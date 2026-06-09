@@ -52,10 +52,28 @@ class Option:
     ``append_option`` pushes these onto :attr:`Rule.options`; the backend
     later turns each into concrete ``--name value`` text, expanding an array
     ``value`` into the cartesian product of rules (Perl ``unfold_rule``).
+
+    :attr:`kind` and :attr:`module` are **synthesized by the port** -- they
+    have no counterpart in the oracle, which distinguishes match/proto/target
+    by the option ``name`` alone (design §"Контракт правила", sanctioned
+    deviation #2, a seed for the Phase 2 nft backend).  ``kind`` is derived
+    from ``name`` in :func:`append_option`; ``module`` is the name of the
+    module that introduced a sub-option (from ``merge_keywords``), supplied by
+    the parser call-site and ``None`` otherwise.  Phase 1 has no consumer for
+    either field (iptables emission is positional and flat).
+
+    :attr:`chosen` is the deferred analog of Perl's formatted slot
+    ``$option->[2]`` (``:1888``): :func:`pyferm.rules.unfold_rule` records the
+    *value* selected for this option in the current leaf rule (array expanded,
+    deferred realized) rather than a rendered string, because formatting moved
+    to the backend (sanctioned deviation #1).
     """
 
     name: str
     value: Value
+    kind: str = "option"
+    module: str | None = None
+    chosen: Value = None
 
 
 @dataclass
@@ -137,14 +155,33 @@ def merge_keywords(rule: Rule, keywords: dict[str, Keyword]) -> None:
     rule.keywords.update(keywords)
 
 
-def append_option(rule: Rule, name: str, value: Value) -> None:
+#: Map an option ``name`` to its synthesized :attr:`Option.kind` (design
+#: §"Контракт правила": ``match``->``match_module``, ``protocol``->``proto``,
+#: ``jump``/``goto``->``target``, everything else->``option``).
+_OPTION_KINDS = {
+    "match": "match_module",
+    "protocol": "proto",
+    "jump": "target",
+    "goto": "target",
+}
+
+
+def append_option(
+    rule: Rule, name: str, value: Value, module: str | None = None
+) -> None:
     """Queue one iptables option on the rule (Perl ``:2020``).
 
     Lives here (with :class:`Rule`/:class:`Option`) rather than in the parser
     so the protocol/param helpers in ``functions`` and the parser can both
     emit options without an import cycle.
+
+    ``kind`` is synthesized from ``name`` via :data:`_OPTION_KINDS`; ``module``
+    (the introducing module for a sub-option) is passed through from the
+    call-site.  Both are port-only contract fields with no Phase 1 consumer
+    (see :class:`Option`).
     """
-    rule.options.append(Option(name, value))
+    kind = _OPTION_KINDS.get(name, "option")
+    rule.options.append(Option(name, value, kind, module))
 
 
 @dataclass
