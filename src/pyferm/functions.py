@@ -342,8 +342,16 @@ class Evaluator:
             error("array not allowed here")
         return token
 
-    def get_function_params(self) -> list[Value]:
-        """Read a ``(a, b, ...)`` argument list (Perl ``:1633``)."""
+    def get_function_params(
+        self, *, allow_negation: bool = False
+    ) -> list[Value]:
+        """Read a ``(a, b, ...)`` argument list (Perl ``:1633``).
+
+        ``allow_negation`` is threaded into every :meth:`getvalues` call, as
+        Perl forwards its ``%options`` (``getvalues(undef, @_)``, ``:1654``);
+        the parser passes it when expanding a user ``&function`` call so a
+        ``! arg`` is accepted, while the ``@``-builtins leave it off.
+        """
         self.tokenizer.expect_token(
             "(", 'function name must be followed by "()"'
         )
@@ -358,7 +366,7 @@ class Evaluator:
                     break
                 if token != ",":
                     error('"," expected')
-            params.append(self.getvalues())
+            params.append(self.getvalues(allow_negation=allow_negation))
         return params
 
     def collect_tokens(
