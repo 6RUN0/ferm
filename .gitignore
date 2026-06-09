@@ -4,9 +4,16 @@
 .#*
 .stgit*
 build
-doc/ferm.1
-doc/ferm.html
-doc/ferm.txt
-doc/import-ferm.1
+reference/doc/ferm.1
+reference/doc/ferm.html
+reference/doc/ferm.txt
+reference/doc/import-ferm.1
 ferm.service
 *.tmp
+
+# local agent/tooling directories (not part of ferm)
+.omc/
+.codegraph/
+.claude/
+CLAUDE.md
+docs/superpowers/

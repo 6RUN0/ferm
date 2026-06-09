@@ -3,14 +3,14 @@ on:
   workflow_dispatch:
   push:
     paths-ignore:
-      - 'doc/**'
-      - 'examples/**'
+      - 'reference/doc/**'
+      - 'reference/examples/**'
     branches:
       - master
   pull_request:
     paths-ignore:
-      - 'doc/**'
-      - 'examples/**'
+      - 'reference/doc/**'
+      - 'reference/examples/**'
     branches:
       - master
 jobs:
@@ -26,4 +26,4 @@ jobs:
             libnet-dns-resolver-mock-perl
 
       - name: Runt unit tests
-        run: make -j$(nproc) check
+        run: make -j$(nproc) -C reference check
