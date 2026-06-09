@@ -1,0 +1,95 @@
+[project]
+name = "ferm"
+version = "0.1.0.dev0"
+description = "For Easy Rule Making - a frontend for iptables (Python port)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Auke Kok" }, { name = "Max Kellermann" }]
+maintainers = [{ name = "Boris Talovikov" }]
+keywords = ["firewall", "iptables", "nftables", "netfilter"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: System :: Networking :: Firewalls",
+]
+dependencies = [
+    "dnspython>=2.8.0",
+]
+
+[project.scripts]
+ferm = "pyferm.cli:main"
+import-ferm = "pyferm.import_ferm:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# src-layout is not auto-detected by hatchling; name the package explicitly.
+packages = ["src/pyferm"]
+
+[tool.uv]
+default-groups = ["dev", "test", "lint"]
+
+[tool.ruff]
+line-length = 79
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",      # pycodestyle + pyflakes
+  "I",                # isort
+  "N",                # pep8-naming
+  "D",                # pydocstyle
+  "UP",               # pyupgrade
+  "B",                # bugbear
+  "A",                # builtins shadowing
+  "C4",               # comprehensions
+  "SIM",              # simplify
+  "PTH",              # use pathlib
+  "RUF",              # ruff-specific
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/*" = ["D"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["pyferm"]
+branch = true
+
+[dependency-groups]
+dev = [
+    "nox>=2026.4.10",
+    "pre-commit>=4.6.0",
+]
+lint = [
+    "bandit[toml]>=1.9.4",
+    "docformatter>=1.7.8",
+    "mypy>=2.1.0",
+    "pip-audit>=2.10.0",
+    "pyright>=1.1.410",
+    "ruff>=0.15.16",
+]
+test = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=4.1.0",
+]

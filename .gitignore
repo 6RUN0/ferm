@@ -11,6 +11,19 @@ reference/doc/import-ferm.1
 ferm.service
 *.tmp
 
+# Python port (uv-managed environment, tool caches, build artifacts)
+.venv/
+__pycache__/
+*.py[cod]
+.nox/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+
 # local agent/tooling directories (not part of ferm)
 .omc/
 .codegraph/
