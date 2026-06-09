@@ -137,6 +137,16 @@ def merge_keywords(rule: Rule, keywords: dict[str, Keyword]) -> None:
     rule.keywords.update(keywords)
 
 
+def append_option(rule: Rule, name: str, value: Value) -> None:
+    """Queue one iptables option on the rule (Perl ``:2020``).
+
+    Lives here (with :class:`Rule`/:class:`Option`) rather than in the parser
+    so the protocol/param helpers in ``functions`` and the parser can both
+    emit options without an import cycle.
+    """
+    rule.options.append(Option(name, value))
+
+
 @dataclass
 class Frame:
     """One scope-stack frame (an element of Perl's ``@stack``).
