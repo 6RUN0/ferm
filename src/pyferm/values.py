@@ -241,8 +241,9 @@ def realize_deferred(domain: str, *values: Value) -> list[Value]:
 
     Each deferred ``function`` returns a list mirroring its Perl
     list-context return, which is spliced into the result; non-deferred
-    values pass through.  This is why ``resolve``'s empty case returns
-    ``[[]]`` (a single empty-array element) rather than an empty list.
+    values pass through.  A function returning the empty list (e.g. an
+    unresolvable ``@resolve``) splices nothing, so the surrounding value
+    shrinks -- matching Perl's list-context splice.
     """
     result: list[Value] = []
     for value in values:

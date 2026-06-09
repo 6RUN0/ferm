@@ -257,9 +257,12 @@ def resolve(
     and survive only when they match the queried family.  ``NS``/``MX``
     answers are hostnames, so they are resolved again in a second pass.
 
-    Returns the addresses as a list; an empty result becomes ``[[]]`` (a
-    single empty-array element) so :func:`pyferm.values.realize_deferred` can
-    splice it like any other deferred result.
+    Returns the addresses as a list; an empty result is the empty list (zero
+    elements), so :func:`pyferm.values.realize_deferred` splices nothing and a
+    rule whose only address came from an empty ``@resolve`` drops out entirely.
+    The oracle's ``return [] unless length @result`` guard (``:1365``) is dead
+    code -- ``length`` forces scalar context, so the count's digit length is
+    always truthy -- leaving ``return @result`` with an empty ``@result``.
     """
     if rrtype is not None and not isinstance(rrtype, str):
         error("String expected")
@@ -294,6 +297,4 @@ def resolve(
     if rrtype in ("NS", "MX"):
         result = resolve(domain, result, None, resolver=resolver)
 
-    if not result:
-        return [[]]
     return result

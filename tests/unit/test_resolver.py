@@ -3,7 +3,7 @@
 Covers the numeric-address classifier, the Net::DNS-style IPv6 expansion,
 zone-file parsing, and the ``resolve`` control flow: family-default record
 type, the numeric fast-path family filter, the silent NXDOMAIN/NOERROR
-skips, the empty-result ``[[]]`` sentinel, and the NS/MX two-pass
+skips, the empty-result (zero elements) case, and the NS/MX two-pass
 resolution.
 """
 
@@ -93,7 +93,7 @@ def test_resolve_numeric_fast_path_filters_family(
 ) -> None:
     # Right family survives untouched; wrong family is dropped.
     assert resolve("ip", "203.0.113.5", resolver=zone) == ["203.0.113.5"]
-    assert resolve("ip6", "203.0.113.5", resolver=zone) == [[]]
+    assert resolve("ip6", "203.0.113.5", resolver=zone) == []
 
 
 def test_resolve_numeric_ipv6_passes_through_uncompressed(
@@ -104,14 +104,14 @@ def test_resolve_numeric_ipv6_passes_through_uncompressed(
 
 
 def test_resolve_nxdomain_is_silent(zone: ZonefileResolver) -> None:
-    assert resolve("ip", "nonexistent.example.com", resolver=zone) == [[]]
+    assert resolve("ip", "nonexistent.example.com", resolver=zone) == []
 
 
 def test_resolve_noerror_wrong_type_is_silent(
     zone: ZonefileResolver,
 ) -> None:
     # Name exists (TXT) but has no A record: NOERROR, skipped silently.
-    assert resolve("ip", "txt.example.com", resolver=zone) == [[]]
+    assert resolve("ip", "txt.example.com", resolver=zone) == []
 
 
 def test_resolve_other_errorstring_raises() -> None:
