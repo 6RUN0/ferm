@@ -22,12 +22,14 @@ class ErrorContext(Protocol):
 
     ``past_tokens`` is a list of token lists (one list per consumed
     statement), mirroring ``$script->{past_tokens}``; ``error`` flattens
-    it to reconstruct an indented view of the offending code.
+    it to reconstruct an indented view of the offending code.  Tokens are
+    usually strings, but a consumed deferred value can also land here
+    (Perl pushes the raw token), so the element type is ``object``.
     """
 
     filename: str
     line: int
-    past_tokens: list[list[str]]
+    past_tokens: list[list[object]]
 
 
 class FermError(Exception):
@@ -59,7 +61,7 @@ def _render_context(context: ErrorContext) -> str:
     the flattened past tokens, tracking bracket/brace depth to re-indent,
     and keeps only the trailing few lines around the error location.
     """
-    words: list[str] = [w for group in context.past_tokens for w in group]
+    words: list[object] = [w for group in context.past_tokens for w in group]
     lines: list[str] = []
     tabs = 0
     cur = 0
@@ -94,7 +96,8 @@ def _render_context(context: ErrorContext) -> str:
             tabs += 1
         if cur > len(lines) - 1:
             put(cur, "")
-        lines[cur] += word + " "
+        text = word if isinstance(word, str) else str(word)
+        lines[cur] += text + " "
         if word == "(":
             cur += 1
             put(cur, "    " * tabs)
