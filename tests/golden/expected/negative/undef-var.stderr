@@ -1,0 +1,3 @@
+Error in test/negative/undef-var line 1:
+chain TEST proto tcp dport % TCP_SERV <--
+Unrecognized keyword: TCP_SERV

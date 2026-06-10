@@ -156,6 +156,24 @@ def preserve_case(
     return expected, generated
 
 
+def diagnostics_case(target: FermTarget, ferm_file: Path) -> tuple[int, str]:
+    """negative/params/warning: return ``(exit code, stderr)``, no raise.
+
+    Unlike :func:`_run`, a non-zero exit is the expected outcome here,
+    so the verdict is returned for the test to assert on.
+    """
+    cmd = [*target.ferm, "--test", "--slow", "--noflush", _rel(ferm_file)]
+    proc = subprocess.run(  # fixed argv, no shell
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_ENV,
+        cwd=REFERENCE_ROOT,
+    )
+    return proc.returncode, proc.stderr
+
+
 def build_mock_preserve_save2(
     target: FermTarget, reference_root: Path, tmp: Path
 ) -> Path:

@@ -1,0 +1,5 @@
+Error in test/negative/missingsemicolon line 3:
+chain INPUT 
+{ 
+    dport <--
+To use sport or dport, you have to specify "proto tcp" or "proto udp" first

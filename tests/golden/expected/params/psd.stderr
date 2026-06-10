@@ -1,0 +1,5 @@
+Error in test/params/psd line 3:
+chain test_psd 
+{ 
+    psd-weight-threshold <--
+Unrecognized keyword: psd-weight-threshold
