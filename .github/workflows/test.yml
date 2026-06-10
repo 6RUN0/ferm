@@ -35,8 +35,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The requires-python floor and the newest stable interpreter.
-        python: ['3.11', '3.14']
+        # Every interpreter declared supported in the trove classifiers.
+        python: ['3.11', '3.12', '3.13', '3.14']
     steps:
       - id: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2

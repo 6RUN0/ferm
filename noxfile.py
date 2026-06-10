@@ -12,6 +12,7 @@ Examples::
     uv run nox -s lint               # pre-commit hooks on all files
     uv run nox -s tests              # unit + golden against the port
     uv run nox -s tests -- tests/unit              # subset
+    uv run nox -s matrix             # test suite on every supported python
     uv run nox -s golden_oracle      # golden harness vs the Perl oracle
     uv run nox -s typecheck          # mypy + pyright
     uv run nox -s coverage           # tests under coverage
@@ -31,6 +32,10 @@ nox.options.sessions = ["lint", "tests", "typecheck"]
 #: The golden harness runs the Python port unless told otherwise; the
 #: ``golden_oracle`` session flips this to validate the harness itself.
 _GOLDEN_ENV = {"FERM_GOLDEN_TARGET": "python"}
+
+#: Every interpreter declared supported in the trove classifiers; keep
+#: in sync with ``[project.classifiers]`` and the CI ``port`` matrix.
+_SUPPORTED_PYTHONS = ("3.11", "3.12", "3.13", "3.14")
 
 
 def _uv(
@@ -55,6 +60,35 @@ def lint(session: nox.Session) -> None:
 def tests(session: nox.Session) -> None:
     """Run the test suite (unit + golden) against the Python port."""
     _uv(session, "pytest", *session.posargs, env=_GOLDEN_ENV)
+
+
+@nox.session
+@nox.parametrize("python", _SUPPORTED_PYTHONS)
+def matrix(session: nox.Session, python: str) -> None:
+    """
+    Run the test suite on one supported interpreter (all by default).
+
+    Local mirror of the CI ``port`` matrix.  Each interpreter gets its
+    own environment (``.venv-<version>``) so the main ``.venv`` stays
+    untouched; uv downloads any missing interpreter on demand.
+    """
+    session.run(
+        "uv",
+        "run",
+        "--locked",
+        "--python",
+        python,
+        "pytest",
+        *session.posargs,
+        external=True,
+        env={
+            **_GOLDEN_ENV,
+            "UV_PROJECT_ENVIRONMENT": f".venv-{python}",
+            # An inherited VIRTUAL_ENV=.venv would make uv warn about
+            # the mismatch with the per-interpreter environment.
+            "VIRTUAL_ENV": f".venv-{python}",
+        },
+    )
 
 
 @nox.session
@@ -181,6 +215,9 @@ def preflight(session: nox.Session) -> None:
         "golden_oracle",
         "fuzz",
         "workflows",
+        # Parametrized sessions are notified per signature; the bare
+        # name would not expand to the variants.
+        *(f"matrix(python='{python}')" for python in _SUPPORTED_PYTHONS),
     )
     for name in queue:
         session.notify(name)
