@@ -1,9 +1,10 @@
 """Differential fuzzing: the port vs the Perl oracle on pure functions.
 
-Narrow start of the property-based plan: arbitrary inputs through
-``tokenize_string`` and ``shell_escape`` must behave identically in the
-Python port and in the frozen oracle (bug-for-bug, e.g. a trailing
-newline slipping past the bare-word ``$`` anchor).
+Arbitrary inputs through the pure lexing/escaping helpers must behave
+identically in the Python port and in the frozen oracle (bug-for-bug,
+e.g. a trailing newline slipping past the bare-word ``$`` anchor).
+Targets: ferm's ``tokenize_string`` and ``shell_escape``, import-ferm's
+save-file lexer, and the backtick-output splitter.
 
 ASCII only, by design: the oracle lexes bytes (no ``use utf8``, so
 ``\\w`` is ASCII) while the port lexes ``str`` (Unicode ``\\w``); the
@@ -20,7 +21,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from .oracle import OracleProcess
+from .oracle import IMPORT_SOURCE, OracleProcess
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -45,11 +46,16 @@ _CHUNK = st.one_of(
     st.sampled_from(["@def", "@include", "#", "`uname -n`", "$var", "&fn"]),
 )
 _SEPARATOR = st.sampled_from(["", " ", "\t", "  "])
-_FERMISH_LINE = st.lists(
-    st.tuples(_CHUNK, _SEPARATOR), max_size=10
-).map(lambda pairs: "".join(chunk + sep for chunk, sep in pairs))
+_FERMISH_LINE = st.lists(st.tuples(_CHUNK, _SEPARATOR), max_size=10).map(
+    lambda pairs: "".join(chunk + sep for chunk, sep in pairs)
+)
 
 _LINES = _ASCII_TEXT | _FERMISH_LINE
+
+# Backtick output is multi-line: comment stripping is per line, so a
+# `#` chunk inside _LINES exercises it on every line independently.
+_MULTILINE = st.lists(_LINES, max_size=4).map("\n".join)
+_OUTPUTS = _LINES | _MULTILINE
 
 
 @pytest.fixture(scope="module")
@@ -100,3 +106,37 @@ def test_shell_escape_matches_oracle(
 
     proc, fast = oracle_escape
     assert shell_escape(token, fast=fast) == proc.query(token)
+
+
+@pytest.fixture(scope="module")
+def oracle_import_tokenize() -> Iterator[OracleProcess]:
+    proc = OracleProcess("import_tokenize", source=IMPORT_SOURCE)
+    yield proc
+    proc.close()
+
+
+@pytest.fixture(scope="module")
+def oracle_backtick_split() -> Iterator[OracleProcess]:
+    proc = OracleProcess("backtick_split")
+    yield proc
+    proc.close()
+
+
+@given(line=_LINES)
+def test_import_tokenize_matches_oracle(
+    line: str, oracle_import_tokenize: OracleProcess
+) -> None:
+    from pyferm.import_ferm import _tokenize
+
+    assert _tokenize(line) == oracle_import_tokenize.tokenize(line)
+
+
+@given(output=_OUTPUTS)
+def test_backtick_split_matches_oracle(
+    output: str, oracle_backtick_split: OracleProcess
+) -> None:
+    from pyferm.functions import _split_backtick_output
+
+    assert _split_backtick_output(output) == oracle_backtick_split.tokenize(
+        output
+    )
