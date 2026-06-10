@@ -6,7 +6,10 @@ they are replaced/augmented by the golden-file harness as the port lands.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_package_imports() -> None:
@@ -20,12 +23,8 @@ def test_reference_oracle_present(reference_root: Path) -> None:
     assert (reference_root / "Makefile").is_file()
 
 
-def test_cli_entry_points_are_stubs() -> None:
+def test_cli_entry_points_answer_help() -> None:
     from pyferm import cli, import_ferm
 
     for entry in (cli.main, import_ferm.main):
-        try:
-            entry([])
-        except NotImplementedError:
-            continue
-        raise AssertionError(f"{entry} should be a scaffold stub")
+        assert entry(["--help"]) == 0
