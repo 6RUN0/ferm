@@ -4,7 +4,9 @@ Arbitrary inputs through the pure lexing/escaping helpers must behave
 identically in the Python port and in the frozen oracle (bug-for-bug,
 e.g. a trailing newline slipping past the bare-word ``$`` anchor).
 Targets: ferm's ``tokenize_string`` and ``shell_escape``, import-ferm's
-save-file lexer, and the backtick-output splitter.
+save-file lexer and option-token classifier, the backtick-output
+splitter, ``@substr`` (Perl numification + ``substr`` semantics), and
+the previous-ruleset reader ``read_previous``.
 
 ASCII only, by design: the oracle lexes bytes (no ``use utf8``, so
 ``\\w`` is ASCII) while the port lexes ``str`` (Unicode ``\\w``); the
@@ -15,6 +17,7 @@ protocol (see :mod:`.oracle`).
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,6 +28,8 @@ from .oracle import IMPORT_SOURCE, OracleProcess
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from pyferm.domains import DomainInfo
 
 _ASCII_TEXT = st.text(
     alphabet=st.characters(min_codepoint=2, max_codepoint=0x7F),
@@ -56,6 +61,70 @@ _LINES = _ASCII_TEXT | _FERMISH_LINE
 # `#` chunk inside _LINES exercises it on every line independently.
 _MULTILINE = st.lists(_LINES, max_size=4).map("\n".join)
 _OUTPUTS = _LINES | _MULTILINE
+
+# @substr numifies its offset/length strings like Perl: mix real
+# numbers (decorated with junk) and arbitrary text.  A leading
+# "inf"/"nan" is excluded -- Perl numifies those to IEEE specials whose
+# integer cast is platform-defined, and no real config computes an
+# offset that way.
+_INF_NAN_PREFIX = re.compile(r"\s*[+-]?(?:inf|nan)", re.ASCII | re.IGNORECASE)
+_NUMBERISH = (
+    st.integers(min_value=-(10**21), max_value=10**21).map(str)
+    | st.floats(allow_nan=False, allow_infinity=False).map(repr)
+    | st.tuples(
+        st.sampled_from(["", " ", "\t ", "+", "-", " -"]),
+        st.sampled_from(["12", "3.5", ".5", "2.", "1e3", "1E-2", "9" * 25]),
+        st.sampled_from(["", "x", "e", ".", "..", "abc"]),
+    ).map("".join)
+    | _ASCII_TEXT.filter(lambda text: _INF_NAN_PREFIX.match(text) is None)
+)
+
+# Option-ish tokens: `-x`/`--long` hits and near misses, plus explicit
+# trailing newlines to probe the oracle's bare-word `$` anchor.
+_OPTION_TOKENS = _ASCII_TEXT | st.tuples(
+    st.sampled_from(["", "-", "--", "---", "!"]),
+    st.text(
+        alphabet=st.characters(min_codepoint=2, max_codepoint=0x7F),
+        max_size=6,
+    ),
+    st.sampled_from(["", "\n", "\n\n", " "]),
+).map("".join)
+
+# Save-dump lines: `*table` / `:CHAIN POLICY [counters]` shapes plus
+# arbitrary noise; read_previous must classify each like the oracle.
+# \x1c probes the byte-vs-Unicode \s divergence in the policy field.
+_SAVE_LINE = _LINES | st.tuples(
+    st.sampled_from(["*", ":", "", " *", "-A "]),
+    st.text(alphabet="ab_F0", max_size=4),
+    st.sampled_from(["", " ", "\t", "\x1c"]),
+    st.sampled_from(["", "-", "ACCEPT", "- [0:0]", "DROP [1:2]"]),
+).map("".join)
+_SAVE_DUMPS = st.tuples(st.lists(_SAVE_LINE, max_size=6), st.booleans()).map(
+    lambda parts: "\n".join(parts[0]) + ("\n" if parts[1] else "")
+)
+
+
+def _read_like_perl(text: str) -> list[str]:
+    """Split into lines the way Perl's ``<$fh>`` does (on ``\\n`` only)."""
+    return re.findall(r"[^\n]*\n|[^\n]+", text)
+
+
+def _domain_layout(domain_info: DomainInfo) -> list[str]:
+    """Flatten tables/chains into the driver's canonical token list."""
+    layout: list[str] = []
+    for table in sorted(domain_info.tables):
+        table_info = domain_info.tables[table]
+        layout.append(f"*{table}")
+        if table_info.has_builtin:
+            layout.append("+")
+        layout.extend(
+            sorted(
+                chain
+                for chain, chain_info in table_info.chains.items()
+                if chain_info.builtin
+            )
+        )
+    return layout
 
 
 @pytest.fixture(scope="module")
@@ -140,3 +209,59 @@ def test_backtick_split_matches_oracle(
     assert _split_backtick_output(output) == oracle_backtick_split.tokenize(
         output
     )
+
+
+@pytest.fixture(scope="module")
+def oracle_substr() -> Iterator[OracleProcess]:
+    proc = OracleProcess("substr3")
+    yield proc
+    proc.close()
+
+
+@pytest.fixture(scope="module")
+def oracle_option_token() -> Iterator[OracleProcess]:
+    proc = OracleProcess("option_token", source=IMPORT_SOURCE)
+    yield proc
+    proc.close()
+
+
+@pytest.fixture(scope="module")
+def oracle_read_previous() -> Iterator[OracleProcess]:
+    proc = OracleProcess("read_previous")
+    yield proc
+    proc.close()
+
+
+@given(string=_ASCII_TEXT, offset=_NUMBERISH, length=_NUMBERISH)
+def test_substr_matches_oracle(
+    string: str, offset: str, length: str, oracle_substr: OracleProcess
+) -> None:
+    from pyferm.functions import _perl_int, _perl_substr
+
+    assert _perl_substr(
+        string, _perl_int(offset), _perl_int(length)
+    ) == oracle_substr.query_fields(string, offset, length)
+
+
+@given(token=_OPTION_TOKENS)
+def test_option_token_matches_oracle(
+    token: str, oracle_option_token: OracleProcess
+) -> None:
+    from pyferm.import_ferm import _match_option
+
+    option = _match_option(token)
+    expected = oracle_option_token.tokenize(token)
+    assert ([] if option is None else [option]) == expected
+
+
+@given(dump=_SAVE_DUMPS)
+def test_read_previous_matches_oracle(
+    dump: str, oracle_read_previous: OracleProcess
+) -> None:
+    from pyferm.domains import DomainInfo, read_previous
+
+    domain_info = DomainInfo()
+    save = read_previous(_read_like_perl(dump), domain_info)
+    # the dump must be reproduced byte-for-byte (rollback relies on it)
+    assert save == dump
+    assert _domain_layout(domain_info) == oracle_read_previous.tokenize(dump)

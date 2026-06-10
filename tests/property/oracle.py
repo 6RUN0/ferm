@@ -52,6 +52,10 @@ class OracleProcess:
             reply.extend(byte)
         return reply.decode("ascii")
 
+    def query_fields(self, *fields: str) -> str:
+        """Send one multi-field record (fields joined by ``\\x01``)."""
+        return self.query(_TOKEN_SEP.join(fields))
+
     def tokenize(self, line: str) -> list[str]:
         """Send ``line`` and parse the reply as a token list."""
         reply = self.query(line)
