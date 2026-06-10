@@ -44,7 +44,8 @@ repos:
           (?x)^tests/(
             conftest\.py$|
             .*__init__\.py$|
-            golden/(conftest|runner|normalize|sortpl)\.py$
+            golden/(conftest|runner|normalize|sortpl)\.py$|
+            property/oracle\.py$
           )
 
   # Quick regex-based gotchas the linters cannot catch: Mock method

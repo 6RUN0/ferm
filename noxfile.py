@@ -17,6 +17,7 @@ Examples::
     uv run nox -s coverage           # tests under coverage
     uv run nox -s audit              # bandit + pip-audit
     uv run nox -s workflows          # actionlint + zizmor on CI configs
+    uv run nox -s fuzz               # thorough differential fuzzing
 """
 
 import shutil
@@ -102,6 +103,24 @@ def coverage(session: nox.Session) -> None:
 
 
 @nox.session
+def fuzz(session: nox.Session) -> None:
+    """
+    Differential fuzzing against the Perl oracle, thorough profile.
+
+    The property tests already run (at the default example count) inside
+    ``tests``/``coverage``; this session reruns them with the "thorough"
+    Hypothesis profile for a deeper sweep.  Needs ``perl`` on PATH.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/property",
+        "--hypothesis-profile=thorough",
+        *session.posargs,
+    )
+
+
+@nox.session
 def audit(session: nox.Session) -> None:
     """Security/vulnerability audit (bandit + pip-audit)."""
     _uv(session, "bandit", "-q", "-c", "pyproject.toml", "-r", "src")
@@ -134,6 +153,13 @@ def preflight(session: nox.Session) -> None:
     """Queue everything a push should pass: lint, typecheck, tests."""
     # `coverage` rather than `tests`: the same suite, but the coverage
     # floor (fail_under) is actually enforced before a push.
-    queue = ("lint", "typecheck", "coverage", "golden_oracle", "workflows")
+    queue = (
+        "lint",
+        "typecheck",
+        "coverage",
+        "golden_oracle",
+        "fuzz",
+        "workflows",
+    )
     for name in queue:
         session.notify(name)
