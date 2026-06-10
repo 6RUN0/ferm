@@ -98,6 +98,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
     from pyferm.config import Options
+    from pyferm.scope import Scope
+    from pyferm.tokenizer import Tokenizer
 
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS = {"realgoto": "goto"}
@@ -240,8 +242,8 @@ class Parser:
     ) -> None:
         """Bind the parser to its evaluator, domain state and injected I/O."""
         self.evaluator = evaluator
-        self.scope = evaluator.scope
-        self.tokenizer = evaluator.tokenizer
+        self.scope: Scope = evaluator.scope
+        self.tokenizer: Tokenizer = evaluator.tokenizer
         self.domains = domains
         self.options = options
         self._execute = execute

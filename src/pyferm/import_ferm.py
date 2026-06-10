@@ -406,14 +406,14 @@ class Importer:
     def __init__(self, out: TextIO, domain: str = "ip") -> None:
         """Bind the output stream and the initial target domain."""
         self.out = out
-        self.indent = 0
+        self.indent: int = 0
         self.table: str | None = None
         self.chain: str | None = None
         self.domain: str | None = None
-        self.next_domain = domain
+        self.next_domain: str = domain
         self.rules: list[Rule] = []
         self.policies: dict[str, str] = {}
-        self.lineno = 0
+        self.lineno: int = 0
 
     # --- emitters ----------------------------------------------------
 
