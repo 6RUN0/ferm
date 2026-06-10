@@ -192,6 +192,21 @@ def splitpath_dir(path: str) -> str:
     return "" if index < 0 else path[: index + 1]
 
 
+def _split_backtick_output(output: str) -> list[str]:
+    """
+    Strip ``#`` comments and split on whitespace (Perl ``:1470``/``:1473``).
+
+    The word list a backtick command's stdout contributes, before each
+    word goes through ``getvalues``.
+    """
+    stripped = re.sub(r"#.*", "", output)
+    # re.ASCII: Perl's byte-mode \s is [ \t\n\r\f\x0B]; a Unicode \s
+    # would also split on \x1c-\x1f (found by the differential fuzzer).
+    return [
+        word for word in re.split(r"\s+", stripped, flags=re.ASCII) if word
+    ]
+
+
 #: The token-source override passed through ``getvalues`` (Perl's ``$code``).
 TokenSource: TypeAlias = "Callable[[], Token | None]"
 
@@ -381,8 +396,7 @@ class Evaluator:
                 error(f"child died with signal {-result.returncode}")
             error(f"child exited with status {result.returncode}")
 
-        output = re.sub(r"#.*", "", result.stdout)
-        tokens = deque(word for word in re.split(r"\s+", output) if word)
+        tokens = deque(_split_backtick_output(result.stdout))
         values: list[Value] = []
         while tokens:
             value = self.getvalues(

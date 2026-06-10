@@ -82,9 +82,12 @@ _OPTION_RE = re.compile(r"-(\w)")
 _LONG_OPTION_RE = re.compile(r"--(\S+)")
 _ESCAPE_RE = re.compile(r"[^-\w.:/]", re.ASCII)
 
-_TOK_QUOTED = re.compile(r'\s*"([^"]*)"')
-_TOK_BANG = re.compile(r"\s*(!)")
-_TOK_WORD = re.compile(r"\s*(\S+)")
+#: ``re.ASCII``: Perl's byte-mode ``\s`` is ``[ \t\n\r\f\x0B]``, so a
+#: Unicode ``\s`` would swallow ``\x1c``-``\x1f`` bytes the oracle
+#: lexes as words (found by the differential fuzzer).
+_TOK_QUOTED = re.compile(r'\s*"([^"]*)"', re.ASCII)
+_TOK_BANG = re.compile(r"\s*(!)", re.ASCII)
+_TOK_WORD = re.compile(r"\s*(\S+)", re.ASCII)
 
 _USAGE = (
     "Usage:\n"
