@@ -161,8 +161,9 @@ skips = [
 ]
 
 [tool.codespell]
-# reference/ is the frozen Perl oracle: never spell-check upstream.
-skip = ".git,.venv,.nox,uv.lock,reference,htmlcov,build,dist,*.pyc"
+# reference/ is the frozen Perl oracle and tests/corpus/configs holds
+# third-party wild configs verbatim: never spell-check upstream text.
+skip = ".git,.venv,.nox,uv.lock,reference,tests/corpus/configs,htmlcov,build,dist,*.pyc"
 # netfilter vocabulary codespell mis-flags:
 # * iif -- nft "input interface" expression
 # * rsource -- iptables `recent --rsource`

@@ -7,10 +7,11 @@ minimum_pre_commit_version: "3.5.0"
 default_install_hook_types: [pre-commit, commit-msg]
 
 # reference/ is the frozen Perl oracle (upstream ferm plus its golden
-# files) and tests/golden/expected/ holds byte-exact captures of the
-# oracle's stderr (trailing whitespace is significant): no hook may
-# rewrite, lint, or spell-check them.
-exclude: ^(reference/|tests/golden/expected/)
+# files), tests/golden/expected/ holds byte-exact captures of the
+# oracle's stderr (trailing whitespace is significant) and
+# tests/corpus/configs/ carries third-party wild configs verbatim: no
+# hook may rewrite, lint, or spell-check them.
+exclude: ^(reference/|tests/golden/expected/|tests/corpus/configs/)
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
