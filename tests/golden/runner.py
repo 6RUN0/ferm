@@ -80,6 +80,7 @@ def _run(prefix: tuple[str, ...], args: list[str]) -> str:
         cmd,
         capture_output=True,
         text=True,
+        check=False,
         env=_ENV,
         cwd=REFERENCE_ROOT,
     )

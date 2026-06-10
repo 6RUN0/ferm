@@ -1,4 +1,5 @@
-"""Error/warning reporting and the exit-code contract.
+"""
+Error/warning reporting and the exit-code contract.
 
 Faithful port of ``error`` and ``warning`` from ``reference/src/ferm``
 (``:834-879``).  ``die`` maps to :class:`FermError`; the top-level CLI
@@ -20,7 +21,8 @@ from typing import NoReturn, Protocol
 
 
 class ErrorContext(Protocol):
-    """The slice of the parser's ``$script`` the reporters need.
+    """
+    The slice of the parser's ``$script`` the reporters need.
 
     ``past_tokens`` is a list of token lists (one list per consumed
     statement), mirroring ``$script->{past_tokens}``; ``error`` flattens
@@ -35,7 +37,8 @@ class ErrorContext(Protocol):
 
 
 class FermError(Exception):
-    """A fatal ferm error, i.e. the Python form of Perl's ``die``.
+    """
+    A fatal ferm error, i.e. the Python form of Perl's ``die``.
 
     The carried message is the already-joined ``die`` argument list,
     without the trailing newline (the handler adds it).
@@ -51,18 +54,20 @@ _context: ErrorContext | None = None
 
 
 def set_error_context(context: ErrorContext | None) -> None:
-    """Register the current script for :func:`error`/:func:`warning`.
+    """
+    Register the current script for :func:`error`/:func:`warning`.
 
     The parser calls this once with its script object and then mutates
     that object's ``line``/``past_tokens`` in place, mirroring Perl's
     single global ``$script``.
     """
-    global _context
+    global _context  # noqa: PLW0603 -- ports the oracle's globals
     _context = context
 
 
 def _render_context(context: ErrorContext) -> str:
-    """Reconstruct the indented code view ``error`` prints to stderr.
+    """
+    Reconstruct the indented code view ``error`` prints to stderr.
 
     A line-for-line port of the ``error`` body (``:837-867``): it walks
     the flattened past tokens, tracking bracket/brace depth to re-indent,
@@ -125,13 +130,13 @@ def _render_context(context: ErrorContext) -> str:
             put(cur, "    " * tabs)
 
     start = len(lines) - 5
-    if start < 0:
-        start = 0
+    start = max(start, 0)
     return "\n".join(lines[start:])
 
 
 def error(*message: str) -> NoReturn:
-    """Report a fatal parser error and raise :class:`FermError`.
+    """
+    Report a fatal parser error and raise :class:`FermError`.
 
     Mirrors Perl ``error``: prints the located, re-indented code context
     to stderr, then raises with the joined message.  Like Perl ``die``,

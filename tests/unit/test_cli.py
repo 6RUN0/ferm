@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from pyferm.cli import _build_parser, _resolve_options, _setup_streams
 from pyferm.config import Options
 from pyferm.errors import FermError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _resolve(
@@ -126,6 +129,7 @@ def test_confirm_rules_timeout_interrupts_read() -> None:
         capture_output=True,
         text=True,
         timeout=10,
+        check=False,
     )
     assert "RESULT=False" in completed.stdout
 

@@ -1,4 +1,5 @@
-"""Name resolution for ``@resolve()`` (A/AAAA/NS/MX, numeric fast-path).
+"""
+Name resolution for ``@resolve()`` (A/AAAA/NS/MX, numeric fast-path).
 
 Faithful port of ferm's resolver from ``reference/src/ferm``:
 ``pick_resolver`` (``:1286``), ``identify_numeric_address`` (``:1306``) and
@@ -38,7 +39,8 @@ _IPV6_RE = re.compile(r"[0-9a-fA-F]*:[0-9a-fA-F:]*:[0-9a-fA-F:]*")
 
 
 def identify_numeric_address(value: str) -> str | None:
-    """Classify a literal address as ``"A"``/``"AAAA"`` (Perl ``:1306``).
+    """
+    Classify a literal address as ``"A"``/``"AAAA"`` (Perl ``:1306``).
 
     Strips an optional ``/prefix`` netmask first, then matches the IPv4 and
     IPv6 shapes verbatim from Perl; returns ``None`` for a hostname.
@@ -59,7 +61,8 @@ def _expand_ipv6(address: str) -> str:
 
 @dataclass
 class ResourceRecord:
-    """One answer record: its type and the relevant rdata text.
+    """
+    One answer record: its type and the relevant rdata text.
 
     ``data`` is the address for ``A``/``AAAA``, the target for ``NS`` and the
     exchange for ``MX`` -- the single field ``resolve`` consumes per type.
@@ -71,7 +74,8 @@ class ResourceRecord:
 
 @dataclass
 class SearchResult:
-    """The outcome of one query (Perl's ``$query`` plus ``errorstring``).
+    """
+    The outcome of one query (Perl's ``$query`` plus ``errorstring``).
 
     ``found`` is the truthiness of Perl's ``$resolver->search`` return: true
     only when the answer holds records of the queried type.  ``errorstring``
@@ -94,7 +98,8 @@ class Resolver(Protocol):
 
 @dataclass
 class ZonefileResolver:
-    """A mock resolver answering from a parsed zone file (the ``--test`` path).
+    """
+    A mock resolver answering from a parsed zone file (the ``--test`` path).
 
     Replaces ``Net::DNS::Resolver::Mock``: it parses the simple
     ``name [TTL] IN TYPE rdata`` lines of the test ``zonefile`` and answers
@@ -132,7 +137,7 @@ class ZonefileResolver:
                 continue
             name = _canonical_name(fields[0])
             rrtype = fields[cls_index + 1]
-            rdata = fields[cls_index + 2:]
+            rdata = fields[cls_index + 2 :]
             record = _make_record(rrtype, rdata)
             if record is not None:
                 records.setdefault(name, []).append(record)
@@ -183,7 +188,8 @@ def _canonical_name(name: str) -> str:
 
 
 def _make_record(rrtype: str, rdata: list[str]) -> ResourceRecord | None:
-    """Build a :class:`ResourceRecord` from zone-file/answer rdata fields.
+    """
+    Build a :class:`ResourceRecord` from zone-file/answer rdata fields.
 
     Mirrors which field Perl reads per type: ``address`` for ``A``/``AAAA``,
     ``nsdname`` for ``NS``, and the ``exchange`` (after the priority) for
@@ -213,17 +219,19 @@ _provider: ResolverProvider | None = None
 
 
 def set_resolver_provider(provider: ResolverProvider | None) -> None:
-    """Install the resolver factory the CLI builds from its options.
+    """
+    Install the resolver factory the CLI builds from its options.
 
     Stands in for Perl's ``pick_resolver`` reading the ``%option``/``$script``
     globals; :func:`resolve` calls it once per ``@resolve`` evaluation.
     """
-    global _provider
+    global _provider  # noqa: PLW0603 -- cli-injected resolver seam
     _provider = provider
 
 
 def pick_resolver(test: bool, script_path: str) -> Resolver:
-    """Choose a resolver for one ``@resolve`` (Perl ``pick_resolver``).
+    """
+    Choose a resolver for one ``@resolve`` (Perl ``pick_resolver``).
 
     Returns the live :class:`SystemResolver` normally, or a
     :class:`ZonefileResolver` reading the ``zonefile`` next to ``script_path``
@@ -253,7 +261,8 @@ def resolve(
     *,
     resolver: Resolver | None = None,
 ) -> list[Value]:
-    """Resolve hostnames to addresses (Perl ``resolve``, ``:1314``).
+    """
+    Resolve hostnames to addresses (Perl ``resolve``, ``:1314``).
 
     ``names`` is a single host or a ferm array; ``rrtype`` defaults to ``A``
     (or ``AAAA`` for the ``ip6`` family).  Numeric literals skip the lookup

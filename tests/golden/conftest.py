@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from .runner import FermTarget, build_mock_preserve_save2, build_target
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(scope="session")
@@ -29,6 +32,7 @@ def perl_has_resolver_mock() -> bool:
     proc = subprocess.run(  # fixed argv, no shell
         ["perl", "-MNet::DNS::Resolver::Mock", "-e1"],
         capture_output=True,
+        check=False,
     )
     return proc.returncode == 0
 

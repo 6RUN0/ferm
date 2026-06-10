@@ -1,4 +1,5 @@
-"""Recursive-descent parser: ``enter()`` and its keyword/option helpers.
+"""
+Recursive-descent parser: ``enter()`` and its keyword/option helpers.
 
 Faithful port of the parser core of ``reference/src/ferm``: the ~795-line
 ``enter()`` recursion (``:2123-2892``, a deliberate monolith) plus
@@ -122,14 +123,13 @@ _DPKG_RE = re.compile(r"\.dpkg-(old|dist|new|tmp)$")
 
 def _check_chain_name(name: str) -> None:
     """Reject a chain name iptables would truncate (the shared 29 limit)."""
-    if len(name) > 29:
-        error(
-            f"Chain name too long, must be 29 characters or less: {name}"
-        )
+    if len(name) > 29:  # noqa: PLR2004 -- iptables chain-name cap
+        error(f"Chain name too long, must be 29 characters or less: {name}")
 
 
 def _domain_key(value: Value) -> str:
-    """Return a family value as a dict key, requiring a single name.
+    """
+    Return a family value as a dict key, requiring a single name.
 
     ``set_domain`` stores a scalar family (``ip``/``ip6``/...) for every real
     rule, so this is always a ``str`` in practice.  Perl would stringify an
@@ -145,7 +145,8 @@ def _domain_key(value: Value) -> str:
 def collect_filenames(
     parent_filename: str, pathnames: list[Value]
 ) -> list[str]:
-    """Resolve ``@include`` arguments to a list of files (Perl ``:1099``).
+    """
+    Resolve ``@include`` arguments to a list of files (Perl ``:1099``).
 
     Non-absolute, non-pipe names are taken relative to ``parent_filename``'s
     directory.  A trailing ``/`` includes every regular file in a directory
@@ -168,9 +169,7 @@ def collect_filenames(
             try:
                 names = sorted(entry.name for entry in directory.iterdir())
             except OSError as exc:
-                error(
-                    f"Failed to open directory '{pathname}': {exc.strerror}"
-                )
+                error(f"Failed to open directory '{pathname}': {exc.strerror}")
             for name in names:
                 if _DPKG_RE.search(name) is not None:
                     continue
@@ -198,7 +197,8 @@ def collect_filenames(
 
 @dataclass
 class Function:
-    """A user-defined ``@def &name`` function (Perl ``%function``, ``:2372``).
+    """
+    A user-defined ``@def &name`` function (Perl ``%function``, ``:2372``).
 
     ``params`` are the declared parameter names; ``tokens`` is the captured
     body token list; ``block`` records whether the body contains a ``{`` (so a
@@ -213,7 +213,8 @@ class Function:
 
 @dataclass
 class NegatedFlag:
-    r"""A mutable negation flag for ``parse_keyword`` (Perl ``\$negated``).
+    r"""
+    A mutable negation flag for ``parse_keyword`` (Perl ``\$negated``).
 
     The oracle passes ``$negated`` by reference so a keyword handler can clear
     it once consumed (``undef $$negated_ref``, ``:1953``); a leftover flag
@@ -253,7 +254,8 @@ class Parser:
     # -- domain / target helpers (:2070-2119, :976) ----------------------
 
     def check_domain(self, domain: Value) -> bool:
-        """Filter by ``--domain`` and initialise the family (Perl ``:976``).
+        """
+        Filter by ``--domain`` and initialise the family (Perl ``:976``).
 
         Returns ``False`` when ``--domain`` is set and ``domain`` differs (the
         family is skipped); otherwise initialises it -- wrapping any
@@ -277,7 +279,8 @@ class Parser:
         return True
 
     def set_domain(self, rule: Rule, domain: Value) -> bool:
-        """Set the rule's family and base keywords (Perl ``:2070``).
+        """
+        Set the rule's family and base keywords (Perl ``:2070``).
 
         Returns ``False`` when :meth:`check_domain` filtered the family out;
         otherwise derives ``domain_family`` (``ip6`` folds to ``ip``; an empty
@@ -321,7 +324,8 @@ class Parser:
     def set_module_target(
         self, rule: Rule, name: str, defs: ModuleDef
     ) -> None:
-        """Apply a target module like ``DNAT``/``TCPMSS`` (Perl ``:2101``).
+        """
+        Apply a target module like ``DNAT``/``TCPMSS`` (Perl ``:2101``).
 
         ``TCPMSS`` requires ``proto tcp``; ``MARK`` becomes ``mark`` under
         ebtables (which has both ``--mark`` and ``-j mark``).  The module's
@@ -344,7 +348,8 @@ class Parser:
     def _call_param_function(
         self, function: ParamFunction, rule: Rule
     ) -> Value:
-        """Invoke a ``&name`` option-argument parser on the evaluator.
+        """
+        Invoke a ``&name`` option-argument parser on the evaluator.
 
         Resolves the recorded :class:`ParamFunction` name
         (``address_magic``/``cgroup_classid``/``multiport_params``) to the
@@ -359,7 +364,8 @@ class Parser:
     def parse_keyword(
         self, rule: Rule, keyword: Keyword, negated: NegatedFlag
     ) -> Value:
-        """Read one keyword's argument per its module def (Perl ``:1943``).
+        """
+        Read one keyword's argument per its module def (Perl ``:1943``).
 
         Dispatches on ``params``: ``None`` (a bare flag), a
         :class:`ParamFunction` (custom parser), ``"m"`` (a repeated ``multi``),
@@ -384,9 +390,7 @@ class Parser:
             domain = self.scope.top.auto.get("DOMAIN")
             family = domain if isinstance(domain, str) else ""
             value = Multi(
-                realize_deferred(
-                    family, *to_array(self.evaluator.getvalues())
-                )
+                realize_deferred(family, *to_array(self.evaluator.getvalues()))
             )
         elif isinstance(params, str) and _LOWER_RE.match(params):
             local_negated = self._maybe_consume_negation(
@@ -397,9 +401,7 @@ class Parser:
                 if code == "s":
                     collected.append(self.evaluator.getvar())
                 elif code == "c":
-                    items = to_array(
-                        self.evaluator.getvalues(non_empty=True)
-                    )
+                    items = to_array(self.evaluator.getvalues(non_empty=True))
                     collected.append(
                         ",".join(stringify(item) for item in items)
                     )
@@ -414,7 +416,7 @@ class Parser:
             if (
                 keyword.name == "log-prefix"
                 and isinstance(value, str)
-                and len(value) > 29
+                and len(value) > 29  # noqa: PLR2004 -- log-prefix cap
             ):
                 warning(
                     "log-prefix is too long; truncating to 29 characters: "
@@ -438,7 +440,8 @@ class Parser:
     def _maybe_consume_negation(
         self, keyword: Keyword, local_negated: bool
     ) -> bool:
-        """Consume a value-leading ``!`` if the keyword allows it (``:1964``).
+        """
+        Consume a value-leading ``!`` if the keyword allows it (``:1964``).
 
         Returns the (possibly newly set) negation flag; a no-op when the
         keyword is not negatable or negation was already taken.
@@ -455,7 +458,8 @@ class Parser:
     def parse_option(
         self, keyword: Keyword, rule: Rule, negated: NegatedFlag
     ) -> None:
-        """Read a module option and queue it on the rule (Perl ``:2026``).
+        """
+        Read a module option and queue it on the rule (Perl ``:2026``).
 
         Fills :attr:`pyferm.scope.Option.module` from the keyword-to-module
         link ``merge_keywords`` recorded (sanctioned deviation #2: the
@@ -471,7 +475,8 @@ class Parser:
     # -- rule emission (:1924) -------------------------------------------
 
     def mkrules(self, rule: Rule) -> None:
-        """Seed ``chain_rules`` over the rule's tables/chains (Perl ``:1924``).
+        """
+        Seed ``chain_rules`` over the rule's tables/chains (Perl ``:1924``).
 
         Marks the family enabled, then for every (table, chain) pair unfolds
         the rule into that chain's rule list -- unless ``--flush`` is set or
@@ -499,7 +504,8 @@ class Parser:
         items: Iterable[Value],
         build_inner: Callable[[Value], Rule | None],
     ) -> None:
-        """Re-parse a captured block once per array element (Perl ``:2500``).
+        """
+        Re-parse a captured block once per array element (Perl ``:2500``).
 
         ``domain``/``table``/``chain`` with an array value buffer the rest of
         the statement (including its ``;``) and replay it for each element,
@@ -535,7 +541,8 @@ class Parser:
     # -- the core recursion (:2123) --------------------------------------
 
     def enter(self, level: int, prev: Rule | None) -> None:
-        """Parse a block of rules at depth ``level`` (Perl ``:2123``).
+        """
+        Parse a block of rules at depth ``level`` (Perl ``:2123``).
 
         Reads keywords until end of file or a closing ``}`` and dispatches each
         through :func:`handle`.  ``prev`` seeds the level's inherited context
@@ -679,6 +686,7 @@ class Parser:
                     error("Domain is already specified")
                 domains = self.evaluator.getvalues()
                 if isinstance(domains, list):
+
                     def build_domain(item: Value) -> Rule | None:
                         inner = new_level(rule)
                         if not self.set_domain(inner, item):
@@ -700,6 +708,7 @@ class Parser:
                 if rule.domain is None:
                     self.set_domain(rule, self.options.domain or "ip")
                 if isinstance(tables, list):
+
                     def build_table(item: Value) -> Rule | None:
                         inner = new_level(rule)
                         inner.table = item
@@ -738,6 +747,7 @@ class Parser:
                         _check_chain_name(name)
                         table_info.chains.setdefault(name, ChainInfo())
                 if isinstance(chains, list):
+
                     def build_chain(item: Value) -> Rule | None:
                         inner = new_level(rule)
                         inner.chain = item
@@ -871,7 +881,7 @@ class Parser:
                 )
                 return "next"
 
-            error(f"Unrecognized keyword: {keyword}")
+            return error(f"Unrecognized keyword: {keyword}")
 
         while True:
             token = self.tokenizer.next_token()
@@ -907,7 +917,8 @@ class Parser:
     # -- enter() sub-handlers (kept off the monolith for readability) ----
 
     def _include_file(self, filename: str, level: int, prev: Rule) -> None:
-        """Open ``filename`` and parse it as a nested level (Perl ``:2282``).
+        """
+        Open ``filename`` and parse it as a nested level (Perl ``:2282``).
 
         Pushes a scope frame that shares the parent's variables/functions
         (so an include can set values for its caller) but has its own
@@ -948,7 +959,8 @@ class Parser:
         self.tokenizer.script = old_script
 
     def _parse_def(self, rule: Rule) -> None:
-        """Define a variable (``$``) or function (``&``) (Perl ``:2325``).
+        """
+        Define a variable (``$``) or function (``&``) (Perl ``:2325``).
 
         Both bind on the innermost scope frame unless the global frame already
         carries that name (so a command-line ``-D`` definition wins).
@@ -998,7 +1010,8 @@ class Parser:
             error('"$" (variable) or "&" (function) expected')
 
     def _call_function(self, rule: Rule) -> None:
-        """Expand a user ``&name(...)`` call into the token stream (``:2440``).
+        """
+        Expand a user ``&name(...)`` call into the token stream (``:2440``).
 
         Looks the function up, reads its arguments, binds them to the
         parameter names, then substitutes ``$param`` references (and
@@ -1042,7 +1055,7 @@ class Parser:
                 )
                 if len(tokens) != 1:
                     expanded = ["(", *expanded, ")"]
-                tokens[index:index + 2] = expanded
+                tokens[index : index + 2] = expanded
                 index += len(expanded) - 2
             elif isinstance(token, str) and _DQUOTE_RE.fullmatch(token):
                 tokens[index] = _DVAR_RE.sub(
@@ -1061,7 +1074,8 @@ class Parser:
         )
 
     def _parse_preserve(self, rule: Rule) -> None:
-        """Mark chains to keep from the previous ruleset (Perl ``:2391``).
+        """
+        Mark chains to keep from the previous ruleset (Perl ``:2391``).
 
         Only valid in ``--fast`` mode with a chain and no matches.  A literal
         chain name is flagged ``preserve``; a ``/regex/`` name is recorded as a
@@ -1105,7 +1119,8 @@ class Parser:
     def _parse_subchain(
         self, keyword: str, rule: Rule, prev: Rule | None, level: int
     ) -> Rule:
-        """Create and enter an inline sub-chain (Perl ``:2667``).
+        """
+        Create and enter an inline sub-chain (Perl ``:2667``).
 
         The sub-chain name is a quoted literal, an auto-generated
         ``ferm_auto_N`` (for a bare ``{``), or a bareword.  After registering
@@ -1140,9 +1155,11 @@ class Parser:
 
         domain = _domain_key(rule.domain)
         for table in to_array(rule.table):
-            chains = self.domains[domain].tables.setdefault(
-                stringify(table), TableInfo()
-            ).chains
+            chains = (
+                self.domains[domain]
+                .tables.setdefault(stringify(table), TableInfo())
+                .chains
+            )
             if subchain in chains:
                 warning(f"Chain {subchain} already exists")
             else:
@@ -1187,7 +1204,8 @@ class Parser:
         return rule
 
     def _parse_protocol(self, rule: Rule, negated: NegatedFlag) -> None:
-        """Set the rule's protocol and merge its keywords (Perl ``:2844``).
+        """
+        Set the rule's protocol and merge its keywords (Perl ``:2844``).
 
         Emits the ``protocol`` option, then -- for a plain (non-array,
         non-negated) protocol -- canonicalises it and, when a proto module is

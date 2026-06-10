@@ -1,4 +1,5 @@
-"""Rule assembly and array unfolding (formatting lives in the backend).
+"""
+Rule assembly and array unfolding (formatting lives in the backend).
 
 Faithful port of ferm's rule-assembly layer from ``reference/src/ferm``: the
 netfilter predicates ``is_netfilter_core_target``,
@@ -38,11 +39,14 @@ in the same order as Perl.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pyferm.errors import internal_error
-from pyferm.modules import ModuleDef, Registry
-from pyferm.scope import Option, Rule, SourcePosition
 from pyferm.values import Value, realize_deferred
+
+if TYPE_CHECKING:
+    from pyferm.modules import ModuleDef, Registry
+    from pyferm.scope import Option, Rule, SourcePosition
 
 #: Targets understood by netfilter itself, no ``-m`` module (``:1769``).
 _CORE_TARGETS = ("ACCEPT", "DROP", "RETURN", "QUEUE")
@@ -60,7 +64,8 @@ _BUILTIN_CHAINS = (
 
 
 def is_netfilter_core_target(target: str | None) -> bool:
-    """Whether ``target`` is a built-in netfilter target (Perl ``:1766``).
+    """
+    Whether ``target`` is a built-in netfilter target (Perl ``:1766``).
 
     Mirrors ``die unless defined $target and length $target`` before the
     membership test; the Perl ``grep`` is used in boolean context, so this
@@ -74,7 +79,8 @@ def is_netfilter_core_target(target: str | None) -> bool:
 def is_netfilter_module_target(
     target_defs: Registry, domain_family: str | None, target: str
 ) -> ModuleDef | None:
-    """Return the target-module def for ``target``, else ``None`` (``:1772``).
+    """
+    Return the target-module def for ``target``, else ``None`` (``:1772``).
 
     The oracle reads the global ``%target_defs``; this port takes the registry
     explicitly (``target_defs`` from :mod:`pyferm.modules`).  Returns the def
@@ -90,7 +96,8 @@ def is_netfilter_module_target(
 
 
 def is_netfilter_builtin_chain(table: str, chain: str) -> bool:
-    """Whether ``chain`` is a built-in chain (Perl ``:1781``).
+    """
+    Whether ``chain`` is a built-in chain (Perl ``:1781``).
 
     ``table`` is part of the faithful signature but unused -- the oracle
     ignores it and tests the chain name against a fixed set across all tables.
@@ -100,7 +107,8 @@ def is_netfilter_builtin_chain(table: str, chain: str) -> bool:
 
 
 def netfilter_canonical_protocol(proto: str) -> str:
-    """Canonicalize a protocol name for matching (Perl ``:1788``).
+    """
+    Canonicalize a protocol name for matching (Perl ``:1788``).
 
     Folds the IPv6 spellings ``ipv6-icmp``/``icmpv6`` to ``icmp`` and
     ``ipv6-mh`` to ``mh`` so auto-protocol lookups hit one canonical key.
@@ -113,7 +121,8 @@ def netfilter_canonical_protocol(proto: str) -> str:
 
 
 def netfilter_protocol_module(proto: str | None) -> str | None:
-    """Map a protocol to its match-module name, if any (Perl ``:1797``).
+    """
+    Map a protocol to its match-module name, if any (Perl ``:1797``).
 
     Returns ``None`` for an undefined protocol (Perl ``return unless
     defined``); rewrites ``icmpv6`` to the ``icmp6`` module name, leaving every
@@ -128,7 +137,8 @@ def netfilter_protocol_module(proto: str | None) -> str | None:
 
 @dataclass
 class RenderedOption:
-    """One option of an unfolded rule, ready for the backend to format.
+    """
+    One option of an unfolded rule, ready for the backend to format.
 
     The kernel->backend contract element ``(name, value, kind, module)``
     (design §"Контракт правила").  ``value`` is the single value selected for
@@ -146,7 +156,8 @@ class RenderedOption:
 
 @dataclass
 class RenderedRule:
-    """One fully unfolded rule (Perl's ``chain_rules`` entry, ``:1889``).
+    """
+    One fully unfolded rule (Perl's ``chain_rules`` entry, ``:1889``).
 
     The oracle stores a rendered ``rule`` string plus ``script``; this port
     stores the structural :attr:`options` list instead and defers string
@@ -159,7 +170,8 @@ class RenderedRule:
 
 
 def append_rule(chain_rules: list[RenderedRule], rule: Rule) -> None:
-    """Emit one finished rule into ``chain_rules`` (Perl ``:1885``).
+    """
+    Emit one finished rule into ``chain_rules`` (Perl ``:1885``).
 
     Snapshots the value currently selected on every option
     (:attr:`pyferm.scope.Option.chosen`, the analog of Perl's joined
@@ -179,7 +191,8 @@ def unfold_rule(
     rule: Rule,
     options: list[Option],
 ) -> None:
-    """Recursively unfold array options into concrete rules (``:1894``).
+    """
+    Recursively unfold array options into concrete rules (``:1894``).
 
     With no array options left, the rule is complete -> :func:`append_rule`.
     Otherwise the first remaining array option is expanded: each value from
@@ -202,7 +215,8 @@ def unfold_rule(
 
 
 def mkrules2(domain: str, chain_rules: list[RenderedRule], rule: Rule) -> None:
-    """Split options into scalar/array and unfold (Perl ``:1907``).
+    """
+    Split options into scalar/array and unfold (Perl ``:1907``).
 
     Array options (plain Python ``list`` == Perl ``ARRAY`` ref) are collected
     for :func:`unfold_rule`; every other value -- scalars and the non-array

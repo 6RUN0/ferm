@@ -1,4 +1,5 @@
-"""Tokenizer: ferm DSL lexing and the lazy token stream.
+"""
+Tokenizer: ferm DSL lexing and the lazy token stream.
 
 Faithful port of the lexing layer of ``reference/src/ferm`` (``:992-1218``).
 ferm lexes one input line at a time: :meth:`Tokenizer.prepare_tokens`
@@ -21,13 +22,16 @@ import re
 import subprocess  # pipe includes: '@include "program|"' reads its stdout
 import sys
 from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TypeAlias
+from typing import IO, TYPE_CHECKING, TypeAlias
 
 from pyferm.errors import FermError, error, set_error_context
-from pyferm.values import Deferred
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pyferm.values import Deferred
 
 
 @dataclass
@@ -43,7 +47,8 @@ Token: TypeAlias = "str | Line | Deferred"
 
 @dataclass
 class Script:
-    """One open ferm input file and its lazy token state (Perl ``$script``).
+    """
+    One open ferm input file and its lazy token state (Perl ``$script``).
 
     Satisfies :class:`pyferm.errors.ErrorContext`, so the tokenizer can
     register it for located error messages.
@@ -88,7 +93,8 @@ def make_line_token(line: int) -> Line:
 
 
 def open_script(filename: str, parent: Script | None) -> Script:
-    """Open a ferm (sub)script, rejecting include cycles (``:1066``).
+    """
+    Open a ferm (sub)script, rejecting include cycles (``:1066``).
 
     ``parent`` is the script doing the opening (``None`` for the top-level
     file); its chain is walked to detect circular includes.
@@ -147,7 +153,8 @@ class Tokenizer:
     """The lazy token reader over a stack of :class:`Script` files."""
 
     def __init__(self, script: Script | None) -> None:
-        """Start lexing ``script`` and register it for error reporting.
+        """
+        Start lexing ``script`` and register it for error reporting.
 
         ``None`` builds a script-less tokenizer for evaluating ``--def``
         values: Perl runs those inside ``GetOptions`` while the global
@@ -184,7 +191,8 @@ class Tokenizer:
         return self.script
 
     def prepare_tokens(self) -> bool:
-        """Fill the queue from the input until it is non-empty (``:1014``).
+        """
+        Fill the queue from the input until it is non-empty (``:1014``).
 
         Returns ``False`` at end of file (Perl's bare ``return``).
         """
@@ -202,7 +210,8 @@ class Tokenizer:
         return True
 
     def handle_special_token(self, token: Token) -> Token | None:
-        """Act on a non-string queue token (``:1031``).
+        """
+        Act on a non-string queue token (``:1031``).
 
         A :class:`Line` advances ``script.line`` and is dropped (returns
         ``None``); a deferred value is kept (returned), which stops the
@@ -277,7 +286,8 @@ class Tokenizer:
     def require_next_token(
         self, code: Callable[[], Token | None] | None = None
     ) -> Token:
-        """Consume a token that must exist and not be ``;``/``{``/``}``.
+        """
+        Consume a token that must exist and not be ``;``/``{``/``}``.
 
         ``code`` overrides the token source (Perl's ``$code`` argument,
         used to read from an expanded shell-command stream); it defaults

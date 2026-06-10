@@ -1,4 +1,5 @@
-"""Value model: bless-tag value types and deferred realization.
+"""
+Value model: bless-tag value types and deferred realization.
 
 Faithful port of ferm's value layer (``reference/src/ferm``).  Perl
 represents parsed values as either plain scalars or *blessed* references
@@ -27,11 +28,13 @@ The deferred *callable* is injected when the :class:`Deferred` is built
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from pyferm.errors import error, internal_error
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass
@@ -43,7 +46,8 @@ class Negated:
 
 @dataclass
 class PreNegated:
-    """Negation consumed before the parameters (Perl ``pre_negated``).
+    """
+    Negation consumed before the parameters (Perl ``pre_negated``).
 
     Renders identically to :class:`Negated` (``shell_format_option``,
     ``:1837``); the distinction is where the ``!`` was parsed, and both
@@ -69,7 +73,8 @@ class Multi:
 
 @dataclass
 class Deferred:
-    """A late-evaluated call (Perl ``deferred``: ``[fn, *params]``).
+    """
+    A late-evaluated call (Perl ``deferred``: ``[fn, *params]``).
 
     ``function`` is invoked as ``function(domain, *realized_params)`` and
     must return a list mirroring its Perl list-context return (so
@@ -108,7 +113,8 @@ def stringify(value: object) -> str:
 
 
 def perl_true(value: object) -> bool:
-    """Apply Perl's truthiness, which differs from Python's.
+    """
+    Apply Perl's truthiness, which differs from Python's.
 
     Perl treats ``undef``, the number 0, the empty string and the string
     ``"0"`` as false; everything else (including ``"0.0"`` and ``"00"``)
@@ -126,7 +132,8 @@ def perl_true(value: object) -> bool:
 
 
 def flatten(*values: Value) -> list[Value]:
-    """Recursively flatten ferm arrays, leaving other refs intact (``:1384``).
+    """
+    Recursively flatten ferm arrays, leaving other refs intact (``:1384``).
 
     Only plain arrays (Python ``list``) are descended into; blessed values
     (negated, deferred, ...) pass through unchanged, exactly as Perl's
@@ -154,7 +161,8 @@ def cat(*values: Value) -> str:
 
 
 def deferred_cat(domain: str, *values: Value) -> list[Value]:
-    """``@cat`` with deferred params (``:1405``).
+    """
+    ``@cat`` with deferred params (``:1405``).
 
     Returns a one-element list (Perl returns the scalar; the single-element
     list lets :func:`realize_deferred` splice it like any other result).
@@ -176,7 +184,8 @@ def join_value(expr: str, value: Value) -> Value:
 def negate_value(
     value: Value, klass: str | None = None, allow_array: bool = False
 ) -> Negated | PreNegated:
-    """Wrap ``value`` as negated, rejecting double/array negation (``:1268``).
+    """
+    Wrap ``value`` as negated, rejecting double/array negation (``:1268``).
 
     ``klass`` selects the tag (``"pre_negated"`` or the default
     ``"negated"``), mirroring Perl's ``$class || 'negated'``.
@@ -197,7 +206,8 @@ def format_bool(value: object) -> str:
 
 
 def to_array(value: Value) -> list[Value]:
-    """Expand a value to a list (Perl list-context ``to_array``, ``:1710``).
+    """
+    Expand a value to a list (Perl list-context ``to_array``, ``:1710``).
 
     Scalars and deferred values become a one-element list; arrays expand to
     their elements; anything else is an internal error (bare ``die``).
@@ -210,7 +220,8 @@ def to_array(value: Value) -> list[Value]:
 
 
 def eval_bool(value: Value) -> bool:
-    """Evaluate a value as a Perl boolean (``:1724``).
+    """
+    Evaluate a value as a Perl boolean (``:1724``).
 
     A scalar uses Perl truthiness; an array is true when non-empty.
     """
@@ -232,7 +243,8 @@ def contains_deferred(*values: Value) -> bool:
 
 
 def realize_deferred(domain: str, *values: Value) -> list[Value]:
-    """Evaluate every deferred value, recursing into nested calls (``:1746``).
+    """
+    Evaluate every deferred value, recursing into nested calls (``:1746``).
 
     Each deferred ``function`` returns a list mirroring its Perl
     list-context return, which is spliced into the result; non-deferred

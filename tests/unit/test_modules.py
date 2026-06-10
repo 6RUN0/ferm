@@ -76,7 +76,9 @@ def test_bang_combines_with_equals_and_star() -> None:
     keywords = _match("!ctstate=c", "!syn*0").keywords
     ctstate = keywords["ctstate"]
     assert (ctstate.params, ctstate.negation, ctstate.pre_negation) == (
-        "c", True, True,
+        "c",
+        True,
+        True,
     )
     syn = keywords["syn"]
     assert (syn.params, syn.negation, syn.pre_negation) == (None, True, True)
@@ -99,7 +101,9 @@ def test_alias_shares_the_target_object_and_sets_ferm_name() -> None:
 
 def test_first_alias_wins_ferm_name() -> None:
     keywords = _match(
-        "in-interface!", "interface:=in-interface", "if:=in-interface",
+        "in-interface!",
+        "interface:=in-interface",
+        "if:=in-interface",
     ).keywords
     assert keywords["interface"] is keywords["in-interface"]
     assert keywords["if"] is keywords["in-interface"]

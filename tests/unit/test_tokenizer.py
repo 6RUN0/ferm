@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 from collections import deque
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -23,6 +23,9 @@ from pyferm.tokenizer import (
     tokenize_string,
 )
 from pyferm.values import Deferred
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _tokenizer(text: str) -> Tokenizer:

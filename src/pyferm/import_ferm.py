@@ -1,4 +1,5 @@
-"""Second console script: convert an iptables-save dump into ferm syntax.
+"""
+Second console script: convert an iptables-save dump into ferm syntax.
 
 Faithful port of ``reference/src/import-ferm``.  The Perl tool ``require``s
 the main ``ferm`` program purely to reuse its module-definition tables and a
@@ -30,10 +31,9 @@ import re
 import subprocess
 import sys
 from collections import deque
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from pyferm.errors import FermError
 from pyferm.modules import (
@@ -56,6 +56,9 @@ from pyferm.values import (
     Value,
     stringify,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 #: import-ferm's own short-flag aliases (Perl ``%aliases``, ``:61``).  These
 #: are the single-letter iptables options, unrelated to ferm's keyword
@@ -101,7 +104,8 @@ class MatchEntry:
 
 @dataclass
 class Rule:
-    """A parsed rule (Perl's ``%line`` hash) or an ``optimize`` block node.
+    """
+    A parsed rule (Perl's ``%line`` hash) or an ``optimize`` block node.
 
     ``cur`` aliases either :attr:`match` or :attr:`target` during parsing so
     that, like Perl's ``$line->{cur}``, pushed options land in the current
@@ -123,7 +127,8 @@ class Rule:
 
 
 def ferm_escape(value: object) -> str:
-    r"""Quote a token unless it is a bare ferm word (Perl ``ferm_escape``).
+    r"""
+    Quote a token unless it is a bare ferm word (Perl ``ferm_escape``).
 
     Returns the value verbatim when it is a non-empty string of only
     ``[-\\w.:/]`` characters; otherwise wraps it in single quotes (an empty
@@ -137,7 +142,8 @@ def ferm_escape(value: object) -> str:
 
 
 def format_array(value: object) -> str:
-    """Render a scalar or array value (Perl ``format_array``, ``:83``).
+    """
+    Render a scalar or array value (Perl ``format_array``, ``:83``).
 
     A scalar escapes directly; a one-element array collapses to its element;
     a longer array becomes ``(a b c)``.  Perl dereferences any ref as an
@@ -155,7 +161,8 @@ def format_array(value: object) -> str:
 
 
 def _tokenize(text: str) -> list[str]:
-    """Split a rule body into tokens (Perl ``tokenize``, ``:325``).
+    """
+    Split a rule body into tokens (Perl ``tokenize``, ``:325``).
 
     Recognizes a double-quoted string (unquoted), a lone ``!``, or a run of
     non-whitespace, in that priority order, skipping leading whitespace.
@@ -167,7 +174,7 @@ def _tokenize(text: str) -> list[str]:
             match = pattern.match(rest)
             if match is not None:
                 result.append(match.group(1))
-                rest = rest[match.end():]
+                rest = rest[match.end() :]
                 break
         else:
             return result
@@ -177,7 +184,8 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _canon(value: object) -> object:
-    """Canonicalize a value for equality (Perl's ``Dumper`` comparison).
+    """
+    Canonicalize a value for equality (Perl's ``Dumper`` comparison).
 
     Produces nested tuples that compare equal exactly when Perl's
     ``Data::Dumper`` (with ``Sortkeys``) would emit equal strings: blessed
@@ -231,7 +239,8 @@ def _canon(value: object) -> object:
 
 
 def _canon_rule(rule: Rule, match: list[MatchEntry]) -> object:
-    """Canonicalize a rule with an explicit ``match`` list.
+    """
+    Canonicalize a rule with an explicit ``match`` list.
 
     Includes only the keys Perl's hash would hold (optional fields appear
     only when set), so that two rules compare equal iff their Dumper strings
@@ -279,7 +288,8 @@ def _prefix_match_count(prefix: Rule, rules: Iterable[Rule]) -> int:
 
 
 def _is_merging_array_member(value: Value) -> bool:
-    """Whether a value can join an array (Perl ``:131``).
+    """
+    Whether a value can join an array (Perl ``:131``).
 
     True for a defined scalar or a plain array; blessed values (negated,
     multi, params) are excluded, so negated options never array-merge.
@@ -327,7 +337,8 @@ def _array_match_count(first: Rule, rules: Iterable[Rule]) -> int:
 
 
 def _optimize(rules: list[Rule]) -> list[Rule]:
-    """Merge rules by common prefix, then by array (Perl ``optimize``).
+    """
+    Merge rules by common prefix, then by array (Perl ``optimize``).
 
     Two passes: pull a shared leading match into a block, then combine rules
     that differ only in one option's value into a single array-valued rule.
@@ -384,7 +395,8 @@ def _optimize(rules: list[Rule]) -> list[Rule]:
 
 
 class Importer:
-    """Stateful translator from ``iptables-save`` lines to ferm syntax.
+    """
+    Stateful translator from ``iptables-save`` lines to ferm syntax.
 
     Holds the emitter indent and the current domain/table/chain plus the
     accumulated rules and recorded chain policies, mirroring ``import-ferm``'s
@@ -418,7 +430,8 @@ class Importer:
             self.indent += 4
 
     def _flush_option(self, line: list[str], key: str, value: Value) -> None:
-        """Append one option to a line (Perl ``flush_option``, ``:243``).
+        """
+        Append one option to a line (Perl ``flush_option``, ``:243``).
 
         A ``pre_negated`` value writes ``!`` before the key, a ``negated``
         value after it; ``params`` expands to several arguments.
@@ -431,8 +444,7 @@ class Importer:
             line.append("!")
             value = value.value
         if isinstance(value, Params):
-            for param in value.values:
-                line.append(format_array(param))
+            line.extend(format_array(param) for param in value.values)
         elif value is not None:
             line.append(format_array(value))
 
@@ -469,7 +481,8 @@ class Importer:
         self.rules = []
 
     def _flush_policies(self) -> None:
-        """Emit leftover chain policies (Perl's ``each %policies`` loop).
+        """
+        Emit leftover chain policies (Perl's ``each %policies`` loop).
 
         Order is irrelevant -- Perl iterates a randomized hash and the golden
         sorter canonicalizes the output -- so a sorted walk keeps it stable.
@@ -540,7 +553,8 @@ class Importer:
         negated: bool,
         tokens: list[str],
     ) -> Value:
-        """Parse an option's argument(s) (Perl ``parse_def_option``, ``:353``).
+        """
+        Parse an option's argument(s) (Perl ``parse_def_option``, ``:353``).
 
         ``params`` selects the shape: ``None`` (flag), a coderef (comma list),
         ``"m"`` (a ``multi``), a letter code (``s`` scalar / ``c`` comma list),
@@ -590,7 +604,8 @@ class Importer:
     def parse_option(
         self, rule: Rule, option: str, pre_negated: bool, tokens: list[str]
     ) -> None:
-        """Parse one iptables option into a rule (Perl ``parse_option``).
+        """
+        Parse one iptables option into a rule (Perl ``parse_option``).
 
         Dispatches on the (alias-resolved) option name: ``protocol`` and
         ``match`` pull in module keywords, a known keyword parses its
@@ -737,7 +752,7 @@ class Importer:
 
         match = re.match(r"-A (\S+)\s+", line)
         if match is not None:
-            self._handle_rule(match.group(1), line[match.end():])
+            self._handle_rule(match.group(1), line[match.end() :])
             return
 
         if re.match(r"COMMIT", line):
@@ -801,9 +816,7 @@ class Importer:
                     token
                 ) or _LONG_OPTION_RE.fullmatch(token)
                 if match is None:
-                    raise FermError(
-                        f"option expected in line {self.lineno}"
-                    )
+                    raise FermError(f"option expected in line {self.lineno}")
                 self.parse_option(rule, match.group(1), True, tokens)
             else:
                 self._warn(f"unknown token '{token}' in line {self.lineno}")
@@ -813,7 +826,8 @@ class Importer:
 
 
 def _gather_input(files: list[str]) -> list[str]:
-    """Read input lines from the named files, or stdin when none.
+    """
+    Read input lines from the named files, or stdin when none.
 
     Perl reads the inputs through the ``<>`` operator: an unopenable
     file yields a ``Can't open ...`` warning on stderr and the run
@@ -826,9 +840,7 @@ def _gather_input(files: list[str]) -> list[str]:
         try:
             text = Path(name).read_text(encoding="utf-8")
         except OSError as exc:
-            sys.stderr.write(
-                f"Can't open {name}: {exc.strerror or exc}\n"
-            )
+            sys.stderr.write(f"Can't open {name}: {exc.strerror or exc}\n")
             continue
         lines.extend(text.splitlines())
     return lines

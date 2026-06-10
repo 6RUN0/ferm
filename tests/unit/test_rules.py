@@ -24,7 +24,7 @@ from pyferm.rules import (
     netfilter_protocol_module,
 )
 from pyferm.scope import Rule, append_option
-from pyferm.values import Deferred, Multi, Negated
+from pyferm.values import Deferred, Multi, Negated, Value
 
 # --- netfilter predicates --------------------------------------------------
 
@@ -161,7 +161,7 @@ def test_empty_array_emits_no_rule() -> None:
 
 def test_deferred_is_realized_inline_during_unfold() -> None:
     # a deferred whose list-context return holds two values
-    def two_addrs(_domain: str, *_args: object) -> list[str]:
+    def two_addrs(_domain: str, *_args: object) -> list[Value]:
         return ["10.0.0.1", "10.0.0.2"]
 
     deferred = Deferred(function=two_addrs, params=[])

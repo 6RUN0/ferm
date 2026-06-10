@@ -1,4 +1,5 @@
-"""pyferm: a faithful Python port of ferm (Phase 1, iptables output).
+"""
+pyferm: a faithful Python port of ferm (Phase 1, iptables output).
 
 The distribution is named ``ferm``; ``__version__`` is read from the
 installed package metadata so the version has a single source of truth

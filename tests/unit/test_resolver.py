@@ -9,6 +9,8 @@ resolution.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from pyferm.errors import FermError
@@ -18,6 +20,9 @@ from pyferm.resolver import (
     resolve,
     set_resolver_provider,
 )
+
+if TYPE_CHECKING:
+    from pyferm.values import Value
 
 _ZONE = """\
 v4.example.com.        IN A    192.0.2.1
@@ -84,7 +89,7 @@ def test_resolve_multiple_records_keep_order(
 
 
 def test_resolve_array_argument(zone: ZonefileResolver) -> None:
-    names = ["v4.example.com", "ds.example.com"]
+    names: list[Value] = ["v4.example.com", "ds.example.com"]
     assert resolve("ip", names, resolver=zone) == ["192.0.2.1", "192.0.2.2"]
 
 
@@ -116,7 +121,7 @@ def test_resolve_noerror_wrong_type_is_silent(
 
 def test_resolve_other_errorstring_raises() -> None:
     class FailingResolver:
-        def search(self, hostname: str, rrtype: str) -> object:
+        def search(self, _hostname: str, _rrtype: str) -> object:
             from pyferm.resolver import SearchResult
 
             return SearchResult(False, [], "SERVFAIL")

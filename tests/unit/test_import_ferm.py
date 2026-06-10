@@ -9,8 +9,7 @@ over a small ``iptables-save`` snippet.
 from __future__ import annotations
 
 import io
-
-import pytest
+from typing import TYPE_CHECKING
 
 from pyferm.import_ferm import (
     Importer,
@@ -24,6 +23,9 @@ from pyferm.import_ferm import (
     main,
 )
 from pyferm.values import Multi, Negated
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _imported(save: str) -> str:
@@ -70,7 +72,10 @@ def test_format_array_scalar_single_and_multi() -> None:
 
 def test_tokenize_quotes_bang_and_words() -> None:
     assert _tokenize("--source 1.2.3.4 --jump ACCEPT") == [
-        "--source", "1.2.3.4", "--jump", "ACCEPT",
+        "--source",
+        "1.2.3.4",
+        "--jump",
+        "ACCEPT",
     ]
     # A lone ``!`` splits even when glued to the next token.
     assert _tokenize("! --proto tcp") == ["!", "--proto", "tcp"]
@@ -87,10 +92,14 @@ def test_canon_distinguishes_negation_tag() -> None:
 def test_optimize_factors_common_prefix_block() -> None:
     # Two rules sharing a leading match collapse into one block.
     rules = [
-        Rule(match=[MatchEntry("proto", "tcp"), MatchEntry("saddr", "1")],
-             jump="ACCEPT"),
-        Rule(match=[MatchEntry("proto", "tcp"), MatchEntry("saddr", "2")],
-             jump="DROP"),
+        Rule(
+            match=[MatchEntry("proto", "tcp"), MatchEntry("saddr", "1")],
+            jump="ACCEPT",
+        ),
+        Rule(
+            match=[MatchEntry("proto", "tcp"), MatchEntry("saddr", "2")],
+            jump="DROP",
+        ),
     ]
     result = _optimize(rules)
     assert len(result) == 1

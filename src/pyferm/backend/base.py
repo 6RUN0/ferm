@@ -1,4 +1,5 @@
-"""Backend interface seam: render / commit / rollback / read_previous.
+"""
+Backend interface seam: render / commit / rollback / read_previous.
 
 The abstraction Phase 2 (native ``nft``) slots into.  The oracle fuses
 building the firewall output with executing it (``execute_fast``/
@@ -42,7 +43,8 @@ RestoreDomain = Callable[["DomainInfo", str], None]
 
 @dataclass
 class Command:
-    """One slow-mode shell command plus its Perl ``$status ||=`` guard.
+    """
+    One slow-mode shell command plus its Perl ``$status ||=`` guard.
 
     ``guarded`` reproduces ``execute_slow``'s mix (``:2919``): the table-walk
     commands run under ``$status ||= execute_command(...)`` (skipped once an
@@ -56,7 +58,8 @@ class Command:
 
 @dataclass
 class Rendered:
-    """The output of :meth:`Backend.render`: a fast save-text or slow commands.
+    """
+    The output of :meth:`Backend.render`: a fast save-text or slow commands.
 
     Exactly one shape is populated; ``render`` selects it from
     :attr:`Options.fast` *and* the family's tooling (arp/eb own no
@@ -77,7 +80,8 @@ class Rendered:
 
 
 class Backend(ABC):
-    """Abstract netfilter backend (the Phase 2 seam).
+    """
+    Abstract netfilter backend (the Phase 2 seam).
 
     Phase 1 ships one implementation,
     :class:`pyferm.backend.iptables.IptablesBackend`; Phase 2 adds an ``nft``

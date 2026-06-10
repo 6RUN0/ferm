@@ -23,15 +23,15 @@ from pyferm.functions import (
 from pyferm.resolver import ZonefileResolver, set_resolver_provider
 from pyferm.scope import Frame, Rule, Scope
 from pyferm.tokenizer import Script, Tokenizer
-from pyferm.values import Deferred, Negated
+from pyferm.values import Deferred, Negated, Value
 
 
 def _evaluator(
     text: str,
     *,
-    variables: dict[str, object] | None = None,
+    variables: dict[str, Value] | None = None,
     functions: dict[str, object] | None = None,
-    auto: dict[str, object] | None = None,
+    auto: dict[str, Value] | None = None,
 ) -> Evaluator:
     tokenizer = Tokenizer(Script(filename="t.ferm", handle=io.StringIO(text)))
     scope = Scope()
@@ -198,7 +198,7 @@ def test_builtin_eq_compares_arrays_by_identity() -> None:
     # Perl ``eq`` stringifies array refs to their addresses, so two distinct
     # arrays are never equal regardless of contents (ferm relies on this:
     # ``@eq($a, $b)`` on equal-content arrays is false in the oracle).
-    variables: dict[str, object] = {"a": ["1", "2"], "b": ["1", "2"]}
+    variables: dict[str, Value] = {"a": ["1", "2"], "b": ["1", "2"]}
     assert _evaluator("@eq($a, $b)", variables=variables).getvalues() == "0"
     assert _evaluator("@ne($a, $b)", variables=variables).getvalues() == "1"
     # the same array reached twice is the same ref -> equal
@@ -297,7 +297,11 @@ def test_collect_tokens_include_semicolon_and_braces() -> None:
     ev = _evaluator("a { b ; } ;")
     tokens = ev.collect_tokens(include_semicolon=True)
     assert [t for t in tokens if isinstance(t, str)] == [
-        "a", "{", "b", ";", "}",
+        "a",
+        "{",
+        "b",
+        ";",
+        "}",
     ]
 
 
@@ -332,12 +336,12 @@ def test_backtick_exec_failure_message(
 ) -> None:
     # Perl maps $? == -1 to 'failed to execute: $!' (:1461); only an
     # unspawnable /bin/sh triggers it, so the OSError is injected.
-    import pyferm.functions as functions_module
+    import subprocess
 
     def boom(*_args: object, **_kwargs: object) -> object:
         raise OSError(2, "No such file or directory")
 
-    monkeypatch.setattr(functions_module.subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "run", boom)
     with pytest.raises(FermError, match="failed to execute: No such file"):
         _evaluator("`true`").getvalues()
 
@@ -423,5 +427,6 @@ def test_multiport_range_counts_as_two() -> None:
     ranges = " ".join(f"{p}:{p}" for p in range(1, 9))  # 8 ranges
     ev = _evaluator(f"({ranges})")
     result = ev.multiport_params(Rule(protocol="tcp"))
+    assert isinstance(result, list)
     assert result[0] == "1:1,2:2,3:3,4:4,5:5,6:6,7:7"
     assert result[1] == "8:8"

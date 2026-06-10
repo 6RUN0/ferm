@@ -1,4 +1,5 @@
-"""Parser state: the rule structure, scope stack and copy-on-write helpers.
+"""
+Parser state: the rule structure, scope stack and copy-on-write helpers.
 
 Faithful port of ferm's scoping machinery from ``reference/src/ferm``:
 ``copy_on_write``/``new_level``/``merge_keywords`` (``:2033-2068``) plus the
@@ -28,14 +29,17 @@ a ``new_level`` call, so rebuilding and reassigning is equivalent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from pyferm.modules import Keyword
-from pyferm.values import Value
+if TYPE_CHECKING:
+    from pyferm.modules import Keyword
+    from pyferm.values import Value
 
 
 @dataclass(frozen=True)
 class SourcePosition:
-    """Where a rule was defined (Perl's ``$rule{script}`` hash, ``:2174``).
+    """
+    Where a rule was defined (Perl's ``$rule{script}`` hash, ``:2174``).
 
     Carried verbatim onto the emitted ``chain_rules`` entry by
     ``append_rule`` so later error/rollback messages can locate the rule.
@@ -47,7 +51,8 @@ class SourcePosition:
 
 @dataclass
 class Option:
-    """One pending iptables option: Perl's ``[ $name, $value ]`` (``:2022``).
+    """
+    One pending iptables option: Perl's ``[ $name, $value ]`` (``:2022``).
 
     ``append_option`` pushes these onto :attr:`Rule.options`; the backend
     later turns each into concrete ``--name value`` text, expanding an array
@@ -79,7 +84,8 @@ class Option:
 
 @dataclass
 class Rule:
-    """The parser's working rule -- Perl's ``%rule`` hash (``:2135``).
+    """
+    The parser's working rule -- Perl's ``%rule`` hash (``:2135``).
 
     ``keywords`` is shared with the parent level until mutated (guarded by
     :attr:`cow`); ``match`` and ``options`` are always copied by
@@ -109,7 +115,8 @@ class Rule:
 
 
 def copy_on_write(rule: Rule, key: str) -> None:
-    """Detach a shared dict before mutating it (Perl ``:2033``).
+    """
+    Detach a shared dict before mutating it (Perl ``:2033``).
 
     A no-op unless ``key`` is still marked copy-on-write in :attr:`Rule.cow`.
     Only ``"keywords"`` is ever guarded this way (``new_level``/``set_domain``
@@ -124,7 +131,8 @@ def copy_on_write(rule: Rule, key: str) -> None:
 
 
 def new_level(prev: Rule | None) -> Rule:
-    """Open a fresh rule level (Perl ``new_level``, ``:2040``).
+    """
+    Open a fresh rule level (Perl ``new_level``, ``:2040``).
 
     With no parent, returns an empty :class:`Rule`.  Otherwise inherits the
     parent's context: ``keywords`` is shared copy-on-write, ``match`` and
@@ -155,7 +163,8 @@ def new_level(prev: Rule | None) -> Rule:
 def merge_keywords(
     rule: Rule, keywords: dict[str, Keyword], module: str | None = None
 ) -> None:
-    """Add a module's keywords to the rule (Perl ``:2062``).
+    """
+    Add a module's keywords to the rule (Perl ``:2062``).
 
     Detaches the shared ``keywords`` dict first so the parent level is not
     affected, then merges ``keywords`` in (later definitions win).
@@ -184,7 +193,8 @@ _OPTION_KINDS = {
 def append_option(
     rule: Rule, name: str, value: Value, module: str | None = None
 ) -> None:
-    """Queue one iptables option on the rule (Perl ``:2020``).
+    """
+    Queue one iptables option on the rule (Perl ``:2020``).
 
     Lives here (with :class:`Rule`/:class:`Option`) rather than in the parser
     so the protocol/param helpers in ``functions`` and the parser can both
@@ -201,7 +211,8 @@ def append_option(
 
 @dataclass
 class Frame:
-    """One scope-stack frame (an element of Perl's ``@stack``).
+    """
+    One scope-stack frame (an element of Perl's ``@stack``).
 
     ``vars``/``functions`` hold the variables and functions visible at this
     level; ``auto`` holds the built-in pseudo-variables (``DOMAIN``,
@@ -217,7 +228,8 @@ class Frame:
 
 
 class Scope:
-    """The parser's scope stack and auto-chain counter (Perl globals).
+    """
+    The parser's scope stack and auto-chain counter (Perl globals).
 
     Mirrors ``@stack`` (``unshift``/``shift`` at the front, so index ``0`` is
     the innermost level and ``-1`` the global one) and ``$auto_chain``.  Name
@@ -249,7 +261,8 @@ class Scope:
         return self.stack.pop(0)
 
     def next_auto_chain(self) -> str:
-        """Mint the next auto-generated chain name (Perl ``:2687``).
+        """
+        Mint the next auto-generated chain name (Perl ``:2687``).
 
         Pre-increments the counter, matching ``'ferm_auto_' . ++$auto_chain``.
         """

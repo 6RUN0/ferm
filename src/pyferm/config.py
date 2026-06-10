@@ -1,4 +1,5 @@
-"""Resolved command-line options: the port's model of Perl's ``%option``.
+"""
+Resolved command-line options: the port's model of Perl's ``%option``.
 
 Faithful stand-in for the ``%option`` hash that ``reference/src/ferm`` fills in
 ``GetOptions``/``main`` (``:644-721``).  ``%option`` holds the *derived* flag
@@ -25,7 +26,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Options:
-    """The resolved option set, mirroring ``%option`` (``:675-721``).
+    """
+    The resolved option set, mirroring ``%option`` (``:675-721``).
 
     Fields use the *derived* meanings from ``main``: e.g. ``test`` already
     forces ``noexec`` and ``lines`` true at construction time (in ``cli.py``),

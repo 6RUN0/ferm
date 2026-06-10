@@ -13,7 +13,7 @@ negation, function token splicing, ``@if``/``@else``, sub-chains, shortcuts,
 from __future__ import annotations
 
 import io
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -21,10 +21,14 @@ from pyferm.config import Options
 from pyferm.errors import FermError
 from pyferm.functions import Evaluator
 from pyferm.parser import Parser, collect_filenames
-from pyferm.rules import RenderedRule
 from pyferm.scope import Frame, Scope
 from pyferm.tokenizer import Script, Tokenizer
 from pyferm.values import Negated
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pyferm.rules import RenderedRule
 
 
 def _parse(source: str, *, options: Options | None = None) -> Parser:
@@ -35,9 +39,7 @@ def _parse(source: str, *, options: Options | None = None) -> Parser:
     scope = Scope()
     scope.push(Frame())
     evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(
-        evaluator, {}, options, execute=lambda _command: None
-    )
+    parser = Parser(evaluator, {}, options, execute=lambda _command: None)
     parser.enter(0, None)
     return parser
 
@@ -83,13 +85,9 @@ def test_suboptions_record_their_introducing_module() -> None:
 
 
 def test_target_module_suboptions_record_module() -> None:
-    parser = _parse(
-        "table nat chain PREROUTING proto tcp DNAT to '10.0.0.1';"
-    )
+    parser = _parse("table nat chain PREROUTING proto tcp DNAT to '10.0.0.1';")
     options = _rules(parser, "ip", "nat", "PREROUTING")[0].options
-    assert ("to-destination", "DNAT") in [
-        (o.name, o.module) for o in options
-    ]
+    assert ("to-destination", "DNAT") in [(o.name, o.module) for o in options]
 
 
 def test_shortcut_suboptions_record_module() -> None:
@@ -219,9 +217,7 @@ def test_if_false_with_else_takes_else() -> None:
     )
     chains = parser.domains["ip"].tables["filter"].chains
     assert "INPUT" not in chains
-    assert _options(chains["OUTPUT"].rules[0]) == [
-        ("jump", "DROP", "target")
-    ]
+    assert _options(chains["OUTPUT"].rules[0]) == [("jump", "DROP", "target")]
 
 
 def test_if_false_without_else_drops_body() -> None:
@@ -261,9 +257,7 @@ def test_negation_on_unsupported_keyword_errors() -> None:
 
 
 def test_subchain_creates_auto_chain_and_jump() -> None:
-    parser = _parse(
-        "chain INPUT proto tcp @subchain { dport 22 ACCEPT; }"
-    )
+    parser = _parse("chain INPUT proto tcp @subchain { dport 22 ACCEPT; }")
     chains = parser.domains["ip"].tables["filter"].chains
     assert "ferm_auto_1" in chains
     parent = _options(chains["INPUT"].rules[0])
@@ -291,9 +285,7 @@ def test_comment_shortcut_loads_module() -> None:
 
 
 def test_mod_loads_match_module() -> None:
-    parser = _parse(
-        "chain INPUT mod conntrack ctstate ESTABLISHED ACCEPT;"
-    )
+    parser = _parse("chain INPUT mod conntrack ctstate ESTABLISHED ACCEPT;")
     options = _options(_rules(parser, "ip", "filter", "INPUT")[0])
     assert ("match", "conntrack", "match_module") in options
     assert ("ctstate", "ESTABLISHED", "option") in options
@@ -323,9 +315,7 @@ def test_address_magic_internal_negation() -> None:
 
 def test_multiport_shortcut_chunks_ports() -> None:
     ports = " ".join(str(n) for n in range(1, 20))
-    parser = _parse(
-        f"chain INPUT proto tcp dports ({ports}) ACCEPT;"
-    )
+    parser = _parse(f"chain INPUT proto tcp dports ({ports}) ACCEPT;")
     options = {
         name: value
         for name, value, _ in _options(
@@ -416,9 +406,7 @@ def test_log_prefix_is_not_truncated() -> None:
     # so parses through the letter-code branch: the truncation is vestigial and
     # never fires (verified against the oracle).  The value is kept whole.
     long_prefix = "x" * 40
-    parser = _parse(
-        f'chain INPUT LOG log-prefix "{long_prefix}";'
-    )
+    parser = _parse(f'chain INPUT LOG log-prefix "{long_prefix}";')
     options = {
         name: value
         for name, value, _ in _options(
@@ -498,8 +486,6 @@ def test_include_pipe_nonzero_exit_aborts(tmp_path: Path) -> None:
     # Perl checks ``close $script->{handle}`` and aborts (:2311) so a
     # generator that dies cannot install a truncated ruleset.
     main = tmp_path / "main.ferm"
-    main.write_text(
-        "@include \"echo 'chain INPUT ACCEPT;'; exit 3|\";\n"
-    )
+    main.write_text("@include \"echo 'chain INPUT ACCEPT;'; exit 3|\";\n")
     with pytest.raises(FermError, match="exit status is not 0"):
         _parse_file(main)

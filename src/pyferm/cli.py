@@ -1,4 +1,5 @@
-"""Command-line entry point: option parsing and apply orchestration.
+"""
+Command-line entry point: option parsing and apply orchestration.
 
 Faithful port of ferm's top-level program in ``reference/src/ferm``: the
 ``GetOptions`` block and its ``%option`` derivation (``:620-700``), the main
@@ -30,25 +31,28 @@ import os
 import re
 import subprocess  # live-only: run rules / hooks / *-save / *-restore
 import sys
-from collections.abc import Callable
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from pyferm import __version__
-from pyferm.backend.base import (
-    Backend,
-    ExecuteCommand,
-    LineEmitter,
-    RestoreDomain,
-)
 from pyferm.backend.iptables import IptablesBackend, restore_domain
 from pyferm.config import Options
-from pyferm.domains import DomainInfo, SaveReader
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
 from pyferm.tokenizer import Tokenizer, open_script, tokenize_string
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pyferm.backend.base import (
+        Backend,
+        ExecuteCommand,
+        LineEmitter,
+        RestoreDomain,
+    )
+    from pyferm.domains import DomainInfo, SaveReader
 
 # The pod2usage(-verbose => 1) rendering of the POD SYNOPSIS/OPTIONS
 # (reference/src/ferm __END__ section), captured verbatim from
@@ -93,14 +97,13 @@ def printversion() -> None:
     """Print the version banner, verbatim from Perl ``printversion``."""
     sys.stdout.write(f"ferm {__version__}\n")
     sys.stdout.write("Copyright 2001-2021 Max Kellermann, Auke Kok\n")
-    sys.stdout.write(
-        "This program is free software released under GPLv2.\n"
-    )
+    sys.stdout.write("This program is free software released under GPLv2.\n")
     sys.stdout.write("See the included COPYING file for license details.\n")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser mirroring ferm's ``GetOptions`` (``:644``).
+    """
+    Build the argument parser mirroring ferm's ``GetOptions`` (``:644``).
 
     ``allow_abbrev=False`` reproduces Getopt::Long's ``no_auto_abbrev``; help
     and version are handled manually (Perl prints its own banner and exits 0).
@@ -120,12 +123,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-V", "--version", action="store_true")
     parser.add_argument("--test", action="store_true")
     # 'remote' is an alias for 'test' (Perl ``:657``).
-    parser.add_argument(
-        "--remote", dest="test", action="store_true"
-    )
-    parser.add_argument(
-        "--test-mock-previous", action="append", default=[]
-    )
+    parser.add_argument("--remote", dest="test", action="store_true")
+    parser.add_argument("--test-mock-previous", action="append", default=[])
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--slow", action="store_true")
     parser.add_argument("--shell", action="store_true")
@@ -138,7 +137,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_options(args: argparse.Namespace) -> Options:
-    """Derive the settled ``%option`` values from raw switches (``:675``).
+    """
+    Derive the settled ``%option`` values from raw switches (``:675``).
 
     Reproduces the oracle's derivation: ``--test`` forces ``noexec`` and
     ``lines``; ``--shell`` forces ``lines``; ``fast`` is ``not --slow``;
@@ -192,7 +192,8 @@ def _resolve_options(args: argparse.Namespace) -> Options:
 
 
 def _apply_def(evaluator: Evaluator, spec: str) -> None:
-    """Evaluate one ``--def name=value`` into the scope (Perl ``opt_def``).
+    """
+    Evaluate one ``--def name=value`` into the scope (Perl ``opt_def``).
 
     The value is tokenized and read with :meth:`Evaluator.getvalues` over a
     private token source (Perl's ``getvalues(sub { shift @$tokens })``), then
@@ -217,7 +218,8 @@ def _apply_def(evaluator: Evaluator, spec: str) -> None:
 def _setup_streams(
     options: Options,
 ) -> tuple[TextIO, Callable[[], None]]:
-    """Replicate Perl's ``LINES``/``STDOUT`` handle plumbing (``:738-739``).
+    """
+    Replicate Perl's ``LINES``/``STDOUT`` handle plumbing (``:738-739``).
 
     Under ``--shell`` the generated script must own the real stdout: the
     ``--lines`` sink keeps a duplicate of the original stdout while fd 1 is
@@ -248,10 +250,11 @@ def _setup_streams(
     return lines_stream, restore
 
 
-def _make_io(options: Options, lines_stream: TextIO) -> tuple[
-    ExecuteCommand, LineEmitter, SaveReader, RestoreDomain
-]:
-    """Build the four injected I/O callables bound to ``options``.
+def _make_io(
+    options: Options, lines_stream: TextIO
+) -> tuple[ExecuteCommand, LineEmitter, SaveReader, RestoreDomain]:
+    """
+    Build the four injected I/O callables bound to ``options``.
 
     Returns ``(execute, emit_line, read_save, restore)``.  ``execute`` is the
     port of ``execute_command`` (``:2894``); ``emit_line`` is the ``print
@@ -285,9 +288,7 @@ def _make_io(options: Options, lines_stream: TextIO) -> tuple[
         except OSError as exc:
             # Perl: $? == -1 -> print and exit 1 at once, skipping the
             # status bookkeeping, post hooks and rollback (:2903-2905).
-            sys.stderr.write(
-                f"failed to execute: {exc.strerror or exc}\n"
-            )
+            sys.stderr.write(f"failed to execute: {exc.strerror or exc}\n")
             raise SystemExit(1) from exc
         ret = completed.returncode
         if ret == 0:
@@ -316,10 +317,9 @@ def _make_io(options: Options, lines_stream: TextIO) -> tuple[
     return execute, emit_line, read_save, restore
 
 
-def _run_hook(
-    command: str, options: Options, emit_line: LineEmitter
-) -> None:
-    """Run a ``@hook`` command (Perl ``:777-794``).
+def _run_hook(command: str, options: Options, emit_line: LineEmitter) -> None:
+    """
+    Run a ``@hook`` command (Perl ``:777-794``).
 
     Hooks echo under ``--lines`` and run under ``system`` unless ``--noexec``;
     unlike :func:`execute_command` their exit status is ignored and never feeds
@@ -339,7 +339,8 @@ def _rollback_all(
     execute: ExecuteCommand,
     restore: RestoreDomain,
 ) -> None:
-    """Roll every family back and exit 1 (Perl ``rollback``, ``:3147``).
+    """
+    Roll every family back and exit 1 (Perl ``rollback``, ``:3147``).
 
     The cross-domain loop and the closing message/``exit 1`` were split out of
     the backend (deviation #3): each family's restore lives in
@@ -365,7 +366,8 @@ class _ConfirmTimeoutError(Exception):
 
 
 def _confirm_rules(options: Options) -> bool:
-    """Ask the admin to confirm, with a timeout (Perl ``confirm_rules``).
+    """
+    Ask the admin to confirm, with a timeout (Perl ``confirm_rules``).
 
     Sanctioned deviation #5: the oracle's ``alarm`` is realised with
     :mod:`signal`.  The ``SIGALRM`` handler must *raise* to abort the
@@ -491,7 +493,7 @@ def _run(
         read_save=read_save,
     )
     parser.enter(0, None)
-    if len(scope.stack) != 2:
+    if len(scope.stack) != 2:  # noqa: PLR2004 -- global + script frames
         raise internal_error("parser left the scope stack unbalanced")
 
     domains = parser.domains
@@ -538,9 +540,7 @@ def _run(
     # Ask the user, and roll back if there is no confirmation (``:803-817``).
     if options.interactive:
         if options.shell:
-            emit_line(
-                "echo 'ferm has applied the new firewall rules.'\n"
-            )
+            emit_line("echo 'ferm has applied the new firewall rules.'\n")
             emit_line("echo 'Please press Ctrl-C to confirm.'\n")
             emit_line(f"sleep {options.timeout}\n")
             for domain in sorted(domains):

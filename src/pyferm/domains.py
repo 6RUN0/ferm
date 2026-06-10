@@ -1,4 +1,5 @@
-"""Per-family domain state, tool discovery and previous-ruleset reads.
+"""
+Per-family domain state, tool discovery and previous-ruleset reads.
 
 Faithful port of ferm's domain layer from ``reference/src/ferm``: the
 ``%domains`` state model (``:70-78``), ``find_tool`` (``:881-901``),
@@ -31,10 +32,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
-from pyferm.config import Options
 from pyferm.errors import FermError
 
 if TYPE_CHECKING:
+    from pyferm.config import Options
     from pyferm.rules import RenderedRule
 
 #: The ebtables tables in their FIXED order (``:94``).  The order is a
@@ -64,7 +65,8 @@ SaveReader = Callable[[str], "str | None"]
 
 @dataclass
 class ChainInfo:
-    """ferm state for one chain (``%domains`` ``chains{...}``, ``:77-78``).
+    """
+    ferm state for one chain (``%domains`` ``chains{...}``, ``:77-78``).
 
     :attr:`preserve` models Perl's ``{preserve}`` flag: absent (``None``)
     means the chain is not preserved; ``True`` is set by ``@preserve``/
@@ -82,7 +84,8 @@ class ChainInfo:
 
 @dataclass
 class TableInfo:
-    """ferm state for one table (``%domains`` ``tables{$name}``, ``:74-76``).
+    """
+    ferm state for one table (``%domains`` ``tables{$name}``, ``:74-76``).
 
     ``has_builtin`` records whether built-in chains have been determined;
     ``preserve_regexes`` holds the ``@preserve`` patterns for dynamically
@@ -96,7 +99,8 @@ class TableInfo:
 
 @dataclass
 class DomainInfo:
-    """State for one family (``$domains{$domain}``, ``:70-78``).
+    """
+    State for one family (``$domains{$domain}``, ``:70-78``).
 
     ``tools`` maps a bare tool key (``tables``/``tables-save``/
     ``tables-restore``) to its resolved path; ``previous`` is the prior save
@@ -116,7 +120,8 @@ class DomainInfo:
 
 
 def find_tool(name: str, options: Options) -> str:
-    """Resolve a tool name to an executable path (Perl ``:881``).
+    """
+    Resolve a tool name to an executable path (Perl ``:881``).
 
     In ``--test`` mode the bare name is returned unchanged (``:883``), which is
     why golden output is path-independent.  Otherwise the search path is
@@ -150,7 +155,8 @@ def find_tool(name: str, options: Options) -> str:
 
 
 def read_previous(lines: Iterable[str], domain_info: DomainInfo) -> str:
-    """Parse a previous save dump, recording its tables/chains (``:903``).
+    """
+    Parse a previous save dump, recording its tables/chains (``:903``).
 
     Accumulates the raw text (returned verbatim for rollback) while noting each
     ``*table`` section and every ``:CHAIN POLICY`` line whose policy is not
@@ -191,7 +197,8 @@ def initialize_domain(
     emit_line: LineEmitter | None = None,
     read_save: SaveReader | None = None,
 ) -> None:
-    """Discover a family's tools and snapshot its current ruleset (``:925``).
+    """
+    Discover a family's tools and snapshot its current ruleset (``:925``).
 
     Idempotent (a second call is a no-op once ``initialized``).  Validates the
     family name, resolves the tool paths via :func:`find_tool`, then captures

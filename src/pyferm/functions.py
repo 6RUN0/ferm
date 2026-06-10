@@ -1,4 +1,5 @@
-"""Value evaluation: ferm's ``@`` built-ins, variable/array reading, helpers.
+"""
+Value evaluation: ferm's ``@`` built-ins, variable/array reading, helpers.
 
 Faithful port of the expression layer of ``reference/src/ferm``: the
 token-consuming readers ``getvalues``/``getvar``/``get_function_params``/
@@ -23,8 +24,7 @@ import glob as globlib
 import re
 import subprocess
 from collections import deque
-from collections.abc import Callable
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from pyferm.errors import error, internal_error
 from pyferm.modules import PROTO_DEFS
@@ -51,6 +51,9 @@ from pyferm.values import (
     to_array,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 _REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred)
 _NAME_RE = re.compile(r"\w+")
 _DVAR_RE = re.compile(r"\$(\w+)")
@@ -70,7 +73,8 @@ def _is_ref(value: object) -> bool:
 
 
 def _perl_eq(a: Value, b: Value) -> bool:
-    """Compare two values the way Perl ``eq`` does (``:1544``).
+    """
+    Compare two values the way Perl ``eq`` does (``:1544``).
 
     Perl stringifies its operands: a reference becomes its address string,
     so two distinct refs are never equal and a ref never equals a scalar --
@@ -82,7 +86,8 @@ def _perl_eq(a: Value, b: Value) -> bool:
 
 
 def ipfilter(domain: str, value: Value) -> list[Value]:
-    """Drop addresses of the wrong family (Perl ``ipfilter``, ``:540``).
+    """
+    Drop addresses of the wrong family (Perl ``ipfilter``, ``:540``).
 
     A deliberately crude split: under ``ip`` discard anything that looks
     IPv6 (a ``:hex:`` run), under ``ip6`` discard anything purely numeric
@@ -91,19 +96,18 @@ def ipfilter(domain: str, value: Value) -> list[Value]:
     ips = to_array(value)
     if domain == "ip":
         return [
-            ip for ip in ips
-            if not re.search(r":[0-9a-f]*:", stringify(ip))
+            ip for ip in ips if not re.search(r":[0-9a-f]*:", stringify(ip))
         ]
     if domain == "ip6":
         return [
-            ip for ip in ips
-            if not re.fullmatch(r"[0-9./]+", stringify(ip))
+            ip for ip in ips if not re.fullmatch(r"[0-9./]+", stringify(ip))
         ]
     return ips
 
 
 def realize_protocol(rule: Rule) -> Value:
-    """Pin down the rule's protocol, emitting it if deferred (Perl ``:458``).
+    """
+    Pin down the rule's protocol, emitting it if deferred (Perl ``:458``).
 
     When no explicit ``protocol`` is set but an ``auto_protocol`` is pending
     (carried into a subchain), promote it now and emit the option so a later
@@ -120,7 +124,8 @@ def realize_protocol(rule: Rule) -> Value:
 
 
 def realize_protocol_keyword(rule: Rule, keyword: str) -> None:
-    """Promote ``auto_protocol`` only if ``keyword`` needs it (Perl ``:477``).
+    """
+    Promote ``auto_protocol`` only if ``keyword`` needs it (Perl ``:477``).
 
     Scans the pending auto-protocols for one whose module defines ``keyword``
     and, on a match, fixes the protocol and emits it -- the magic behind
@@ -162,7 +167,8 @@ _NUMERIC_PREFIX_RE = re.compile(
 
 
 def _perl_int(text: str) -> int:
-    """Coerce a string to an integer the way Perl numifies it.
+    """
+    Coerce a string to an integer the way Perl numifies it.
 
     Perl reads the leading numeric prefix and truncates toward zero;
     anything non-numeric becomes 0.  ferm runs without ``use warnings``,
@@ -177,7 +183,7 @@ def _perl_int(text: str) -> int:
 def splitpath_file(path: str) -> str:
     """Return the trailing component (``File::Spec->splitpath`` basename)."""
     index = path.rfind("/")
-    return path if index < 0 else path[index + 1:]
+    return path if index < 0 else path[index + 1 :]
 
 
 def splitpath_dir(path: str) -> str:
@@ -191,7 +197,8 @@ TokenSource: TypeAlias = "Callable[[], Token | None]"
 
 
 class Evaluator:
-    """Reads values from the token stream against a variable stack.
+    """
+    Reads values from the token stream against a variable stack.
 
     Bundles the :class:`~pyferm.tokenizer.Tokenizer` and
     :class:`~pyferm.scope.Scope` that Perl keeps as the ``$script`` and
@@ -206,7 +213,8 @@ class Evaluator:
     # -- variable / function stack lookups (:1220-1379) ------------------
 
     def variable_value(self, name: str) -> Value:
-        """Look up a variable, then a pseudo-variable (Perl ``:1221``).
+        """
+        Look up a variable, then a pseudo-variable (Perl ``:1221``).
 
         ``LINE`` resolves to the current input line; otherwise the stack is
         walked from the top, falling back to the global frame's ``auto``
@@ -233,9 +241,7 @@ class Evaluator:
         """Like :meth:`variable_value` but reject an array (Perl ``:1240``)."""
         value = self.variable_value(name)
         if _is_ref(value):
-            error(
-                f"variable '{name}' must be a string, but it is an array"
-            )
+            error(f"variable '{name}' must be a string, but it is an array")
         return value
 
     def lookup_function(self, name: str) -> object | None:
@@ -257,7 +263,8 @@ class Evaluator:
         parenthesis_allowed: bool = False,
         allow_array_negation: bool = False,
     ) -> Value:
-        """Read one value: scalar, array, function call, ... (Perl ``:1416``).
+        """
+        Read one value: scalar, array, function call, ... (Perl ``:1416``).
 
         A faithful transcription of ferm's recursive value reader; the
         keyword flags mirror Perl's ``%options`` (``non_empty`` forbids an
@@ -352,7 +359,8 @@ class Evaluator:
         return wordlist[0] if len(wordlist) == 1 else wordlist
 
     def _run_shell(self, command: str) -> Value:
-        """Run a backtick command and tokenize its output (Perl ``:1455``).
+        """
+        Run a backtick command and tokenize its output (Perl ``:1455``).
 
         Only stdout is captured, as with Perl backticks: the child's
         stderr reaches the terminal, so a failing command's diagnostics
@@ -393,7 +401,8 @@ class Evaluator:
     def get_function_params(
         self, *, allow_negation: bool = False
     ) -> list[Value]:
-        """Read a ``(a, b, ...)`` argument list (Perl ``:1633``).
+        """
+        Read a ``(a, b, ...)`` argument list (Perl ``:1633``).
 
         ``allow_negation`` is threaded into every :meth:`getvalues` call, as
         Perl forwards its ``%options`` (``getvalues(undef, @_)``, ``:1654``);
@@ -420,7 +429,8 @@ class Evaluator:
     def collect_tokens(
         self, *, include_semicolon: bool = False, include_else: bool = False
     ) -> list[Token]:
-        """Buffer tokens up to the statement end (Perl ``:1662``).
+        """
+        Buffer tokens up to the statement end (Perl ``:1662``).
 
         Tracks bracket depth so a top-level ``;`` (or a closing ``}``) ends
         the run; used to capture a ``@def`` body or a ``domain (...)`` block
@@ -487,7 +497,8 @@ class Evaluator:
             if any(_is_ref(p) for p in params):
                 error("String expected")
             return _perl_substr(
-                stringify(params[0]), _perl_int(stringify(params[1])),
+                stringify(params[0]),
+                _perl_int(stringify(params[1])),
                 _perl_int(stringify(params[2])),
             )
         if token == "@length":
@@ -517,7 +528,7 @@ class Evaluator:
             if len(params) != 1:
                 error("Usage: @ipfilter((ip1 ip2 ...))")
             return Deferred(ipfilter, params)
-        error("unknown ferm built-in function")
+        return error("unknown ferm built-in function")
 
     def _params(self, usage: str, count: int) -> list[Value]:
         """Read a fixed-arity argument list, erroring with ``usage``."""
@@ -544,7 +555,7 @@ class Evaluator:
                 error("function name expected")
             self.tokenizer.expect_token(")")
             return "1" if self.lookup_function(name) is not None else ""
-        error("'$' or '&' expected")
+        return error("'$' or '&' expected")
 
     def _builtin_glob(self) -> Value:
         """``@glob(pattern)`` against the script's dir (Perl ``:1588``)."""
@@ -565,7 +576,8 @@ class Evaluator:
     # -- keyword-parameter parsers (:498-615) ----------------------------
 
     def address_magic(self, rule: Rule) -> Value:
-        """Parse a ``source``/``destination`` address value (Perl ``:552``).
+        """
+        Parse a ``source``/``destination`` address value (Perl ``:552``).
 
         Realizes any deferred ``@resolve``/``@ipfilter`` against the rule's
         family now, and -- only on a dual-stack ``domain (ip ip6)`` rule
@@ -594,6 +606,7 @@ class Evaluator:
 
     def cgroup_classid(self, rule: Rule) -> Value:
         """Parse a cgroup ``classid``: hex:hex or decimal (Perl ``:583``)."""
+        del rule  # uniform keyword-parser signature (address_magic & co.)
         value = self.getvalues(allow_negation=True)
         negated = False
         if isinstance(value, list):
@@ -621,7 +634,7 @@ class Evaluator:
                 error("classid must be hex:hex or decimal")
             if number < 0:
                 error("classid must be non-negative")
-            if number > 0xFFFFFFFF:
+            if number > 0xFFFFFFFF:  # noqa: PLR2004 -- classid is 32-bit
                 error("classid is too large")
             normalized.append(stored)
 
@@ -630,7 +643,8 @@ class Evaluator:
         return normalized
 
     def multiport_params(self, rule: Rule) -> Value:
-        """Parse ``multiport`` ports, chunked to 15 each (Perl ``:499``).
+        """
+        Parse ``multiport`` ports, chunked to 15 each (Perl ``:499``).
 
         multiport accepts at most 15 ports per invocation (a range counts as
         two), so a long list is split into chunks that become array elements
@@ -646,9 +660,7 @@ class Evaluator:
                 'To use multiport, you have to specify "proto tcp" or '
                 '"proto udp" first'
             )
-        value = self.getvalues(
-            allow_negation=True, allow_array_negation=True
-        )
+        value = self.getvalues(allow_negation=True, allow_array_negation=True)
         if not isinstance(value, list):
             return join_value(",", value)
 
@@ -658,7 +670,7 @@ class Evaluator:
         for ports in value:
             text = stringify(ports)
             increment = 2 if ":" in text else 1
-            if size + increment > 15:
+            if size + increment > 15:  # noqa: PLR2004 -- multiport kernel cap
                 params.append(",".join(chunk))
                 chunk = []
                 size = 0

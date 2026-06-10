@@ -11,7 +11,7 @@ left red so the harness itself reports green.
 from __future__ import annotations
 
 import difflib
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -24,6 +24,9 @@ from .runner import (
     import_case,
     preserve_case,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Categories that share the generic slow/noflush pipeline.  import-ferm
 # round-trips the same set (FERM_SCRIPTS minus arptables/ebtables).

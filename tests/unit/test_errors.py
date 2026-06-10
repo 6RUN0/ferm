@@ -19,7 +19,7 @@ from pyferm.errors import FermError, error, set_error_context, warning
 class _Script:
     filename: str = "test.ferm"
     line: int = 0
-    past_tokens: list[list[str]] = field(default_factory=list)
+    past_tokens: list[list[object]] = field(default_factory=list)
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +50,7 @@ def test_error_reindents_past_tokens_byte_exact(
 ) -> None:
     # Nested table/chain block; locks the indentation algorithm and the
     # deliberate trailing spaces emitted by Perl's "$word . ' '".
-    tokens = [
+    tokens: list[object] = [
         "table",
         "filter",
         "{",
@@ -101,6 +101,6 @@ def test_warning_writes_located_message(
 def test_set_error_context_module_state() -> None:
     script = _Script(line=1)
     set_error_context(script)
-    assert errors._context is script
+    assert errors._context is script  # noqa: SLF001 -- state under test
     set_error_context(None)
-    assert errors._context is None
+    assert errors._context is None  # noqa: SLF001 -- state under test

@@ -9,6 +9,8 @@ injected ``eb`` atomic-save seam.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from pyferm.config import Options
@@ -20,6 +22,9 @@ from pyferm.domains import (
     read_previous,
 )
 from pyferm.errors import FermError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # --- find_tool -------------------------------------------------------------
 
@@ -144,7 +149,7 @@ def test_initialize_domain_arp_has_only_tables_tool() -> None:
     assert domains["arp"].tools == {"tables": "arptables"}
 
 
-def test_initialize_domain_reads_mock_previous(tmp_path) -> None:
+def test_initialize_domain_reads_mock_previous(tmp_path: Path) -> None:
     mock = tmp_path / "ip.save"
     mock.write_text("*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n")
     options = Options(test=True, mock_previous={"ip": str(mock)})

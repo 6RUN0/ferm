@@ -39,7 +39,7 @@ def result_sed(text: str) -> str:
     out: list[str] = []
     for line in text.splitlines(keepends=True):
         for old, new in _RESULT_SUBS:
-            line = line.replace(old, new)
+            line = line.replace(old, new)  # noqa: PLW2901 -- sort.pl s///
         if line.startswith("#"):
             continue
         out.append(line)
@@ -62,8 +62,10 @@ def ebtables_tempfile_rename(text: str) -> str:
     """Normalize random ebtables ``/tmp/ferm.XXXX`` atomic-file names."""
     out: list[str] = []
     for line in text.splitlines(keepends=True):
-        line = _TMP_SUFFIX.sub("--atomic-file /tmp/ferm.1 ", line, count=1)
-        line = _TMP_SAVE.sub(
+        line = _TMP_SUFFIX.sub(  # noqa: PLW2901 -- tempfile_rename s///
+            "--atomic-file /tmp/ferm.1 ", line, count=1
+        )
+        line = _TMP_SAVE.sub(  # noqa: PLW2901 -- tempfile_rename s///
             "--atomic-file /tmp/ferm.0 --atomic-save", line, count=1
         )
         out.append(line)
