@@ -157,6 +157,15 @@ def test_initialize_domain_reads_mock_previous(tmp_path) -> None:
     assert info.tables["filter"].chains["INPUT"].builtin is True
 
 
+def test_initialize_domain_missing_mock_previous_is_ferm_error() -> None:
+    # The oracle's `open ... or die $!` (:948) is caught by check_domain's
+    # eval and reported as a located ferm error; a raw OSError would
+    # escape every FermError handler as a traceback.
+    options = Options(test=True, mock_previous={"ip": "/nonexistent/save"})
+    with pytest.raises(FermError, match="No such file or directory"):
+        initialize_domain("ip", {}, options, execute=_noexec_execute)
+
+
 def test_initialize_domain_is_idempotent() -> None:
     domains: dict[str, DomainInfo] = {}
     initialize_domain(

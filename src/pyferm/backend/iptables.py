@@ -356,9 +356,9 @@ def restore_domain(
         # the path comes from find_tool; no shell is used
         completed = subprocess.run(args, input=save.encode(), check=False)
     except OSError as exc:
-        raise FermError(f"Failed to run {path}: {exc}\n") from exc
+        raise FermError(f"Failed to run {path}: {exc}") from exc
     if completed.returncode != 0:
-        raise FermError(f"Failed to run {path}\n")
+        raise FermError(f"Failed to run {path}")
 
 
 class IptablesBackend(Backend):
@@ -575,7 +575,7 @@ class IptablesBackend(Backend):
         try:
             restore(domain_info, save)
         except FermError as exc:
-            print(str(exc), file=sys.stderr, end="")
+            print(exc, file=sys.stderr)
             return 1
         return None
 

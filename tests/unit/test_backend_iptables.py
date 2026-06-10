@@ -21,6 +21,7 @@ from pyferm.backend.iptables import (
     format_option,
     format_rule,
     resolve_dynamic_preserve,
+    restore_domain,
     rules_to_save,
     shell_escape,
     shell_format_option,
@@ -512,6 +513,39 @@ def test_commit_fast_emits_lines_and_skips_exec() -> None:
     )
     assert status is None
     assert "".join(emitted) == "*filter\nCOMMIT\n"
+
+
+def test_restore_domain_failure_message_lacks_trailing_newline() -> None:
+    # errors.py contract: a FermError carries its message without the
+    # trailing newline (the handler adds it); an embedded '\n' would
+    # double-space the rollback path through cli.main.
+    domain_info = DomainInfo(tools={"tables-restore": "false"})
+    with pytest.raises(FermError) as excinfo:
+        restore_domain(domain_info, "", Options())
+    assert str(excinfo.value) == "Failed to run false"
+
+
+def test_commit_fast_failure_prints_single_line(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # The restore failure is reported once with exactly one newline; no
+    # per-call-site end="" compensation.
+    def restore(_info: DomainInfo, _save: str) -> None:
+        raise FermError("Failed to run iptables-restore")
+
+    domain_info = DomainInfo(tools={"tables-restore": "iptables-restore"})
+    rendered = Rendered(save="*filter\nCOMMIT\n")
+    status = IptablesBackend().commit(
+        "ip",
+        domain_info,
+        rendered,
+        Options(fast=True),
+        execute=lambda _c: None,
+        emit_line=lambda _t: None,
+        restore=restore,
+    )
+    assert status == 1
+    assert capfd.readouterr().err == "Failed to run iptables-restore\n"
 
 
 def test_commit_fast_shell_wraps_heredoc() -> None:

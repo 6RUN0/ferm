@@ -813,12 +813,24 @@ class Importer:
 
 
 def _gather_input(files: list[str]) -> list[str]:
-    """Read input lines from the named files, or stdin when none."""
+    """Read input lines from the named files, or stdin when none.
+
+    Perl reads the inputs through the ``<>`` operator: an unopenable
+    file yields a ``Can't open ...`` warning on stderr and the run
+    continues with the remaining files.
+    """
     if not files:
         return list(sys.stdin)
     lines: list[str] = []
     for name in files:
-        lines.extend(Path(name).read_text(encoding="utf-8").splitlines())
+        try:
+            text = Path(name).read_text(encoding="utf-8")
+        except OSError as exc:
+            sys.stderr.write(
+                f"Can't open {name}: {exc.strerror or exc}\n"
+            )
+            continue
+        lines.extend(text.splitlines())
     return lines
 
 

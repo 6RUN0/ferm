@@ -220,6 +220,14 @@ def test_builtin_substr_and_length() -> None:
     assert _evaluator("@length(hello)").getvalues() == "5"
 
 
+def test_builtin_substr_coerces_non_numeric_like_perl() -> None:
+    # Perl numifies the offset/length silently: 'a' -> 0, '1.5' -> 1
+    # (truncated toward zero); ferm runs without 'use warnings', so the
+    # oracle does not even warn (verified against reference/src/ferm).
+    assert _evaluator("@substr(hello, a, 2)").getvalues() == "he"
+    assert _evaluator("@substr(hello, 1.5, 2.9)").getvalues() == "el"
+
+
 def test_builtin_basename_dirname() -> None:
     assert _evaluator("@basename(/a/b/c.conf)").getvalues() == "c.conf"
     assert _evaluator("@dirname(/a/b/c.conf)").getvalues() == "/a/b/"
@@ -308,6 +316,30 @@ def test_backtick_runs_command() -> None:
 def test_backtick_nonzero_exit_errors() -> None:
     with pytest.raises(FermError, match="child exited with status"):
         _evaluator("`exit 3`").getvalues()
+
+
+def test_backtick_child_stderr_passes_through(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # Perl backticks capture only stdout; the child's stderr reaches the
+    # terminal, so a failing script's diagnostics are not swallowed.
+    assert _evaluator("`echo ok; echo diag >&2`").getvalues() == "ok"
+    assert "diag" in capfd.readouterr().err
+
+
+def test_backtick_exec_failure_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Perl maps $? == -1 to 'failed to execute: $!' (:1461); only an
+    # unspawnable /bin/sh triggers it, so the OSError is injected.
+    import pyferm.functions as functions_module
+
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(functions_module.subprocess, "run", boom)
+    with pytest.raises(FermError, match="failed to execute: No such file"):
+        _evaluator("`true`").getvalues()
 
 
 # -- address_magic -----------------------------------------------------------

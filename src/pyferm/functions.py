@@ -22,6 +22,7 @@ from __future__ import annotations
 import glob as globlib
 import re
 import subprocess
+from collections import deque
 from collections.abc import Callable
 from typing import TypeAlias
 
@@ -153,6 +154,24 @@ def _perl_substr(string: str, offset: int, length: int) -> str:
     end = size + length if length < 0 else start + length
     end = max(start, min(end, size))
     return string[start:end]
+
+
+_NUMERIC_PREFIX_RE = re.compile(
+    r"\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+)
+
+
+def _perl_int(text: str) -> int:
+    """Coerce a string to an integer the way Perl numifies it.
+
+    Perl reads the leading numeric prefix and truncates toward zero;
+    anything non-numeric becomes 0.  ferm runs without ``use warnings``,
+    so the oracle does this silently.
+    """
+    match = _NUMERIC_PREFIX_RE.match(text)
+    if match is None:
+        return 0
+    return int(float(match.group()))
 
 
 def splitpath_file(path: str) -> str:
@@ -333,24 +352,34 @@ class Evaluator:
         return wordlist[0] if len(wordlist) == 1 else wordlist
 
     def _run_shell(self, command: str) -> Value:
-        """Run a backtick command and tokenize its output (Perl ``:1455``)."""
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        """Run a backtick command and tokenize its output (Perl ``:1455``).
+
+        Only stdout is captured, as with Perl backticks: the child's
+        stderr reaches the terminal, so a failing command's diagnostics
+        are not swallowed.
+        """
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            error(f"failed to execute: {exc.strerror or exc}")
         if result.returncode != 0:
             if result.returncode < 0:
                 error(f"child died with signal {-result.returncode}")
             error(f"child exited with status {result.returncode}")
 
         output = re.sub(r"#.*", "", result.stdout)
-        tokens = [word for word in re.split(r"\s+", output) if word]
+        tokens = deque(word for word in re.split(r"\s+", output) if word)
         values: list[Value] = []
         while tokens:
-            value = self.getvalues(lambda: tokens.pop(0) if tokens else None)
+            value = self.getvalues(
+                lambda: tokens.popleft() if tokens else None
+            )
             values.extend(to_array(value))
         return values[0] if len(values) == 1 else values
 
@@ -458,8 +487,8 @@ class Evaluator:
             if any(_is_ref(p) for p in params):
                 error("String expected")
             return _perl_substr(
-                stringify(params[0]), int(stringify(params[1])),
-                int(stringify(params[2])),
+                stringify(params[0]), _perl_int(stringify(params[1])),
+                _perl_int(stringify(params[2])),
             )
         if token == "@length":
             params = self._params("@length(string)", 1)

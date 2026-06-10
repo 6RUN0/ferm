@@ -218,7 +218,16 @@ def initialize_domain(
     if options.test:
         mock = options.mock_previous.get(domain)
         if mock is not None:
-            with Path(mock).open() as handle:
+            # Perl: `open ... or die $!` (:948) -- the strerror message is
+            # caught by check_domain and located; a raw OSError would
+            # escape every FermError handler as a traceback.
+            try:
+                # The `with` follows immediately; the open is separate
+                # only so the OSError can be mapped.
+                handle = Path(mock).open()  # noqa: SIM115
+            except OSError as exc:
+                raise FermError(exc.strerror or str(exc)) from exc
+            with handle:
                 domain_info.previous = read_previous(handle, domain_info)
     elif "tables-save" in tools and read_save is not None:
         saved = read_save(tools["tables-save"])

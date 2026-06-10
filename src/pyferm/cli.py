@@ -50,13 +50,43 @@ from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
 from pyferm.tokenizer import Tokenizer, open_script, tokenize_string
 
-USAGE = (
-    "Usage: ferm [--noexec] [--lines] [--slow] [--shell] "
-    "[--interactive] [--flush] FILENAME\n"
-)
+# The pod2usage(-verbose => 1) rendering of the POD SYNOPSIS/OPTIONS
+# (reference/src/ferm __END__ section), captured verbatim from
+# ``perl reference/src/ferm --help``.  Perl prints it to stdout for both
+# ``--help`` (exit 0) and the wrong-argument-count path (exit 1):
+# pod2usage writes to STDOUT whenever the exit status is below 2.
+HELP_TEXT = """\
+Usage:
+    ferm options inputfiles
+
+Options:
+     -n, --noexec      Do not execute the rules, just simulate
+     -F, --flush       Flush all netfilter tables managed by ferm
+     -l, --lines       Show all rules that were created
+     -i, --interactive Interactive mode: revert if user does not confirm
+     -t, --timeout s   Define interactive mode timeout in seconds
+     --remote          Remote mode; ignore host specific configuration.
+                       This implies --noexec and --lines.
+     -V, --version     Show current version number
+     -h, --help        Look at this text
+     --slow            Slow mode, don't use iptables-restore
+     --shell           Generate a shell script which calls iptables-restore
+     --domain {ip|ip6} Handle only the specified domain
+     --def '$name=v'   Override a variable
+
+"""
 
 _TIMEOUT_RE = re.compile(r"^[+-]?\d+$")
 _DEF_RE = re.compile(r"\$?(\w+)=(.*)", re.DOTALL)
+
+# Perl system() runs a one-string command through /bin/sh only when it
+# contains shell metacharacters (perl doio.c, Perl_do_exec3); otherwise it
+# splits on whitespace and execs the first word directly.  The extra
+# Perl-side refinements (a trailing "2>&1", a trailing newline) force the
+# shell here too -- both contain metacharacters from this set -- which only
+# swaps an exec for an equivalent shell run.
+_SHELL_META = "$&*(){}[]'\";\\|?<>~`\n"
+_VAR_ASSIGN_RE = re.compile(r"[A-Za-z]*=")
 
 
 def printversion() -> None:
@@ -240,7 +270,25 @@ def _make_io(options: Options, lines_stream: TextIO) -> tuple[
             emit_line(command + "\n")
         if options.noexec:
             return None
-        completed = subprocess.run(command, shell=True, check=False)
+        use_shell = (
+            command.startswith(". ")
+            or _VAR_ASSIGN_RE.match(command) is not None
+            or any(ch in _SHELL_META for ch in command)
+            or not command.split()
+        )
+        try:
+            completed = subprocess.run(
+                command if use_shell else command.split(),
+                shell=use_shell,
+                check=False,
+            )
+        except OSError as exc:
+            # Perl: $? == -1 -> print and exit 1 at once, skipping the
+            # status bookkeeping, post hooks and rollback (:2903-2905).
+            sys.stderr.write(
+                f"failed to execute: {exc.strerror or exc}\n"
+            )
+            raise SystemExit(1) from exc
         ret = completed.returncode
         if ret == 0:
             return None
@@ -250,13 +298,17 @@ def _make_io(options: Options, lines_stream: TextIO) -> tuple[
         return ret
 
     def read_save(tool: str) -> str | None:
+        # Perl never checks the pipe's exit status (:950-955): a partial
+        # dump still becomes {previous}.  An unspawnable tool matches the
+        # pipe-open whose child fails to exec: the parent reads EOF, so
+        # {previous} is set to the empty string, not left unset.
         try:
             completed = subprocess.run(
                 [tool], capture_output=True, text=True, check=False
             )
         except OSError:
-            return None
-        return completed.stdout if completed.returncode == 0 else None
+            return ""
+        return completed.stdout
 
     def restore(domain_info: DomainInfo, save: str) -> None:
         restore_domain(domain_info, save, options)
@@ -308,19 +360,27 @@ def _rollback_all(
     raise SystemExit(1)
 
 
+class _ConfirmTimeoutError(Exception):
+    """Raised by the ``SIGALRM`` handler to abort the confirmation read."""
+
+
 def _confirm_rules(options: Options) -> bool:
     """Ask the admin to confirm, with a timeout (Perl ``confirm_rules``).
 
     Sanctioned deviation #5: the oracle's ``alarm`` is realised with
-    :mod:`signal`.  A no-op ``SIGALRM`` handler interrupts the blocking read
-    after ``--timeout`` seconds; the input buffer is flushed with
-    :func:`termios.tcflush` (best-effort, like Perl's ``eval``).  Returns
-    ``True`` only when the admin typed exactly ``yes``.
+    :mod:`signal`.  The ``SIGALRM`` handler must *raise* to abort the
+    blocking read: Perl's ``sysread`` returns on ``EINTR``, but Python
+    retries an interrupted ``os.read`` whenever the handler returns
+    normally (PEP 475), which would disarm the timeout entirely.  The
+    input buffer is flushed with :func:`termios.tcflush` (best-effort,
+    like Perl's ``eval``).  Returns ``True`` only when the admin typed
+    exactly ``yes``.
     """
     import signal
 
     def _alrm_handler(_signum: int, _frame: object) -> None:
-        """Interrupt the blocking read; do nothing else (Perl ``:3185``)."""
+        """Abort the blocking read (Perl ``:3185`` + PEP 475)."""
+        raise _ConfirmTimeoutError
 
     previous = signal.signal(signal.SIGALRM, _alrm_handler)
     sys.stderr.write(
@@ -333,18 +393,23 @@ def _confirm_rules(options: Options) -> bool:
     try:
         data = os.read(sys.stdin.fileno(), 3)
         line = data.decode("utf-8", "replace")
-    except (OSError, InterruptedError):
+    except (_ConfirmTimeoutError, OSError):
         line = ""
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
 
+    # Perl wraps the flush in a bare eval and prints $@ on any failure;
+    # termios.error is not an OSError, so it needs its own clause.
     try:
         import termios
-
-        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-    except (ImportError, OSError) as exc:  # pragma: no cover - tty only
+    except ImportError as exc:  # pragma: no cover - termios is POSIX
         sys.stderr.write(f"{exc}\n")
+    else:
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except (OSError, termios.error) as exc:
+            sys.stderr.write(f"{exc}\n")
 
     return line == "yes"
 
@@ -363,7 +428,7 @@ def _main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     if args.help:
-        sys.stdout.write(USAGE)
+        sys.stdout.write(HELP_TEXT)
         return 0
     if args.version:
         printversion()
@@ -372,11 +437,21 @@ def _main(argv: list[str] | None = None) -> int:
     options = _resolve_options(args)
 
     if len(args.files) != 1:
-        sys.stderr.write(USAGE)
+        sys.stdout.write(HELP_TEXT)
         return 1
-    filename = args.files[0]
 
-    lines_stream, _restore_streams = _setup_streams(options)
+    lines_stream, restore_streams = _setup_streams(options)
+    try:
+        return _run(args, options, lines_stream)
+    finally:
+        restore_streams()
+
+
+def _run(
+    args: argparse.Namespace, options: Options, lines_stream: TextIO
+) -> int:
+    """Parse and apply the configuration with the streams already set up."""
+    filename = args.files[0]
     execute, emit_line, read_save, restore = _make_io(options, lines_stream)
 
     # Scope: the global frame (Perl ``:618``) holds --def vars; the script

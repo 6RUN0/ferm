@@ -88,3 +88,117 @@ def test_shell_redirect_keeps_script_stdout_clean(
     assert "script-line" in out
     assert "child-noise" not in out
     assert "child-noise" in err
+
+
+def test_main_restores_streams_after_shell(
+    capfd: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # After an in-process --shell run fd 1 must point at the original
+    # stdout again (and the duplicated fd must be closed), or every
+    # later write of the caller (and its children) lands on stderr.
+    import os
+
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text("domain ip table filter chain INPUT ACCEPT;\n")
+    assert main(["--shell", "--test", str(conf)]) == 0
+    os.write(1, b"after-marker\n")
+    assert "after-marker" in capfd.readouterr().out
+
+
+def test_confirm_rules_timeout_interrupts_read() -> None:
+    # PEP 475: a SIGALRM handler that returns normally makes os.read
+    # restart transparently, so the alarm must abort the read by raising
+    # (Perl's sysread returns on EINTR).  Run in a child process: with
+    # the bug this blocks until the subprocess timeout kills it.
+    code = (
+        "import os, sys\n"
+        "r, w = os.pipe()\n"
+        "os.dup2(r, 0)\n"
+        "from pyferm.cli import _confirm_rules\n"
+        "from pyferm.config import Options\n"
+        "ok = _confirm_rules(Options(interactive=True, timeout=1))\n"
+        "sys.stdout.write('RESULT=%r' % ok)\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert "RESULT=False" in completed.stdout
+
+
+def test_read_save_keeps_output_on_nonzero_exit(tmp_path: Path) -> None:
+    # Perl reads the *-save pipe and never checks the exit status
+    # (:950-955): a partial dump still becomes {previous}, keeping
+    # @preserve and rollback working.
+    from pyferm.cli import _make_io
+
+    tool = tmp_path / "save-tool"
+    tool.write_text("#!/bin/sh\necho '*filter'\nexit 1\n")
+    tool.chmod(0o755)
+    _execute, _emit, read_save, _restore = _make_io(Options(), sys.stdout)
+    assert read_save(str(tool)) == "*filter\n"
+
+
+def test_read_save_unexecutable_tool_reads_empty() -> None:
+    # Perl's pipe-open forks fine and the child's exec fails: the parent
+    # reads EOF, so {previous} is set to the empty string, not unset.
+    from pyferm.cli import _make_io
+
+    _execute, _emit, read_save, _restore = _make_io(Options(), sys.stdout)
+    assert read_save("/nonexistent/ferm-no-such-tool") == ""
+
+
+def test_execute_exec_failure_is_fatal(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # Perl system() execs a metachar-free command directly; when that
+    # exec fails it prints 'failed to execute: ...' and exits 1 at once
+    # (:2903-2905) -- no status bookkeeping, no rollback.
+    from pyferm.cli import _make_io
+
+    execute, _emit, _read, _restore = _make_io(Options(), sys.stdout)
+    with pytest.raises(SystemExit) as excinfo:
+        execute("/nonexistent/ferm-no-such-tool -A INPUT")
+    assert excinfo.value.code == 1
+    assert "failed to execute:" in capfd.readouterr().err
+
+
+def test_execute_returns_status_of_plain_command() -> None:
+    from pyferm.cli import _make_io
+
+    execute, _emit, _read, _restore = _make_io(Options(), sys.stdout)
+    assert execute("true") is None
+    assert execute("false") == 1
+
+
+HELP_SNIPPET = " --domain {ip|ip6} Handle only the specified domain"
+
+
+def test_help_prints_full_options_block(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Perl's pod2usage(-exitstatus => 0) prints the whole OPTIONS table
+    # from the POD to stdout (:666-668).
+    from pyferm.cli import main
+
+    assert main(["--help"]) == 0
+    out = capsys.readouterr().out
+    assert "-t, --timeout s" in out
+    assert "--def '$name=v'" in out
+    assert HELP_SNIPPET in out
+
+
+def test_wrong_argument_count_prints_usage_to_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # pod2usage(-exitstatus => 1) writes to STDOUT too (status < 2).
+    from pyferm.cli import main
+
+    assert main([]) == 1
+    captured = capsys.readouterr()
+    assert HELP_SNIPPET in captured.out
+    assert captured.err == ""
