@@ -47,6 +47,7 @@ repos:
             .*__init__\.py$|
             golden/(conftest|runner|normalize|sortpl)\.py$|
             corpus/canon\.py$|
+            e2e/lockout/driver\.py$|
             property/oracle\.py$
           )
 

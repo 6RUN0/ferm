@@ -20,9 +20,12 @@ Examples::
     uv run nox -s workflows          # actionlint + zizmor on CI configs
     uv run nox -s fuzz               # thorough differential fuzzing
     uv run nox -s mutation           # mutmut over the unit suite (slow)
+    uv run nox -s crashfuzz          # atheris crash fuzzing of the parsers
+    uv run nox -s lockout            # containerized anti-lockout e2e (docker)
 """
 
 import shutil
+from pathlib import Path
 
 import nox
 
@@ -173,6 +176,77 @@ def mutation(session: nox.Session) -> None:
     """
     _uv(session, "--group", "mutation", "mutmut", "run", *session.posargs)
     _uv(session, "--group", "mutation", "mutmut", "results")
+
+
+#: atheris ships cp311-cp313 wheels only; the crashfuzz session pins this
+#: interpreter so the run never lands on an unsupported one (e.g. 3.14).
+_CRASHFUZZ_PYTHON = "3.13"
+
+#: One crash-fuzz target: harness script plus the read-only seed corpora
+#: libFuzzer mines for an initial coverage frontier.
+_CRASHFUZZ_TARGETS = {
+    "config": ("fuzz/fuzz_config.py", ("tests/corpus/configs",)),
+    "import": ("fuzz/fuzz_import.py", ("fuzz/seeds/import",)),
+}
+
+
+@nox.session
+def crashfuzz(session: nox.Session) -> None:
+    """
+    Coverage-guided crash fuzzing of both parsers with atheris (opt-in).
+
+    Asks the robustness question the differential fuzzers do not -- "is
+    there an input that makes the port raise an unhandled exception or
+    hang?" -- driving the config parser and ``import-ferm`` below the CLI
+    with every shell/file/network seam neutralized (see ``fuzz/README.md``).
+    Each target runs for ``posargs[0]`` seconds (default 60); findings are
+    saved under ``fuzz/crashes/`` and the working corpus grows in
+    ``fuzz/corpus/`` across runs.  Needs the ``crashfuzz`` dependency group
+    (``atheris``, cp311-cp313 only); deliberately absent from ``preflight``.
+    """
+    seconds = session.posargs[0] if session.posargs else "60"
+    for name, (harness, seeds) in _CRASHFUZZ_TARGETS.items():
+        corpus = Path("fuzz/corpus") / name
+        corpus.mkdir(parents=True, exist_ok=True)
+        Path("fuzz/crashes").mkdir(parents=True, exist_ok=True)
+        session.run(
+            "uv",
+            "run",
+            "--group",
+            "crashfuzz",
+            "--python",
+            _CRASHFUZZ_PYTHON,
+            "python",
+            harness,
+            str(corpus),
+            *seeds,
+            f"-artifact_prefix=fuzz/crashes/{name}-",
+            f"-max_total_time={seconds}",
+            external=True,
+        )
+
+
+@nox.session
+def lockout(session: nox.Session) -> None:
+    """
+    Containerized ``--interactive`` anti-lockout e2e (needs docker).
+
+    Provokes a real lockout inside a throwaway container network
+    namespace: applies an ``INPUT DROP`` ruleset, never answers the
+    confirmation prompt, and asserts the timeout rollback restores the
+    previous ruleset and revives the frozen connection.  Netfilter is
+    a namespaced subsystem of the shared kernel, so this is as real as
+    a bare-host run.  Opt-in (needs the docker daemon; the test skips
+    itself when docker is absent) and deliberately absent from
+    ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e",
+        *session.posargs,
+        env={"FERM_LOCKOUT_E2E": "1"},
+    )
 
 
 @nox.session

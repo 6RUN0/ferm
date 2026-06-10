@@ -124,6 +124,9 @@ testpaths = ["tests"]
 # --strict-config/--strict-markers turn config typos and unknown marks
 # into errors instead of silently-ignored decoration.
 addopts = "-ra --strict-config --strict-markers"
+markers = [
+  "lockout: containerized --interactive anti-lockout e2e (opt-in, needs docker)",
+]
 xfail_strict = true
 # A hung test (interactive prompt, stuck subprocess) must fail, not
 # stall the gate.  The thread method, not signal: the port itself owns
@@ -178,8 +181,9 @@ ignore-words-list = "iif,rsource,ect"
 # The import name differs from the distribution name (ferm -> pyferm).
 known_first_party = ["pyferm"]
 # noxfile.py imports its dev-group tooling by design; mutants/ is
-# mutmut's generated working copy of src and tests.
-extend_exclude = ["reference", "noxfile\\.py", "mutants"]
+# mutmut's generated working copy of src and tests; fuzz/ imports
+# atheris from its own opt-in group (crashfuzz).
+extend_exclude = ["reference", "noxfile\\.py", "mutants", "fuzz"]
 
 [tool.vulture]
 # Clean at 80 today; the hook is a no-regression gate against dead code
@@ -220,6 +224,11 @@ lint = [
 ]
 mutation = [
     "mutmut>=3.6.0",
+]
+crashfuzz = [
+    # atheris 3.0.0 ships cp311-cp313 wheels only; the marker keeps the
+    # lock resolvable on 3.14 (where `nox -s crashfuzz` cannot run yet).
+    "atheris>=3.0.0; python_version < '3.14'",
 ]
 test = [
     "hypothesis>=6.155.2",

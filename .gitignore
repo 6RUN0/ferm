@@ -30,6 +30,12 @@ htmlcov/
 *.egg-info/
 dist/
 mutants/
+# atheris crash-fuzzing (nox -s crashfuzz): the working corpus accumulates
+# coverage across runs and the crash artifacts are raw reproducers; the
+# committed seeds live in fuzz/seeds/.  Promote a minimized reproducer into
+# a unit/golden test by hand rather than committing the artifact.
+fuzz/corpus/
+fuzz/crashes/
 
 # local agent/tooling directories (not part of ferm)
 .omc/
