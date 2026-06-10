@@ -277,7 +277,10 @@ class Parser:
                 read_save=self._read_save,
             )
         except FermError as exc:
-            error(str(exc))
+            # Perl re-raises ``error($@)``: $@ keeps the die's trailing
+            # newline and error() appends its own, so the message prints
+            # with a blank line after it.
+            error(f"{exc}\n")
         return True
 
     def set_domain(self, rule: Rule, domain: Value) -> bool:

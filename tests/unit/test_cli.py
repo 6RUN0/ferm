@@ -68,6 +68,20 @@ def test_def_is_evaluated_without_script_context(tmp_path: Path) -> None:
     assert main(["--test", "--def", "$x=@glob(x*)", str(conf)]) == 1
 
 
+def test_invalid_domain_keeps_perl_blank_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # check_domain re-raises through error(): Perl's $@ keeps the die's
+    # trailing newline and error() appends its own, so the oracle prints
+    # a blank line after the message (found by the config fuzzer).
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text("domain p { table filter { chain INPUT { } } }\n")
+    assert main(["--test", "--noexec", str(conf)]) == 1
+    assert capsys.readouterr().err.endswith("Invalid domain 'p'\n\n")
+
+
 def test_setup_streams_without_shell_is_passthrough() -> None:
     lines_stream, restore = _setup_streams(Options(lines=True))
     assert lines_stream is sys.stdout
