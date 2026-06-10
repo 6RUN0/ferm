@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from pyferm.errors import FermError, error
+from pyferm.errors import error, internal_error
 
 
 @dataclass
@@ -100,9 +100,11 @@ def _is_ref(value: object) -> bool:
     return isinstance(value, _REF_TYPES)
 
 
-def _die() -> FermError:
-    """Exception for a Perl bare ``die`` (unreachable on valid input)."""
-    return FermError("internal error: unexpected value type")
+def stringify(value: object) -> str:
+    """Coerce a value to text the way Perl stringifies it (undef -> "")."""
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else str(value)
 
 
 def perl_true(value: object) -> bool:
@@ -157,14 +159,7 @@ def deferred_cat(domain: str, *values: Value) -> list[Value]:
     Returns a one-element list (Perl returns the scalar; the single-element
     list lets :func:`realize_deferred` splice it like any other result).
     """
-    result = ""
-    for item in flatten(*realize_deferred(domain, *values)):
-        if item is None:
-            continue
-        if not isinstance(item, str):
-            error("String expected")
-        result += item
-    return [result]
+    return [cat(*realize_deferred(domain, *values))]
 
 
 def join_value(expr: str, value: Value) -> Value:
@@ -175,7 +170,7 @@ def join_value(expr: str, value: Value) -> Value:
         return expr.join(str(item) for item in value)
     if isinstance(value, Negated):
         return Negated(join_value(expr, value.value))
-    raise _die()
+    raise internal_error()
 
 
 def negate_value(
@@ -211,7 +206,7 @@ def to_array(value: Value) -> list[Value]:
         return [value]
     if isinstance(value, list):
         return list(value)
-    raise _die()
+    raise internal_error()
 
 
 def eval_bool(value: Value) -> bool:
@@ -223,7 +218,7 @@ def eval_bool(value: Value) -> bool:
         return perl_true(value)
     if isinstance(value, list):
         return len(value) > 0
-    raise _die()
+    raise internal_error()
 
 
 def contains_deferred(*values: Value) -> bool:

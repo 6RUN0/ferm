@@ -24,16 +24,18 @@ wires up, so the parser never imports the backend.  The ``@hook`` lists are
 parser state, consumed later by the cli's main flow (``:777-794``).
 
 ``Option.module`` (the port-only contract field, sanctioned deviation #2) is
-left ``None`` for keyword sub-options: the oracle does not track which module
-introduced a keyword, and Phase 1 has no consumer for the field
-(:class:`pyferm.scope.Option`).  ``kind`` is still synthesized from the option
-name in :func:`pyferm.scope.append_option`.
+filled by :meth:`Parser.parse_option` from the keyword-to-module link that
+``merge_keywords`` records (the oracle computes the same link at parse time
+and discards it); ``kind`` is synthesized from the option name in
+:func:`pyferm.scope.append_option`.  Phase 1 has no consumer for either
+field -- they exist for the Phase 2 nft translator.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -47,11 +49,13 @@ from pyferm.domains import (
     TableInfo,
     initialize_domain,
 )
-from pyferm.errors import FermError, error, warning
+from pyferm.errors import FermError, error, internal_error, warning
 from pyferm.functions import (
     Evaluator,
     realize_protocol,
     realize_protocol_keyword,
+    splitpath_dir,
+    splitpath_file,
 )
 from pyferm.modules import (
     MATCH_DEFS,
@@ -85,6 +89,7 @@ from pyferm.values import (
     eval_bool,
     negate_value,
     realize_deferred,
+    stringify,
     to_array,
 )
 
@@ -115,21 +120,12 @@ _ABS_OR_PIPE_RE = re.compile(r"^/|\|$")
 _DPKG_RE = re.compile(r"\.dpkg-(old|dist|new|tmp)$")
 
 
-def _internal_error() -> FermError:
-    """Exception for a Perl bare ``die`` on an unexpected value type."""
-    return FermError("internal error: unexpected value type")
-
-
-def _text(value: object) -> str:
-    """Coerce a value to text the way Perl stringifies it (undef -> "").
-
-    Accepts any token or value (a stream token may be a non-string
-    :class:`~pyferm.tokenizer.Line`/:class:`~pyferm.values.Deferred`); ``None``
-    becomes the empty string, matching Perl's stringification of ``undef``.
-    """
-    if value is None:
-        return ""
-    return value if isinstance(value, str) else str(value)
+def _check_chain_name(name: str) -> None:
+    """Reject a chain name iptables would truncate (the shared 29 limit)."""
+    if len(name) > 29:
+        error(
+            f"Chain name too long, must be 29 characters or less: {name}"
+        )
 
 
 def _domain_key(value: Value) -> str:
@@ -143,19 +139,7 @@ def _domain_key(value: Value) -> str:
     """
     if isinstance(value, str):
         return value
-    raise _internal_error()
-
-
-def _splitpath_file(path: str) -> str:
-    """Return the trailing component (``File::Spec->splitpath`` basename)."""
-    index = path.rfind("/")
-    return path if index < 0 else path[index + 1:]
-
-
-def _splitpath_dir(path: str) -> str:
-    """Return the directory with its trailing slash (``splitpath``)."""
-    index = path.rfind("/")
-    return "" if index < 0 else path[: index + 1]
+    raise internal_error()
 
 
 def collect_filenames(
@@ -173,7 +157,7 @@ def collect_filenames(
 
     ret: list[str] = []
     for raw in pathnames:
-        pathname = _text(raw)
+        pathname = stringify(raw)
         if _ABS_OR_PIPE_RE.search(pathname) is None:
             pathname = parent_dir + pathname
 
@@ -305,7 +289,7 @@ class Parser:
             return False
 
         if not isinstance(domain, list):
-            family = "ip" if domain == "ip6" else _text(domain)
+            family = "ip" if domain == "ip6" else stringify(domain)
         elif len(domain) == 0:
             family = "none"
         elif any(
@@ -319,6 +303,9 @@ class Parser:
         rule.domain_family = family
         base = MATCH_DEFS.get(family, {}).get("")
         rule.keywords = base.keywords if base is not None else {}
+        # base keywords come from the family's "" pseudo-module: no -m is
+        # ever emitted for them, so they carry no introducing module
+        rule.keyword_module = {}
         rule.cow.add("keywords")
         rule.domain = domain
         self.scope.top.auto["DOMAIN"] = domain
@@ -350,7 +337,7 @@ class Parser:
         if name == "MARK" and rule.domain_family == "eb":
             name = "mark"
         self.set_target(rule, "jump", name)
-        merge_keywords(rule, defs.keywords)
+        merge_keywords(rule, defs.keywords, name)
 
     # -- keyword / option parsing (:1943-2031) ---------------------------
 
@@ -366,7 +353,7 @@ class Parser:
         """
         method = getattr(self.evaluator, function.name, None)
         if method is None:
-            raise _internal_error()
+            raise internal_error()
         return cast("Value", method(rule))
 
     def parse_keyword(
@@ -413,9 +400,11 @@ class Parser:
                     items = to_array(
                         self.evaluator.getvalues(non_empty=True)
                     )
-                    collected.append(",".join(_text(item) for item in items))
+                    collected.append(
+                        ",".join(stringify(item) for item in items)
+                    )
                 else:
-                    raise _internal_error()
+                    raise internal_error()
             value = collected[0] if len(collected) == 1 else Params(collected)
         elif params == 1:
             local_negated = self._maybe_consume_negation(
@@ -466,9 +455,17 @@ class Parser:
     def parse_option(
         self, keyword: Keyword, rule: Rule, negated: NegatedFlag
     ) -> None:
-        """Read a module option and queue it on the rule (Perl ``:2026``)."""
+        """Read a module option and queue it on the rule (Perl ``:2026``).
+
+        Fills :attr:`pyferm.scope.Option.module` from the keyword-to-module
+        link ``merge_keywords`` recorded (sanctioned deviation #2: the
+        contract field the Phase 2 nft translator reads).
+        """
         append_option(
-            rule, keyword.name, self.parse_keyword(rule, keyword, negated)
+            rule,
+            keyword.name,
+            self.parse_keyword(rule, keyword, negated),
+            module=rule.keyword_module.get(keyword.name),
         )
 
     # -- rule emission (:1924) -------------------------------------------
@@ -486,11 +483,11 @@ class Parser:
 
         for table in to_array(rule.table):
             table_info = domain_info.tables.setdefault(
-                _text(table), TableInfo()
+                stringify(table), TableInfo()
             )
             for chain in to_array(rule.chain):
                 chain_info = table_info.chains.setdefault(
-                    _text(chain), ChainInfo()
+                    stringify(chain), ChainInfo()
                 )
                 if rule.has_rule and not self.options.flush:
                     mkrules2(domain, chain_info.rules, rule)
@@ -519,7 +516,7 @@ class Parser:
         old_handle = script.handle
         old_tokens = script.tokens
         old_base_level = script.base_level
-        old_tokens.insert(0, make_line_token(script.line))
+        old_tokens.appendleft(make_line_token(script.line))
         script.handle = None
 
         for item in items:
@@ -527,7 +524,7 @@ class Parser:
             if inner is None:
                 continue
             script.base_level = 0
-            script.tokens = list(block)
+            script.tokens = deque(block)
             self.enter(0, inner)
 
         script.base_level = old_base_level
@@ -547,7 +544,7 @@ class Parser:
         """
         base_level = self.tokenizer.script.base_level or 0
         if base_level > level:
-            raise _internal_error()
+            raise internal_error()
 
         rule = new_level(prev)
         # The keyword as last seen by the dispatcher: a handler may remap it
@@ -611,7 +608,7 @@ class Parser:
                     hooks = self.flush_hooks
                 else:
                     error(f"Invalid hook position: '{position}'")
-                hooks.append(_text(self.evaluator.getvar()))
+                hooks.append(stringify(self.evaluator.getvar()))
                 self.tokenizer.expect_token(";")
                 return "next"
 
@@ -622,7 +619,7 @@ class Parser:
                 self.enter(level + 1, rule)
                 self.scope.pop()
                 if len(self.scope.stack) != old_depth:
-                    raise _internal_error()
+                    raise internal_error()
                 rule = new_level(prev)
                 return "next"
 
@@ -637,7 +634,7 @@ class Parser:
             if keyword in ("@include", "include"):
                 if self.tokenizer.peek_token() == "@glob":
                     files = [
-                        _text(name)
+                        stringify(name)
                         for name in to_array(self.evaluator.getvalues())
                     ]
                 else:
@@ -734,15 +731,11 @@ class Parser:
                 domain = _domain_key(rule.domain)
                 for table in to_array(rule.table):
                     table_info = self.domains[domain].tables.setdefault(
-                        _text(table), TableInfo()
+                        stringify(table), TableInfo()
                     )
                     for chain in to_array(chains):
-                        name = _text(chain)
-                        if len(name) > 29:
-                            error(
-                                "Chain name too long, must be 29 characters "
-                                f"or less: {name}"
-                            )
+                        name = stringify(chain)
+                        _check_chain_name(name)
                         table_info.chains.setdefault(name, ChainInfo())
                 if isinstance(chains, list):
                     def build_chain(item: Value) -> Rule | None:
@@ -776,11 +769,11 @@ class Parser:
                 domain_info.enabled = True
                 for table in to_array(rule.table):
                     table_info = domain_info.tables.setdefault(
-                        _text(table), TableInfo()
+                        stringify(table), TableInfo()
                     )
                     for chain in to_array(rule.chain):
                         table_info.chains.setdefault(
-                            _text(chain), ChainInfo()
+                            stringify(chain), ChainInfo()
                         ).policy = policy
                 rule = new_level(prev)
                 return "next"
@@ -797,7 +790,7 @@ class Parser:
                 r"mod(?:ule)?", keyword
             ):
                 for value in to_array(self.evaluator.getvalues()):
-                    module = _text(value)
+                    module = stringify(value)
                     if module in rule.match:
                         continue
                     family_defs = MATCH_DEFS.get(rule.domain_family or "", {})
@@ -805,7 +798,7 @@ class Parser:
                     append_option(rule, "match", module)
                     rule.match.add(module)
                     if defs is not None:
-                        merge_keywords(rule, defs.keywords)
+                        merge_keywords(rule, defs.keywords, module)
                 return "next"
 
             # shortcuts
@@ -818,7 +811,7 @@ class Parser:
                     append_option(rule, "match", module)
                     rule.match.add(module)
                     if defs is not None:
-                        merge_keywords(rule, defs.keywords)
+                        merge_keywords(rule, defs.keywords, module)
                     keyword = shortcut[1]
                     shown_keyword = keyword
 
@@ -829,24 +822,11 @@ class Parser:
                 return "next"
 
             # actions
-            if keyword == "jump":
+            if keyword in ("jump", "goto"):
                 target = self.evaluator.getvar()
-                if isinstance(target, str) and len(target) > 29:
-                    error(
-                        "Chain name too long, must be 29 characters or "
-                        f"less: {target}"
-                    )
-                self.set_target(rule, "jump", target)
-                return "next"
-
-            if keyword == "goto":
-                target = self.evaluator.getvar()
-                if isinstance(target, str) and len(target) > 29:
-                    error(
-                        "Chain name too long, must be 29 characters or "
-                        f"less: {target}"
-                    )
-                self.set_target(rule, "goto", target)
+                if isinstance(target, str):
+                    _check_chain_name(target)
+                self.set_target(rule, keyword, target)
                 return "next"
 
             if isinstance(keyword, str) and is_netfilter_core_target(keyword):
@@ -949,8 +929,8 @@ class Parser:
         else:
             frame = Frame()
         frame.auto["FILENAME"] = filename
-        frame.auto["FILEBNAME"] = _splitpath_file(filename)
-        frame.auto["DIRNAME"] = _splitpath_dir(filename)
+        frame.auto["FILEBNAME"] = splitpath_file(filename)
+        frame.auto["DIRNAME"] = splitpath_dir(filename)
         self.scope.push(frame)
 
         self.enter(level + 1, prev)
@@ -958,9 +938,13 @@ class Parser:
         handle = new_script.handle
         if handle is not None and handle is not sys.stdin:
             handle.close()
+        if new_script.process is not None and new_script.process.wait() != 0:
+            # Perl: close on a piped handle reaps the child and fails on a
+            # non-zero exit (:2311) -- a truncated ruleset must not install.
+            error(f"'{new_script.filename}': exit status is not 0")
         self.scope.pop()
         if len(self.scope.stack) != old_depth:
-            raise _internal_error()
+            raise internal_error()
         self.tokenizer.script = old_script
 
     def _parse_def(self, rule: Rule) -> None:
@@ -1063,7 +1047,7 @@ class Parser:
             elif isinstance(token, str) and _DQUOTE_RE.fullmatch(token):
                 tokens[index] = _DVAR_RE.sub(
                     lambda match: (
-                        _text(variables[match.group(1)])
+                        stringify(variables[match.group(1)])
                         if match.group(1) in variables
                         else f"${match.group(1)}"
                     ),
@@ -1071,7 +1055,10 @@ class Parser:
                 )
             index += 1
 
-        self.tokenizer.script.tokens[0:0] = [*tokens, line_token]
+        # extendleft inserts in reverse, so pre-reverse to prepend in order
+        self.tokenizer.script.tokens.extendleft(
+            reversed([*tokens, line_token])
+        )
 
     def _parse_preserve(self, rule: Rule) -> None:
         """Mark chains to keep from the previous ruleset (Perl ``:2391``).
@@ -1096,10 +1083,10 @@ class Parser:
 
         for table in to_array(rule.table):
             table_info = domain_info.tables.setdefault(
-                _text(table), TableInfo()
+                stringify(table), TableInfo()
             )
             for chain in to_array(rule.chain):
-                name = _text(chain)
+                name = stringify(chain)
                 chain_info = table_info.chains.setdefault(name, ChainInfo())
                 if chain_info.rules:
                     error(
@@ -1140,25 +1127,21 @@ class Parser:
         if quoted is not None:
             subchain = quoted.group(2)
             self.tokenizer.next_token()
-            keyword = _text(self.tokenizer.next_token())
+            keyword = stringify(self.tokenizer.next_token())
         elif token == "{":
             self.tokenizer.next_token()
             subchain = self.scope.next_auto_chain()
             keyword = "{"
         else:
-            subchain = _text(self.evaluator.getvar())
-            keyword = _text(self.tokenizer.next_token())
+            subchain = stringify(self.evaluator.getvar())
+            keyword = stringify(self.tokenizer.next_token())
 
-        if len(subchain) > 29:
-            error(
-                "Chain name too long, must be 29 characters or less: "
-                f"{subchain}"
-            )
+        _check_chain_name(subchain)
 
         domain = _domain_key(rule.domain)
         for table in to_array(rule.table):
             chains = self.domains[domain].tables.setdefault(
-                _text(table), TableInfo()
+                stringify(table), TableInfo()
             ).chains
             if subchain in chains:
                 warning(f"Chain {subchain} already exists")
@@ -1178,15 +1161,13 @@ class Parser:
         # The oracle builds %inner from scratch (:2711), copying only
         # domain/domain_family/domain_both/table/keywords -- crucially NOT
         # 'protocol'.  ``new_level`` copied it, so clear it: the parent's
-        # protocol is carried only as ``auto_protocol`` below, so
-        # ``realize_protocol`` re-emits ``-p tcp`` inside the sub-chain.
+        # protocol is carried only as ``auto_protocol`` (already inherited
+        # by ``new_level``, overridden here when the parent had an explicit
+        # protocol), so ``realize_protocol`` re-emits ``-p tcp`` inside the
+        # sub-chain.
         inner.protocol = None
         if rule.protocol is not None:
             inner.auto_protocol = rule.protocol
-        elif rule.auto_protocol is not None:
-            inner.auto_protocol = rule.auto_protocol
-        else:
-            inner.auto_protocol = None
 
         old_depth = len(self.scope.stack)
         frame = Frame(auto=dict(self.scope.top.auto))
@@ -1195,7 +1176,7 @@ class Parser:
         self.enter(level + 1, inner)
         self.scope.pop()
         if len(self.scope.stack) != old_depth:
-            raise _internal_error()
+            raise internal_error()
 
         rule.script = SourcePosition(
             self.tokenizer.script.filename, self.tokenizer.script.line
@@ -1225,7 +1206,7 @@ class Parser:
             canonical = netfilter_canonical_protocol(protocol)
             defs = PROTO_DEFS.get(rule.domain_family or "", {}).get(canonical)
             if defs is not None:
-                merge_keywords(rule, defs.keywords)
                 module = netfilter_protocol_module(canonical)
+                merge_keywords(rule, defs.keywords, module)
                 if module is not None:
                     rule.match.add(module)

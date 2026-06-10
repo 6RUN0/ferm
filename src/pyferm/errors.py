@@ -2,8 +2,10 @@
 
 Faithful port of ``error`` and ``warning`` from ``reference/src/ferm``
 (``:834-879``).  ``die`` maps to :class:`FermError`; the top-level CLI
-handler turns an uncaught :class:`FermError` into ``exit(1)`` after
-printing its message, exactly as Perl's uncaught ``die`` does.
+handler prints its message and exits non-zero.  The exit code is a flat
+``1``, a sanctioned simplification (design §"Обработка ошибок"): Perl's
+uncaught ``die`` exits with whatever ``$!``/``$?`` happen to hold (e.g. 2
+after ENOENT, 25 after ENOTTY) -- residual errno noise, not an interface.
 
 Perl reaches the parser state through the global ``$script``.  To keep
 this module a leaf of the dependency graph (it imports nothing from
@@ -38,6 +40,11 @@ class FermError(Exception):
     The carried message is the already-joined ``die`` argument list,
     without the trailing newline (the handler adds it).
     """
+
+
+def internal_error(detail: str = "unexpected value type") -> FermError:
+    """Exception for a Perl bare ``die`` (unreachable on valid input)."""
+    return FermError(f"internal error: {detail}")
 
 
 _context: ErrorContext | None = None

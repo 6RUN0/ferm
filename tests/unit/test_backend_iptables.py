@@ -179,14 +179,15 @@ def test_extract_chain_from_table_save() -> None:
     )
 
 
-def test_resolve_dynamic_preserve_adds_matching_chains() -> None:
+def test_resolve_dynamic_preserve_returns_matching_chains() -> None:
     table_info = TableInfo(preserve_regexes=[re.compile(r"^docker")])
     body = extract_table_from_save(_SAVE, "filter")
-    resolve_dynamic_preserve(table_info, body)
-    # the docker chain matched and was added with the preserve flag
-    assert table_info.chains["docker"].preserve is True
-    # INPUT did not match the regex
-    assert "INPUT" not in table_info.chains
+    added = resolve_dynamic_preserve(table_info, body)
+    # the docker chain matched and is returned with the preserve flag;
+    # the table itself stays untouched (render purity)
+    assert added["docker"].preserve is True
+    assert "INPUT" not in added
+    assert table_info.chains == {}
 
 
 # --- rules_to_save (fast) --------------------------------------------------
@@ -321,8 +322,145 @@ def test_render_slow_eb_atomic_framing_is_unguarded() -> None:
     framing = [c for c in rendered.commands if not c.guarded]
     assert any("--atomic-init" in c.text for c in framing)
     assert any("--atomic-commit" in c.text for c in framing)
-    # tempfiles were created for every eb table
-    assert set(domain_info.ebt_current) == {"filter", "nat", "broute"}
+    # one atomic tempfile per eb table, kept alive on the Rendered
+    assert len(rendered.resources) == 3
+
+
+_PREVIOUS = (
+    "*filter\n"
+    ":INPUT ACCEPT [0:0]\n"
+    ":docker - [0:0]\n"
+    "-A docker -j RETURN\n"
+    "COMMIT\n"
+)
+
+
+def test_render_fast_preserve_keeps_domain_state_intact() -> None:
+    # render is the pure half of the seam (base.py): resolving @preserve
+    # must not rewrite chain_info.preserve (True -> extracted text), and a
+    # second render must produce the identical save.
+    domain_info = DomainInfo(
+        tools={
+            "tables-save": "iptables-save",
+            "tables-restore": "iptables-restore",
+        },
+        previous=_PREVIOUS,
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(builtin=True),
+                    "docker": ChainInfo(preserve=True),
+                }
+            )
+        },
+    )
+    backend = IptablesBackend()
+    first = rules_to_save("ip", domain_info, Options(), now="WHEN")
+    assert "-A docker -j RETURN" in first
+    assert domain_info.tables["filter"].chains["docker"].preserve is True
+    second = rules_to_save("ip", domain_info, Options(), now="WHEN")
+    assert first == second
+    del backend
+
+
+def test_render_fast_dynamic_preserve_leaves_chains_untouched() -> None:
+    domain_info = DomainInfo(
+        tools={
+            "tables-save": "iptables-save",
+            "tables-restore": "iptables-restore",
+        },
+        previous=_PREVIOUS,
+        tables={
+            "filter": TableInfo(
+                preserve_regexes=[re.compile(r"^docker")],
+                chains={"INPUT": ChainInfo(builtin=True)},
+            )
+        },
+    )
+    save = rules_to_save("ip", domain_info, Options(), now="WHEN")
+    # the dynamically preserved chain is emitted from the previous ruleset
+    assert ":docker - [0:0]" in save
+    assert "-A docker -j RETURN" in save
+    # ...without inserting it into the parser-owned domain state
+    assert "docker" not in domain_info.tables["filter"].chains
+
+
+def test_render_slow_eb_rerender_keeps_first_tempfiles() -> None:
+    from pathlib import Path
+
+    domain_info = DomainInfo(
+        tools={"tables": "ebtables"},
+        tables={"filter": TableInfo(chains={})},
+    )
+    backend = IptablesBackend()
+    rendered_one = backend.render("eb", domain_info, _SLOW)
+    names = {
+        match.group(1)
+        for command in rendered_one.commands
+        for match in [re.search(r"--atomic-file (\S+)", command.text)]
+        if match is not None
+    }
+    assert names and all(Path(name).exists() for name in names)
+    # a second render must not unlink the files the first Rendered's
+    # commands reference (commit may still run them)
+    backend.render("eb", domain_info, _SLOW)
+    assert all(Path(name).exists() for name in names)
+    del rendered_one
+
+
+def test_render_falls_back_to_slow_with_fast_escaping() -> None:
+    # arp/eb own no *-restore tool, so under the default (fast) options
+    # render must fall back to slow commands -- but the oracle formats the
+    # values at parse time with the GLOBAL $option{fast}=1, so the escaping
+    # stays fast-mode (double quotes), not slow-mode (single quotes).
+    rule = RenderedRule(
+        options=[
+            RenderedOption("log-prefix", "a b", "option", None),
+            RenderedOption("jump", "ACCEPT", "target", None),
+        ],
+        script=None,
+    )
+    domain_info = DomainInfo(
+        tools={"tables": "arptables"},
+        tables={
+            "filter": TableInfo(
+                chains={"INPUT": ChainInfo(builtin=True, rules=[rule])}
+            )
+        },
+    )
+    rendered = IptablesBackend().render(
+        "arp", domain_info, Options(fast=True)
+    )
+    assert rendered.save is None
+    texts = [command.text for command in rendered.commands]
+    assert any('--log-prefix "a b"' in text for text in texts)
+    # an explicit --slow still escapes slow-mode
+    rendered_slow = IptablesBackend().render("arp", domain_info, _SLOW)
+    slow_texts = [command.text for command in rendered_slow.commands]
+    assert any("--log-prefix 'a b'" in text for text in slow_texts)
+
+
+def test_commit_dispatches_on_rendered_shape() -> None:
+    # commit must follow the Rendered it was handed, not re-derive the
+    # fast/slow decision from options (arp/eb fall back to slow even when
+    # options.fast is true).
+    calls: list[str] = []
+
+    def execute(command: str) -> int | None:
+        calls.append(command)
+        return None
+
+    status = IptablesBackend().commit(
+        "arp",
+        DomainInfo(),
+        Rendered(commands=[Command("a")]),
+        Options(fast=True),
+        execute=execute,
+        emit_line=lambda _text: None,
+        restore=lambda _domain_info, _save: None,
+    )
+    assert status is None
+    assert calls == ["a"]
 
 
 # --- commit ----------------------------------------------------------------

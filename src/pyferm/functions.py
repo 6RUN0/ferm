@@ -25,7 +25,7 @@ import subprocess
 from collections.abc import Callable
 from typing import TypeAlias
 
-from pyferm.errors import FermError, error
+from pyferm.errors import error, internal_error
 from pyferm.modules import PROTO_DEFS
 from pyferm.resolver import resolve
 from pyferm.scope import Rule, Scope, append_option
@@ -46,6 +46,7 @@ from pyferm.values import (
     negate_value,
     perl_true,
     realize_deferred,
+    stringify,
     to_array,
 )
 
@@ -67,9 +68,16 @@ def _is_ref(value: object) -> bool:
     return isinstance(value, _REF_TYPES)
 
 
-def _as_str(value: Value) -> str:
-    """Coerce a scalar value to text the way Perl stringifies it."""
-    return value if isinstance(value, str) else str(value)
+def _perl_eq(a: Value, b: Value) -> bool:
+    """Compare two values the way Perl ``eq`` does (``:1544``).
+
+    Perl stringifies its operands: a reference becomes its address string,
+    so two distinct refs are never equal and a ref never equals a scalar --
+    identity is the only way refs compare equal.  Scalars compare as text.
+    """
+    if _is_ref(a) or _is_ref(b):
+        return a is b
+    return stringify(a) == stringify(b)
 
 
 def ipfilter(domain: str, value: Value) -> list[Value]:
@@ -81,9 +89,15 @@ def ipfilter(domain: str, value: Value) -> list[Value]:
     """
     ips = to_array(value)
     if domain == "ip":
-        return [ip for ip in ips if not re.search(r":[0-9a-f]*:", _as_str(ip))]
+        return [
+            ip for ip in ips
+            if not re.search(r":[0-9a-f]*:", stringify(ip))
+        ]
     if domain == "ip6":
-        return [ip for ip in ips if not re.fullmatch(r"[0-9./]+", _as_str(ip))]
+        return [
+            ip for ip in ips
+            if not re.fullmatch(r"[0-9./]+", stringify(ip))
+        ]
     return ips
 
 
@@ -141,13 +155,13 @@ def _perl_substr(string: str, offset: int, length: int) -> str:
     return string[start:end]
 
 
-def _splitpath_file(path: str) -> str:
+def splitpath_file(path: str) -> str:
     """Return the trailing component (``File::Spec->splitpath`` basename)."""
     index = path.rfind("/")
     return path if index < 0 else path[index + 1:]
 
 
-def _splitpath_dir(path: str) -> str:
+def splitpath_dir(path: str) -> str:
     """Return the directory with its trailing slash (``splitpath``)."""
     index = path.rfind("/")
     return "" if index < 0 else path[: index + 1]
@@ -180,7 +194,13 @@ class Evaluator:
         pseudo-variables.  Returns ``None`` when undefined.
         """
         if name == "LINE":
-            return str(self.tokenizer.script.line)
+            # No script while evaluating --def: fall through to undefined,
+            # so the caller reports "no such variable: $LINE" (the oracle's
+            # autovivified empty $script behaves the same way).
+            script = self.tokenizer.script_if_any
+            if script is None:
+                return None
+            return str(script.line)
         for frame in self.scope.stack:
             if name in frame.vars:
                 return frame.vars[name]
@@ -282,8 +302,7 @@ class Evaluator:
 
     def _interpolate(self, name: str) -> str:
         """Expand ``$name`` inside a double-quoted string (undefined -> "")."""
-        value = self.string_variable_value(name)
-        return _as_str(value) if value is not None else ""
+        return stringify(self.string_variable_value(name))
 
     def _read_array(
         self, code: TokenSource | None, *, non_empty: bool
@@ -416,10 +435,10 @@ class Evaluator:
             return self._builtin_defined()
         if token == "@eq":
             params = self._params("@eq(a, b)", 2)
-            return format_bool(params[0] == params[1])
+            return format_bool(_perl_eq(params[0], params[1]))
         if token == "@ne":
             params = self._params("@ne(a, b)", 2)
-            return format_bool(params[0] != params[1])
+            return format_bool(not _perl_eq(params[0], params[1]))
         if token == "@not":
             params = self._params("@not(a)", 1)
             return format_bool(not perl_true(params[0]))
@@ -432,31 +451,31 @@ class Evaluator:
             params = self.get_function_params()
             if not params:
                 return ""
-            separator = _as_str(params[0])
+            separator = stringify(params[0])
             return join_value(separator, flatten(*params[1:]))
         if token == "@substr":
             params = self._params("@substr(string, num, num)", 3)
             if any(_is_ref(p) for p in params):
                 error("String expected")
             return _perl_substr(
-                _as_str(params[0]), int(_as_str(params[1])),
-                int(_as_str(params[2])),
+                stringify(params[0]), int(stringify(params[1])),
+                int(stringify(params[2])),
             )
         if token == "@length":
             params = self._params("@length(string)", 1)
             if _is_ref(params[0]):
                 error("String expected")
-            return str(len(_as_str(params[0])))
+            return str(len(stringify(params[0])))
         if token == "@basename":
             params = self._params("@basename(path)", 1)
             if _is_ref(params[0]):
                 error("String expected")
-            return _splitpath_file(_as_str(params[0]))
+            return splitpath_file(stringify(params[0]))
         if token == "@dirname":
             params = self._params("@dirname(path)", 1)
             if _is_ref(params[0]):
                 error("String expected")
-            return _splitpath_dir(_as_str(params[0]))
+            return splitpath_dir(stringify(params[0]))
         if token == "@glob":
             return self._builtin_glob()
         if token == "@resolve":
@@ -505,7 +524,7 @@ class Evaluator:
         parent_dir = match.group(1) if match is not None else "./"
         result: list[Value] = []
         for pattern in to_array(params[0]):
-            path = _as_str(pattern)
+            path = stringify(pattern)
             if not path.startswith("/"):
                 path = parent_dir + path
             # Perl glob() takes a full shell pattern (possibly absolute);
@@ -535,7 +554,7 @@ class Evaluator:
             ips = realize_deferred(family, value.value)
             negated = True
         elif _is_ref(value):
-            raise _internal_error()
+            raise internal_error()
         else:
             ips = [value]
         if rule.domain_both:
@@ -554,13 +573,13 @@ class Evaluator:
             classids = [value.value]
             negated = True
         elif _is_ref(value):
-            raise _internal_error()
+            raise internal_error()
         else:
             classids = [value]
 
         normalized: list[Value] = []
         for item in classids:
-            text = _as_str(item)
+            text = stringify(item)
             pair = _CLASSID_RE.fullmatch(text)
             if pair is not None:
                 high = int(pair.group(1), 16)
@@ -608,7 +627,7 @@ class Evaluator:
         chunk: list[str] = []
         size = 0
         for ports in value:
-            text = _as_str(ports)
+            text = stringify(ports)
             increment = 2 if ":" in text else 1
             if size + increment > 15:
                 params.append(",".join(chunk))
@@ -619,8 +638,3 @@ class Evaluator:
         if chunk:
             params.append(",".join(chunk))
         return params[0] if len(params) == 1 else params
-
-
-def _internal_error() -> FermError:
-    """Exception for a Perl bare ``die`` on an unexpected value type."""
-    return FermError("internal error: unexpected value type")

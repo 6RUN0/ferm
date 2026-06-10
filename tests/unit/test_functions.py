@@ -194,6 +194,20 @@ def test_builtin_eq_ne_not() -> None:
     assert _evaluator("@not(x)").getvalues() == "0"
 
 
+def test_builtin_eq_compares_arrays_by_identity() -> None:
+    # Perl ``eq`` stringifies array refs to their addresses, so two distinct
+    # arrays are never equal regardless of contents (ferm relies on this:
+    # ``@eq($a, $b)`` on equal-content arrays is false in the oracle).
+    variables: dict[str, object] = {"a": ["1", "2"], "b": ["1", "2"]}
+    assert _evaluator("@eq($a, $b)", variables=variables).getvalues() == "0"
+    assert _evaluator("@ne($a, $b)", variables=variables).getvalues() == "1"
+    # the same array reached twice is the same ref -> equal
+    assert _evaluator("@eq($a, $a)", variables=variables).getvalues() == "1"
+    assert _evaluator("@ne($a, $a)", variables=variables).getvalues() == "0"
+    # a ref never equals a scalar
+    assert _evaluator("@eq($a, x)", variables=variables).getvalues() == "0"
+
+
 def test_builtin_cat_and_join() -> None:
     assert _evaluator("@cat(a, b, c)").getvalues() == "abc"
     assert _evaluator("@join(-, a, b)").getvalues() == "a-b"

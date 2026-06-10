@@ -26,11 +26,12 @@ realised with :mod:`signal` (``signal.alarm``/``SIGALRM``) rather than Perl's
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import os
 import re
 import subprocess  # live-only: run rules / hooks / *-save / *-restore
 import sys
+from collections.abc import Callable
+from typing import TextIO
 
 from pyferm import __version__
 from pyferm.backend.base import (
@@ -42,9 +43,9 @@ from pyferm.backend.base import (
 from pyferm.backend.iptables import IptablesBackend, restore_domain
 from pyferm.config import Options
 from pyferm.domains import DomainInfo, SaveReader
-from pyferm.errors import FermError
-from pyferm.functions import Evaluator
-from pyferm.parser import Parser, _splitpath_dir, _splitpath_file
+from pyferm.errors import FermError, internal_error
+from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
+from pyferm.parser import Parser
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
 from pyferm.tokenizer import Tokenizer, open_script, tokenize_string
@@ -56,11 +57,6 @@ USAGE = (
 
 _TIMEOUT_RE = re.compile(r"^[+-]?\d+$")
 _DEF_RE = re.compile(r"\$?(\w+)=(.*)", re.DOTALL)
-
-
-def _internal_error() -> FermError:
-    """Exception for a Perl bare ``die`` (the ``@stack == 2`` sanity check)."""
-    return FermError("internal error: parser left the scope stack unbalanced")
 
 
 def printversion() -> None:
@@ -78,7 +74,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ``allow_abbrev=False`` reproduces Getopt::Long's ``no_auto_abbrev``; help
     and version are handled manually (Perl prints its own banner and exits 0).
-    Bundling of single-letter flags (Perl's ``bundling``) is not supported.
+    Bundled single-letter flags (Perl's ``bundling``, e.g. ``-nl``) work via
+    argparse's native short-flag concatenation.
     """
     parser = argparse.ArgumentParser(
         prog="ferm", add_help=False, allow_abbrev=False
@@ -115,13 +112,16 @@ def _resolve_options(args: argparse.Namespace) -> Options:
 
     Reproduces the oracle's derivation: ``--test`` forces ``noexec`` and
     ``lines``; ``--shell`` forces ``lines``; ``fast`` is ``not --slow``;
-    ``interactive`` requires ``not noexec``.  Validates ``--timeout`` and the
+    ``interactive`` requires the raw ``--noexec`` switch to be absent
+    (``--test`` does not suppress it).  Validates ``--timeout`` and the
     interactive-mode tty requirements, raising :class:`FermError` for each
     ``die`` (``:691-698``).
     """
     noexec = args.noexec or args.test
     lines = args.lines or args.test or args.shell
-    interactive = args.interactive and not noexec
+    # The oracle derives interactive from the RAW --noexec switch (:679),
+    # so --test alone does not suppress interactive mode.
+    interactive = args.interactive and not args.noexec
 
     if args.timeout is not None and not _TIMEOUT_RE.match(args.timeout):
         raise FermError("invalid timeout. must be an integer")
@@ -184,21 +184,56 @@ def _apply_def(evaluator: Evaluator, spec: str) -> None:
     evaluator.scope.top.vars[name] = value
 
 
-def _make_io(options: Options) -> tuple[
+def _setup_streams(
+    options: Options,
+) -> tuple[TextIO, Callable[[], None]]:
+    """Replicate Perl's ``LINES``/``STDOUT`` handle plumbing (``:738-739``).
+
+    Under ``--shell`` the generated script must own the real stdout: the
+    ``--lines`` sink keeps a duplicate of the original stdout while fd 1 is
+    redirected to stderr, so child processes (hooks, ``*-save`` tools,
+    slow-mode commands) cannot interleave their output with the script.
+    Without ``--shell`` the sink is plain ``sys.stdout``.  Returns the sink
+    and an undo callable (for in-process tests; the oracle never restores).
+    """
+    if not options.shell:
+        return sys.stdout, lambda: None
+
+    # Perl's open works on the STDOUT/STDERR handles, i.e. file descriptors
+    # 1 and 2; children inherit the descriptor, not sys.stdout, so the
+    # plumbing must happen at fd level.
+    stdout_fd, stderr_fd = 1, 2
+    saved_fd = os.dup(stdout_fd)
+    # Line-buffered: each emitted line reaches the script file before any
+    # subsequent child could have run.
+    lines_stream = os.fdopen(saved_fd, "w", buffering=1)
+    sys.stdout.flush()
+    os.dup2(stderr_fd, stdout_fd)
+
+    def restore() -> None:
+        sys.stdout.flush()
+        os.dup2(saved_fd, stdout_fd)
+        lines_stream.close()
+
+    return lines_stream, restore
+
+
+def _make_io(options: Options, lines_stream: TextIO) -> tuple[
     ExecuteCommand, LineEmitter, SaveReader, RestoreDomain
 ]:
     """Build the four injected I/O callables bound to ``options``.
 
     Returns ``(execute, emit_line, read_save, restore)``.  ``execute`` is the
     port of ``execute_command`` (``:2894``); ``emit_line`` is the ``print
-    LINES`` sink (raw, caller supplies newlines); ``read_save`` runs a
-    ``*-save`` tool; ``restore`` adapts the backend's three-argument
+    LINES`` sink (raw, caller supplies newlines) writing to ``lines_stream``
+    from :func:`_setup_streams`; ``read_save`` runs a ``*-save`` tool;
+    ``restore`` adapts the backend's three-argument
     :func:`pyferm.backend.iptables.restore_domain` to the injected two-argument
     shape.  All but ``emit_line`` are no-ops under ``--test`` (never reached).
     """
 
     def emit_line(text: str) -> None:
-        sys.stdout.write(text)
+        lines_stream.write(text)
 
     def execute(command: str) -> int | None:
         if options.lines:
@@ -341,12 +376,20 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
     filename = args.files[0]
 
-    execute, emit_line, read_save, restore = _make_io(options)
+    lines_stream, _restore_streams = _setup_streams(options)
+    execute, emit_line, read_save, restore = _make_io(options, lines_stream)
 
     # Scope: the global frame (Perl ``:618``) holds --def vars; the script
     # frame (Perl ``:751``) sits above it and carries the auto-variables.
     scope = Scope()
     scope.push(Frame())
+
+    # --def is evaluated before the script exists (Perl runs it inside
+    # GetOptions, ``:662``): plain values bind on the global frame, while
+    # script-context built-ins abort, exactly as the oracle does.
+    def_evaluator = Evaluator(Tokenizer(None), scope)
+    for spec in args.defs:
+        _apply_def(def_evaluator, spec)
 
     script = open_script(filename, None)
     tokenizer = Tokenizer(script)
@@ -359,13 +402,10 @@ def _main(argv: list[str] | None = None) -> int:
         lambda: pick_resolver(options.test, tokenizer.script.filename)
     )
 
-    for spec in args.defs:
-        _apply_def(evaluator, spec)
-
     scope.push(Frame())
     scope.top.auto["FILENAME"] = filename
-    scope.top.auto["FILEBNAME"] = _splitpath_file(filename)
-    scope.top.auto["DIRNAME"] = _splitpath_dir(filename)
+    scope.top.auto["FILEBNAME"] = splitpath_file(filename)
+    scope.top.auto["DIRNAME"] = splitpath_dir(filename)
 
     parser = Parser(
         evaluator,
@@ -377,7 +417,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.enter(0, None)
     if len(scope.stack) != 2:
-        raise _internal_error()
+        raise internal_error("parser left the scope stack unbalanced")
 
     domains = parser.domains
     backend: Backend = IptablesBackend()
@@ -397,18 +437,14 @@ def _main(argv: list[str] | None = None) -> int:
         domain_info = domains[domain]
         if not domain_info.enabled:
             continue
-        use_fast = options.fast and "tables-restore" in domain_info.tools
-        domain_options = (
-            options
-            if use_fast == options.fast
-            else dataclasses.replace(options, fast=use_fast)
-        )
-        rendered = backend.render(domain, domain_info, domain_options)
+        # The arp/eb fallback to slow commands (no *-restore tool) is the
+        # backend's decision: render picks the shape, commit follows it.
+        rendered = backend.render(domain, domain_info, options)
         result = backend.commit(
             domain,
             domain_info,
             rendered,
-            domain_options,
+            options,
             execute=execute,
             emit_line=emit_line,
             restore=restore,

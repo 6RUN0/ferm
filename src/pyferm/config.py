@@ -4,7 +4,8 @@ Faithful stand-in for the ``%option`` hash that ``reference/src/ferm`` fills in
 ``GetOptions``/``main`` (``:644-721``).  ``%option`` holds the *derived* flag
 values, not the raw switches: ``noexec`` is ``--noexec || --test``, ``lines``
 is ``--lines || --test || --shell``, ``fast`` is ``not --slow``,
-``interactive`` is ``--interactive and not noexec`` (``:675-683``).  That
+``interactive`` is ``--interactive and not the raw --noexec switch``
+(``:675-683``).  That
 derivation is the CLI's job (``cli.py``, the ``GetOptions`` port); this
 dataclass only carries the settled result, so the rest of the program reads
 one typed value object instead
@@ -45,7 +46,7 @@ class Options:
     noflush: bool = False
     #: ``--shell``: emit a shell script instead of executing.
     shell: bool = False
-    #: ``--interactive`` (and not ``noexec``): confirm-or-rollback safety net.
+    #: ``--interactive`` (and no raw ``--noexec``): confirm-or-rollback net.
     interactive: bool = False
     #: ``--timeout``: seconds before an unconfirmed ruleset is rolled back.
     timeout: int = 30

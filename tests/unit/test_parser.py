@@ -13,6 +13,7 @@ negation, function token splicing, ``@if``/``@else``, sub-chains, shortcuts,
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 
@@ -66,6 +67,41 @@ def test_basic_rule_records_options_and_kinds() -> None:
         ("jump", "ACCEPT", "target"),
     ]
     assert parser.domains["ip"].enabled
+
+
+def test_suboptions_record_their_introducing_module() -> None:
+    # The contract field Option.module links a sub-option to the module
+    # whose merge_keywords introduced its keyword (design, sanctioned
+    # deviation #2); the match/jump elements themselves carry no module.
+    parser = _parse("chain INPUT mod state state NEW ACCEPT;")
+    options = _rules(parser, "ip", "filter", "INPUT")[0].options
+    assert [(o.name, o.kind, o.module) for o in options] == [
+        ("match", "match_module", None),
+        ("state", "option", "state"),
+        ("jump", "target", None),
+    ]
+
+
+def test_target_module_suboptions_record_module() -> None:
+    parser = _parse(
+        "table nat chain PREROUTING proto tcp DNAT to '10.0.0.1';"
+    )
+    options = _rules(parser, "ip", "nat", "PREROUTING")[0].options
+    assert ("to-destination", "DNAT") in [
+        (o.name, o.module) for o in options
+    ]
+
+
+def test_shortcut_suboptions_record_module() -> None:
+    # the 'dports' shortcut implies 'mod multiport' and then its sub-option
+    parser = _parse("chain INPUT proto tcp dports (22 80) ACCEPT;")
+    options = _rules(parser, "ip", "filter", "INPUT")[0].options
+    assert [(o.name, o.module) for o in options] == [
+        ("protocol", None),
+        ("match", None),
+        ("destination-ports", "multiport"),
+        ("jump", None),
+    ]
 
 
 def test_chain_defaults_to_ip_filter() -> None:
@@ -395,7 +431,7 @@ def test_log_prefix_is_not_truncated() -> None:
 # -- collect_filenames -----------------------------------------------------
 
 
-def test_collect_filenames_relative_to_parent(tmp_path) -> None:
+def test_collect_filenames_relative_to_parent(tmp_path: Path) -> None:
     included = tmp_path / "rules.ferm"
     included.write_text("")
     parent = str(tmp_path / "main.ferm")
@@ -403,7 +439,7 @@ def test_collect_filenames_relative_to_parent(tmp_path) -> None:
 
 
 def test_collect_filenames_directory_sorts_and_filters(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     (tmp_path / "b.ferm").write_text("")
     (tmp_path / "a.ferm").write_text("")
@@ -414,7 +450,7 @@ def test_collect_filenames_directory_sorts_and_filters(
     assert result == [str(tmp_path / "a.ferm"), str(tmp_path / "b.ferm")]
 
 
-def test_include_pulls_in_another_file(tmp_path) -> None:
+def test_include_pulls_in_another_file(tmp_path: Path) -> None:
     included = tmp_path / "sub.ferm"
     included.write_text("chain INPUT ACCEPT;\n")
     main = tmp_path / "main.ferm"
@@ -433,3 +469,37 @@ def test_include_pulls_in_another_file(tmp_path) -> None:
 
     rules = parser.domains["ip"].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
+
+
+def _parse_file(main: Path, *, options: Options | None = None) -> Parser:
+    """Parse a ferm file from disk (the @include tests' harness)."""
+    options = options if options is not None else Options(test=True)
+    handle = main.open(encoding="utf-8")
+    script = Script(filename=str(main), handle=handle)
+    tokenizer = Tokenizer(script)
+    scope = Scope()
+    scope.push(Frame())
+    evaluator = Evaluator(tokenizer, scope)
+    parser = Parser(evaluator, {}, options, execute=lambda _command: None)
+    parser.enter(0, None)
+    handle.close()
+    return parser
+
+
+def test_include_pipe_parses_command_output(tmp_path: Path) -> None:
+    main = tmp_path / "main.ferm"
+    main.write_text("@include \"echo 'chain INPUT ACCEPT;'|\";\n")
+    parser = _parse_file(main)
+    rules = parser.domains["ip"].tables["filter"].chains["INPUT"].rules
+    assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
+
+
+def test_include_pipe_nonzero_exit_aborts(tmp_path: Path) -> None:
+    # Perl checks ``close $script->{handle}`` and aborts (:2311) so a
+    # generator that dies cannot install a truncated ruleset.
+    main = tmp_path / "main.ferm"
+    main.write_text(
+        "@include \"echo 'chain INPUT ACCEPT;'; exit 3|\";\n"
+    )
+    with pytest.raises(FermError, match="exit status is not 0"):
+        _parse_file(main)

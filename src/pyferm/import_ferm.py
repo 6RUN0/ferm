@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,7 +48,14 @@ from pyferm.rules import (
     is_netfilter_module_target,
     netfilter_canonical_protocol,
 )
-from pyferm.values import Multi, Negated, Params, PreNegated, Value
+from pyferm.values import (
+    Multi,
+    Negated,
+    Params,
+    PreNegated,
+    Value,
+    stringify,
+)
 
 #: import-ferm's own short-flag aliases (Perl ``%aliases``, ``:61``).  These
 #: are the single-letter iptables options, unrelated to ferm's keyword
@@ -122,7 +130,7 @@ def ferm_escape(value: object) -> str:
     string becomes ``''``).  A non-string stringifies first, matching Perl's
     implicit scalar coercion.
     """
-    text = value if isinstance(value, str) else str(value)
+    text = stringify(value)
     if text == "" or _ESCAPE_RE.search(text):
         return f"'{text}'"
     return text
@@ -260,7 +268,7 @@ def _prefix_matches(first: Rule, other: Rule) -> bool:
     )
 
 
-def _prefix_match_count(prefix: Rule, rules: list[Rule]) -> int:
+def _prefix_match_count(prefix: Rule, rules: Iterable[Rule]) -> int:
     """Count the consecutive rules sharing ``prefix``'s lead (``:121``)."""
     count = 0
     for rule in rules:
@@ -294,7 +302,7 @@ def _array_matches(rule1: Rule, rule2: Rule) -> bool:
     )
 
 
-def _array_match_count(first: Rule, rules: list[Rule]) -> int:
+def _array_match_count(first: Rule, rules: Iterable[Rule]) -> int:
     """Count rules mergeable with ``first`` into an array (Perl ``:154``)."""
     if not first.match:
         return 0
@@ -325,18 +333,20 @@ def _optimize(rules: list[Rule]) -> list[Rule]:
     that differ only in one option's value into a single array-valued rule.
     Recurses on each extracted block to find deeper structure.
     """
-    work = list(rules)
+    # A deque makes consuming from the front O(1) (list.pop(0) is O(n),
+    # quadratic over a large save file); the helpers only iterate it.
+    work = deque(rules)
     result: list[Rule] = []
 
     # Pass 1: factor a common leading match into a block.
     while work:
-        rule = work.pop(0)
+        rule = work.popleft()
         if rule.match:
             count = _prefix_match_count(rule, work)
             if count > 0:
                 match = rule.match[0]
-                matching = [rule, *work[:count]]
-                del work[:count]
+                matching = [rule]
+                matching.extend(work.popleft() for _ in range(count))
                 for member in matching:
                     member.match.pop(0)
                 block = _optimize(matching)
@@ -352,14 +362,14 @@ def _optimize(rules: list[Rule]) -> list[Rule]:
             result.append(rule)
 
     # Pass 2: combine rules differing only in one option into an array.
-    work = result
+    work = deque(result)
     result = []
     while work:
-        rule = work.pop(0)
+        rule = work.popleft()
         count = _array_match_count(rule, work)
         if count > 0:
-            matching = [rule, *work[:count]]
-            del work[:count]
+            matching = [rule]
+            matching.extend(work.popleft() for _ in range(count))
             params: list[Value] = []
             for member in matching:
                 value = member.match[0].value

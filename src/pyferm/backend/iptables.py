@@ -27,7 +27,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 from pyferm import __version__
 from pyferm.backend.base import (
@@ -47,7 +47,7 @@ from pyferm.domains import (
 from pyferm.domains import (
     read_previous as _domains_read_previous,
 )
-from pyferm.errors import FermError
+from pyferm.errors import FermError, internal_error
 from pyferm.rules import RenderedRule, is_netfilter_builtin_chain
 from pyferm.values import Deferred, Multi, Negated, Params, PreNegated, Value
 
@@ -77,11 +77,6 @@ _ICMP6_REJECT_MAP = {
 }
 
 
-def _die() -> FermError:
-    """Exception for a Perl bare ``die`` (unreachable on valid input)."""
-    return FermError("internal error: unexpected value type")
-
-
 def _scalar(value: Value) -> str:
     """Narrow a ``params``/``multi`` element to a scalar string.
 
@@ -89,7 +84,7 @@ def _scalar(value: Value) -> str:
     string op); a non-scalar is an internal error (bare ``die``).
     """
     if not isinstance(value, str):
-        raise _die()
+        raise internal_error()
     return value
 
 
@@ -155,7 +150,7 @@ def shell_format_option(keyword: str, value: Value, *, fast: bool) -> str:
         for item in value.values:
             cmd += f" --{keyword} " + shell_escape(_scalar(item), fast=fast)
     elif isinstance(value, (list, Negated, PreNegated, Deferred)):
-        raise _die()
+        raise internal_error()
     else:
         cmd += f" --{keyword} " + shell_escape(value, fast=fast)
 
@@ -215,34 +210,49 @@ def extract_chain_from_table_save(table_save: str, chain: str) -> str:
     return "".join(match.group(0) for match in pattern.finditer(table_save))
 
 
-def resolve_dynamic_preserve(table_info: TableInfo, table_save: str) -> None:
-    """Add preserve-matched chains from a save dump (Perl ``:3030``).
+def resolve_dynamic_preserve(
+    table_info: TableInfo, table_save: str
+) -> dict[str, ChainInfo]:
+    """Collect preserve-matched chains from a save dump (Perl ``:3030``).
 
     For each ``:CHAIN`` in ``table_save`` not already known, if it matches any
-    of the table's ``preserve_regexes`` it is added with the preserve flag set,
-    so ``rules_to_save`` later copies its rules verbatim.
+    of the table's ``preserve_regexes`` it is returned with the preserve flag
+    set, so ``rules_to_save`` copies its rules verbatim.  The oracle writes
+    the additions into the global ``%domains``; this port returns them so
+    :meth:`Backend.render` stays pure (deviation #3).
     """
+    added: dict[str, ChainInfo] = {}
     for match in re.finditer(r"^:([^ ]+) .*", table_save, re.MULTILINE):
         chain = match.group(1)
         if chain in table_info.chains:
             continue
         for regex in table_info.preserve_regexes:
             if regex.search(chain):
-                table_info.chains[chain] = ChainInfo(preserve=True)
+                added[chain] = ChainInfo(preserve=True)
+    return added
 
 
-def table_to_save(domain: str, table_info: TableInfo, options: Options) -> str:
+def table_to_save(
+    domain: str,
+    chains: dict[str, ChainInfo],
+    options: Options,
+    preserved: dict[str, str],
+) -> str:
     """Render one table's preserved + generated rules (Perl ``:2997``).
 
-    Chains are emitted in sorted order; a resolved ``preserve`` text is
-    prepended, then (unless ``--flush``) each rule as ``-A CHAIN <options>``.
+    Chains are emitted in sorted order; a chain's ``preserved`` text (the
+    rules extracted from the previous ruleset) is prepended, then (unless
+    ``--flush``) each rule as ``-A CHAIN <options>``.  The oracle stores the
+    extracted text back into the chain's ``{preserve}`` slot (``:3073``);
+    this port passes it alongside so the domain state stays untouched.
     """
     result = ""
-    for chain in sorted(table_info.chains):
-        chain_info = table_info.chains[chain]
+    for chain in sorted(chains):
+        chain_info = chains[chain]
 
-        if isinstance(chain_info.preserve, str):
-            result += chain_info.preserve
+        text = preserved.get(chain)
+        if text is not None:
+            result += text
 
         if options.flush:
             continue
@@ -274,24 +284,34 @@ def rules_to_save(
 
     for table in sorted(domain_info.tables):
         table_info = domain_info.tables[table]
+        chains = table_info.chains
+        table_save: str | None = None
 
         if table_info.preserve_regexes:
             table_save = extract_table_from_save(
                 domain_info.previous or "", table
             )
-            resolve_dynamic_preserve(table_info, table_save)
+            added = resolve_dynamic_preserve(table_info, table_save)
+            if added:
+                chains = {**chains, **added}
 
         result += f"*{table}\n"
 
-        for chain in sorted(table_info.chains):
-            chain_info = table_info.chains[chain]
+        # chain -> previous-ruleset rules text, resolved here instead of
+        # being written back into chain_info.preserve (render stays pure)
+        preserved: dict[str, str] = {}
+
+        for chain in sorted(chains):
+            chain_info = chains[chain]
 
             if chain_info.preserve is not None:
-                table_save = extract_table_from_save(
-                    domain_info.previous or "", table
+                if table_save is None:
+                    table_save = extract_table_from_save(
+                        domain_info.previous or "", table
+                    )
+                preserved[chain] = extract_chain_from_table_save(
+                    table_save, chain
                 )
-                chain_save = extract_chain_from_table_save(table_save, chain)
-                chain_info.preserve = chain_save
 
                 line = re.search(
                     r"^:" + re.escape(chain) + r" .*\n",
@@ -313,7 +333,7 @@ def rules_to_save(
 
             result += f":{chain} {policy} [0:0]\n"
 
-        result += table_to_save(domain, table_info, options)
+        result += table_to_save(domain, chains, options, preserved)
         result += "COMMIT\n"
 
     return result
@@ -347,37 +367,45 @@ class IptablesBackend(Backend):
     def render(
         self, domain: str, domain_info: DomainInfo, options: Options
     ) -> Rendered:
-        """Build a fast save or the slow command list (``:3119``/``:2919``)."""
-        if options.fast:
+        """Build a fast save or the slow command list (``:3119``/``:2919``).
+
+        A family without a ``*-restore`` tool (arp/eb) falls back to the
+        slow command list even under ``--fast`` (Perl ``:773``).  The
+        escaping mode stays ``options.fast``: the oracle formats values at
+        parse time with the global ``$option{fast}``, so an arp/eb fallback
+        under the default fast mode still double-quotes.
+        """
+        use_fast = options.fast and "tables-restore" in domain_info.tools
+        if use_fast:
             return Rendered(save=rules_to_save(domain, domain_info, options))
-        return Rendered(
-            commands=self._render_slow(domain, domain_info, options)
-        )
+        return self._render_slow(domain, domain_info, options)
 
     def _render_slow(
         self, domain: str, domain_info: DomainInfo, options: Options
-    ) -> list[Command]:
+    ) -> Rendered:
         """Build the ordered ``-P/-F/-X/-N/-A`` command list (Perl ``:2919``).
 
         The execution-free half of ``execute_slow``: the table-walk commands
         are guarded (``$status ||=``); the ``eb`` atomic-init/atomic-commit
         framing is unguarded.  For ``eb`` the per-table atomic-file tempfiles
-        are created here (as the oracle does, even under ``--noexec``) and kept
-        on :attr:`DomainInfo.ebt_current`; their random names are normalized by
-        the test harness.
+        are created here (as the oracle does, even under ``--noexec``) and
+        carried on :attr:`Rendered.resources` -- their random names (the one
+        nondeterminism in render, normalized by the test harness) are
+        embedded in the commands, so the files must live until commit.
         """
         commands: list[Command] = []
         domain_cmd = domain_info.tools["tables"]
+        ebt_current: dict[str, IO[bytes]] = {}
 
         if domain == "eb":
             for eb_table in EB_TABLES:
                 # Long-lived like the rollback snapshots in domains.py: the
                 # tempfile must outlive this call (its name is in the
-                # commands) and auto-unlinks when DomainInfo is dropped.
+                # commands) and auto-unlinks when the Rendered is dropped.
                 current = tempfile.NamedTemporaryFile(  # noqa: SIM115
                     prefix="ferm."
                 )
-                domain_info.ebt_current[eb_table] = current
+                ebt_current[eb_table] = current
                 name = current.name
                 commands.append(
                     Command(
@@ -397,7 +425,7 @@ class IptablesBackend(Backend):
         for table, table_info in domain_info.tables.items():
             table_cmd = f"{domain_cmd} -t {table}"
             if domain == "eb":
-                tablefile = domain_info.ebt_current[table].name
+                tablefile = ebt_current[table].name
                 table_cmd = f"{table_cmd} --atomic-file {tablefile}"
 
             # reset chain policies
@@ -440,19 +468,20 @@ class IptablesBackend(Backend):
                 else:
                     commands.append(Command(f"{table_cmd} -N {chain}"))
 
-            # dump rules
+            # dump rules (escaped with the GLOBAL fast mode, see render)
             for chain, chain_info in table_info.chains.items():
                 chain_cmd = f"{table_cmd} -A {chain}"
                 for rule in chain_info.rules:
                     commands.append(
                         Command(
-                            chain_cmd + format_rule(domain, rule, fast=False)
+                            chain_cmd
+                            + format_rule(domain, rule, fast=options.fast)
                         )
                     )
 
         if domain == "eb":
             for eb_table in EB_TABLES:
-                name = domain_info.ebt_current[eb_table].name
+                name = ebt_current[eb_table].name
                 commands.append(
                     Command(
                         f"{domain_cmd} -t {eb_table} "
@@ -461,7 +490,9 @@ class IptablesBackend(Backend):
                     )
                 )
 
-        return commands
+        return Rendered(
+            commands=commands, resources=list(ebt_current.values())
+        )
 
     def commit(
         self,
@@ -474,8 +505,13 @@ class IptablesBackend(Backend):
         emit_line: LineEmitter,
         restore: RestoreDomain,
     ) -> int | None:
-        """Emit and run a rendered ruleset (Perl ``:3119``/``:2919``)."""
-        if options.fast:
+        """Emit and run a rendered ruleset (Perl ``:3119``/``:2919``).
+
+        Dispatches on the shape of ``rendered`` (a save text vs. a command
+        list), so the arp/eb slow fallback :meth:`render` chose is honoured
+        without re-deriving it from ``options``.
+        """
+        if rendered.save is not None:
             return self._commit_fast(
                 domain_info,
                 rendered.save,
@@ -521,7 +557,7 @@ class IptablesBackend(Backend):
         :class:`FermError` to a non-zero status, as the oracle's ``eval`` does.
         """
         if save is None:
-            raise _die()
+            raise internal_error()
 
         if options.lines:
             path = domain_info.tools["tables-restore"]

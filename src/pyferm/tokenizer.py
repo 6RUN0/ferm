@@ -18,11 +18,13 @@ and -- after variable expansion injects them -- deferred values, so the
 from __future__ import annotations
 
 import re
+import subprocess  # pipe includes: '@include "program|"' reads its stdout
 import sys
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO, TypeAlias
+from typing import IO, TypeAlias
 
 from pyferm.errors import FermError, error, set_error_context
 from pyferm.values import Deferred
@@ -48,12 +50,18 @@ class Script:
     """
 
     filename: str
-    handle: TextIO | None
+    handle: IO[str] | None
     line: int = 0
     past_tokens: list[list[object]] = field(default_factory=list)
-    tokens: list[Token] = field(default_factory=list)
+    #: A deque, not a list: Perl's shift/unshift are O(1) and the parser
+    #: replays whole captured blocks through the queue (``_replay_array``/
+    #: ``_call_function``), where ``list.pop(0)`` would be quadratic.
+    tokens: deque[Token] = field(default_factory=deque)
     parent: Script | None = None
     base_level: int | None = None
+    #: The child of a pipe include (``'cmd|'``); the parser checks its exit
+    #: status on close, as Perl's ``close`` does for a piped handle.
+    process: subprocess.Popen[str] | None = None
 
 
 # The lexer pattern, copied verbatim from Perl (``:997``): quoted strings,
@@ -95,12 +103,31 @@ def open_script(filename: str, parent: Script | None) -> Script:
             )
         node = node.parent
 
-    handle: TextIO
+    handle: IO[str]
+    process: subprocess.Popen[str] | None = None
     if filename == "-":
         # Only allowed for the command-line argument, not @includes (those
         # are filtered by collect_filenames); label it for error messages.
         handle = sys.stdin
         filename = "<stdin>"
+    elif filename.endswith("|"):
+        # Perl's two-argument open runs a trailing-pipe filename through
+        # the shell and reads its stdout ('@include "program|"').
+        try:
+            # The shell invocation is the oracle's semantics: the filename
+            # comes from the root-owned config, exactly as in Perl.
+            process = subprocess.Popen(
+                filename[:-1],
+                shell=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            raise FermError(
+                f"Failed to open {filename}: {exc.strerror}"
+            ) from exc
+        assert process.stdout is not None
+        handle = process.stdout
     else:
         try:
             # The handle is read lazily and closed later by the parser, so
@@ -111,46 +138,65 @@ def open_script(filename: str, parent: Script | None) -> Script:
                 f"Failed to open {filename}: {exc.strerror}"
             ) from exc
 
-    return Script(filename=filename, handle=handle, parent=parent)
+    return Script(
+        filename=filename, handle=handle, parent=parent, process=process
+    )
 
 
 class Tokenizer:
     """The lazy token reader over a stack of :class:`Script` files."""
 
-    def __init__(self, script: Script) -> None:
-        """Start lexing ``script`` and register it for error reporting."""
+    def __init__(self, script: Script | None) -> None:
+        """Start lexing ``script`` and register it for error reporting.
+
+        ``None`` builds a script-less tokenizer for evaluating ``--def``
+        values: Perl runs those inside ``GetOptions`` while the global
+        ``$script`` is still undef, so any built-in that reaches the script
+        there aborts the run.
+        """
         self._script = script
         set_error_context(script)
 
     @property
     def script(self) -> Script:
         """The script currently being lexed (Perl's global ``$script``)."""
-        return self._script
+        script = self._script
+        if script is None:
+            # the oracle dies dereferencing the undef $script
+            raise FermError(
+                "script context not available while evaluating --def"
+            )
+        return script
 
     @script.setter
     def script(self, value: Script) -> None:
         self._script = value
         set_error_context(value)
 
+    @property
+    def script_if_any(self) -> Script | None:
+        """The current script, or ``None`` in ``--def`` evaluation."""
+        return self._script
+
     def open_script(self, filename: str) -> Script:
         """Descend into ``filename`` as a sub-script of the current one."""
         self.script = open_script(filename, self._script)
-        return self._script
+        return self.script
 
     def prepare_tokens(self) -> bool:
         """Fill the queue from the input until it is non-empty (``:1014``).
 
         Returns ``False`` at end of file (Perl's bare ``return``).
         """
-        tokens = self._script.tokens
+        tokens = self.script.tokens
         while len(tokens) == 0:
-            handle = self._script.handle
+            handle = self.script.handle
             if handle is None:
                 return False
             line = handle.readline()
             if line == "":
                 return False
-            tokens.append(make_line_token(self._script.line + 1))
+            tokens.append(make_line_token(self.script.line + 1))
             # the next parser stage eats the line sentinel
             tokens.extend(tokenize_string(line))
         return True
@@ -163,22 +209,22 @@ class Tokenizer:
         caller's drain loop.
         """
         if isinstance(token, Line):
-            self._script.line = token.number
+            self.script.line = token.number
             return None
         return token
 
     def handle_special_tokens(self) -> None:
         """Drop leading sentinels; stop at a deferred token (``:1044``)."""
-        tokens = self._script.tokens
+        tokens = self.script.tokens
         while tokens and not isinstance(tokens[0], str):
             if self.handle_special_token(tokens[0]) is None:
-                tokens.pop(0)
+                tokens.popleft()
             else:
                 break
 
     def prepare_normal_tokens(self) -> bool:
         """:meth:`prepare_tokens` plus sentinel handling (``:1056``)."""
-        tokens = self._script.tokens
+        tokens = self.script.tokens
         while True:
             self.handle_special_tokens()
             if len(tokens) > 0:
@@ -190,21 +236,21 @@ class Tokenizer:
         """Return the next token without consuming it (``:1158``)."""
         if not self.prepare_normal_tokens():
             return None
-        return self._script.tokens[0]
+        return self.script.tokens[0]
 
     def next_raw_token(self) -> Token | None:
         """Consume the next token, sentinels included (``:1164``)."""
         if not self.prepare_tokens():
             return None
-        return self._script.tokens.pop(0)
+        return self.script.tokens.popleft()
 
     def next_token(self) -> Token | None:
         """Consume a real token, updating ``past_tokens`` (``:1170``)."""
         if not self.prepare_normal_tokens():
             return None
-        token = self._script.tokens.pop(0)
+        token = self.script.tokens.popleft()
 
-        past = self._script.past_tokens
+        past = self.script.past_tokens
         if past:
             last_group = past[-1]
             prev_token = last_group[-1] if last_group else None

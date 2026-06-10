@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pyferm.errors import FermError
+from pyferm.errors import internal_error
 from pyferm.modules import ModuleDef, Registry
 from pyferm.scope import Option, Rule, SourcePosition
 from pyferm.values import Value, realize_deferred
@@ -59,11 +59,6 @@ _BUILTIN_CHAINS = (
 )
 
 
-def _die() -> FermError:
-    """Exception for a Perl bare ``die`` (unreachable on valid input)."""
-    return FermError("internal error: undefined or empty target")
-
-
 def is_netfilter_core_target(target: str | None) -> bool:
     """Whether ``target`` is a built-in netfilter target (Perl ``:1766``).
 
@@ -72,7 +67,7 @@ def is_netfilter_core_target(target: str | None) -> bool:
     returns a plain ``bool``.
     """
     if target is None or target == "":
-        raise _die()
+        raise internal_error("undefined or empty target")
     return target in _CORE_TARGETS
 
 
@@ -88,7 +83,7 @@ def is_netfilter_module_target(
     Perl's ``if (my $defs = ...)``.
     """
     if target is None or target == "":
-        raise _die()
+        raise internal_error("undefined or empty target")
     if domain_family is None:
         return None
     return target_defs.get(domain_family, {}).get(target)

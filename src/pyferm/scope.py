@@ -58,9 +58,10 @@ class Option:
     by the option ``name`` alone (design §"Контракт правила", sanctioned
     deviation #2, a seed for the Phase 2 nft backend).  ``kind`` is derived
     from ``name`` in :func:`append_option`; ``module`` is the name of the
-    module that introduced a sub-option (from ``merge_keywords``), supplied by
-    the parser call-site and ``None`` otherwise.  Phase 1 has no consumer for
-    either field (iptables emission is positional and flat).
+    module that introduced a sub-option's keyword, recorded by
+    :func:`merge_keywords` on :attr:`Rule.keyword_module` and passed in by
+    ``parse_option`` (``None`` for non-module options).  Phase 1 has no
+    consumer for either field (iptables emission is positional and flat).
 
     :attr:`chosen` is the deferred analog of Perl's formatted slot
     ``$option->[2]`` (``:1888``): :func:`pyferm.rules.unfold_rule` records the
@@ -88,6 +89,10 @@ class Rule:
 
     cow: set[str] = field(default_factory=set)
     keywords: dict[str, Keyword] = field(default_factory=dict)
+    #: Which module's ``merge_keywords`` introduced each keyword (the
+    #: parse-time link the oracle discards, kept for :attr:`Option.module`);
+    #: travels with ``keywords`` under the same copy-on-write guard.
+    keyword_module: dict[str, str] = field(default_factory=dict)
     match: set[str] = field(default_factory=set)
     options: list[Option] = field(default_factory=list)
     domain: Value = None
@@ -114,6 +119,7 @@ def copy_on_write(rule: Rule, key: str) -> None:
         return
     if key == "keywords":
         rule.keywords = dict(rule.keywords)
+        rule.keyword_module = dict(rule.keyword_module)
     rule.cow.discard(key)
 
 
@@ -131,6 +137,7 @@ def new_level(prev: Rule | None) -> Rule:
     rule = Rule()
     rule.cow = {"keywords"}
     rule.keywords = prev.keywords
+    rule.keyword_module = prev.keyword_module
     rule.match = set(prev.match)
     rule.options = list(prev.options)
     rule.domain = prev.domain
@@ -145,14 +152,22 @@ def new_level(prev: Rule | None) -> Rule:
     return rule
 
 
-def merge_keywords(rule: Rule, keywords: dict[str, Keyword]) -> None:
+def merge_keywords(
+    rule: Rule, keywords: dict[str, Keyword], module: str | None = None
+) -> None:
     """Add a module's keywords to the rule (Perl ``:2062``).
 
     Detaches the shared ``keywords`` dict first so the parent level is not
     affected, then merges ``keywords`` in (later definitions win).
+    ``module`` is the introducing module's name; it is recorded per keyword
+    so ``parse_option`` can fill :attr:`Option.module` (the parse-time link
+    the oracle discards -- design, sanctioned deviation #2).
     """
     copy_on_write(rule, "keywords")
     rule.keywords.update(keywords)
+    if module is not None:
+        for name in keywords:
+            rule.keyword_module[name] = module
 
 
 #: Map an option ``name`` to its synthesized :attr:`Option.kind` (design

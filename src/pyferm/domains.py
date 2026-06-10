@@ -66,18 +66,18 @@ SaveReader = Callable[[str], "str | None"]
 class ChainInfo:
     """ferm state for one chain (``%domains`` ``chains{...}``, ``:77-78``).
 
-    :attr:`preserve` is a faithful model of Perl's dual-use ``{preserve}``
-    slot: absent (``None``) means the chain is not preserved; ``True`` is the
-    flag set by ``@preserve``/``resolve_dynamic_preserve`` (Perl ``preserve =>
-    1``, ``:2420``/``:3040``); a ``str`` is the extracted previous-ruleset text
-    that ``rules_to_save`` resolves it to (``:3073``) and ``table_to_save``
-    prepends (``:3003``).  Perl distinguishes the three via ``exists``.
+    :attr:`preserve` models Perl's ``{preserve}`` flag: absent (``None``)
+    means the chain is not preserved; ``True`` is set by ``@preserve``/
+    ``resolve_dynamic_preserve`` (Perl ``preserve => 1``,
+    ``:2420``/``:3040``).  The oracle additionally overwrites the slot with
+    the extracted previous-ruleset text (``:3073``); this port keeps that
+    text local to ``rules_to_save`` so render does not mutate domain state.
     """
 
     builtin: bool = False
     policy: str | None = None
     rules: list[RenderedRule] = field(default_factory=list)
-    preserve: str | bool | None = None
+    preserve: bool | None = None
 
 
 @dataclass
@@ -101,9 +101,10 @@ class DomainInfo:
     ``tools`` maps a bare tool key (``tables``/``tables-save``/
     ``tables-restore``) to its resolved path; ``previous`` is the prior save
     text kept for rollback; ``ebt_previous`` holds the per-table atomic-save
-    tempfiles for rollback and ``ebt_current`` the per-table atomic-file
-    tempfiles built while installing the new ruleset (both ``eb`` only,
-    ``:2929``/``:969``); ``enabled`` is set once a rule uses this family.
+    tempfiles for rollback (``eb`` only, ``:969``); the atomic files for the
+    *new* ruleset (``:2929``) live on the backend's ``Rendered.resources``,
+    not here, so re-rendering cannot orphan them; ``enabled`` is set once a
+    rule uses this family.
     """
 
     initialized: bool = False
@@ -111,7 +112,6 @@ class DomainInfo:
     tools: dict[str, str] = field(default_factory=dict)
     previous: str | None = None
     ebt_previous: dict[str, IO[bytes]] = field(default_factory=dict)
-    ebt_current: dict[str, IO[bytes]] = field(default_factory=dict)
     tables: dict[str, TableInfo] = field(default_factory=dict)
 
 

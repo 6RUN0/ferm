@@ -216,18 +216,21 @@ def set_resolver_provider(provider: ResolverProvider | None) -> None:
     """Install the resolver factory the CLI builds from its options.
 
     Stands in for Perl's ``pick_resolver`` reading the ``%option``/``$script``
-    globals; :func:`resolve` calls it once per top-level invocation.
+    globals; :func:`resolve` calls it once per ``@resolve`` evaluation.
     """
     global _provider
     _provider = provider
 
 
 def pick_resolver(test: bool, script_path: str) -> Resolver:
-    """Choose a resolver for one run (Perl ``pick_resolver``, ``:1286``).
+    """Choose a resolver for one ``@resolve`` (Perl ``pick_resolver``).
 
     Returns the live :class:`SystemResolver` normally, or a
     :class:`ZonefileResolver` reading the ``zonefile`` next to ``script_path``
     under ``--test`` (the directory rule is Perl's ``m,^(.*/),`` or ``./``).
+    Building a fresh resolver -- and re-reading the zonefile -- on every call
+    is oracle behavior (``:1286-1304``), not an accident: the file is looked
+    up relative to the *current* script, which changes across ``@include``.
     """
     if not test:
         return SystemResolver()

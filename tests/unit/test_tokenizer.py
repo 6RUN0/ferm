@@ -8,6 +8,7 @@ at a deferred queue token and ``@include`` cycle detection.
 from __future__ import annotations
 
 import io
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -128,7 +129,7 @@ def test_handle_special_tokens_stops_at_deferred() -> None:
     script = Script(
         filename="t.ferm",
         handle=io.StringIO(""),
-        tokens=[Line(5), deferred, "x"],
+        tokens=deque([Line(5), deferred, "x"]),
     )
     tk = Tokenizer(script)
     assert tk.peek_token() is deferred
@@ -153,3 +154,14 @@ def test_open_script_reads_a_real_file(tmp_path: Path) -> None:
 def test_open_script_missing_file_errors() -> None:
     with pytest.raises(FermError, match="Failed to open"):
         open_script("/no/such/ferm/file.ferm", None)
+
+
+def test_open_script_pipe_runs_command() -> None:
+    # Perl's two-argument open executes a trailing-pipe filename
+    # ('cmd|') and reads its stdout -- the documented ferm feature
+    # "@include 'program|'" depends on it.
+    script = open_script("echo 'chain INPUT ACCEPT;'|", None)
+    assert script.handle is not None
+    assert script.handle.read() == "chain INPUT ACCEPT;\n"
+    assert script.process is not None
+    assert script.process.wait() == 0

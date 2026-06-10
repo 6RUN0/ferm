@@ -58,14 +58,22 @@ class Command:
 class Rendered:
     """The output of :meth:`Backend.render`: a fast save-text or slow commands.
 
-    Exactly one shape is populated, selected by :attr:`Options.fast`: ``save``
-    is the ``*-restore`` input built by ``rules_to_save`` (``:3046``);
-    ``commands`` is the ordered ``-P/-F/-X/-N/-A`` sequence built from
-    ``execute_slow`` (``:2919``) with execution split off.
+    Exactly one shape is populated; ``render`` selects it from
+    :attr:`Options.fast` *and* the family's tooling (arp/eb own no
+    ``*-restore``, so they fall back to commands), and ``commit`` dispatches
+    on the populated shape.  ``save`` is the ``*-restore`` input built by
+    ``rules_to_save`` (``:3046``); ``commands`` is the ordered
+    ``-P/-F/-X/-N/-A`` sequence built from ``execute_slow`` (``:2919``) with
+    execution split off.
     """
 
     save: str | None = None
     commands: list[Command] = field(default_factory=list)
+    #: Artifacts the commands reference that must stay alive until commit
+    #: (the eb atomic tempfiles auto-unlink when dropped).  Owned here, not
+    #: on ``DomainInfo``, so re-rendering cannot orphan an earlier
+    #: ``Rendered``'s files.
+    resources: list[object] = field(default_factory=list)
 
 
 class Backend(ABC):
