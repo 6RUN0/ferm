@@ -14,7 +14,7 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
+  reference:
     runs-on: ubuntu-latest
     steps:
       - id: checkout
@@ -27,5 +27,51 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libnet-dns-resolver-mock-perl
 
-      - name: Runt unit tests
+      - name: Run reference tests
         run: make -j"$(nproc)" -C reference check
+
+  port:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The requires-python floor and the newest stable interpreter.
+        python: ['3.11', '3.14']
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Run the gates (lint, typecheck, tests under coverage)
+        run: uv run nox -s lint typecheck coverage
+
+  golden-oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install the Perl oracle dependency
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libnet-dns-resolver-mock-perl
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Validate the golden harness against the Perl oracle
+        run: uv run nox -s golden_oracle
