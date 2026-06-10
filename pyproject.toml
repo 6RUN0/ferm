@@ -53,13 +53,55 @@ select = [
   "SIM",              # simplify
   "PTH",              # use pathlib
   "RUF",              # ruff-specific
+  "PIE",              # misc lints
+  "RET",              # return consistency
+  "TID",              # tidy imports
+  "FURB",             # refurb modernisation
+  "TRY",              # exception hygiene
+  "ARG",              # unused arguments
+  "PERF",             # performance anti-patterns
+  "BLE",              # blind except
+  "TC",               # typing-only imports
+  "SLF",              # private-member access
+  "ICN",              # import naming conventions
+  "PGH",              # pygrep (blanket noqa / type: ignore)
+  "PL",               # pylint (PLE/PLW/PLC/PLR)
+  "DTZ",              # naive datetime
+  "G",                # logging format
+  "LOG",              # logging hygiene
+]
+# D213 (summary on the second line) is the project's docstring shape;
+# it is mutually exclusive with D212, which the pep257 convention
+# enables -- hence the explicit extend-select + D212 ignore.
+extend-select = ["D213"]
+ignore = [
+  "D212",    # we use D213 (summary on second line); see extend-select
+  "TRY003",  # long messages in raise FermError(...) ARE the product's
+             # error text, ported verbatim from the Perl die strings;
+             # a custom exception class per message is over-engineering
+  "PLC0415", # function-local imports are deliberate: signal/termios
+             # mirror the oracle's lazy `require POSIX`, and tests
+             # import the unit under test inside the test function
+  # The complexity quartet is inherited: enter()/handle() port the
+  # oracle's ~770-line recursive-descent monolith verbatim (a sanctioned
+  # phase 1 decision); splitting it is the Phase 7 AST refactor, and the
+  # golden suite guards the behaviour until then.
+  "PLR0911", # too many return statements
+  "PLR0912", # too many branches
+  "PLR0913", # too many arguments
+  "PLR0915", # too many statements
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
 
+[tool.ruff.lint.isort]
+known-first-party = ["pyferm"]
+
 [tool.ruff.lint.extend-per-file-ignores]
-"tests/*" = ["D"]
+# Test-method names are their own documentation (D); asserting against
+# literal expected values is the point of a test (PLR2004).
+"tests/*" = ["D", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -67,13 +109,73 @@ files = ["src", "tests"]
 strict = true
 warn_unreachable = true
 
+[tool.pyright]
+# Pin the analysis scope: without it pyright walks the whole worktree
+# (including throwaway scratch files) and the gate stops being stable.
+include = ["src", "tests", "noxfile.py"]
+pythonVersion = "3.11"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# --strict-config/--strict-markers turn config typos and unknown marks
+# into errors instead of silently-ignored decoration.
+addopts = "-ra --strict-config --strict-markers"
+xfail_strict = true
 
 [tool.coverage.run]
 source = ["pyferm"]
 branch = true
+
+[tool.coverage.report]
+show_missing = true
+# No-regression floor just under the measured baseline (84% on
+# 2026-06-10); ratchet it up as the port's error paths gain tests.
+fail_under = 82
+exclude_also = [
+    # Type-only branches never execute at runtime.
+    "if TYPE_CHECKING:",
+    # Escape hatch for paths a test cannot exercise (documented per site).
+    "pragma: no cover",
+]
+
+[tool.bandit]
+# ferm's job is to run iptables and admin-authored shell commands as
+# root, faithfully porting Perl's system()/backticks/pipe-opens -- the
+# subprocess family of findings describes the product, not a defect.
+# New findings outside this list still fail the audit session.
+skips = [
+    "B101", # assert: dev-time invariants; ferm is never run with -O
+    "B105", # hardcoded-password heuristic fires on the lexer's
+            # `token` variables (a parser token is not a credential)
+    "B404", # import subprocess
+    "B602", # shell=True -- the Perl system()/backtick port
+    "B603", # subprocess without shell (tool paths from find_tool)
+    "B604", # shell=True via the injected execute callable
+    "B607", # partial executable path: --test mode uses bare tool
+            # names by design (find_tool returns `iptables` verbatim)
+]
+
+[tool.codespell]
+# reference/ is the frozen Perl oracle: never spell-check upstream.
+skip = ".git,.venv,.nox,uv.lock,reference,htmlcov,build,dist,*.pyc"
+# netfilter vocabulary codespell mis-flags:
+# * iif -- nft "input interface" expression
+# * rsource -- iptables `recent --rsource`
+# * ect -- ECN ECT codepoint (ecn-ip-ect)
+ignore-words-list = "iif,rsource,ect"
+
+[tool.deptry]
+# The import name differs from the distribution name (ferm -> pyferm).
+known_first_party = ["pyferm"]
+# noxfile.py imports its dev-group tooling by design.
+extend_exclude = ["reference", "noxfile\\.py"]
+
+[tool.vulture]
+# Clean at 80 today; the hook is a no-regression gate against dead code
+# creeping in during the port (min_confidence below 80 drowns in the
+# dataclass fields the rule-structure contract carries for Phase 2).
+min_confidence = 80
+paths = ["src/pyferm"]
 
 [dependency-groups]
 dev = [
@@ -82,11 +184,12 @@ dev = [
 ]
 lint = [
     "bandit[toml]>=1.9.4",
-    "docformatter>=1.7.8",
+    "deptry>=0.23.1",
     "mypy>=2.1.0",
     "pip-audit>=2.10.0",
     "pyright>=1.1.410",
     "ruff>=0.15.16",
+    "vulture>=2.14",
 ]
 test = [
     "pytest>=9.0.3",
