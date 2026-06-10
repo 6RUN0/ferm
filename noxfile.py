@@ -16,7 +16,10 @@ Examples::
     uv run nox -s typecheck          # mypy + pyright
     uv run nox -s coverage           # tests under coverage
     uv run nox -s audit              # bandit + pip-audit
+    uv run nox -s workflows          # actionlint + zizmor on CI configs
 """
+
+import shutil
 
 import nox
 
@@ -98,7 +101,28 @@ def audit(session: nox.Session) -> None:
 
 
 @nox.session
+def workflows(session: nox.Session) -> None:
+    """
+    Lint the GitHub Actions workflows (actionlint + zizmor).
+
+    Both linters are system binaries (not Python packages), so each one
+    is skipped with a notice when absent from PATH; the session fails
+    only on real findings.
+    """
+    available = [
+        tool for tool in ("actionlint", "zizmor") if shutil.which(tool)
+    ]
+    for tool in available:
+        # actionlint discovers .github/workflows on its own; zizmor
+        # needs the path spelled out.
+        args = [tool] if tool == "actionlint" else [tool, ".github/workflows"]
+        session.run(*args, external=True)
+    if not available:
+        session.skip("neither actionlint nor zizmor is installed")
+
+
+@nox.session
 def preflight(session: nox.Session) -> None:
     """Queue everything a push should pass: lint, typecheck, tests."""
-    for name in ("lint", "typecheck", "tests", "golden_oracle"):
+    for name in ("lint", "typecheck", "tests", "golden_oracle", "workflows"):
         session.notify(name)
