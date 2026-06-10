@@ -46,6 +46,7 @@ repos:
             conftest\.py$|
             .*__init__\.py$|
             golden/(conftest|runner|normalize|sortpl)\.py$|
+            corpus/canon\.py$|
             property/oracle\.py$
           )
 
