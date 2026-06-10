@@ -1,14 +1,16 @@
-.dotest
+# editor backups and VCS-tool droppings
 *~
 \#*#
 .#*
 .stgit*
+
+# build artifacts of the Perl reference (cd reference && make all/check)
 build
 reference/doc/ferm.1
 reference/doc/ferm.html
 reference/doc/ferm.txt
 reference/doc/import-ferm.1
-ferm.service
+reference/ferm.service
 *.tmp
 
 # Python port (uv-managed environment, tool caches, build artifacts)
@@ -20,6 +22,7 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 *.egg-info/
 dist/
@@ -30,3 +33,4 @@ dist/
 .claude/
 CLAUDE.md
 docs/superpowers/
+.mcp.json

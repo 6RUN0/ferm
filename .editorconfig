@@ -1,0 +1,30 @@
+# https://editorconfig.org -- editor defaults matching the project style:
+# Python (ruff: 4 spaces, 79 columns), Perl reference (4 spaces),
+# Makefiles (tabs), YAML (2 spaces).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.py]
+max_line_length = 79
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+[*.md]
+trim_trailing_whitespace = false
+
+# The Perl oracle and its golden files are frozen: editors must never
+# reformat them, or the reference diverges from upstream.
+[reference/**]
+trim_trailing_whitespace = false
+insert_final_newline = false

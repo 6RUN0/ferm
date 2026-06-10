@@ -1,0 +1,17 @@
+# Normalize line endings; ferm is Linux-only, the repo is LF throughout.
+* text=auto eol=lf
+
+# Better hunk headers for the two languages of the repo.
+*.py diff=python
+*.pl diff=perl
+*.pm diff=perl
+*.pod diff=perl
+/reference/src/ferm diff=perl
+/reference/src/import-ferm diff=perl
+
+# The Perl oracle is frozen reference material: keep it out of language
+# statistics and collapse it in web diffs.
+/reference/** linguist-vendored
+
+# Lockfile is machine-written.
+uv.lock linguist-generated=true
