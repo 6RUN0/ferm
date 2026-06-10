@@ -1,0 +1,134 @@
+# -*- shell-script -*-
+#
+#  Configuration file for ferm(1).
+#
+
+@def $DEV_PRIVATE = (lan lan.10 lan.20 lan.30);
+@def $DEV_WORLD0 = wan;
+@def $DEV_WORLD1 = tun0;
+@def $DEV_WORLD2 = tun1;
+@def $DEV_WORLD3 = tun2;
+
+@def $NET_PRIVATE0 = 192.168.0.0/24;
+@def $NET_PRIVATE1 = 192.168.10.0/24;
+@def $NET_PRIVATE2 = 192.168.20.0/24;
+@def $NET_PRIVATE3 = 192.168.30.0/24;
+
+table filter {
+    chain INPUT {
+        policy DROP;
+
+        # connection tracking
+        mod state state INVALID DROP;
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+
+        # allow lo packets
+        interface lo ACCEPT;
+
+        # respond to ping
+        proto icmp ACCEPT; 
+
+        # allow IPsec
+        proto udp dport 500 ACCEPT;
+        proto (esp ah) ACCEPT;
+
+        # allow SSH connections
+        proto tcp dport ssh ACCEPT;
+
+        # allow dhcp-server (lan dhcp client -> local dhcp server)
+        interface $DEV_PRIVATE proto udp dport 67 ACCEPT;
+
+        # allow dns-server (lan dns client -> local dns server)
+        interface $DEV_PRIVATE proto (udp tcp) dport domain ACCEPT;
+
+        # allow unifi stuff only on internal lan (lan)
+        # and on lo (see above)
+        # unifi web admin UI connections
+        interface lan proto tcp dport 8443 ACCEPT;
+        # unifi UAP connections
+        interface lan proto tcp dport 8080 ACCEPT;
+        interface lan proto tcp dport 8081 ACCEPT;
+        # unifi http portal redirect
+        interface lan proto tcp dport 8880 ACCEPT;
+        # unifi https portal redirect
+        interface lan proto tcp dport 8843 ACCEPT;
+        # STUN packets from unifi UAPs
+        interface lan proto udp dport 3478 ACCEPT;
+        # unifi controller l2 discoverable
+        interface lan proto udp dport 1900 ACCEPT;
+        # unifi remote syslog
+        interface lan proto udp dport 5514 ACCEPT;
+        # unifi device discovery
+        interface lan proto udp dport 10001 ACCEPT;
+
+        # silently drop/reject some common packets, so they don't fill the logs
+        # no microsoft / samba here
+        proto tcp dport (137 139 445) REJECT;
+        proto udp dport (137 138) REJECT;
+
+        # no NAT-PMP
+        proto udp dport 5351 REJECT;
+
+        # dropbox LAN sync
+        proto udp dport 17500 DROP;
+
+        interface $DEV_WORLD0 mod limit limit 10/min limit-burst 30 LOG log-prefix "INPUT-dropped W: ";
+        interface $DEV_PRIVATE mod limit limit 10/min limit-burst 30 LOG log-prefix "INPUT-dropped P: ";
+    }
+    chain OUTPUT {
+        policy ACCEPT;
+
+        # connection tracking
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+    }
+    chain FORWARD {
+        policy DROP;
+
+        # connection tracking
+        mod state state INVALID DROP;
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+
+        # connections from the internal net to the internet or to other
+        # internal nets are allowed
+        interface $DEV_PRIVATE ACCEPT;
+
+        mod limit limit 10/min limit-burst 30 LOG log-prefix "FORWARD-dropped: ";
+    }
+}
+
+table mangle {
+    chain PREROUTING {
+        # tunnel rules
+
+        # better interactive experience for remote maint without vpn:
+        proto tcp dport 22 MARK set-mark 1;
+        proto tcp dport 3389 MARK set-mark 1;
+
+        # smtp / submission is blocked on cyberghost vpn, don't use vpn:
+        proto tcp dport 25 MARK set-mark 1;
+        proto tcp dport 465 MARK set-mark 1;
+        proto tcp dport 587 MARK set-mark 1;
+
+        # use no vpn on (untagged) lan:
+        interface lan MARK set-mark 1;
+
+        # if we marked the packet above, we're finished:
+        mod mark mark ! 0 ACCEPT;
+
+        # use vpn on vlans, mark the packet depending on the interface:
+        interface lan.10 MARK set-mark 2;
+        interface lan.20 MARK set-mark 3;
+        interface lan.30 MARK set-mark 4;
+    }
+}
+
+table nat {
+    chain POSTROUTING {
+        policy ACCEPT;
+        outerface $DEV_WORLD0 MASQUERADE;
+        outerface $DEV_WORLD1 MASQUERADE;
+        outerface $DEV_WORLD2 MASQUERADE;
+        outerface $DEV_WORLD3 MASQUERADE;
+    }
+}
+

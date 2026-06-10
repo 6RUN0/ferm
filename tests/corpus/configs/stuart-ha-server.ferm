@@ -1,0 +1,84 @@
+# ferm firewall rules
+# http://ferm.foo-projects.org
+
+# Chain policies
+domain (ip ip6) {
+    table filter {
+        chain (INPUT FORWARD) policy DROP;
+        chain OUTPUT policy ACCEPT;
+    }
+}
+
+# loopback
+domain (ip ip6) table filter {
+    chain INPUT interface lo ACCEPT;
+    chain OUTPUT outerface lo ACCEPT;
+}
+
+# ipv6
+domain ip table filter chain (INPUT OUTPUT) protocol ipv6 ACCEPT;
+
+# icmp (kernel does rate-limiting)
+domain (ip ip6) table filter chain (INPUT OUTPUT) protocol icmp ACCEPT;
+
+# invalid
+domain (ip ip6) table filter chain INPUT mod state state INVALID DROP;
+
+# established/related connections
+domain (ip ip6) table filter chain (INPUT OUTPUT FORWARD) mod state state (ESTABLISHED RELATED) ACCEPT;
+
+# allow no more than 8 ssh attempts from a source ip in 5 minutes
+domain (ip) table filter chain INPUT {
+    protocol tcp dport (ssh 33322) @subchain {
+        mod recent name SSH {
+            set NOP;
+            update seconds 300 hitcount 8 @subchain {
+                LOG log-prefix "Blocked-ssh: " log-level warning;
+                DROP;
+            }
+        }
+        ACCEPT;
+    }
+}
+
+domain (ip) table filter chain INPUT protocol udp destination 224.0.0.56 ACCEPT;
+# Allow: Home Assistant (hass) Mqtt, Matrix, snapserver
+domain (ip) table filter chain INPUT protocol tcp dport (1883 8008 1704) source 192.168.0.0/16 ACCEPT;
+
+@def $DEV_WORLD = eth0;
+@def $DEV_CONTAINERS = lxcbr0;
+@def $HOST_STATIC = 192.168.0.16;
+@def $HOST_CONTAINERS = 10.0.3.1;
+@def $NET_CONTAINERS = "$HOST_CONTAINERS/24";
+
+domain (ip) table filter chain INPUT interface $DEV_CONTAINERS protocol udp dport (bootps) ACCEPT;
+# https://www.reddit.com/r/networking/comments/3w1jyp/dhclient_only_getting_halfway_through_dhcp_lease/
+table mangle chain POSTROUTING proto udp saddr $NET_CONTAINERS dport bootpc CHECKSUM checksum-fill;
+
+@def &FORWARD_TCP($proto, $world_port, $dest, $internal_port) = {
+    table filter chain FORWARD interface $DEV_WORLD outerface $DEV_CONTAINERS daddr $dest proto $proto dport $internal_port ACCEPT;
+    table nat chain PREROUTING interface $DEV_WORLD proto $proto dport $world_port DNAT to "$dest:$internal_port";
+}
+
+# https://openvz.org/Using_NAT_for_container_with_private_IPs
+#table nat chain POSTROUTING outerface $DEV_WORLD saddr $NET_CONTAINERS SNAT to $HOST_STATIC;
+# https://gist.github.com/EnigmaCurry/7895407
+table nat chain POSTROUTING daddr ! "$NET_CONTAINERS" saddr $NET_CONTAINERS MASQUERADE;
+table filter chain INPUT interface $DEV_CONTAINERS proto udp daddr $HOST_CONTAINERS dport (domain) ACCEPT;
+table filter chain FORWARD interface $DEV_CONTAINERS outerface $DEV_WORLD ACCEPT;
+
+&FORWARD_TCP(tcp, 8028, 10.0.3.28, 80);
+&FORWARD_TCP(tcp, 8448, 10.0.3.22, 8448);
+&FORWARD_TCP(tcp, 8008, 10.0.3.22, 8008);
+
+# FORWARD chain REJECT
+domain (ip ip6) table filter chain FORWARD {
+    mod limit limit 3/second limit-burst 10 LOG log-prefix "FORWARD-rejected: " log-level debug;
+    REJECT;
+}
+
+# log all other INPUT
+domain (ip ip6) table filter chain INPUT {
+    mod limit limit 3/second limit-burst 10 LOG log-prefix "INPUT-rejected: " log-level debug;
+    REJECT;
+}

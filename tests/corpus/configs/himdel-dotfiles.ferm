@@ -1,0 +1,74 @@
+# -*- shell-script -*-
+#
+#  Configuration file for ferm(1).
+#
+
+domain (ip ip6) {
+  table filter {
+    chain INPUT {
+      policy DROP;
+
+      # connection tracking
+      mod state state INVALID DROP;
+      mod state state (ESTABLISHED RELATED) ACCEPT;
+
+      # allow local packet
+      interface lo ACCEPT;
+
+      # respond to ping
+      proto icmp ACCEPT;
+
+      # allow IPsec
+      proto udp dport 500 ACCEPT;
+      @if @eq($DOMAIN, ip) {
+        proto (esp ah) ACCEPT;
+      } @else {
+        proto (esp) ACCEPT;
+      }
+
+      # allow ssh
+      proto tcp dport ssh ACCEPT;
+
+      # from local net
+      saddr (192.168.1.0/24 192.168.16.0/24 10.8.8.0/24) {
+        # http
+        proto tcp dport (http https) ACCEPT;
+
+        # samba
+        proto tcp dport (139 445) ACCEPT;
+        proto udp dport (137 138) ACCEPT;
+
+        # vnc
+        proto (tcp udp) dport 5900 ACCEPT;
+
+        # barrier/synergy
+        #proto (tcp udp) dport 24800 ACCEPT;
+
+        # pulseaudio
+        #proto tcp dport 4317 ACCEPT;
+
+        # wemo
+        #proto udp dport 54321 ACCEPT;
+
+        # miq
+        #proto tcp dport 3000 ACCEPT;
+      }
+    }
+    chain OUTPUT {
+      policy ACCEPT;
+
+      # connection tracking
+      #mod state state INVALID DROP;
+      mod state state (ESTABLISHED RELATED) ACCEPT;
+    }
+    chain FORWARD {
+      policy DROP;
+
+      # connection tracking
+      mod state state INVALID DROP;
+      mod state state (ESTABLISHED RELATED) ACCEPT;
+    }
+  }
+}
+
+# [corpus: @include removed] @include ferm.d/;

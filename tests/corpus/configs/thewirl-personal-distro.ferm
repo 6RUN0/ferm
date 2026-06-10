@@ -1,0 +1,59 @@
+
+# ferm firewall rules
+# http://ferm.foo-projects.org
+domain (ip ip6){
+  table filter {
+    chain INPUT {
+	policy DROP;
+	# connection tracking
+	mod state state INVALID DROP;
+	mod state state (ESTABLISHED RELATED) ACCEPT;
+	# allow local connections
+	interface lo ACCEPT;
+	# uncomment the following line to run an HTTPS service
+	# proto tcp dport (https) ACCEPT;
+	# Allow peer connections to the cjdns UDP tunnel
+	proto udp dport 40100 ACCEPT;
+	# Allow Bittorrent
+	# proto (tcp udp) dport 51413 ACCEPT;
+	# Make some services available to cjdns
+	interface cjdroute0{
+	  proto tcp dport (https) ACCEPT;
+	  # Allow Peer-To-Peer SIP connections
+	  proto udp dport (5060 7078 9078) ACCEPT;
+	}
+      # the rest is dropped by tfhe above policy
+    }
+    # outgoing connections are not limited
+    chain OUTPUT{
+      policy DROP;
+      proto tcp dport (ftp) ACCEPT;
+      proto (tcp udp) dport (7) ACCEPT;
+      proto (tcp udp) dport (ssh) ACCEPT;
+      proto tcp dport (smtp) ACCEPT;
+      proto tcp dport (whois) ACCEPT;
+      proto (tcp udp) dport (33434) ACCEPT;
+      proto tcp dport (http https) ACCEPT;
+      proto tcp dport (995 465) ACCEPT;
+      proto (tcp udp) dport (53) ACCEPT;
+      proto tcp dport (9050) ACCEPT;
+      proto tcp dport (9150) ACCEPT;
+      proto tcp dport (5222 5223 8010) ACCEPT;
+      proto udp dport (40100) ACCEPT;
+      proto udp dport (5060 7078 9078) ACCEPT;
+      proto udp dport 51413 ACCEPT;
+      outerface lo{
+        ACCEPT;
+      }
+    }
+  }
+}
+# established/related connections
+# domain (ip ip6) table filter chain (INPUT OUTPUT) mod state state (ESTABLISHED RELATED) ACCEPT;
+domain (ip ip6) table filter chain FORWARD ACCEPT;
+# log all other INPUT
+domain (ip ip6) table filter chain INPUT {
+    mod limit limit 3/min limit-burst 10 LOG log-prefix "INPUT-rejected: " log-level debug;
+    REJECT;
+}
+

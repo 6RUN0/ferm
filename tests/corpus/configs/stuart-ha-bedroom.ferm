@@ -1,0 +1,42 @@
+# ferm firewall rules
+# http://ferm.foo-projects.org
+
+# Chain policies
+domain (ip ip6) {
+    table filter {
+        chain (INPUT FORWARD) policy DROP;
+        chain OUTPUT policy ACCEPT;
+    }
+}
+
+# loopback
+domain (ip ip6) table filter {
+    chain INPUT interface lo ACCEPT;
+    chain OUTPUT outerface lo ACCEPT;
+}
+
+# ipv6
+domain ip table filter chain (INPUT OUTPUT) protocol ipv6 ACCEPT;
+
+# icmp (kernel does rate-limiting)
+domain (ip ip6) table filter chain (INPUT OUTPUT) protocol icmp ACCEPT;
+
+# invalid
+domain (ip ip6) table filter chain INPUT mod state state INVALID DROP;
+
+# established/related connections
+domain (ip ip6) table filter chain (INPUT OUTPUT) mod state state (ESTABLISHED RELATED) ACCEPT;
+
+domain (ip) table filter chain INPUT protocol tcp dport (ssh) source 192.168.0.0/25 ACCEPT;
+domain (ip) table filter chain INPUT protocol tcp dport (1883) source 192.168.0.0/26 ACCEPT;
+
+domain (ip) table filter chain INPUT protocol udp destination 224.0.0.56 ACCEPT;
+
+# FORWARD chain REJECT
+domain (ip ip6) table filter chain FORWARD REJECT;
+
+# log all other INPUT
+domain (ip ip6) table filter chain INPUT {
+    mod limit limit 3/min limit-burst 10 LOG log-prefix "INPUT-rejected: " log-level debug;
+    REJECT;
+}

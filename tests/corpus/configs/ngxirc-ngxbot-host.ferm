@@ -1,0 +1,40 @@
+domain (ip ip6) {
+
+    chain sshguard { }
+
+    table filter {
+        chain INPUT {
+            policy DROP;
+
+            # connection tracking
+            mod state state INVALID DROP;
+            mod state state (ESTABLISHED RELATED) ACCEPT;
+
+            # allow local packet
+            interface lo ACCEPT;
+
+            # respond to ping
+            proto icmp ACCEPT; 
+
+            # allow SSH connections
+            proto tcp dport ssh ACCEPT;
+
+            # allow web connections
+            proto tcp dport (http https) ACCEPT;
+        }
+        chain OUTPUT {
+            policy ACCEPT;
+
+            # connection tracking
+            #mod state state INVALID DROP;
+            mod state state (ESTABLISHED RELATED) ACCEPT;
+        }
+        chain FORWARD {
+            policy DROP;
+
+            # connection tracking
+            mod state state INVALID DROP;
+            mod state state (ESTABLISHED RELATED) ACCEPT;
+        }
+    }
+}

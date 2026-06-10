@@ -7,6 +7,7 @@ only exposes the repository and reference roots.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -34,3 +35,14 @@ def repo_root() -> Path:
 def reference_root() -> Path:
     """Absolute path to the Perl oracle tree (``reference/``)."""
     return REFERENCE_ROOT
+
+
+@pytest.fixture(scope="session")
+def perl_has_resolver_mock() -> bool:
+    """Whether Perl can load Net::DNS::Resolver::Mock on this machine."""
+    proc = subprocess.run(  # fixed argv, no shell
+        ["perl", "-MNet::DNS::Resolver::Mock", "-e1"],
+        capture_output=True,
+        check=False,
+    )
+    return proc.returncode == 0

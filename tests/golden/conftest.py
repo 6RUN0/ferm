@@ -1,14 +1,14 @@
 """Fixtures for the golden-file harness.
 
 Selects the ferm implementation under test and builds the shared
-preserve mock once per session.  ``reference_root`` is inherited from the
-parent ``tests/conftest.py``.
+preserve mock once per session.  ``reference_root`` and
+``perl_has_resolver_mock`` are inherited from the parent
+``tests/conftest.py``.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,17 +24,6 @@ def golden_target(reference_root: Path) -> FermTarget:
     """The ferm under test; ``FERM_GOLDEN_TARGET`` env, default ``perl``."""
     name = os.environ.get("FERM_GOLDEN_TARGET", "perl")
     return build_target(name, reference_root)
-
-
-@pytest.fixture(scope="session")
-def perl_has_resolver_mock() -> bool:
-    """Whether Perl can load Net::DNS::Resolver::Mock on this machine."""
-    proc = subprocess.run(  # fixed argv, no shell
-        ["perl", "-MNet::DNS::Resolver::Mock", "-e1"],
-        capture_output=True,
-        check=False,
-    )
-    return proc.returncode == 0
 
 
 @pytest.fixture(scope="session")

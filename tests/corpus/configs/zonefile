@@ -1,0 +1,6 @@
+www.google.com.    IN A    192.0.2.80
+yahoo.com.         IN MX   10 mx1.yahoo.com.
+mx1.yahoo.com.     IN A    192.0.2.25
+denic.de.          IN NS   ns1.denic.de.
+ns1.denic.de.      IN A    192.0.2.53
+www.sixxs.net.     IN AAAA 2001:db8::6

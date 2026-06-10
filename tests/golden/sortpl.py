@@ -108,3 +108,22 @@ def sort_output(text: str) -> str:
 
     flush()
     return "".join(out)
+
+
+def is_save_line(line: str) -> bool:
+    """Whether :func:`sort_output` recognizes ``line``.
+
+    Not part of sort.pl: the corpus suite uses this to split ferm output
+    into sortable save blocks and pass-through lines (``@hook`` commands,
+    ``--shell`` preambles) that the Perl original would ``die`` on.
+    """
+    return bool(
+        _BANNER.match(line)
+        or line.startswith(("#", "COMMIT"))
+        or _NAP.match(line)
+        or _FX.match(line)
+        or _TABLE.match(line)
+        or _CHAIN.match(line)
+        or _APPEND.match(line)
+        or _EB_ATOMIC.match(line)
+    )

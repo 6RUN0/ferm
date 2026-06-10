@@ -1,0 +1,22 @@
+# ferm(1) main configuration
+
+table filter {
+  chain INPUT {
+    policy ACCEPT;
+    proto icmp ACCEPT;
+    interface lo ACCEPT;
+
+    ## mod state state INVALID DROP;
+    ## mod state state (ESTABLISHED RELATED) ACCEPT;
+
+    ## proto tcp dport ssh ACCEPT;
+  }
+  chain OUTPUT {
+    policy ACCEPT;
+  }
+  chain FORWARD {
+    policy ACCEPT;
+  }
+}
+
+# [corpus: @include removed] @include '/etc/ferm/conf.d/';
