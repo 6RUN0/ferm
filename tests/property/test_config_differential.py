@@ -124,27 +124,21 @@ _MATCH = st.one_of(
     st.tuples(st.just("proto "), _negated(_PROTO) | _array(_PROTO)).map(
         "".join
     ),
-    st.tuples(st.sampled_from(["dport ", "sport "]), _PORT_VALUE).map(
-        "".join
-    ),
-    st.tuples(st.sampled_from(["saddr ", "daddr "]), _ADDR_VALUE).map(
-        "".join
-    ),
+    st.tuples(st.sampled_from(["dport ", "sport "]), _PORT_VALUE).map("".join),
+    st.tuples(st.sampled_from(["saddr ", "daddr "]), _ADDR_VALUE).map("".join),
     st.tuples(st.just("mod state state "), _STATE | _array(_STATE)).map(
         "".join
     ),
-    st.tuples(st.just("mod limit limit "), st.sampled_from(
-        ["3/second", "10/minute", "1/hour"]
-    )).map("".join),
+    st.tuples(
+        st.just("mod limit limit "),
+        st.sampled_from(["3/second", "10/minute", "1/hour"]),
+    ).map("".join),
     st.just('mod comment comment "fuzzed rule"'),
 )
 
-_RULE = (
-    st.tuples(st.lists(_MATCH, max_size=3), _TARGET).map(
-        lambda pair: " ".join([*pair[0], pair[1]]) + ";"
-    )
-    | st.sampled_from(["&svc(22);", "&svc($ports);", "&svc((22 8080));"])
-)
+_RULE = st.tuples(st.lists(_MATCH, max_size=3), _TARGET).map(
+    lambda pair: " ".join([*pair[0], pair[1]]) + ";"
+) | st.sampled_from(["&svc(22);", "&svc($ports);", "&svc((22 8080));"])
 
 _CONDITION = st.sampled_from(["0", "1", "$one", "''", "($addr)", "$nodef"])
 
