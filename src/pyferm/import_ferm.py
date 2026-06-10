@@ -78,8 +78,11 @@ _ALIASES = {
 #: Protocols that gain ``sport``/``dport`` keywords (Perl ``:420``/``:447``).
 _PORTED_PROTOCOLS = re.compile(r"tcp|udp|udplite|dccp|sctp")
 
-_OPTION_RE = re.compile(r"-(\w)")
-_LONG_OPTION_RE = re.compile(r"--(\S+)")
+#: ``\n?``: the oracle anchors with a bare-word ``$``, which also
+#: matches before a trailing newline; ``re.ASCII``: Perl's byte-mode
+#: ``\S`` includes ``\x1c``-``\x1f`` (found by the differential fuzzer).
+_OPTION_RE = re.compile(r"-(\w)\n?", re.ASCII)
+_LONG_OPTION_RE = re.compile(r"--(\S+)\n?", re.ASCII)
 _ESCAPE_RE = re.compile(r"[^-\w.:/]", re.ASCII)
 
 #: ``re.ASCII``: Perl's byte-mode ``\s`` is ``[ \t\n\r\f\x0B]``, so a
@@ -181,6 +184,17 @@ def _tokenize(text: str) -> list[str]:
                 break
         else:
             return result
+
+
+def _match_option(token: str) -> str | None:
+    """
+    Classify ``token`` as a ``-x``/``--long`` option (Perl ``:578``).
+
+    Returns the option name, or ``None`` when the token is not an
+    option (the caller warns or dies, depending on context).
+    """
+    match = _OPTION_RE.fullmatch(token) or _LONG_OPTION_RE.fullmatch(token)
+    return None if match is None else match.group(1)
 
 
 # --- Data::Dumper-equivalent structural canonicalization -------------
@@ -806,21 +820,17 @@ class Importer:
         tokens = _tokenize(rest)
         while tokens:
             token = tokens.pop(0)
-            match = _OPTION_RE.fullmatch(token) or _LONG_OPTION_RE.fullmatch(
-                token
-            )
-            if match is not None:
-                self.parse_option(rule, match.group(1), False, tokens)
+            option = _match_option(token)
+            if option is not None:
+                self.parse_option(rule, option, False, tokens)
             elif token == "!":
                 if not tokens:
                     raise self._die()
                 token = tokens.pop(0)
-                match = _OPTION_RE.fullmatch(
-                    token
-                ) or _LONG_OPTION_RE.fullmatch(token)
-                if match is None:
+                option = _match_option(token)
+                if option is None:
                     raise FermError(f"option expected in line {self.lineno}")
-                self.parse_option(rule, match.group(1), True, tokens)
+                self.parse_option(rule, option, True, tokens)
             else:
                 self._warn(f"unknown token '{token}' in line {self.lineno}")
 

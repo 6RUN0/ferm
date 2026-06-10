@@ -152,18 +152,43 @@ def realize_protocol_keyword(rule: Rule, keyword: str) -> None:
 
 
 def _perl_substr(string: str, offset: int, length: int) -> str:
-    """Reproduce Perl's three-argument ``substr`` (signed offset/length)."""
+    """
+    Reproduce Perl's three-argument ``substr`` (signed offset/length).
+
+    Both endpoints may fall before the string: the start is then clamped
+    to 0, and only when the *end* is also negative (or the offset is past
+    the string) does Perl return undef -- which ferm later interpolates
+    as ``''``.  Model verified empirically against perl 5.42 by the
+    differential fuzzer.
+    """
     size = len(string)
+    if offset > size:
+        return ""  # Perl: undef ("substr outside of string")
     start = size + offset if offset < 0 else offset
-    start = max(0, min(start, size))
     end = size + length if length < 0 else start + length
+    if start < 0:
+        if end < 0:
+            return ""  # Perl: undef -- both endpoints before the string
+        start = 0
     end = max(start, min(end, size))
     return string[start:end]
 
 
+#: ``re.ASCII``: Perl numification skips byte-mode ``\s`` only, so a
+#: Unicode ``\s`` would accept ``\x1c``-``\x1f`` before the digits.
 _NUMERIC_PREFIX_RE = re.compile(
-    r"\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+    r"\s*(?P<sign>[+-]?)(?P<number>\d+(?:\.\d*)?|\.\d+)(?P<exp>[eE][+-]?\d+)?",
+    re.ASCII,
 )
+
+_UV_MAX = 2**64 - 1
+_IV_MAX = 2**63 - 1
+_IV_MIN = -(2**63)
+
+
+def _wrap_uv(uv: int) -> int:
+    """Reinterpret an unsigned 64-bit value as Perl's signed IV."""
+    return uv - 2**64 if uv > _IV_MAX else uv
 
 
 def _perl_int(text: str) -> int:
@@ -172,12 +197,31 @@ def _perl_int(text: str) -> int:
 
     Perl reads the leading numeric prefix and truncates toward zero;
     anything non-numeric becomes 0.  ferm runs without ``use warnings``,
-    so the oracle does this silently.
+    so the oracle does this silently.  Out-of-IV-range values mirror
+    Perl's two-step conversion (verified against perl 5.42): a pure
+    integer string accumulates exactly into a UV whose bit pattern is
+    then read as signed (``"1e19"`` -> -8446744073709551616), an NV
+    at or beyond 2**64 clamps to UV_MAX (-1 as IV), and anything below
+    -2**63 clamps to IV_MIN.
     """
     match = _NUMERIC_PREFIX_RE.match(text)
     if match is None:
         return 0
-    return int(float(match.group()))
+    number, exponent = match.group("number", "exp")
+    negative = match.group("sign") == "-"
+    if exponent is None and "." not in number:
+        magnitude = int(number)
+        if negative:
+            return max(-magnitude, _IV_MIN)
+        if magnitude <= _UV_MAX:
+            return _wrap_uv(magnitude)
+        return -1  # NV re-parse lands at or beyond 2**64 -> UV_MAX
+    value = float(match.group())
+    if _IV_MIN <= value < 2**63:
+        return int(value)
+    if value > 0:
+        return _wrap_uv(_UV_MAX if value >= 2**64 else int(value))
+    return _IV_MIN
 
 
 def splitpath_file(path: str) -> str:

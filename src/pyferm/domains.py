@@ -169,13 +169,16 @@ def read_previous(lines: Iterable[str], domain_info: DomainInfo) -> str:
     for line in lines:
         save += line
 
-        table_match = re.match(r"^\*(\w+)", line)
+        # re.ASCII: Perl's byte-mode \s+ does not match \x1c-\x1f, so a
+        # Unicode \s would accept a policy field the oracle rejects
+        # (found by the differential fuzzer).
+        table_match = re.match(r"^\*(\w+)", line, re.ASCII)
         if table_match is not None:
             table = table_match.group(1)
             table_info = domain_info.tables.setdefault(table, TableInfo())
             continue
 
-        chain_match = re.match(r"^:(\w+)\s+(\S+)", line)
+        chain_match = re.match(r"^:(\w+)\s+(\S+)", line, re.ASCII)
         if (
             table_info is not None
             and chain_match is not None
