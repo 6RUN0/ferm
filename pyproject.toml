@@ -121,6 +121,11 @@ testpaths = ["tests"]
 # into errors instead of silently-ignored decoration.
 addopts = "-ra --strict-config --strict-markers"
 xfail_strict = true
+# A hung test (interactive prompt, stuck subprocess) must fail, not
+# stall the gate.  The thread method, not signal: the port itself owns
+# SIGALRM (--interactive), so a per-test alarm could be clobbered.
+timeout = 60
+timeout_method = "thread"
 
 [tool.coverage.run]
 source = ["pyferm"]
@@ -128,9 +133,9 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# No-regression floor just under the measured baseline (84% on
+# No-regression floor just under the measured baseline (83.60% on
 # 2026-06-10); ratchet it up as the port's error paths gain tests.
-fail_under = 82
+fail_under = 83
 exclude_also = [
     # Type-only branches never execute at runtime.
     "if TYPE_CHECKING:",
@@ -195,4 +200,5 @@ test = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "pytest-randomly>=4.1.0",
+    "pytest-timeout>=2.4.0",
 ]

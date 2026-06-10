@@ -78,6 +78,9 @@ def typecheck(session: nox.Session) -> None:
     """Run static type checks with mypy and pyright."""
     _uv(session, "mypy")
     _uv(session, "pyright")
+    # Public API type completeness: pyright exits non-zero below 100%,
+    # so this is a no-regression gate (py.typed promises full typing).
+    _uv(session, "pyright", "--verifytypes", "pyferm")
 
 
 @nox.session
@@ -91,6 +94,11 @@ def coverage(session: nox.Session) -> None:
         *session.posargs,
         env=_GOLDEN_ENV,
     )
+    # pytest-cov prints the fail_under verdict but exits zero (observed
+    # with pytest-cov 7.1 / pytest 9), so the floor is enforced here:
+    # `coverage report` exits non-zero below [tool.coverage.report]
+    # fail_under.
+    _uv(session, "coverage", "report", "--format=total")
 
 
 @nox.session
@@ -124,5 +132,8 @@ def workflows(session: nox.Session) -> None:
 @nox.session
 def preflight(session: nox.Session) -> None:
     """Queue everything a push should pass: lint, typecheck, tests."""
-    for name in ("lint", "typecheck", "tests", "golden_oracle", "workflows"):
+    # `coverage` rather than `tests`: the same suite, but the coverage
+    # floor (fail_under) is actually enforced before a push.
+    queue = ("lint", "typecheck", "coverage", "golden_oracle", "workflows")
+    for name in queue:
         session.notify(name)
