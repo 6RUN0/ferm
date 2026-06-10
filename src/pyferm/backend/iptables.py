@@ -62,10 +62,14 @@ _PLAIN_TOKEN_RE = re.compile(r"[-_a-zA-Z0-9]+$")
 #: An already-quoted backtick command (slow mode only, ``:1821``).
 _BACKTICK_RE = re.compile(r"`.*`$")
 #: Characters forcing double-quoting in fast (``iptables-restore``) mode
-#: (``:1818``).
-_FAST_SPECIAL_RE = re.compile(r"[\s'\\;&]")
-#: Characters forcing single-quoting in slow (per-command) mode (``:1824``).
-_SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]')
+#: (``:1818``).  ``re.ASCII``: Perl's byte-mode ``\s`` is
+#: ``[ \t\n\r\f\x0B]``; Python's Unicode ``\s`` would also match
+#: ``\x1c``-``\x1f`` and quote tokens the oracle leaves bare (found by
+#: the differential fuzzer).
+_FAST_SPECIAL_RE = re.compile(r"[\s'\\;&]", re.ASCII)
+#: Characters forcing single-quoting in slow (per-command) mode (``:1824``);
+#: ``re.ASCII`` for the same reason as above.
+_SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
 
 #: ip6 ``reject-with`` value translation (``:1871-1878``); several IPv4 names
 #: collapse onto ``icmp6-adm-prohibited``.
