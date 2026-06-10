@@ -18,6 +18,7 @@ Examples::
     uv run nox -s audit              # bandit + pip-audit
     uv run nox -s workflows          # actionlint + zizmor on CI configs
     uv run nox -s fuzz               # thorough differential fuzzing
+    uv run nox -s mutation           # mutmut over the unit suite (slow)
 """
 
 import shutil
@@ -118,6 +119,26 @@ def fuzz(session: nox.Session) -> None:
         "--hypothesis-profile=thorough",
         *session.posargs,
     )
+
+
+@nox.session
+def mutation(session: nox.Session) -> None:
+    """
+    Mutation testing with mutmut (periodic, NOT a gate).
+
+    Generates trampoline mutants for ``src/`` under ``mutants/`` and
+    runs the coverage-selected unit tests against each one (see
+    ``[tool.mutmut]`` for the kill-set rationale).  A full sweep takes
+    hours; scope it to a module with a mutant-name glob::
+
+        uv run nox -s mutation -- "pyferm.scope.*"
+
+    ``mutmut run`` resumes from previous results, so interrupted sweeps
+    just continue.  Triage survivors with ``uv run --group mutation
+    mutmut browse``.  Deliberately absent from ``preflight``.
+    """
+    _uv(session, "--group", "mutation", "mutmut", "run", *session.posargs)
+    _uv(session, "--group", "mutation", "mutmut", "results")
 
 
 @nox.session

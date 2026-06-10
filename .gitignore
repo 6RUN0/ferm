@@ -27,6 +27,7 @@ __pycache__/
 htmlcov/
 *.egg-info/
 dist/
+mutants/
 
 # local agent/tooling directories (not part of ferm)
 .omc/

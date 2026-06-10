@@ -163,7 +163,7 @@ skips = [
 [tool.codespell]
 # reference/ is the frozen Perl oracle and tests/corpus/configs holds
 # third-party wild configs verbatim: never spell-check upstream text.
-skip = ".git,.venv,.nox,uv.lock,reference,tests/corpus/configs,htmlcov,build,dist,*.pyc"
+skip = ".git,.venv,.nox,uv.lock,reference,tests/corpus/configs,htmlcov,build,dist,mutants,*.pyc"
 # netfilter vocabulary codespell mis-flags:
 # * iif -- nft "input interface" expression
 # * rsource -- iptables `recent --rsource`
@@ -173,8 +173,9 @@ ignore-words-list = "iif,rsource,ect"
 [tool.deptry]
 # The import name differs from the distribution name (ferm -> pyferm).
 known_first_party = ["pyferm"]
-# noxfile.py imports its dev-group tooling by design.
-extend_exclude = ["reference", "noxfile\\.py"]
+# noxfile.py imports its dev-group tooling by design; mutants/ is
+# mutmut's generated working copy of src and tests.
+extend_exclude = ["reference", "noxfile\\.py", "mutants"]
 
 [tool.vulture]
 # Clean at 80 today; the hook is a no-regression gate against dead code
@@ -182,6 +183,22 @@ extend_exclude = ["reference", "noxfile\\.py"]
 # dataclass fields the rule-structure contract carries for Phase 2).
 min_confidence = 80
 paths = ["src/pyferm"]
+
+[tool.mutmut]
+# src-layout: mutmut copies each source path into mutants/ verbatim,
+# prepends mutants/src to sys.path and drops the original src entry, so
+# `import pyferm` resolves to the trampoline-instrumented copy.
+source_paths = ["src"]
+# Kill set: the in-process unit suite only.  The differential property
+# fuzzers cover nearly every line, so coverage-based selection would
+# pick them for almost every mutant at dozens of Perl-oracle subprocess
+# calls per run; golden/corpus suites execute `python -m pyferm` in a
+# child process, which imports the unmutated venv install and can never
+# kill a mutant (the trampoline activates via sys.path + env var).
+pytest_add_cli_args_test_selection = ["tests/unit"]
+# Deterministic test order keeps mutmut's per-test timing baseline
+# (its timeout estimates) stable across runs.
+pytest_add_cli_args = ["-p", "no:randomly"]
 
 [dependency-groups]
 dev = [
@@ -196,6 +213,9 @@ lint = [
     "pyright>=1.1.410",
     "ruff>=0.15.16",
     "vulture>=2.14",
+]
+mutation = [
+    "mutmut>=3.6.0",
 ]
 test = [
     "hypothesis>=6.155.2",
