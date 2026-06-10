@@ -75,3 +75,6 @@ jobs:
 
       - name: Validate the golden harness against the Perl oracle
         run: uv run nox -s golden_oracle
+
+      - name: Differential fuzzing against the oracle (thorough)
+        run: uv run nox -s fuzz
