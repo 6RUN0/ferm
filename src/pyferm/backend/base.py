@@ -1,14 +1,16 @@
 """
-Backend interface seam: render / commit / rollback / read_previous.
+Backend interface seam: render/commit/rollback/capture_previous/read_previous.
 
 The abstraction Phase 2 (native ``nft``) slots into.  The oracle fuses
 building the firewall output with executing it (``execute_fast``/
 ``execute_slow``, ``reference/src/ferm:2919-3145``); this port splits that into
 a pure :meth:`Backend.render` (deterministic output -- the golden oracle checks
 exactly this) and an effectful :meth:`Backend.commit`, plus
-:meth:`Backend.rollback` and :meth:`Backend.read_previous`.  Splitting the
-slow/eb-atomic build out of execution is sanctioned deviation #3 (design
-§"Backend-интерфейс"); the oracle has no such seam.
+:meth:`Backend.rollback`, :meth:`Backend.capture_previous` (snapshot the
+family's previous state for rollback/``@preserve``) and
+:meth:`Backend.read_previous`.  Splitting the slow/eb-atomic build out of
+execution is sanctioned deviation #3 (design §"Backend-интерфейс"); the oracle
+has no such seam.
 
 Effectful I/O (running a command, emitting a ``--lines`` line, piping a save to
 ``*-restore``) is injected as callables rather than reached for directly, so
@@ -47,6 +49,9 @@ LineEmitter = Callable[[str], None]
 #: Pipes a save text to ``*-restore`` (Perl ``restore_domain``, ``:3103``),
 #: raising :class:`pyferm.errors.FermError` on failure.
 RestoreDomain = Callable[["DomainInfo", str], None]
+#: Runs a ``*-save`` tool path and returns its output, or ``None`` if it
+#: could not be run (the live branch of ``:951-952``).
+SaveReader = Callable[[str], "str | None"]
 
 
 @dataclass
@@ -180,6 +185,29 @@ class Backend(ABC):
         restore: RestoreDomain,
     ) -> None:
         """Restore one family's previous ruleset (cli loops over domains)."""
+
+    @abstractmethod
+    def capture_previous(
+        self,
+        domain: str,
+        domain_info: DomainInfo,
+        options: Options,
+        *,
+        execute: ExecuteCommand,
+        read_save: SaveReader,
+    ) -> None:
+        """
+        Snapshot the family's previous state for rollback/``@preserve``.
+
+        Owns the whole capture phase of ``initialize_domain`` (Perl
+        ``:946-952`` + the ``eb`` atomic block, ``:963-970``): the
+        ``--test`` mock branch, the live ``*-save`` read and the ``eb``
+        atomic-save snapshot.  ``execute``/``read_save`` are
+        x_tables-affine seams injected for testability, NOT a contract
+        obligation -- an nft backend may ignore ``read_save`` and capture
+        via ``execute`` (``nft list ruleset``).  Call invariant: the
+        caller resolves ``domain_info.tools`` before calling.
+        """
 
     @abstractmethod
     def read_previous(

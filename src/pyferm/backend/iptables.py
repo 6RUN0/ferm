@@ -27,6 +27,7 @@ import subprocess  # live-only: restore pipes a save to *-restore
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 from pyferm import __version__
@@ -37,6 +38,7 @@ from pyferm.backend.base import (
     LineEmitter,
     Rendered,
     RestoreDomain,
+    SaveReader,
 )
 from pyferm.domains import (
     EB_TABLES,
@@ -658,6 +660,69 @@ class IptablesBackend(Backend):
             reset += domain_info.previous
 
         restore(domain_info, reset)
+
+    def capture_previous(
+        self,
+        domain: str,
+        domain_info: DomainInfo,
+        options: Options,
+        *,
+        execute: ExecuteCommand,
+        read_save: SaveReader,
+    ) -> None:
+        """
+        Capture the previous x_tables state (Perl ``:946-952,963-970``).
+
+        Moved from ``initialize_domain`` (verbatim except the mock file
+        is read latin-1 per the byte model; the old utf-8 copy dies in
+        the wiring change): the ``--test`` branch parses
+        ``mock_previous``, the live branch reads the ``*-save`` tool (a
+        partial dump on non-zero exit still becomes ``previous``, an
+        unrunnable tool yields the empty string -- the injected
+        ``read_save`` owns that contract), and ``eb`` snapshots each
+        table with ``--atomic-save`` (also under ``--test``: the golden
+        eb runs normalize the tempfile names).
+        """
+        if options.test:
+            mock = options.mock_previous.get(domain)
+            if mock is not None:
+                # Perl: `open ... or die $!` (:948) -- the strerror
+                # message is caught by check_domain and located; a raw
+                # OSError would escape every FermError handler.
+                try:
+                    # The `with` follows immediately; the open is
+                    # separate only so the OSError can be mapped.
+                    handle = Path(mock).open(  # noqa: SIM115
+                        encoding="latin-1"
+                    )
+                except OSError as exc:
+                    raise FermError(exc.strerror or str(exc)) from exc
+                with handle:
+                    domain_info.previous = self.read_previous(
+                        handle, domain_info
+                    )
+        elif "tables-save" in domain_info.tools:
+            saved = read_save(domain_info.tools["tables-save"])
+            if saved is not None:
+                domain_info.previous = self.read_previous(
+                    saved.splitlines(keepends=True), domain_info
+                )
+
+        if domain == "eb":
+            domain_cmd = domain_info.tools["tables"]
+            for eb_table in EB_TABLES:
+                # Kept open deliberately (not a context manager): the
+                # file must outlive this call, stored in ``ebt_previous``
+                # for rollback and unlinked by ``DomainInfo.close()``,
+                # mirroring Perl's ``File::Temp`` ``UNLINK => 1`` (:966).
+                snapshot = tempfile.NamedTemporaryFile(  # noqa: SIM115
+                    prefix="ferm."
+                )
+                execute(
+                    f"{domain_cmd} -t {eb_table} "
+                    f"--atomic-file {snapshot.name} --atomic-save"
+                )
+                domain_info.ebt_previous[eb_table] = snapshot
 
     def read_previous(
         self, lines: Iterable[str], domain_info: DomainInfo

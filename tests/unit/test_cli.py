@@ -338,6 +338,17 @@ def test_rollback_all_restores_enabled_domains_and_exits(
         ) -> None:
             self.calls.append((domain, domain_info, options, execute, restore))
 
+        def capture_previous(
+            self,
+            domain: str,
+            domain_info: DomainInfo,
+            options: Options,
+            *,
+            execute: ExecuteCommand,
+            read_save: object,
+        ) -> None:
+            raise NotImplementedError
+
         def read_previous(
             self, lines: Iterable[str], domain_info: DomainInfo
         ) -> str:

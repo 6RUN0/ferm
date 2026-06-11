@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +29,7 @@ from pyferm.backend.iptables import (
     shell_format_option,
 )
 from pyferm.config import Options
-from pyferm.domains import ChainInfo, DomainInfo, TableInfo
+from pyferm.domains import EB_TABLES, ChainInfo, DomainInfo, TableInfo
 from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
 from pyferm.values import Multi, Negated, Params, PreNegated
@@ -392,8 +393,6 @@ def test_render_fast_dynamic_preserve_leaves_chains_untouched() -> None:
 
 
 def test_render_slow_eb_rerender_keeps_first_tempfiles() -> None:
-    from pathlib import Path
-
     domain_info = DomainInfo(
         tools={"tables": "ebtables"},
         tables={"filter": TableInfo(chains={})},
@@ -671,3 +670,128 @@ def test_restore_domain_pipes_latin1_bytes(
     info = DomainInfo(tools={"tables-restore": "iptables-restore"})
     restore_domain(info, '-A INPUT --comment "\xff"\n', Options())
     assert sent["input"] == b'-A INPUT --comment "\xff"\n'
+
+
+# --- capture_previous --------------------------------------------------------
+
+
+def _fail_execute(_command: str) -> int | None:
+    raise AssertionError("execute must not run on this branch")
+
+
+def _fail_read_save(_tool: str) -> str | None:
+    raise AssertionError("read_save must not run on this branch")
+
+
+def test_capture_previous_reads_mock_previous(tmp_path: Path) -> None:
+    mock = tmp_path / "ip.save"
+    mock.write_bytes(b"*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n")
+    options = Options(test=True, mock_previous={"ip": str(mock)})
+    info = DomainInfo(tools={"tables": "iptables"})
+
+    IptablesBackend().capture_previous(
+        "ip", info, options,
+        execute=_fail_execute, read_save=_fail_read_save,
+    )
+
+    assert info.previous == "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
+    assert info.tables["filter"].chains["INPUT"].builtin is True
+
+
+def test_capture_previous_mock_keeps_high_bytes(tmp_path: Path) -> None:
+    mock = tmp_path / "ip.save"
+    mock.write_bytes(b'*filter\n-A INPUT --comment "\xff"\nCOMMIT\n')
+    options = Options(test=True, mock_previous={"ip": str(mock)})
+    info = DomainInfo()
+
+    IptablesBackend().capture_previous(
+        "ip", info, options,
+        execute=_fail_execute, read_save=_fail_read_save,
+    )
+
+    assert info.previous is not None
+    assert '"\xff"' in info.previous
+
+
+def test_capture_previous_missing_mock_is_ferm_error() -> None:
+    # Perl: `open ... or die $!` (:948) -- check_domain locates the
+    # FermError; a raw OSError would escape as a traceback.
+    options = Options(test=True, mock_previous={"ip": "/nonexistent/save"})
+    with pytest.raises(FermError, match="No such file or directory"):
+        IptablesBackend().capture_previous(
+            "ip", DomainInfo(), options,
+            execute=_fail_execute, read_save=_fail_read_save,
+        )
+
+
+def test_capture_previous_live_reads_save_tool() -> None:
+    seen: list[str] = []
+
+    def read_save(tool: str) -> str | None:
+        seen.append(tool)
+        return "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
+
+    info = DomainInfo(
+        tools={"tables": "iptables", "tables-save": "iptables-save"}
+    )
+    IptablesBackend().capture_previous(
+        "ip", info, Options(), execute=_fail_execute, read_save=read_save
+    )
+
+    assert seen == ["iptables-save"]
+    assert info.previous == "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
+    assert info.tables["filter"].has_builtin is True
+
+
+def test_capture_previous_live_unreadable_tool_leaves_previous_unset() -> None:
+    info = DomainInfo(
+        tools={"tables": "iptables", "tables-save": "iptables-save"}
+    )
+    IptablesBackend().capture_previous(
+        "ip", info, Options(),
+        execute=_fail_execute, read_save=lambda _tool: None,
+    )
+    assert info.previous is None
+
+
+def test_capture_previous_eb_snapshots_each_table_in_order() -> None:
+    calls: list[str] = []
+
+    def execute(command: str) -> int | None:
+        calls.append(command)
+        return None
+
+    info = DomainInfo(tools={"tables": "ebtables"})
+    # --test does NOT skip the eb snapshot (golden eb runs rely on it;
+    # the random tempfile names are normalized by tests/golden/normalize.py)
+    IptablesBackend().capture_previous(
+        "eb", info, Options(test=True),
+        execute=execute, read_save=_fail_read_save,
+    )
+    try:
+        assert list(info.ebt_previous) == list(EB_TABLES)
+        assert [c.split(" -t ")[1].split()[0] for c in calls] == list(
+            EB_TABLES
+        )
+        assert all("--atomic-save" in c for c in calls)
+    finally:
+        info.close()
+
+
+def test_capture_previous_live_without_save_tool_skips_to_eb() -> None:
+    calls: list[str] = []
+
+    def execute(command: str) -> int | None:
+        calls.append(command)
+        return None
+
+    info = DomainInfo(tools={"tables": "ebtables"})
+    # live eb has no *-save tool: no read, straight to the atomic snapshot
+    IptablesBackend().capture_previous(
+        "eb", info, Options(), execute=execute, read_save=_fail_read_save
+    )
+    try:
+        assert info.previous is None
+        assert list(info.ebt_previous) == list(EB_TABLES)
+    finally:
+        info.close()
