@@ -213,6 +213,14 @@ def test_pick_resolver_missing_zonefile_is_fatal(tmp_path: Path) -> None:
         pick_resolver(True, str(tmp_path / "main.ferm"))
 
 
+def test_zonefile_with_non_ascii_bytes_parses(tmp_path: Path) -> None:
+    zone = tmp_path / "zone"
+    zone.write_bytes(b"; comment \xff\nhost.example. IN A 192.0.2.1\n")
+    resolver = ZonefileResolver.from_file(str(zone))
+    # the non-UTF-8 comment byte must not abort the read
+    assert resolver.records
+
+
 def _system_search(
     monkeypatch: pytest.MonkeyPatch, outcome: Callable[[], list[str]]
 ) -> tuple[SearchResult, tuple[object, ...]]:

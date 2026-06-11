@@ -430,7 +430,7 @@ class Evaluator:
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,
-                encoding="utf-8",
+                encoding="latin-1",
                 check=False,
             )
         except OSError as exc:

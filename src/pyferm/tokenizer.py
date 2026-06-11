@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, TypeAlias
 
 from pyferm.errors import FermError, error, set_error_context
+from pyferm.streams import reconfigure_latin1
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -131,6 +132,7 @@ def open_script(filename: str, parent: Script | None) -> Script:
         # Only allowed for the command-line argument, not @includes (those
         # are filtered by collect_filenames); label it for error messages.
         handle = sys.stdin
+        reconfigure_latin1(handle)
         filename = "<stdin>"
     elif filename.endswith("|"):
         # Perl's two-argument open runs a trailing-pipe filename through
@@ -142,7 +144,7 @@ def open_script(filename: str, parent: Script | None) -> Script:
                 filename[:-1],
                 shell=True,
                 stdout=subprocess.PIPE,
-                encoding="utf-8",
+                encoding="latin-1",
             )
         except OSError as exc:
             raise FermError(
@@ -154,7 +156,7 @@ def open_script(filename: str, parent: Script | None) -> Script:
         try:
             # The handle is read lazily and closed later by the parser, so
             # a context manager is intentionally not used here.
-            handle = Path(filename).open(encoding="utf-8")  # noqa: SIM115
+            handle = Path(filename).open(encoding="latin-1")  # noqa: SIM115
         except OSError as exc:
             raise FermError(
                 f"Failed to open {filename}: {exc.strerror}"

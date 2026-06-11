@@ -115,7 +115,7 @@ class ZonefileResolver:
     def from_file(cls, path: str) -> ZonefileResolver:
         """Parse a zone file into a resolver (Perl ``zonefile_read``)."""
         try:
-            text = Path(path).read_text(encoding="utf-8")
+            text = Path(path).read_text(encoding="latin-1")
         except OSError as exc:
             raise FermError(
                 f"Failed to read zonefile {path}: {exc.strerror}"

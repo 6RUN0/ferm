@@ -170,3 +170,24 @@ def test_open_script_pipe_runs_command() -> None:
     assert script.process is not None
     assert script.process.wait() == 0
     script.close()
+
+
+def test_open_script_reads_raw_bytes_as_latin1(tmp_path: Path) -> None:
+    config = tmp_path / "bytes.ferm"
+    config.write_bytes(b'"\xff\x80"\n')
+    script = open_script(str(config), None)
+    try:
+        token = Tokenizer(script).next_token()
+        # bijective byte<->char: each input byte is one latin-1 char
+        assert "\xff\x80" in str(token)
+    finally:
+        script.close()
+
+
+def test_open_script_pipe_reads_raw_bytes_as_latin1() -> None:
+    script = open_script(r"printf '\377'|", None)
+    try:
+        assert script.handle is not None
+        assert script.handle.read() == "\xff"
+    finally:
+        script.close()
