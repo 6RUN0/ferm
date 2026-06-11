@@ -661,7 +661,10 @@ def test_restore_domain_pipes_latin1_bytes(
     sent: dict[str, object] = {}
 
     def fake_run(
-        args: list[str], *, input: bytes, check: bool  # noqa: A002,ARG001
+        args: list[str],
+        *,
+        input: bytes,  # noqa: A002
+        check: bool,  # noqa: ARG001
     ) -> subprocess.CompletedProcess[bytes]:
         sent["input"] = input
         return subprocess.CompletedProcess(args, 0)
@@ -690,8 +693,11 @@ def test_capture_previous_reads_mock_previous(tmp_path: Path) -> None:
     info = DomainInfo(tools={"tables": "iptables"})
 
     IptablesBackend().capture_previous(
-        "ip", info, options,
-        execute=_fail_execute, read_save=_fail_read_save,
+        "ip",
+        info,
+        options,
+        execute=_fail_execute,
+        read_save=_fail_read_save,
     )
 
     assert info.previous == "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
@@ -705,8 +711,11 @@ def test_capture_previous_mock_keeps_high_bytes(tmp_path: Path) -> None:
     info = DomainInfo()
 
     IptablesBackend().capture_previous(
-        "ip", info, options,
-        execute=_fail_execute, read_save=_fail_read_save,
+        "ip",
+        info,
+        options,
+        execute=_fail_execute,
+        read_save=_fail_read_save,
     )
 
     assert info.previous is not None
@@ -719,8 +728,11 @@ def test_capture_previous_missing_mock_is_ferm_error() -> None:
     options = Options(test=True, mock_previous={"ip": "/nonexistent/save"})
     with pytest.raises(FermError, match="No such file or directory"):
         IptablesBackend().capture_previous(
-            "ip", DomainInfo(), options,
-            execute=_fail_execute, read_save=_fail_read_save,
+            "ip",
+            DomainInfo(),
+            options,
+            execute=_fail_execute,
+            read_save=_fail_read_save,
         )
 
 
@@ -748,8 +760,11 @@ def test_capture_previous_live_unreadable_tool_leaves_previous_unset() -> None:
         tools={"tables": "iptables", "tables-save": "iptables-save"}
     )
     IptablesBackend().capture_previous(
-        "ip", info, Options(),
-        execute=_fail_execute, read_save=lambda _tool: None,
+        "ip",
+        info,
+        Options(),
+        execute=_fail_execute,
+        read_save=lambda _tool: None,
     )
     assert info.previous is None
 
@@ -765,8 +780,11 @@ def test_capture_previous_eb_snapshots_each_table_in_order() -> None:
     # --test does NOT skip the eb snapshot (golden eb runs rely on it;
     # the random tempfile names are normalized by tests/golden/normalize.py)
     IptablesBackend().capture_previous(
-        "eb", info, Options(test=True),
-        execute=execute, read_save=_fail_read_save,
+        "eb",
+        info,
+        Options(test=True),
+        execute=execute,
+        read_save=_fail_read_save,
     )
     try:
         assert list(info.ebt_previous) == list(EB_TABLES)
