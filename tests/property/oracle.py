@@ -37,12 +37,16 @@ class OracleProcess:
         )
 
     def query(self, record: str) -> str:
-        """Send one record and return the oracle's reply."""
+        """Send one record and return the oracle's reply.
+
+        Latin-1 is a bijective byte-to-char mapping, so the oracle lexes
+        the very same bytes the port sees (the byte model, section 3).
+        """
         stdin = self._proc.stdin
         stdout = self._proc.stdout
         assert stdin is not None
         assert stdout is not None
-        stdin.write(record.encode("ascii") + _RECORD_SEP)
+        stdin.write(record.encode("latin-1") + _RECORD_SEP)
         stdin.flush()
         reply = bytearray()
         while (byte := stdout.read(1)) != _RECORD_SEP:
@@ -51,7 +55,7 @@ class OracleProcess:
                     f"oracle driver exited (status {self._proc.poll()})"
                 )
             reply.extend(byte)
-        return reply.decode("ascii")
+        return reply.decode("latin-1")
 
     def query_fields(self, *fields: str) -> str:
         """Send one multi-field record (fields joined by ``\\x01``)."""

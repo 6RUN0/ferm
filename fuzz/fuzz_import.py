@@ -40,8 +40,11 @@ with atheris.instrument_imports():
 
 def test_one_input(data: bytes) -> None:
     """Fuzz one input: import a save dump, swallowing non-bug errors."""
-    provider = atheris.FuzzedDataProvider(data)
-    text = provider.ConsumeUnicodeNoSurrogates(len(data))
+    text = (
+        atheris.FuzzedDataProvider(data)
+        .ConsumeBytes(len(data))
+        .decode("latin-1")
+    )
     sink = io.StringIO()
     importer = Importer(io.StringIO(), "ip")
     with contextlib.redirect_stderr(sink):

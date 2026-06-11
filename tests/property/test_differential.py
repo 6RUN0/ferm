@@ -8,11 +8,12 @@ save-file lexer and option-token classifier, the backtick-output
 splitter, ``@substr`` (Perl numification + ``substr`` semantics), and
 the previous-ruleset reader ``read_previous``.
 
-ASCII only, by design: the oracle lexes bytes (no ``use utf8``, so
-``\\w`` is ASCII) while the port lexes ``str`` (Unicode ``\\w``); the
-divergence on non-ASCII word characters is representational, and real
-ferm configs are ASCII.  Codepoints 0 and 1 are reserved by the pipe
-protocol (see :mod:`.oracle`).
+Full byte range: the latin-1 byte model on every I/O boundary maps
+bytes to codepoints bijectively, so port and oracle lex the very same
+bytes and must compare byte-for-byte on arbitrary input (the old
+representational divergence on non-ASCII word characters is gone).
+Codepoints 0 and 1 are reserved by the pipe protocol (see
+:mod:`.oracle`).
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ if TYPE_CHECKING:
 
     from pyferm.domains import DomainInfo
 
-_ASCII_TEXT = st.text(
-    alphabet=st.characters(min_codepoint=2, max_codepoint=0x7F),
+_BYTE_TEXT = st.text(
+    alphabet=st.characters(min_codepoint=2, max_codepoint=0xFF),
     max_size=60,
 )
 
@@ -43,7 +44,7 @@ _CHUNK = st.one_of(
     st.text(alphabet="ab-+/.:_09", min_size=1, max_size=6),
     st.text(
         alphabet=st.characters(
-            min_codepoint=2, max_codepoint=0x7F, exclude_characters='"'
+            min_codepoint=2, max_codepoint=0xFF, exclude_characters='"'
         ),
         max_size=8,
     ).map(lambda body: f'"{body}"'),
@@ -55,7 +56,7 @@ _FERMISH_LINE = st.lists(st.tuples(_CHUNK, _SEPARATOR), max_size=10).map(
     lambda pairs: "".join(chunk + sep for chunk, sep in pairs)
 )
 
-_LINES = _ASCII_TEXT | _FERMISH_LINE
+_LINES = _BYTE_TEXT | _FERMISH_LINE
 
 # Backtick output is multi-line: comment stripping is per line, so a
 # `#` chunk inside _LINES exercises it on every line independently.
@@ -76,15 +77,15 @@ _NUMBERISH = (
         st.sampled_from(["12", "3.5", ".5", "2.", "1e3", "1E-2", "9" * 25]),
         st.sampled_from(["", "x", "e", ".", "..", "abc"]),
     ).map("".join)
-    | _ASCII_TEXT.filter(lambda text: _INF_NAN_PREFIX.match(text) is None)
+    | _BYTE_TEXT.filter(lambda text: _INF_NAN_PREFIX.match(text) is None)
 )
 
 # Option-ish tokens: `-x`/`--long` hits and near misses, plus explicit
 # trailing newlines to probe the oracle's bare-word `$` anchor.
-_OPTION_TOKENS = _ASCII_TEXT | st.tuples(
+_OPTION_TOKENS = _BYTE_TEXT | st.tuples(
     st.sampled_from(["", "-", "--", "---", "!"]),
     st.text(
-        alphabet=st.characters(min_codepoint=2, max_codepoint=0x7F),
+        alphabet=st.characters(min_codepoint=2, max_codepoint=0xFF),
         max_size=6,
     ),
     st.sampled_from(["", "\n", "\n\n", " "]),
@@ -232,7 +233,7 @@ def oracle_read_previous() -> Iterator[OracleProcess]:
     proc.close()
 
 
-@given(string=_ASCII_TEXT, offset=_NUMBERISH, length=_NUMBERISH)
+@given(string=_BYTE_TEXT, offset=_NUMBERISH, length=_NUMBERISH)
 def test_substr_matches_oracle(
     string: str, offset: str, length: str, oracle_substr: OracleProcess
 ) -> None:

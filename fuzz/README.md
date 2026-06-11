@@ -26,11 +26,12 @@ different classes of defect.
   (the stdout of the system `iptables-save`). `Importer.run` is pure, so no
   guards are needed.
 
-Both decode input with `ConsumeUnicodeNoSurrogates`: the file-open path uses
-strict UTF-8, so non-UTF-8 bytes are a separate (documented) Phase 2 concern,
-not a parser crash. The unbounded recursive descent (`RecursionError` on deep
-nesting) is likewise a tracked Phase 2 depth-limit item; the oracle recurses
-the same way, so it is allow-listed here rather than treated as a finding.
+Both decode input as latin-1, a bijective byte-to-char mapping, so the
+fuzzers exercise the full byte range exactly as the latin-1 byte model on
+the port's I/O boundaries delivers it. The unbounded recursive descent
+(`RecursionError` on deep nesting) is a tracked Phase 2 depth-limit item;
+the oracle recurses the same way, so it is allow-listed here rather than
+treated as a finding.
 
 ## Running
 

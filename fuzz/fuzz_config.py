@@ -92,8 +92,11 @@ def _parse(source: str) -> None:
 
 def test_one_input(data: bytes) -> None:
     """Fuzz one input: parse it, swallowing the non-bug exceptions."""
-    provider = atheris.FuzzedDataProvider(data)
-    source = provider.ConsumeUnicodeNoSurrogates(len(data))
+    source = (
+        atheris.FuzzedDataProvider(data)
+        .ConsumeBytes(len(data))
+        .decode("latin-1")
+    )
     sink = io.StringIO()
     with (
         contextlib.redirect_stdout(sink),

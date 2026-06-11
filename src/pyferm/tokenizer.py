@@ -88,8 +88,11 @@ class Script:
 
 # The lexer pattern, copied verbatim from Perl (``:997``): quoted strings,
 # single special characters, word runs, ``@function`` names and ``#``.
+# re.ASCII: Perl's byte-mode ``\w`` is ``[0-9A-Za-z_]``; a Unicode ``\w``
+# would also lex bytes like ``\xb9`` as word runs (found by the
+# differential fuzzer once the strategies covered the full byte range).
 _TOKEN_RE = re.compile(
-    r"""(".*?"|'.*?'|`.*?`|[!,=&$%(){};]|[-+\w/.:]+|@\w+|#)"""
+    r"""(".*?"|'.*?'|`.*?`|[!,=&$%(){};]|[-+\w/.:]+|@\w+|#)""", re.ASCII
 )
 _NOT_ALLOWED_RE = re.compile(r"[;{}]")
 

@@ -53,6 +53,14 @@ def test_tokenize_string_stops_at_comment() -> None:
     assert tokenize_string("a b # comment c") == ["a", "b"]
 
 
+def test_tokenize_string_word_class_is_byte_mode() -> None:
+    # Perl's byte-mode \w is [0-9A-Za-z_] (reference/src/ferm:997); the
+    # widened differential fuzzer caught Unicode \w gluing U+00B9 into
+    # word runs. Pin the byte-model lexing deterministically.
+    assert tokenize_string("a\xb9b") == ["a", "b"]
+    assert tokenize_string("\xe9") == []
+
+
 def test_make_line_token() -> None:
     assert make_line_token(7) == Line(7)
 
