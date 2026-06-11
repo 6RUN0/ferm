@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, TextIO, cast
 from pyferm.errors import FermError
 from pyferm.modules import (
     MATCH_DEFS,
+    PORT_PROTOCOLS,
     PROTO_DEFS,
     TARGET_DEFS,
     Keyword,
@@ -74,9 +75,6 @@ _ALIASES = {
     "j": "jump",
     "g": "goto",
 }
-
-#: Protocols that gain ``sport``/``dport`` keywords (Perl ``:420``/``:447``).
-_PORTED_PROTOCOLS = re.compile(r"tcp|udp|udplite|dccp|sctp")
 
 #: ``\n?``: the oracle anchors with a bare-word ``$``, which also
 #: matches before a trailing newline; ``re.ASCII``: Perl's byte-mode
@@ -653,7 +651,7 @@ class Importer:
                 proto_def = PROTO_DEFS.get("ip", {}).get(module)
                 if proto_def is not None:
                     self._merge_keywords(rule, proto_def.keywords)
-                if _PORTED_PROTOCOLS.fullmatch(value):
+                if value in PORT_PROTOCOLS:
                     self._add_port_keywords(rule)
             pre_negated = False
         elif option == "match":
@@ -678,7 +676,7 @@ class Importer:
                 proto_def = PROTO_DEFS.get("ip", {}).get(module)
                 if proto_def is not None:
                     self._merge_keywords(rule, proto_def.keywords)
-            if _PORTED_PROTOCOLS.fullmatch(param):
+            if param in PORT_PROTOCOLS:
                 self._add_port_keywords(rule)
         elif option in rule.keywords:
             keyword = rule.keywords[option]

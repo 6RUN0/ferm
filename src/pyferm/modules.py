@@ -685,8 +685,17 @@ def _build_registry() -> tuple[Registry, Registry, Registry]:
 
 PROTO_DEFS, MATCH_DEFS, TARGET_DEFS = _build_registry()
 
+#: Protocols that carry ``sport``/``dport`` keywords (Perl ``:2868``;
+#: ``import-ferm`` ``:420``/``:447``).  The single source of this fact for
+#: the parser's port-switch check and import-ferm's keyword injection.
+#: Distinct from multiport's narrower ``tcp|udp|udplite`` (Perl ``:509``).
+PORT_PROTOCOLS: frozenset[str] = frozenset(
+    {"tcp", "udp", "udplite", "dccp", "sctp"}
+)
+
 #: ``domain_family -> shortcut_keyword -> [module_name, real_keyword]``
-#: (Perl ``%shortcuts``, ``:442``).  ``import-ferm`` reads these too.
+#: (Perl ``%shortcuts``, ``:442``).  Read by the parser only; ``import-ferm``
+#: hardcodes its own ``dports``/``sports`` aliases (Perl ``:406``).
 SHORTCUTS: dict[str, dict[str, list[str]]] = {
     "ip": {
         "sports": ["multiport", "source-ports"],

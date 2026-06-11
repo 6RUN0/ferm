@@ -59,6 +59,7 @@ from pyferm.functions import (
 )
 from pyferm.modules import (
     MATCH_DEFS,
+    PORT_PROTOCOLS,
     PROTO_DEFS,
     SHORTCUTS,
     TARGET_DEFS,
@@ -114,8 +115,6 @@ _LOWER_RE = re.compile(r"[a-z]")
 _QUOTED_SUB_RE = re.compile(r"([\"'])(.*)\1", re.DOTALL)
 #: Built-in chain names that must be upper case (Perl ``:2588``).
 _LOWER_BUILTIN_RE = re.compile(r"input|forward|output|prerouting|postrouting")
-#: Protocols that accept ``sport``/``dport`` (Perl ``:2868``).
-_PORT_PROTO_RE = re.compile(r"tcp|udp|udplite|dccp|sctp")
 #: A relative ``@include`` path / pipe spec (Perl ``:1112``).
 _ABS_OR_PIPE_RE = re.compile(r"^/|\|$")
 #: dpkg backup files skipped by a directory ``@include`` (Perl ``:1129``).
@@ -873,7 +872,7 @@ class Parser:
             if isinstance(keyword, str) and re.fullmatch(r"[sd]port", keyword):
                 proto = realize_protocol(rule)
                 valid = proto is not None and any(
-                    isinstance(p, str) and _PORT_PROTO_RE.fullmatch(p)
+                    isinstance(p, str) and p in PORT_PROTOCOLS
                     for p in to_array(proto)
                 )
                 if not valid:
