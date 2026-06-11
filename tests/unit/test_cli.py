@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -13,7 +14,16 @@ from pyferm.config import Options
 from pyferm.errors import FermError
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
+
+    from pyferm.backend.base import (
+        ExecuteCommand,
+        LineEmitter,
+        Rendered,
+        RestoreDomain,
+    )
+    from pyferm.domains import DomainInfo
 
 
 def _resolve(
@@ -266,3 +276,130 @@ def test_wrong_argument_count_prints_usage_to_stdout(
     captured = capsys.readouterr()
     assert HELP_SNIPPET in captured.out
     assert captured.err == ""
+
+
+def test_version_prints_perl_banner(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Perl printversion: the banner is verbatim oracle output (stdout,
+    # exit 0, nothing else runs), so it is pinned byte-exactly.
+    from pyferm import __version__
+    from pyferm.cli import main
+
+    assert main(["--version"]) == 0
+    assert capsys.readouterr().out == (
+        f"ferm {__version__}\n"
+        "Copyright 2001-2021 Max Kellermann, Auke Kok\n"
+        "This program is free software released under GPLv2.\n"
+        "See the included COPYING file for license details.\n"
+    )
+
+
+def test_rollback_all_restores_enabled_domains_and_exits(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Perl rollback (:3147): every *active* family is restored, the
+    # closing message goes to stderr and the process exits 1 -- the
+    # admin must learn the new rules did NOT stay applied.
+    from pyferm.backend.base import Backend
+    from pyferm.cli import _rollback_all
+    from pyferm.domains import DomainInfo as RealDomainInfo
+
+    class _RecordingBackend(Backend):
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        def render(
+            self, domain: str, domain_info: DomainInfo, options: Options
+        ) -> Rendered:
+            raise NotImplementedError
+
+        def commit(
+            self,
+            domain: str,
+            domain_info: DomainInfo,
+            rendered: Rendered,
+            options: Options,
+            *,
+            execute: ExecuteCommand,
+            emit_line: LineEmitter,
+            restore: RestoreDomain,
+        ) -> int | None:
+            raise NotImplementedError
+
+        def rollback(
+            self,
+            domain: str,
+            domain_info: DomainInfo,
+            options: Options,
+            *,
+            execute: ExecuteCommand,
+            restore: RestoreDomain,
+        ) -> None:
+            self.calls.append((domain, domain_info, options, execute, restore))
+
+        def read_previous(
+            self, lines: Iterable[str], domain_info: DomainInfo
+        ) -> str:
+            raise NotImplementedError
+
+    backend = _RecordingBackend()
+    domains = {
+        "ip6": RealDomainInfo(enabled=True),
+        "ip": RealDomainInfo(enabled=True),
+        "arp": RealDomainInfo(enabled=False),
+    }
+    options = Options()
+
+    def execute(_command: str) -> int | None:
+        return None
+
+    def restore(_domain_info: DomainInfo, _text: str) -> None:
+        return None
+
+    with pytest.raises(SystemExit) as excinfo:
+        _rollback_all(
+            domains, options, backend, execute=execute, restore=restore
+        )
+    assert excinfo.value.code == 1
+    # Deterministic (sorted) order; the unused family is left alone.
+    assert [call[0] for call in backend.calls] == ["ip", "ip6"]
+    # Each family gets its own state and the caller's I/O seams verbatim.
+    assert backend.calls[0][1:] == (domains["ip"], options, execute, restore)
+    assert capsys.readouterr().err.endswith("Firewall rules rolled back.\n")
+
+
+class _PipeStdin:
+    """A minimal stdin stand-in exposing the pipe's read end."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+
+    def fileno(self) -> int:
+        return self._fd
+
+
+def _confirm_with_input(data: bytes, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Run ``_confirm_rules`` with ``data`` waiting on a pipe stdin."""
+    from pyferm.cli import _confirm_rules
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, data)
+        os.close(write_fd)
+        monkeypatch.setattr(sys, "stdin", _PipeStdin(read_fd))
+        return _confirm_rules(Options())
+    finally:
+        os.close(read_fd)
+
+
+def test_confirm_rules_requires_exact_yes(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # Perl confirm_rules: sysread grabs 3 bytes and only the literal
+    # 'yes' confirms; anything else -- including EOF (a closed stdin) --
+    # must report "not confirmed" so the caller rolls back.
+    assert _confirm_with_input(b"yes\n", monkeypatch) is True
+    assert "type 'yes' to confirm" in capfd.readouterr().err
+    assert _confirm_with_input(b"no\n", monkeypatch) is False
+    assert _confirm_with_input(b"", monkeypatch) is False

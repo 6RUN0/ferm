@@ -4,7 +4,8 @@ Covers the numeric-address classifier, the Net::DNS-style IPv6 expansion,
 zone-file parsing, and the ``resolve`` control flow: family-default record
 type, the numeric fast-path family filter, the silent NXDOMAIN/NOERROR
 skips, the empty-result (zero elements) case, and the NS/MX two-pass
-resolution.
+resolution.  Also covers resolver selection (``pick_resolver``) and the
+dnspython adapter (``SystemResolver``) against a stubbed ``dns.resolver``.
 """
 
 from __future__ import annotations
@@ -15,13 +16,19 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.resolver import (
+    SystemResolver,
     ZonefileResolver,
     identify_numeric_address,
+    pick_resolver,
     resolve,
     set_resolver_provider,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+    from pyferm.resolver import SearchResult
     from pyferm.values import Value
 
 _ZONE = """\
@@ -160,3 +167,126 @@ def test_resolve_without_provider_errors() -> None:
     set_resolver_provider(None)
     with pytest.raises(FermError, match="no resolver provider"):
         resolve("ip", "v4.example.com")
+
+
+def test_pick_resolver_production_path_is_system() -> None:
+    # Without --test ferm queries live DNS (Perl pick_resolver, :1286).
+    assert isinstance(pick_resolver(False, "rules/main.ferm"), SystemResolver)
+
+
+def test_pick_resolver_test_reads_zonefile_next_to_script(
+    tmp_path: Path,
+) -> None:
+    # Under --test the zonefile lives in the *script's* directory (Perl
+    # m,^(.*/), on the current script path), so an @include'd file in
+    # another directory resolves against its own zonefile.
+    (tmp_path / "zonefile").write_text(
+        "h.example.com. IN A 192.0.2.9\n", encoding="utf-8"
+    )
+    resolver = pick_resolver(True, str(tmp_path / "main.ferm"))
+    assert resolve("ip", "h.example.com", resolver=resolver) == ["192.0.2.9"]
+
+
+def test_pick_resolver_relative_script_reads_cwd_zonefile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A script path without a directory part falls back to ./zonefile.
+    # The zonefile read is intercepted instead of chdir'ing into a
+    # tmp dir: mutmut's trampoline resolves the relative source_paths
+    # config against the cwd and breaks under a chdir'd test.
+    seen: list[str] = []
+
+    def fake_from_file(path: str) -> ZonefileResolver:
+        seen.append(path)
+        return ZonefileResolver.from_text("h.example.com. IN A 192.0.2.10\n")
+
+    monkeypatch.setattr(
+        "pyferm.resolver.ZonefileResolver.from_file", fake_from_file
+    )
+    resolver = pick_resolver(True, "main.ferm")
+    assert seen == ["./zonefile"]
+    assert resolve("ip", "h.example.com", resolver=resolver) == ["192.0.2.10"]
+
+
+def test_pick_resolver_missing_zonefile_is_fatal(tmp_path: Path) -> None:
+    with pytest.raises(FermError, match="Failed to read zonefile"):
+        pick_resolver(True, str(tmp_path / "main.ferm"))
+
+
+def _system_search(
+    monkeypatch: pytest.MonkeyPatch, outcome: Callable[[], list[str]]
+) -> tuple[SearchResult, tuple[object, ...]]:
+    """Run ``SystemResolver.search`` against a stubbed ``dns.resolver``."""
+    import dns.resolver
+
+    seen: list[tuple[object, ...]] = []
+
+    def fake_resolve(
+        hostname: str, rrtype: str, search: bool = False
+    ) -> list[str]:
+        seen.append((hostname, rrtype, search))
+        return outcome()
+
+    monkeypatch.setattr(dns.resolver, "resolve", fake_resolve)
+    return SystemResolver().search("h.example.com", "A"), seen[0]
+
+
+def test_system_resolver_maps_answer_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, call = _system_search(monkeypatch, lambda: ["192.0.2.7"])
+    assert result.found is True
+    assert [(rr.type, rr.data) for rr in result.answer] == [("A", "192.0.2.7")]
+    assert result.errorstring == "NOERROR"
+    # search=True honours the resolv.conf search list, like Perl's
+    # $res->search (as opposed to ->query).
+    assert call == ("h.example.com", "A", True)
+
+
+def test_system_resolver_nxdomain_is_silent_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A missing name must map to the "NXDOMAIN" errorstring that resolve()
+    # skips silently -- not to a fatal DNS failure.
+    def raise_nxdomain() -> list[str]:
+        import dns.resolver
+
+        raise dns.resolver.NXDOMAIN
+
+    result, _ = _system_search(monkeypatch, raise_nxdomain)
+    assert (result.found, result.answer) == (False, [])
+    assert result.errorstring == "NXDOMAIN"
+
+
+def test_system_resolver_no_answer_is_silent_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A name that exists without the queried type behaves like the mock's
+    # NOERROR case: the host is skipped, the run continues.
+    def raise_no_answer() -> list[str]:
+        import dns.resolver
+
+        raise dns.resolver.NoAnswer
+
+    result, _ = _system_search(monkeypatch, raise_no_answer)
+    assert (result.found, result.answer) == (False, [])
+    assert result.errorstring == "NOERROR"
+
+
+def test_system_resolver_failure_carries_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Any other DNS failure keeps its message, which resolve() turns into
+    # a fatal "DNS query ... failed" -- a transient resolver outage must
+    # abort the run instead of silently dropping firewall rules.
+    def raise_failure() -> list[str]:
+        import dns.exception
+
+        # dnspython's DNSException.__init__ is untyped.
+        raise dns.exception.DNSException(  # type: ignore[no-untyped-call]
+            "connection timed out"
+        )
+
+    result, _ = _system_search(monkeypatch, raise_failure)
+    assert result.found is False
+    assert result.errorstring == "connection timed out"

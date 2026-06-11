@@ -160,9 +160,7 @@ class ZonefileResolver:
 class SystemResolver:
     """The production resolver, backed by ``dnspython`` (Perl ``Net::DNS``)."""
 
-    def search(
-        self, hostname: str, rrtype: str
-    ) -> SearchResult:  # pragma: no cover - needs live DNS
+    def search(self, hostname: str, rrtype: str) -> SearchResult:
         """Query the system resolver, mapping failures to error strings."""
         import dns.exception
         import dns.resolver

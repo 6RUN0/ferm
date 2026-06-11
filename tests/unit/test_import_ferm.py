@@ -9,13 +9,17 @@ over a small ``iptables-save`` snippet.
 from __future__ import annotations
 
 import io
-from typing import TYPE_CHECKING
+import subprocess
 
+import pytest
+
+from pyferm.errors import FermError
 from pyferm.import_ferm import (
     Importer,
     MatchEntry,
     Rule,
     _canon,
+    _iptables_save_lines,
     _optimize,
     _tokenize,
     ferm_escape,
@@ -23,9 +27,6 @@ from pyferm.import_ferm import (
     main,
 )
 from pyferm.values import Multi, Negated
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _imported(save: str) -> str:
@@ -158,3 +159,87 @@ COMMIT
 """
     output = _imported(save)
     assert "saddr ! 10.0.0.0/8 DROP;" in output
+
+
+def test_run_ported_protocol_enables_port_options() -> None:
+    # sport/dport are not global options: a ported protocol (Perl :420)
+    # brings both into scope, mirroring iptables' own -p tcp --dport.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp --sport 1024 --dport 22 --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol tcp sport 1024 dport 22 ACCEPT;" in output
+
+
+def test_run_dport_without_ported_protocol_is_fatal() -> None:
+    # Without a port-carrying protocol the option stays unknown, exactly
+    # like iptables itself rejects a bare --dport.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT --dport 22 --jump ACCEPT
+COMMIT
+"""
+    with pytest.raises(
+        FermError, match="option 'dport' in line 3 not understood"
+    ):
+        _imported(save)
+
+
+def test_run_emits_leftover_policy_of_chain_without_rules() -> None:
+    # A declared chain that never receives an -A line still must keep its
+    # policy: it is emitted as a one-line chain at the end of the table.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD DROP [0:0]
+-A INPUT --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "chain FORWARD policy DROP;" in output
+
+
+def test_iptables_save_lines_returns_stdout_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        ["iptables-save"], 0, stdout="*filter\nCOMMIT\n"
+    )
+    commands: list[object] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return completed
+
+    monkeypatch.setattr("pyferm.import_ferm.subprocess.run", fake_run)
+    assert _iptables_save_lines() == ["*filter", "COMMIT"]
+    # The dump must come from iptables-save itself (Perl :502).
+    assert commands == [["iptables-save"]]
+
+
+def test_iptables_save_lines_failure_is_ferm_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A missing/failing iptables-save must surface as a FermError (one
+    # diagnostic line, exit 1) -- never as a raw traceback.
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr("pyferm.import_ferm.subprocess.run", fail)
+    with pytest.raises(FermError, match="Failed to run iptables-save"):
+        _iptables_save_lines()
+
+
+def test_main_unknown_option_prints_usage_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["-x"]) == 1
+    captured = capsys.readouterr()
+    assert "Usage:" in captured.err
+    assert captured.out == ""
