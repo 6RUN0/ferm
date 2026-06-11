@@ -71,12 +71,12 @@ class Rendered:
     """
 
     save: str | None = None
-    commands: list[Command] = field(default_factory=list)
+    commands: list[Command] = field(default_factory=list[Command])
     #: Artifacts the commands reference that must stay alive until commit
     #: (the eb atomic tempfiles auto-unlink when dropped).  Owned here, not
     #: on ``DomainInfo``, so re-rendering cannot orphan an earlier
     #: ``Rendered``'s files.
-    resources: list[object] = field(default_factory=list)
+    resources: list[object] = field(default_factory=list[object])
 
 
 class Backend(ABC):

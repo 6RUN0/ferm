@@ -33,7 +33,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, TextIO, cast
 
 from pyferm.errors import FermError
 from pyferm.modules import (
@@ -120,9 +120,9 @@ class Rule:
     :attr:`block`.
     """
 
-    keywords: dict[str, Keyword] = field(default_factory=dict)
-    match: list[MatchEntry] = field(default_factory=list)
-    mod: dict[str, int] = field(default_factory=dict)
+    keywords: dict[str, Keyword] = field(default_factory=dict[str, Keyword])
+    match: list[MatchEntry] = field(default_factory=list[MatchEntry])
+    mod: dict[str, int] = field(default_factory=dict[str, int])
     proto: Value | None = None
     jump: str | None = None
     goto: str | None = None
@@ -158,7 +158,7 @@ def format_array(value: object) -> str:
     if isinstance(value, Multi):
         items: list[Value] = value.values
     elif isinstance(value, list):
-        items = value
+        items = cast("list[Value]", value)
     else:
         return ferm_escape(value)
     if len(items) == 1:
@@ -241,14 +241,17 @@ def _canon(value: object) -> object:
     if isinstance(value, Rule):
         return _canon_rule(value, value.match)
     if isinstance(value, list):
-        return ("array", tuple(_canon(item) for item in value))
+        return (
+            "array",
+            tuple(_canon(item) for item in cast("list[object]", value)),
+        )
     if isinstance(value, dict):
         return (
             "hash",
             tuple(
                 sorted(
-                    ((key, _canon(val)) for key, val in value.items()),
-                    key=lambda pair: pair[0],
+                    (key, _canon(val))
+                    for key, val in cast("dict[str, object]", value).items()
                 )
             ),
         )

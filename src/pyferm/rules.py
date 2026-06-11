@@ -77,7 +77,7 @@ def is_netfilter_core_target(target: str | None) -> bool:
 
 
 def is_netfilter_module_target(
-    target_defs: Registry, domain_family: str | None, target: str
+    target_defs: Registry, domain_family: str | None, target: str | None
 ) -> ModuleDef | None:
     """
     Return the target-module def for ``target``, else ``None`` (``:1772``).

@@ -18,13 +18,17 @@ Examples::
     uv run nox -s coverage           # tests under coverage
     uv run nox -s audit              # bandit + pip-audit
     uv run nox -s workflows          # actionlint + zizmor on CI configs
+    uv run nox -s deps_lowest        # test suite on lowest dep bounds
+    uv run nox -s build              # wheel/sdist build + install smoke
     uv run nox -s fuzz               # thorough differential fuzzing
     uv run nox -s mutation           # mutmut over the unit suite (slow)
     uv run nox -s crashfuzz          # atheris crash fuzzing of the parsers
     uv run nox -s lockout            # containerized anti-lockout e2e (docker)
 """
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import nox
@@ -122,14 +126,22 @@ def typecheck(session: nox.Session) -> None:
     _uv(session, "pyright", "--verifytypes", "pyferm")
 
 
+#: Base ref for the diff-cover patch-coverage gate: the branch a local
+#: preflight is about to push to.  In CI the checked-out commit equals
+#: this ref, the diff is empty and the gate passes trivially -- the gate
+#: bites locally, before the push.
+_PATCH_COVERAGE_BASE = os.environ.get("FERM_DIFF_BASE", "origin/python-port")
+
+
 @nox.session
 def coverage(session: nox.Session) -> None:
-    """Run the test suite under coverage."""
+    """Run the test suite under coverage (global floor + patch gate)."""
     _uv(
         session,
         "pytest",
         "--cov",
         "--cov-report=term-missing",
+        "--cov-report=xml",
         *session.posargs,
         env=_GOLDEN_ENV,
     )
@@ -138,6 +150,29 @@ def coverage(session: nox.Session) -> None:
     # `coverage report` exits non-zero below [tool.coverage.report]
     # fail_under.
     _uv(session, "coverage", "report", "--format=total")
+    # Patch coverage: lines added/changed relative to the push target are
+    # held to a higher floor than the global ratchet, so new code cannot
+    # coast on the existing suite's percentage.
+    base_exists = (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", _PATCH_COVERAGE_BASE],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+    if base_exists:
+        _uv(
+            session,
+            "diff-cover",
+            "coverage.xml",
+            f"--compare-branch={_PATCH_COVERAGE_BASE}",
+            "--fail-under=90",
+        )
+    else:
+        session.log(
+            f"{_PATCH_COVERAGE_BASE} not found; skipping the patch gate"
+        )
 
 
 @nox.session
@@ -250,6 +285,94 @@ def lockout(session: nox.Session) -> None:
 
 
 @nox.session
+def deps_lowest(session: nox.Session) -> None:
+    """
+    Run the test suite against the lowest declared dependency bounds.
+
+    Installs the project plus the ``test`` group with ``--resolution
+    lowest-direct`` into its own environment (``.venv-lowest``), proving
+    the ``>=`` floors in pyproject.toml are honest rather than
+    aspirational.  ``uv pip`` resolves independently of ``uv.lock``, so
+    the lockfile stays untouched.
+    """
+    session.run(
+        "uv", "venv", "--quiet", "--clear", ".venv-lowest", external=True
+    )
+    session.run(
+        "uv",
+        "pip",
+        "install",
+        "--quiet",
+        "--resolution",
+        "lowest-direct",
+        "-e",
+        ".",
+        "--group",
+        "test",
+        external=True,
+        env={"VIRTUAL_ENV": ".venv-lowest"},
+    )
+    session.run(
+        ".venv-lowest/bin/python",
+        "-m",
+        "pytest",
+        *session.posargs,
+        external=True,
+        env=_GOLDEN_ENV,
+    )
+
+
+@nox.session
+def build(session: nox.Session) -> None:
+    """
+    Build the wheel/sdist and smoke-test the wheel in a clean venv.
+
+    Every other gate runs against the editable src-layout install, so
+    none of them notices a wheel that ships without ``py.typed`` or with
+    broken entry points.  ``twine check`` and ``check-wheel-contents``
+    validate the artifacts; the explicit zipfile assertion covers
+    ``py.typed`` (the one promise ``--verifytypes`` makes that
+    check-wheel-contents does not test for); then the wheel installs
+    into a throwaway venv where both console scripts must answer.
+    """
+    out = Path(session.create_tmp())
+    # create_tmp does not wipe an existing directory: stale artifacts
+    # from a previous run (an old-version wheel, the smoke venv) would
+    # leak into the globs below.
+    shutil.rmtree(out)
+    out.mkdir()
+    session.run("uv", "build", "--out-dir", str(out), external=True)
+    artifacts = sorted(str(path) for path in out.glob("ferm-*"))
+    _uv(session, "--group", "build", "twine", "check", "--strict", *artifacts)
+    wheel = next(str(path) for path in out.glob("*.whl"))
+    _uv(session, "--group", "build", "check-wheel-contents", wheel)
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "-c",
+        "import sys, zipfile\n"
+        f"names = zipfile.ZipFile({wheel!r}).namelist()\n"
+        "sys.exit('py.typed missing from the wheel'\n"
+        "         if 'pyferm/py.typed' not in names else 0)",
+        external=True,
+    )
+    venv = out / "smoke-venv"
+    session.run("uv", "venv", "--quiet", str(venv), external=True)
+    session.run(
+        "uv",
+        "pip",
+        "install",
+        "--quiet",
+        wheel,
+        external=True,
+        env={"VIRTUAL_ENV": str(venv)},
+    )
+    session.run(str(venv / "bin" / "ferm"), "--version", external=True)
+    session.run(str(venv / "bin" / "import-ferm"), "--help", external=True)
+
+
+@nox.session
 def audit(session: nox.Session) -> None:
     """Security/vulnerability audit (bandit + pip-audit)."""
     _uv(session, "bandit", "-q", "-c", "pyproject.toml", "-r", "src")
@@ -289,6 +412,8 @@ def preflight(session: nox.Session) -> None:
         "golden_oracle",
         "fuzz",
         "workflows",
+        "deps_lowest",
+        "build",
         # Parametrized sessions are notified per signature; the bare
         # name would not expand to the variants.
         *(f"matrix(python='{python}')" for python in _SUPPORTED_PYTHONS),

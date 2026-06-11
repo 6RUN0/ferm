@@ -40,7 +40,8 @@ class OracleProcess:
         """Send one record and return the oracle's reply."""
         stdin = self._proc.stdin
         stdout = self._proc.stdout
-        assert stdin is not None and stdout is not None
+        assert stdin is not None
+        assert stdout is not None
         stdin.write(record.encode("ascii") + _RECORD_SEP)
         stdin.flush()
         reply = bytearray()

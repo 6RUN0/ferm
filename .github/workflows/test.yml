@@ -54,6 +54,28 @@ jobs:
       - name: Run the gates (lint, typecheck, tests under coverage)
         run: uv run nox -s lint typecheck coverage
 
+  # Deliberately light (no mutation/crashfuzz here): the wheel smoke and
+  # the lowest-bounds suite together stay around two minutes.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Build and smoke-test the wheel
+        run: uv run nox -s build
+
+      - name: Test against the lowest declared dependency bounds
+        run: uv run nox -s deps_lowest
+
   golden-oracle:
     runs-on: ubuntu-latest
     steps:

@@ -57,11 +57,11 @@ class Script:
     filename: str
     handle: IO[str] | None
     line: int = 0
-    past_tokens: list[list[object]] = field(default_factory=list)
+    past_tokens: list[list[object]] = field(default_factory=list[list[object]])
     #: A deque, not a list: Perl's shift/unshift are O(1) and the parser
     #: replays whole captured blocks through the queue (``_replay_array``/
     #: ``_call_function``), where ``list.pop(0)`` would be quadratic.
-    tokens: deque[Token] = field(default_factory=deque)
+    tokens: deque[Token] = field(default_factory=deque[Token])
     parent: Script | None = None
     base_level: int | None = None
     #: The child of a pipe include (``'cmd|'``); the parser checks its exit

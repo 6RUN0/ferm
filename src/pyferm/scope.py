@@ -29,11 +29,12 @@ a ``new_level`` call, so rebuilding and reassigning is equivalent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from pyferm.modules import Keyword
-    from pyferm.values import Value
+# Runtime imports, not TYPE_CHECKING: the parametrized default_factory
+# expressions below (``dict[str, Keyword]`` etc.) evaluate at class-body
+# time.
+from pyferm.modules import Keyword
+from pyferm.values import Value
 
 
 @dataclass(frozen=True)
@@ -93,14 +94,14 @@ class Rule:
     emitted their ``-m module`` (Perl's ``$rule{match}{$module}`` set).
     """
 
-    cow: set[str] = field(default_factory=set)
-    keywords: dict[str, Keyword] = field(default_factory=dict)
+    cow: set[str] = field(default_factory=set[str])
+    keywords: dict[str, Keyword] = field(default_factory=dict[str, Keyword])
     #: Which module's ``merge_keywords`` introduced each keyword (the
     #: parse-time link the oracle discards, kept for :attr:`Option.module`);
     #: travels with ``keywords`` under the same copy-on-write guard.
-    keyword_module: dict[str, str] = field(default_factory=dict)
-    match: set[str] = field(default_factory=set)
-    options: list[Option] = field(default_factory=list)
+    keyword_module: dict[str, str] = field(default_factory=dict[str, str])
+    match: set[str] = field(default_factory=set[str])
+    options: list[Option] = field(default_factory=list[Option])
     domain: Value = None
     domain_family: str | None = None
     domain_both: bool = False
@@ -222,9 +223,9 @@ class Frame:
     same object assigned to two frames.
     """
 
-    vars: dict[str, Value] = field(default_factory=dict)
-    functions: dict[str, object] = field(default_factory=dict)
-    auto: dict[str, Value] = field(default_factory=dict)
+    vars: dict[str, Value] = field(default_factory=dict[str, Value])
+    functions: dict[str, object] = field(default_factory=dict[str, object])
+    auto: dict[str, Value] = field(default_factory=dict[str, Value])
 
 
 class Scope:

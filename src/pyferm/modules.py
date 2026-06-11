@@ -80,7 +80,7 @@ class Keyword:
 class ModuleDef:
     """One registered module (Perl's ``$def`` hash: ``{keywords => ...}``)."""
 
-    keywords: dict[str, Keyword] = field(default_factory=dict)
+    keywords: dict[str, Keyword] = field(default_factory=dict[str, Keyword])
 
 
 #: A registry: ``domain_family -> module_name -> ModuleDef``.

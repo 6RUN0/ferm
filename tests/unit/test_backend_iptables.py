@@ -111,7 +111,7 @@ def test_format_option_ip6_icmp_protocol() -> None:
     assert format_option("ip6", "protocol", "icmp", fast=False) == (
         " --protocol icmpv6"
     )
-    # ip: untouched
+    # the ip family stays untouched
     assert format_option("ip", "protocol", "icmp", fast=False) == (
         " --protocol icmp"
     )
@@ -402,7 +402,8 @@ def test_render_slow_eb_rerender_keeps_first_tempfiles() -> None:
         for match in [re.search(r"--atomic-file (\S+)", command.text)]
         if match is not None
     }
-    assert names and all(Path(name).exists() for name in names)
+    assert names
+    assert all(Path(name).exists() for name in names)
     # a second render must not unlink the files the first Rendered's
     # commands reference (commit may still run them)
     backend.render("eb", domain_info, _SLOW)

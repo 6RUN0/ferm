@@ -144,7 +144,7 @@ def test_resolve_mx_two_pass_aaaa(zone: ZonefileResolver) -> None:
 
 def test_resolve_rejects_non_string_type(zone: ZonefileResolver) -> None:
     with pytest.raises(FermError, match="String expected"):
-        resolve("ip", "v4.example.com", ["A"], resolver=zone)  # type: ignore[arg-type]
+        resolve("ip", "v4.example.com", ["A"], resolver=zone)
 
 
 def test_resolve_uses_installed_provider() -> None:

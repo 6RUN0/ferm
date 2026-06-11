@@ -34,9 +34,12 @@ from typing import IO, TYPE_CHECKING
 
 from pyferm.errors import FermError
 
+# Runtime import, not TYPE_CHECKING: the parametrized default_factory
+# expressions below (``list[RenderedRule]``) evaluate at class-body time.
+from pyferm.rules import RenderedRule
+
 if TYPE_CHECKING:
     from pyferm.config import Options
-    from pyferm.rules import RenderedRule
 
 #: The ebtables tables in their FIXED order (``:94``).  The order is a
 #: deliberate literal, NOT sorted -- arp/eb output is byte-for-byte and not
@@ -78,7 +81,7 @@ class ChainInfo:
 
     builtin: bool = False
     policy: str | None = None
-    rules: list[RenderedRule] = field(default_factory=list)
+    rules: list[RenderedRule] = field(default_factory=list[RenderedRule])
     preserve: bool | None = None
 
 
@@ -93,8 +96,10 @@ class TableInfo:
     """
 
     has_builtin: bool = False
-    preserve_regexes: list[re.Pattern[str]] = field(default_factory=list)
-    chains: dict[str, ChainInfo] = field(default_factory=dict)
+    preserve_regexes: list[re.Pattern[str]] = field(
+        default_factory=list[re.Pattern[str]]
+    )
+    chains: dict[str, ChainInfo] = field(default_factory=dict[str, ChainInfo])
 
 
 @dataclass
@@ -113,10 +118,12 @@ class DomainInfo:
 
     initialized: bool = False
     enabled: bool = False
-    tools: dict[str, str] = field(default_factory=dict)
+    tools: dict[str, str] = field(default_factory=dict[str, str])
     previous: str | None = None
-    ebt_previous: dict[str, IO[bytes]] = field(default_factory=dict)
-    tables: dict[str, TableInfo] = field(default_factory=dict)
+    ebt_previous: dict[str, IO[bytes]] = field(
+        default_factory=dict[str, IO[bytes]]
+    )
+    tables: dict[str, TableInfo] = field(default_factory=dict[str, TableInfo])
 
 
 def find_tool(name: str, options: Options) -> str:

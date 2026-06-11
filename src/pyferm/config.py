@@ -55,7 +55,7 @@ class Options:
     #: ``--domain``: restrict processing to a single family, if set.
     domain: str | None = None
     #: ``--test-mock-previous=fam=path``: stand-in previous save per family.
-    mock_previous: dict[str, str] = field(default_factory=dict)
+    mock_previous: dict[str, str] = field(default_factory=dict[str, str])
     #: ``--nolegacy`` (port-only, deviation #4): skip the ``*-legacy`` tool
     #: preference in :func:`pyferm.domains.find_tool`.
     nolegacy: bool = False

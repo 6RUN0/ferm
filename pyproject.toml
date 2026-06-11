@@ -73,6 +73,11 @@ select = [
   "DTZ",              # naive datetime
   "G",                # logging format
   "LOG",              # logging hygiene
+  "PT",               # pytest style
+  "ERA",              # commented-out code
+  "ISC",              # implicit string concatenation
+  "FLY",              # static str.join -> f-string
+  "SLOT",             # __slots__ on str/tuple subclasses
 ]
 # D213 (summary on the second line) is the project's docstring shape;
 # it is mutually exclusive with D212, which the pep257 convention
@@ -118,6 +123,26 @@ warn_unreachable = true
 # (including throwaway scratch files) and the gate stops being stable.
 include = ["src", "tests", "noxfile.py"]
 pythonVersion = "3.11"
+# Match mypy's strictness: two checkers at different strictness levels
+# only pretend to be redundant -- the weaker one stops catching the
+# classes of errors the duplication exists for.
+typeCheckingMode = "strict"
+
+# Tests stay strict except for patterns that are the point of a test:
+# importing the private unit under test, loose lambda stubs (whose
+# completeness mypy --strict still checks), and autouse fixtures that
+# pyright cannot see being called.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+# The env root replaces the project root for import resolution, which
+# would break the suite's absolute self-imports (``tests.corpus.canon``).
+extraPaths = ["."]
+reportPrivateUsage = "none"
+reportUnknownVariableType = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnusedFunction = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -140,9 +165,11 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# No-regression floor just under the measured baseline (83.60% on
-# 2026-06-10); ratchet it up as the port's error paths gain tests.
-fail_under = 83
+# No-regression floor just under the measured baseline (84.58% on
+# 2026-06-11); ratchet it up as the port's error paths gain tests.
+# New code is additionally held to 90% by the diff-cover patch gate in
+# the ``coverage`` nox session.
+fail_under = 84
 exclude_also = [
     # Type-only branches never execute at runtime.
     "if TYPE_CHECKING:",
@@ -231,9 +258,14 @@ crashfuzz = [
     "atheris>=3.0.0; python_version < '3.14'",
 ]
 test = [
+    "diff-cover>=10.3.0",
     "hypothesis>=6.155.2",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "pytest-randomly>=4.1.0",
     "pytest-timeout>=2.4.0",
+]
+build = [
+    "check-wheel-contents>=0.6.3",
+    "twine>=6.2.0",
 ]

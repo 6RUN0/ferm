@@ -107,7 +107,9 @@ class ZonefileResolver:
     mock yields.
     """
 
-    records: dict[str, list[ResourceRecord]] = field(default_factory=dict)
+    records: dict[str, list[ResourceRecord]] = field(
+        default_factory=dict[str, list[ResourceRecord]]
+    )
 
     @classmethod
     def from_file(cls, path: str) -> ZonefileResolver:
@@ -257,7 +259,10 @@ def _current_resolver() -> Resolver:
 def resolve(
     domain: str,
     names: Value,
-    rrtype: str | None = None,
+    # ``Value``, not ``str | None``: ``@resolve(host, type)`` arrives as a
+    # ``Deferred`` with unvalidated parser values, and the "String
+    # expected" guard below is what enforces the narrowing at runtime.
+    rrtype: Value = None,
     *,
     resolver: Resolver | None = None,
 ) -> list[Value]:
