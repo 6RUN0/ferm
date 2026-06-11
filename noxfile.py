@@ -391,20 +391,14 @@ def workflows(session: nox.Session) -> None:
     """
     Lint the GitHub Actions workflows (actionlint + zizmor).
 
-    Both linters are system binaries (not Python packages), so each one
-    is skipped with a notice when absent from PATH; the session fails
-    only on real findings.
+    Both linters come from the locked ``lint`` group (actionlint via the
+    ``actionlint-py`` vendored-binary wheel), so the session runs the
+    same versions everywhere -- locally and in the weekly audit job.
     """
-    available = [
-        tool for tool in ("actionlint", "zizmor") if shutil.which(tool)
-    ]
-    for tool in available:
-        # actionlint discovers .github/workflows on its own; zizmor
-        # needs the path spelled out.
-        args = [tool] if tool == "actionlint" else [tool, ".github/workflows"]
-        session.run(*args, external=True)
-    if not available:
-        session.skip("neither actionlint nor zizmor is installed")
+    # actionlint discovers .github/workflows on its own; zizmor needs
+    # the path spelled out.
+    _uv(session, "actionlint")
+    _uv(session, "zizmor", ".github/workflows")
 
 
 @nox.session

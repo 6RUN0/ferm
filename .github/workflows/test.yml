@@ -98,5 +98,17 @@ jobs:
       - name: Validate the golden harness against the Perl oracle
         run: uv run nox -s golden_oracle
 
+      # The Hypothesis example database only grows: a unique key forces
+      # a save after every run while restore-keys pulls the most recent
+      # snapshot, so counterexamples and the explored coverage frontier
+      # accumulate across runs instead of restarting from scratch.
+      - name: Restore the accumulated Hypothesis example database
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # frozen: v5.0.5
+        with:
+          path: .hypothesis
+          key: hypothesis-${{ github.run_id }}
+          restore-keys: |
+            hypothesis-
+
       - name: Differential fuzzing against the oracle (thorough)
         run: uv run nox -s fuzz

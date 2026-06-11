@@ -1,0 +1,41 @@
+---
+# Weekly dependency and CI-config audit.  pip-audit findings appear
+# without any push (a CVE lands against an already-locked version), so
+# a push-triggered gate would never see them -- a schedule is the only
+# trigger that matches how this class of problem arrives.
+#
+# GitHub fires `schedule` from the workflow file on the default branch
+# only, so the cron becomes active once the port lands on master.
+# Until then run it manually against the branch:
+#   gh workflow run audit.yml --ref python-port
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 06:20 UTC; an off-peak minute (GitHub throttles the
+    # top-of-hour spike).
+    - cron: '20 6 * * 1'
+  # Self-validation: exercise the job whenever this file changes.
+  push:
+    paths: ['.github/workflows/audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Audit the dependencies (bandit + pip-audit)
+        run: uv run nox -s audit
+
+      - name: Lint the CI workflows (actionlint + zizmor)
+        run: uv run nox -s workflows

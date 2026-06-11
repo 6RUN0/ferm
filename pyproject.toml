@@ -304,6 +304,7 @@ dev = [
     "pre-commit>=4.6.0",
 ]
 lint = [
+    "actionlint-py>=1.7.12.24",
     "bandit[toml]>=1.9.4",
     "deptry>=0.23.1",
     "import-linter>=2.11",
@@ -312,6 +313,7 @@ lint = [
     "pyright>=1.1.410",
     "ruff>=0.15.16",
     "vulture>=2.14",
+    "zizmor>=1.25.2",
 ]
 mutation = [
     "mutmut>=3.6.0",
