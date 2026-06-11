@@ -10,6 +10,7 @@ guard flags and ``eb`` atomic framing, plus ``commit``/``rollback``.
 from __future__ import annotations
 
 import re
+import subprocess
 
 import pytest
 
@@ -648,3 +649,25 @@ def test_read_previous_delegates_to_domains() -> None:
     )
     assert save == "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
     assert info.tables["filter"].chains["INPUT"].builtin is True
+
+
+# --- restore_domain latin-1 encoding ---------------------------------------
+
+
+def test_restore_domain_pipes_latin1_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # save.encode() with default utf-8 would turn U+00FF into two bytes
+    # (0xc3 0xbf); latin-1 must preserve it as the single byte 0xff.
+    sent: dict[str, object] = {}
+
+    def fake_run(
+        args: list[str], *, input: bytes, check: bool  # noqa: A002,ARG001
+    ) -> subprocess.CompletedProcess[bytes]:
+        sent["input"] = input
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("pyferm.backend.iptables.subprocess.run", fake_run)
+    info = DomainInfo(tools={"tables-restore": "iptables-restore"})
+    restore_domain(info, '-A INPUT --comment "\xff"\n', Options())
+    assert sent["input"] == b'-A INPUT --comment "\xff"\n'

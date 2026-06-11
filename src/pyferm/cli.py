@@ -42,6 +42,7 @@ from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
+from pyferm.streams import reconfigure_latin1
 from pyferm.tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
@@ -239,7 +240,7 @@ def _setup_streams(
     saved_fd = os.dup(stdout_fd)
     # Line-buffered: each emitted line reaches the script file before any
     # subsequent child could have run.
-    lines_stream = os.fdopen(saved_fd, "w", buffering=1, encoding="utf-8")
+    lines_stream = os.fdopen(saved_fd, "w", buffering=1, encoding="latin-1")
     sys.stdout.flush()
     os.dup2(stderr_fd, stdout_fd)
 
@@ -306,7 +307,7 @@ def _make_io(
         # {previous} is set to the empty string, not left unset.
         try:
             completed = subprocess.run(
-                [tool], capture_output=True, encoding="utf-8", check=False
+                [tool], capture_output=True, encoding="latin-1", check=False
             )
         except OSError:
             return ""
@@ -395,7 +396,7 @@ def _confirm_rules(options: Options) -> bool:
 
     try:
         data = os.read(sys.stdin.fileno(), 3)
-        line = data.decode("utf-8", "replace")
+        line = data.decode("latin-1")
     except (_ConfirmTimeoutError, OSError):
         line = ""
     finally:
@@ -419,6 +420,9 @@ def _confirm_rules(options: Options) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the ferm CLI (Perl's top-level program, ``:620-819``)."""
+    # before any write: argparse renders usage/errors through these streams
+    reconfigure_latin1(sys.stdout, errors="backslashreplace")
+    reconfigure_latin1(sys.stderr, errors="backslashreplace")
     try:
         return _main(argv)
     except FermError as exc:

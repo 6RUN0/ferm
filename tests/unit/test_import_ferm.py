@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import io
 import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from pyferm.errors import FermError
 from pyferm.import_ferm import (
@@ -19,6 +23,7 @@ from pyferm.import_ferm import (
     MatchEntry,
     Rule,
     _canon,
+    _gather_input,
     _iptables_save_lines,
     _optimize,
     _tokenize,
@@ -339,3 +344,16 @@ def test_main_unknown_option_prints_usage_to_stderr(
     captured = capsys.readouterr()
     assert "Usage:" in captured.err
     assert captured.out == ""
+
+
+# --- _gather_input latin-1 file read ---------------------------------------
+
+
+def test_gather_input_reads_high_bytes(tmp_path: Path) -> None:
+    # latin-1 decode preserves byte 0xff as the single char U+00FF;
+    # utf-8 would raise UnicodeDecodeError on that byte.
+    save = tmp_path / "dump"
+    save.write_bytes(b"# \xff\n*filter\nCOMMIT\n")
+    lines = _gather_input([str(save)])
+    # _gather_input uses splitlines(), so there are no trailing newlines
+    assert lines[0] == "# \xff"

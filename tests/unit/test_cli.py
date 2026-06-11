@@ -403,3 +403,54 @@ def test_confirm_rules_requires_exact_yes(
     assert "type 'yes' to confirm" in capfd.readouterr().err
     assert _confirm_with_input(b"no\n", monkeypatch) is False
     assert _confirm_with_input(b"", monkeypatch) is False
+
+
+# --- latin-1 byte round-trips through the CLI entry point ------------------
+
+_BYTE_CONFIG = (
+    b'table filter chain INPUT mod comment comment "h\xfc" ACCEPT;\n'
+)
+
+
+def test_cli_file_round_trips_high_bytes(tmp_path: Path) -> None:
+    # Byte 0xfc in the config must survive end to end on stdout: latin-1
+    # preserves the one-byte-per-char contract; utf-8 would encode it as
+    # two bytes (0xc3 0xbc), breaking the verbatim round-trip.
+    config = tmp_path / "bytes.ferm"
+    config.write_bytes(_BYTE_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "-m", "pyferm", "--test", str(config)],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    # fast mode: bare comment value is emitted unquoted; the byte 0xfc must
+    # appear verbatim rather than as the utf-8 two-byte sequence 0xc3 0xbc
+    assert b"h\xfc" in result.stdout
+    assert b"h\xc3\xbc" not in result.stdout
+
+
+def test_cli_stdin_round_trips_high_bytes() -> None:
+    # Same round-trip via stdin ("-") so the stdin reconfigure path is hit.
+    result = subprocess.run(
+        [sys.executable, "-m", "pyferm", "--test", "-"],
+        input=_BYTE_CONFIG,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert b"h\xfc" in result.stdout
+    assert b"h\xc3\xbc" not in result.stdout
+
+
+def test_cli_error_with_non_latin1_filename_does_not_crash() -> None:
+    # argv decodes to U+20AC; the FermError text lands on the
+    # backslashreplace stderr instead of raising UnicodeEncodeError
+    result = subprocess.run(
+        [sys.executable, "-m", "pyferm", "--test", "missing-\u20ac.ferm"],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert b"Traceback" not in result.stderr
+    assert result.stderr  # a usable error message was printed

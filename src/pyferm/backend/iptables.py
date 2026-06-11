@@ -370,7 +370,11 @@ def restore_domain(
 
     try:
         # the path comes from find_tool; no shell is used
-        completed = subprocess.run(args, input=save.encode(), check=False)
+        # latin-1: one byte per char, reproducing the config bytes exactly
+        # (default utf-8 would turn U+0080-U+00FF into two bytes each)
+        completed = subprocess.run(
+            args, input=save.encode("latin-1"), check=False
+        )
     except OSError as exc:
         raise FermError(f"Failed to run {path}: {exc}") from exc
     if completed.returncode != 0:
