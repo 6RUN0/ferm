@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
+from pyferm.backend.base import shell_snapshot
 from pyferm.errors import FermError
 
 # Runtime import, not TYPE_CHECKING: the parametrized default_factory
@@ -265,14 +266,11 @@ def initialize_domain(
                 saved.splitlines(keepends=True), domain_info
             )
 
-    if (
-        options.shell
-        and options.interactive
-        and "tables-save" in tools
-        and emit_line is not None
-    ):
-        emit_line(f"{domain}_tmp=$(mktemp ferm.XXXXXXXXXX)\n")
-        emit_line(f"{tools['tables-save']} >${domain}_tmp\n")
+    if options.shell and options.interactive and emit_line is not None:
+        snapshot_lines = shell_snapshot(domain, tools)
+        if snapshot_lines is not None:
+            for line in snapshot_lines.setup:
+                emit_line(line)
 
     if domain == "eb":
         domain_cmd = tools["tables"]

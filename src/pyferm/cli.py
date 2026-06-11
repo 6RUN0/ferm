@@ -34,6 +34,7 @@ import sys
 from typing import TYPE_CHECKING, TextIO
 
 from pyferm import __version__
+from pyferm.backend.base import shell_snapshot
 from pyferm.backend.iptables import IptablesBackend, restore_domain
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
@@ -563,10 +564,10 @@ def _run(
                 emit_line("echo 'Please press Ctrl-C to confirm.'\n")
                 emit_line(f"sleep {options.timeout}\n")
                 for domain in sorted(domains):
-                    restore_tool = domains[domain].tools.get("tables-restore")
-                    if restore_tool is None:
+                    snapshot = shell_snapshot(domain, domains[domain].tools)
+                    if snapshot is None:
                         continue
-                    emit_line(f"{restore_tool} <${domain}_tmp\n")
+                    emit_line(snapshot.restore)
 
             if not options.noexec and not _confirm_rules(options):
                 _rollback_all(
