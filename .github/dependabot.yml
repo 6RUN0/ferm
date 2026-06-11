@@ -1,0 +1,19 @@
+---
+# Dependabot reads this file from the default branch only (same
+# limitation as the audit cron), so it becomes active once the port
+# lands on master.  Complements the weekly pip-audit: pip-audit flags
+# CVEs against the locked versions, Dependabot proposes the bumps --
+# including the frozen action SHAs, which nothing else refreshes.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
