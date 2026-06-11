@@ -30,11 +30,13 @@ later), and the previous-state capture stays inert because no
 harmless here too.
 
 The exception allow-list -- inputs that are *not* a finding -- is
-:class:`FermError` (every located ``error()``/``die`` plus the
-``internal error: ...`` marker) and :class:`RecursionError` (deeply nested
-``{}``/arrays overflow the recursive-descent ``enter``; the oracle recurses
-the same way -- a known Phase 2 depth-limit debt, see the nft roadmap).
-Anything else propagates to atheris as a crash with a saved reproducer.
+:class:`FermError` only (every located ``error()``/``die`` plus the
+``internal error: ...`` marker).  Deeply nested ``{}``/arrays no longer
+overflow the recursive-descent ``enter``: it refuses past
+``MAX_BLOCK_DEPTH`` with the regular ``too many nested blocks``
+diagnostic (sanctioned deviation #6), so a :class:`RecursionError` here
+is a real finding again.  Anything else propagates to atheris as a
+crash with a saved reproducer.
 
 Run via ``nox -s crashfuzz``; standalone::
 
@@ -105,7 +107,7 @@ def test_one_input(data: bytes) -> None:
     ):
         try:
             _parse(source)
-        except (FermError, RecursionError):
+        except FermError:
             return
 
 

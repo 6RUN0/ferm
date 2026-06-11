@@ -20,7 +20,7 @@ import pytest
 from pyferm.config import Options
 from pyferm.errors import FermError
 from pyferm.functions import Evaluator
-from pyferm.parser import Parser, collect_filenames
+from pyferm.parser import MAX_BLOCK_DEPTH, Parser, collect_filenames
 from pyferm.scope import Frame, Scope
 from pyferm.tokenizer import Script, Tokenizer
 from pyferm.values import Negated
@@ -500,3 +500,87 @@ def test_include_pipe_nonzero_exit_aborts(tmp_path: Path) -> None:
     )
     with pytest.raises(FermError, match="exit status is not 0"):
         _parse_file(main)
+
+
+# -- enter depth limit (sanctioned deviation #6) ----------------------------
+
+
+def _nested(depth: int) -> str:
+    """A config whose parse needs ``depth`` block frames past top level."""
+    return (
+        "table filter chain INPUT "
+        + "proto tcp { " * depth
+        + "ACCEPT;"
+        + " }" * depth
+    )
+
+
+def test_enter_depth_at_limit_parses() -> None:
+    # top-level enter is frame 1; each "{" adds one: MAX-1 braces fit
+    parser = _parse(_nested(MAX_BLOCK_DEPTH - 1))
+    assert parser._block_depth == 0  # noqa: SLF001 -- counter under test
+
+
+def test_enter_depth_over_limit_is_located_ferm_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(FermError, match=r"too many nested blocks \(max 100\)"):
+        _parse(_nested(MAX_BLOCK_DEPTH))
+    # error() located the diagnostic, no bare RecursionError traceback
+    assert "Error in <test> line" in capsys.readouterr().err
+
+
+def test_enter_depth_counter_recovers_after_error() -> None:
+    script = Script(
+        filename="<test>", handle=io.StringIO(_nested(MAX_BLOCK_DEPTH))
+    )
+    tokenizer = Tokenizer(script)
+    scope = Scope()
+    scope.push(Frame())
+    parser = Parser(Evaluator(tokenizer, scope), {}, Options(test=True))
+    with pytest.raises(FermError):
+        parser.enter(0, None)
+    # the finally chain unwound every frame
+    assert parser._block_depth == 0  # noqa: SLF001 -- counter under test
+
+
+def test_enter_array_replay_does_not_reset_depth() -> None:
+    # domain/table/chain arrays replay their block via enter(0, ...)
+    # (_replay_array): a limit derived from ``level`` would restart from
+    # zero inside each replay.  Each array level costs TWO frames (the
+    # replay's enter(0, ...) plus the block's "{"), so the deepest path
+    # here holds 1 + 3*2 + (MAX-3) = MAX+4 frames -- the counter must
+    # overflow while the deepest ``level`` stays at MAX-2, below the
+    # limit a level-derived guard would use.
+    inner = (
+        "proto tcp { " * (MAX_BLOCK_DEPTH - 3)
+        + "ACCEPT;"
+        + " }" * (MAX_BLOCK_DEPTH - 3)
+    )
+    source = (
+        "domain (ip ip6) { table (filter nat) { chain (one two) { "
+        + inner
+        + " } } }"
+    )
+    with pytest.raises(FermError, match="too many nested blocks"):
+        _parse(source)
+
+
+def test_enter_sequential_replays_release_depth() -> None:
+    # each array element replays the same block in sequence: without the
+    # finally-decrement the second element would inherit the first's
+    # depth.  The deepest path is 1 + 3*2 + inner braces, so MAX-7 inner
+    # braces sit exactly at the limit -- legal once, overflowing if any
+    # earlier replay leaked frames.
+    inner = (
+        "proto tcp { " * (MAX_BLOCK_DEPTH - 7)
+        + "ACCEPT;"
+        + " }" * (MAX_BLOCK_DEPTH - 7)
+    )
+    source = (
+        "domain (ip ip6) { table (filter nat) { chain (one two) { "
+        + inner
+        + " } } }"
+    )
+    parser = _parse(source)
+    assert parser._block_depth == 0  # noqa: SLF001 -- counter under test

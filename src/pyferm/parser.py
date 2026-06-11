@@ -103,6 +103,16 @@ if TYPE_CHECKING:
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS = {"realgoto": "goto"}
 
+#: Hard ceiling on nested-block recursion in :meth:`Parser.enter`.  Real
+#: configs nest below ten levels; 100 is an order of magnitude of headroom
+#: yet sits well below the interpreter's own RecursionError point
+#: (~150-300 frames at the default recursionlimit).  An explicit counter,
+#: NOT the ``level`` parameter: an array ``domain``/``table``/``chain``
+#: replays its block with ``enter(0, ...)`` (:meth:`Parser._replay_array`),
+#: resetting ``level``.  Sanctioned deviation #6: Perl recurses until
+#: memory runs out, the port fails with a located diagnostic.
+MAX_BLOCK_DEPTH = 100
+
 _NAME_RE = re.compile(r"\w+")
 _DVAR_RE = re.compile(r"\$(\w+)")
 #: A double-quoted token, for the function-expansion interpolation (``:2484``).
@@ -242,6 +252,7 @@ class Parser:
         self.tokenizer: Tokenizer = evaluator.tokenizer
         self.domains = domains
         self.options = options
+        self._block_depth = 0
         self._capture_previous = capture_previous
         self._emit_line = emit_line
         self.pre_hooks: list[str] = []
@@ -546,15 +557,37 @@ class Parser:
         """
         Parse a block of rules at depth ``level`` (Perl ``:2123``).
 
-        Reads keywords until end of file or a closing ``}`` and dispatches each
-        through :func:`handle`.  ``prev`` seeds the level's inherited context
-        (see :func:`pyferm.scope.new_level`); the trailing consistency checks
-        reproduce the oracle's "missing ``}``" / "missing ``;``" diagnostics.
+        Guards the recursion with :data:`MAX_BLOCK_DEPTH` (an explicit
+        frame counter -- ``level`` resets to 0 in array-block replays),
+        then delegates to :meth:`_enter_body`.  The guard sits after the
+        structural ``internal_error`` check so broken bookkeeping cannot
+        skew the count; all four recursion points call ``enter``, so one
+        guard covers them all.
         """
         base_level = self.tokenizer.script.base_level or 0
         if base_level > level:
             raise internal_error()
 
+        if self._block_depth >= MAX_BLOCK_DEPTH:
+            error(f"too many nested blocks (max {MAX_BLOCK_DEPTH})")
+        self._block_depth += 1
+        try:
+            self._enter_body(level, prev, base_level)
+        finally:
+            self._block_depth -= 1
+
+    def _enter_body(
+        self, level: int, prev: Rule | None, base_level: int
+    ) -> None:
+        """
+        Run the body of :meth:`enter` (Perl ``:2123``).
+
+        See the wrapper for the depth guard.
+        Reads keywords until end of file or a closing ``}`` and dispatches each
+        through :func:`handle`.  ``prev`` seeds the level's inherited context
+        (see :func:`pyferm.scope.new_level`); the trailing consistency checks
+        reproduce the oracle's "missing ``}``" / "missing ``;``" diagnostics.
+        """
         rule = new_level(prev)
         # The keyword as last seen by the dispatcher: a handler may remap it
         # (``hook``->``@hook``, a shortcut->its real keyword) and the trailing

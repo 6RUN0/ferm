@@ -39,6 +39,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from pyferm.parser import MAX_BLOCK_DEPTH
 from tests.corpus.canon import canonicalize
 
 if TYPE_CHECKING:
@@ -154,6 +155,16 @@ _STATEMENT = st.recursive(
     ),
     max_leaves=6,
 )
+
+# st.recursive(max_leaves=6) plus the chain/table/domain wrappers yields
+# nesting of roughly 9 -- an order of magnitude below the parser's depth
+# limit.  Keep it that way: a config deeper than MAX_BLOCK_DEPTH would be
+# a legalized divergence (port errors, oracle succeeds), and divergence
+# markers over normalized stderr are brittle.  The assert is a tripwire
+# against lowering MAX_BLOCK_DEPTH only; the strategy does not consume
+# this constant -- re-derive 16 if the recursive strategy deepens.
+_MAX_GENERATED_NESTING = 16
+assert _MAX_GENERATED_NESTING < MAX_BLOCK_DEPTH
 
 _BUILTIN_CHAINS: dict[str, tuple[str, ...]] = {
     "filter": ("INPUT", "FORWARD", "OUTPUT"),
