@@ -1,0 +1,33 @@
+"""
+Stream encoding helpers for the latin-1 byte model.
+
+Every byte boundary of ferm is latin-1 (the Perl byte model, debt design
+2026-06-11 section 3): a bijective byte<->char mapping keeps config bytes
+intact down to the kernel and keeps ``@substr``/``length``/``re.ASCII``
+counting bytes exactly as the oracle does.  Human-facing streams
+additionally get ``errors="backslashreplace"``: the only source of chars
+above U+00FF is a localized OS ``strerror``, and failing while printing
+an error message is unacceptable.
+"""
+
+from __future__ import annotations
+
+
+def reconfigure_latin1(stream: object, errors: str = "strict") -> None:
+    """
+    Switch ``stream`` to latin-1 if it supports reconfiguration.
+
+    Streams without ``reconfigure`` (test doubles like ``StringIO``) or
+    that reject it (detached/closed wrappers raise ``ValueError``) are
+    left untouched: the policy matters on the real OS-backed std streams,
+    which always support it.  Call it before the first read/write:
+    reconfiguring the encoding afterwards raises (and is swallowed as)
+    ``ValueError``.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="latin-1", errors=errors)
+    except ValueError:
+        return
