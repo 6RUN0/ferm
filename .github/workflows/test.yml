@@ -13,6 +13,11 @@ on:
     branches: [main, master, develop, python-port]
 permissions:
   contents: read
+# Rapid pushes to a working branch queue full matrix runs; only the
+# newest commit's verdict matters, so cancel the superseded ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   reference:
     runs-on: ubuntu-latest
@@ -23,12 +28,37 @@ jobs:
           persist-credentials: false
 
       - name: Install dependencies
+        # Without `update` the image's stale apt indexes 404 whenever
+        # the mirror rotates a package version out.
         run: |
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libnet-dns-resolver-mock-perl
 
       - name: Run reference tests
         run: make -j"$(nproc)" -C reference check
+
+  # Interpreter-independent gates, run once: ruff/mypy/pyright all pin
+  # their analysis target to 3.11 in pyproject.toml, so repeating them
+  # per matrix interpreter would re-check identical results.
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Lint, typecheck and lint the CI workflows
+        run: uv run nox -s lint typecheck workflows
 
   port:
     runs-on: ubuntu-latest
@@ -42,6 +72,9 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
         with:
           persist-credentials: false
+          # diff-cover needs the merge base with the PR target branch;
+          # a shallow clone has neither it nor the origin/* ref.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
@@ -51,8 +84,30 @@ jobs:
       - name: Sync the locked environment
         run: uv sync --locked
 
-      - name: Run the gates (lint, typecheck, tests under coverage)
-        run: uv run nox -s lint typecheck coverage
+      - name: Run the tests under coverage (global floor + patch gate)
+        env:
+          # On pull requests diff-cover compares against the PR base so
+          # the 90% patch gate bites in CI too; on pushes the default
+          # base equals HEAD, the diff is empty and the gate is a no-op
+          # (it already ran in the local preflight).
+          FERM_DIFF_BASE: >-
+            ${{ github.event_name == 'pull_request'
+                && format('origin/{0}', github.base_ref)
+                || 'origin/python-port' }}
+        run: uv run nox -s coverage
+
+      # One leg is enough for trend surfacing: the suite and therefore
+      # the percentages are identical across interpreters.
+      - name: Publish the coverage report to the job summary
+        if: matrix.python == '3.11'
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the coverage XML for offline trend analysis
+        if: matrix.python == '3.11'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # frozen: v6.0.0
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
   # Deliberately light (no mutation/crashfuzz here): the wheel smoke and
   # the lowest-bounds suite together stay around two minutes.
@@ -85,7 +140,10 @@ jobs:
           persist-credentials: false
 
       - name: Install the Perl oracle dependency
+        # Without `update` the image's stale apt indexes 404 whenever
+        # the mirror rotates a package version out.
         run: |
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libnet-dns-resolver-mock-perl
 

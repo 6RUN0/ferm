@@ -133,9 +133,11 @@ def typecheck(session: nox.Session) -> None:
 
 
 #: Base ref for the diff-cover patch-coverage gate: the branch a local
-#: preflight is about to push to.  In CI the checked-out commit equals
-#: this ref, the diff is empty and the gate passes trivially -- the gate
-#: bites locally, before the push.
+#: preflight is about to push to.  On push CI the checked-out commit
+#: equals this ref, the diff is empty and the gate passes trivially --
+#: there it already ran in the local preflight.  On pull requests the
+#: workflow overrides the base with the PR target branch, so the gate
+#: also bites on contributions that skipped the local preflight.
 _PATCH_COVERAGE_BASE = os.environ.get("FERM_DIFF_BASE", "origin/python-port")
 
 
