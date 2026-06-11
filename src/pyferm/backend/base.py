@@ -23,11 +23,19 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pyferm.config import Options
     from pyferm.domains import DomainInfo
+
+
+@runtime_checkable
+class _SupportsClose(Protocol):
+    """A resource :meth:`Rendered.close` knows how to release."""
+
+    def close(self) -> None: ...
+
 
 #: Runs one shell command (Perl ``execute_command``, ``:2894``): emits it under
 #: ``--lines`` and runs it unless ``--noexec``, returning the exit status (or
@@ -73,10 +81,23 @@ class Rendered:
     save: str | None = None
     commands: list[Command] = field(default_factory=list[Command])
     #: Artifacts the commands reference that must stay alive until commit
-    #: (the eb atomic tempfiles auto-unlink when dropped).  Owned here, not
+    #: (the eb atomic tempfiles unlink on :meth:`close`).  Owned here, not
     #: on ``DomainInfo``, so re-rendering cannot orphan an earlier
     #: ``Rendered``'s files.
     resources: list[object] = field(default_factory=list[object])
+
+    def close(self) -> None:
+        """
+        Release the rendered artifacts (idempotent).
+
+        The cli calls this once the ``Rendered`` has been committed.  Perl
+        leaves the eb atomic tempfiles to ``File::Temp``'s destructor
+        (``UNLINK => 1``, ``:2929``); relying on gc finalization the same
+        way raises ResourceWarning on Python 3.14+.
+        """
+        for resource in self.resources:
+            if isinstance(resource, _SupportsClose):
+                resource.close()
 
 
 class Backend(ABC):

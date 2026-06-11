@@ -190,7 +190,12 @@ def test_initialize_domain_eb_snapshots_each_table_in_order() -> None:
     initialize_domain("eb", domains, Options(test=True), execute=calls.append)
 
     info = domains["eb"]
-    # one atomic-save per table, in the fixed @eb_tables order
-    assert list(info.ebt_previous) == list(EB_TABLES)
-    assert [c.split(" -t ")[1].split()[0] for c in calls] == list(EB_TABLES)
-    assert all("--atomic-save" in c for c in calls)
+    try:
+        # one atomic-save per table, in the fixed @eb_tables order
+        assert list(info.ebt_previous) == list(EB_TABLES)
+        assert [c.split(" -t ")[1].split()[0] for c in calls] == list(
+            EB_TABLES
+        )
+        assert all("--atomic-save" in c for c in calls)
+    finally:
+        info.close()

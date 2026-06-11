@@ -516,52 +516,64 @@ def _run(
     else:
         parser.flush_hooks.clear()
 
+    # finally: drop the eb rollback snapshots once nothing can roll back
+    # any more -- after _rollback_all (SystemExit passes through) and on
+    # the success path alike.  Perl gets this from File::Temp's
+    # destructor; the suite runs with ResourceWarning as error.
     status: int | None = None
-    for command in parser.pre_hooks:
-        _run_hook(command, options, emit_line)
+    try:
+        for command in parser.pre_hooks:
+            _run_hook(command, options, emit_line)
 
-    for domain in sorted(domains):
-        domain_info = domains[domain]
-        if not domain_info.enabled:
-            continue
-        # The arp/eb fallback to slow commands (no *-restore tool) is the
-        # backend's decision: render picks the shape, commit follows it.
-        rendered = backend.render(domain, domain_info, options)
-        result = backend.commit(
-            domain,
-            domain_info,
-            rendered,
-            options,
-            execute=execute,
-            emit_line=emit_line,
-            restore=restore,
-        )
-        if result is not None:
-            status = result
+        for domain in sorted(domains):
+            domain_info = domains[domain]
+            if not domain_info.enabled:
+                continue
+            # The arp/eb fallback to slow commands (no *-restore tool) is
+            # the backend's decision: render picks the shape, commit
+            # follows it.
+            rendered = backend.render(domain, domain_info, options)
+            try:
+                result = backend.commit(
+                    domain,
+                    domain_info,
+                    rendered,
+                    options,
+                    execute=execute,
+                    emit_line=emit_line,
+                    restore=restore,
+                )
+            finally:
+                rendered.close()
+            if result is not None:
+                status = result
 
-    for command in [*parser.post_hooks, *parser.flush_hooks]:
-        _run_hook(command, options, emit_line)
+        for command in [*parser.post_hooks, *parser.flush_hooks]:
+            _run_hook(command, options, emit_line)
 
-    if status is not None:
-        _rollback_all(
-            domains, options, backend, execute=execute, restore=restore
-        )
-
-    # Ask the user, and roll back if there is no confirmation (``:803-817``).
-    if options.interactive:
-        if options.shell:
-            emit_line("echo 'ferm has applied the new firewall rules.'\n")
-            emit_line("echo 'Please press Ctrl-C to confirm.'\n")
-            emit_line(f"sleep {options.timeout}\n")
-            for domain in sorted(domains):
-                restore_tool = domains[domain].tools.get("tables-restore")
-                if restore_tool is None:
-                    continue
-                emit_line(f"{restore_tool} <${domain}_tmp\n")
-
-        if not options.noexec and not _confirm_rules(options):
+        if status is not None:
             _rollback_all(
                 domains, options, backend, execute=execute, restore=restore
             )
+
+        # Ask the user, and roll back without confirmation (``:803-817``).
+        if options.interactive:
+            if options.shell:
+                emit_line("echo 'ferm has applied the new firewall rules.'\n")
+                emit_line("echo 'Please press Ctrl-C to confirm.'\n")
+                emit_line(f"sleep {options.timeout}\n")
+                for domain in sorted(domains):
+                    restore_tool = domains[domain].tools.get("tables-restore")
+                    if restore_tool is None:
+                        continue
+                    emit_line(f"{restore_tool} <${domain}_tmp\n")
+
+            if not options.noexec and not _confirm_rules(options):
+                _rollback_all(
+                    domains, options, backend, execute=execute, restore=restore
+                )
+    finally:
+        for info in domains.values():
+            info.close()
 
     return 0

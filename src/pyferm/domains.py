@@ -125,6 +125,18 @@ class DomainInfo:
     )
     tables: dict[str, TableInfo] = field(default_factory=dict[str, TableInfo])
 
+    def close(self) -> None:
+        """
+        Release the eb rollback snapshots (idempotent).
+
+        The cli calls this once no rollback can need them.  Perl leaves
+        the tempfiles to ``File::Temp``'s destructor (``UNLINK => 1``,
+        ``:966``); relying on gc finalization the same way raises
+        ResourceWarning on Python 3.14+.
+        """
+        for snapshot in self.ebt_previous.values():
+            snapshot.close()
+
 
 def find_tool(name: str, options: Options) -> str:
     """
@@ -267,7 +279,7 @@ def initialize_domain(
         for eb_table in EB_TABLES:
             # Kept open deliberately (not a context manager): the file must
             # outlive this call, stored in ``ebt_previous`` for rollback and
-            # auto-unlinked when the DomainInfo is dropped, mirroring Perl's
+            # unlinked by ``DomainInfo.close()``, mirroring Perl's
             # ``File::Temp`` ``UNLINK => 1`` (``:966``).
             snapshot = tempfile.NamedTemporaryFile(prefix="ferm.")  # noqa: SIM115
             execute(

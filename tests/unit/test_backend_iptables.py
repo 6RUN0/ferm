@@ -320,12 +320,15 @@ def test_render_slow_eb_atomic_framing_is_unguarded() -> None:
         tables={"filter": TableInfo(chains={})},
     )
     rendered = IptablesBackend().render("eb", domain_info, _SLOW)
-    # the atomic init/commit framing must run unconditionally
-    framing = [c for c in rendered.commands if not c.guarded]
-    assert any("--atomic-init" in c.text for c in framing)
-    assert any("--atomic-commit" in c.text for c in framing)
-    # one atomic tempfile per eb table, kept alive on the Rendered
-    assert len(rendered.resources) == 3
+    try:
+        # the atomic init/commit framing must run unconditionally
+        framing = [c for c in rendered.commands if not c.guarded]
+        assert any("--atomic-init" in c.text for c in framing)
+        assert any("--atomic-commit" in c.text for c in framing)
+        # one atomic tempfile per eb table, kept alive on the Rendered
+        assert len(rendered.resources) == 3
+    finally:
+        rendered.close()
 
 
 _PREVIOUS = (
@@ -396,19 +399,24 @@ def test_render_slow_eb_rerender_keeps_first_tempfiles() -> None:
     )
     backend = IptablesBackend()
     rendered_one = backend.render("eb", domain_info, _SLOW)
-    names = {
-        match.group(1)
-        for command in rendered_one.commands
-        for match in [re.search(r"--atomic-file (\S+)", command.text)]
-        if match is not None
-    }
-    assert names
-    assert all(Path(name).exists() for name in names)
-    # a second render must not unlink the files the first Rendered's
-    # commands reference (commit may still run them)
-    backend.render("eb", domain_info, _SLOW)
-    assert all(Path(name).exists() for name in names)
-    del rendered_one
+    try:
+        names = {
+            match.group(1)
+            for command in rendered_one.commands
+            for match in [re.search(r"--atomic-file (\S+)", command.text)]
+            if match is not None
+        }
+        assert names
+        assert all(Path(name).exists() for name in names)
+        # a second render must not unlink the files the first Rendered's
+        # commands reference (commit may still run them)
+        rendered_two = backend.render("eb", domain_info, _SLOW)
+        try:
+            assert all(Path(name).exists() for name in names)
+        finally:
+            rendered_two.close()
+    finally:
+        rendered_one.close()
 
 
 def test_render_falls_back_to_slow_with_fast_escaping() -> None:
