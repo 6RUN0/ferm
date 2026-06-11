@@ -84,6 +84,48 @@ def test_invalid_domain_keeps_perl_blank_line(
     assert capsys.readouterr().err.endswith("Invalid domain 'p'\n\n")
 
 
+def test_hooks_echo_under_lines_without_execution(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # @hook commands echo under --lines and are skipped under --noexec
+    # (Perl :777-794); their status never feeds the rollback decision.
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text(
+        '@hook pre "echo pre-marker";\n'
+        '@hook post "echo post-marker";\n'
+        "chain INPUT ACCEPT;\n",
+        encoding="utf-8",
+    )
+    assert main(["--test", str(conf)]) == 0
+    out = capsys.readouterr().out
+    assert "echo pre-marker" in out
+    assert "echo post-marker" in out
+
+
+def test_interactive_shell_emits_confirmation_block(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Under --shell the interactive safety net is woven into the emitted
+    # script (Perl :806-813): a confirm prompt, a sleep, and one
+    # *-restore line per domain reading the mktemp'd previous ruleset.
+    # capfd, not capsys: the LINES sink dups fd 1 below sys.stdout.
+    from pyferm.cli import main
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--test", "--interactive", "--shell", str(conf)]) == 0
+    out = capfd.readouterr().out
+    assert "echo 'Please press Ctrl-C to confirm.'\n" in out
+    assert "sleep 30\n" in out
+    assert "iptables-restore <$ip_tmp\n" in out
+
+
 def test_setup_streams_without_shell_is_passthrough() -> None:
     lines_stream, restore = _setup_streams(Options(lines=True))
     assert lines_stream is sys.stdout
