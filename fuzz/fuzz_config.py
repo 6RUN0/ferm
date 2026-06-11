@@ -25,8 +25,9 @@ filesystem or the network and must never fire on fuzz input:
   raises :class:`FermError` (no DNS, no zonefile read).
 
 ``@hook`` commands are merely *recorded* by the parser (the CLI runs them
-later), and rule execution goes through ``execute=lambda: None``, so both
-are inert here too.
+later), and the previous-state capture stays inert because no
+``capture_previous`` closure is injected (the ``None`` seam), so both are
+harmless here too.
 
 The exception allow-list -- inputs that are *not* a finding -- is
 :class:`FermError` (every located ``error()``/``die`` plus the
@@ -86,7 +87,7 @@ def _parse(source: str) -> None:
     scope = Scope()
     scope.push(Frame())
     evaluator = _SafeEvaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options, execute=lambda _command: None)
+    parser = Parser(evaluator, {}, options)
     parser.enter(0, None)
 
 

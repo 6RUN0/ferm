@@ -3,28 +3,24 @@
 Covers the domain layer ported from ``reference/src/ferm`` (``:881-974``):
 ``find_tool`` in test mode and its ``*-legacy`` preference (incl. the
 ``--nolegacy`` deviation), the ``read_previous`` save parser, and
-``initialize_domain``'s validation/idempotency/mock-previous paths plus the
-injected ``eb`` atomic-save seam.
+``initialize_domain``'s validation/idempotency/``capture_previous`` contract.
+The mock-previous and ``eb`` atomic-save paths now belong to the backend
+(:meth:`pyferm.backend.base.Backend.capture_previous`) and are covered in
+``test_backend_iptables.py``.
 """
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 import pytest
 
 from pyferm.config import Options
 from pyferm.domains import (
-    EB_TABLES,
     DomainInfo,
     find_tool,
     initialize_domain,
     read_previous,
 )
 from pyferm.errors import FermError
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # --- find_tool -------------------------------------------------------------
 
@@ -115,22 +111,46 @@ def test_read_previous_chain_before_table_is_ignored() -> None:
 # --- initialize_domain -----------------------------------------------------
 
 
-def _noexec_execute(_command: str) -> int | None:
-    raise AssertionError("execute must not run in these tests")
+def test_initialize_domain_invokes_capture_previous_after_tools() -> None:
+    seen: list[tuple[str, dict[str, str]]] = []
+    domains: dict[str, DomainInfo] = {}
+
+    def capture(domain: str, info: DomainInfo) -> None:
+        # the call invariant: tools are resolved BEFORE the capture
+        seen.append((domain, dict(info.tools)))
+
+    initialize_domain(
+        "ip", domains, Options(test=True), capture_previous=capture
+    )
+
+    assert seen == [
+        (
+            "ip",
+            {
+                "tables": "iptables",
+                "tables-save": "iptables-save",
+                "tables-restore": "iptables-restore",
+            },
+        )
+    ]
+
+
+def test_initialize_domain_without_capture_previous_skips_capture() -> None:
+    # the None seam is a unit-test/fuzz convenience: no previous state
+    domains: dict[str, DomainInfo] = {}
+    initialize_domain("ip", domains, Options(test=True))
+    assert domains["ip"].previous is None
+    assert domains["ip"].initialized is True
 
 
 def test_initialize_domain_rejects_invalid_family() -> None:
     with pytest.raises(FermError, match="Invalid domain 'wat'"):
-        initialize_domain(
-            "wat", {}, Options(test=True), execute=_noexec_execute
-        )
+        initialize_domain("wat", {}, Options(test=True))
 
 
 def test_initialize_domain_test_mode_tools_are_bare_names() -> None:
     domains: dict[str, DomainInfo] = {}
-    initialize_domain(
-        "ip", domains, Options(test=True), execute=_noexec_execute
-    )
+    initialize_domain("ip", domains, Options(test=True))
     info = domains["ip"]
     assert info.initialized is True
     # ip/ip6 get the save+restore tools; bare names under --test
@@ -143,59 +163,13 @@ def test_initialize_domain_test_mode_tools_are_bare_names() -> None:
 
 def test_initialize_domain_arp_has_only_tables_tool() -> None:
     domains: dict[str, DomainInfo] = {}
-    initialize_domain(
-        "arp", domains, Options(test=True), execute=_noexec_execute
-    )
+    initialize_domain("arp", domains, Options(test=True))
     assert domains["arp"].tools == {"tables": "arptables"}
-
-
-def test_initialize_domain_reads_mock_previous(tmp_path: Path) -> None:
-    mock = tmp_path / "ip.save"
-    mock.write_text("*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n", encoding="utf-8")
-    options = Options(test=True, mock_previous={"ip": str(mock)})
-    domains: dict[str, DomainInfo] = {}
-
-    initialize_domain("ip", domains, options, execute=_noexec_execute)
-
-    info = domains["ip"]
-    assert info.previous == "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
-    assert info.tables["filter"].chains["INPUT"].builtin is True
-
-
-def test_initialize_domain_missing_mock_previous_is_ferm_error() -> None:
-    # The oracle's `open ... or die $!` (:948) is caught by check_domain's
-    # eval and reported as a located ferm error; a raw OSError would
-    # escape every FermError handler as a traceback.
-    options = Options(test=True, mock_previous={"ip": "/nonexistent/save"})
-    with pytest.raises(FermError, match="No such file or directory"):
-        initialize_domain("ip", {}, options, execute=_noexec_execute)
 
 
 def test_initialize_domain_is_idempotent() -> None:
     domains: dict[str, DomainInfo] = {}
-    initialize_domain(
-        "ip", domains, Options(test=True), execute=_noexec_execute
-    )
+    initialize_domain("ip", domains, Options(test=True))
     domains["ip"].tools = {"sentinel": "kept"}  # would be clobbered on re-init
-    initialize_domain(
-        "ip", domains, Options(test=True), execute=_noexec_execute
-    )
+    initialize_domain("ip", domains, Options(test=True))
     assert domains["ip"].tools == {"sentinel": "kept"}
-
-
-def test_initialize_domain_eb_snapshots_each_table_in_order() -> None:
-    calls: list[str] = []
-    domains: dict[str, DomainInfo] = {}
-
-    initialize_domain("eb", domains, Options(test=True), execute=calls.append)
-
-    info = domains["eb"]
-    try:
-        # one atomic-save per table, in the fixed @eb_tables order
-        assert list(info.ebt_previous) == list(EB_TABLES)
-        assert [c.split(" -t ")[1].split()[0] for c in calls] == list(
-            EB_TABLES
-        )
-        assert all("--atomic-save" in c for c in calls)
-    finally:
-        info.close()

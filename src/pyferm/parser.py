@@ -20,7 +20,7 @@ stream and variable stack come from the injected
 per-family ``%domains`` is passed in, and ``%option`` is a typed
 :class:`pyferm.config.Options`.  The execution-coupled
 :func:`pyferm.domains.initialize_domain` (reached via ``check_domain``) is fed
-the same injected ``execute``/``emit_line``/``read_save`` callables the cli
+the same injected ``capture_previous`` closure and ``emit_line`` sink the cli
 wires up, so the parser never imports the backend.  The ``@hook`` lists are
 parser state, consumed later by the cli's main flow (``:777-794``).
 
@@ -41,11 +41,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pyferm.domains import (
+    CapturePrevious,
     ChainInfo,
     DomainInfo,
-    ExecuteCommand,
     LineEmitter,
-    SaveReader,
     TableInfo,
     initialize_domain,
 )
@@ -234,9 +233,8 @@ class Parser:
         domains: dict[str, DomainInfo],
         options: Options,
         *,
-        execute: ExecuteCommand,
+        capture_previous: CapturePrevious | None = None,
         emit_line: LineEmitter | None = None,
-        read_save: SaveReader | None = None,
     ) -> None:
         """Bind the parser to its evaluator, domain state and injected I/O."""
         self.evaluator = evaluator
@@ -244,9 +242,8 @@ class Parser:
         self.tokenizer: Tokenizer = evaluator.tokenizer
         self.domains = domains
         self.options = options
-        self._execute = execute
+        self._capture_previous = capture_previous
         self._emit_line = emit_line
-        self._read_save = read_save
         self.pre_hooks: list[str] = []
         self.post_hooks: list[str] = []
         self.flush_hooks: list[str] = []
@@ -270,9 +267,8 @@ class Parser:
                 _domain_key(domain),
                 self.domains,
                 self.options,
-                execute=self._execute,
+                capture_previous=self._capture_previous,
                 emit_line=self._emit_line,
-                read_save=self._read_save,
             )
         except FermError as exc:
             # Perl re-raises ``error($@)``: $@ keeps the die's trailing

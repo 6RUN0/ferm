@@ -11,10 +11,13 @@ The pieces the oracle reaches through globals are wired here instead.  The cli
 owns the real I/O callables -- ``execute_command`` (run a shell command,
 echoing it under ``--lines`` and skipping it under ``--noexec``),
 ``emit_line`` (the ``print LINES`` sink), ``read_save`` (run a ``*-save`` tool)
-and ``restore`` (pipe a save to ``*-restore``) -- and injects them into
-:func:`pyferm.domains.initialize_domain` (via the parser) and into
-:meth:`pyferm.backend.base.Backend.commit`/``rollback``, so neither the parser
-nor the backend touches global state or ``system`` directly.
+and ``restore`` (pipe a save to ``*-restore``).  ``emit_line`` is injected
+into :func:`pyferm.domains.initialize_domain` (via the parser) directly;
+the previous-state capture goes through a ``capture_previous`` closure that
+folds backend + options + ``execute`` + ``read_save`` into the two-parameter
+shape ``initialize_domain`` expects; ``execute``/``restore`` also feed
+:meth:`pyferm.backend.base.Backend.commit`/``rollback``.  So neither the
+parser nor the backend touches global state or ``system`` directly.
 
 Two sanctioned deviations live in this flow: the orchestration across domains
 (apply all -> ``confirm_rules`` -> roll back all, with the closing message and
@@ -53,8 +56,9 @@ if TYPE_CHECKING:
         ExecuteCommand,
         LineEmitter,
         RestoreDomain,
+        SaveReader,
     )
-    from pyferm.domains import DomainInfo, SaveReader
+    from pyferm.domains import DomainInfo
 
 # The pod2usage(-verbose => 1) rendering of the POD SYNOPSIS/OPTIONS
 # (reference/src/ferm __END__ section), captured verbatim from
@@ -261,8 +265,10 @@ def _make_io(
     Returns ``(execute, emit_line, read_save, restore)``.  ``execute`` is the
     port of ``execute_command`` (``:2894``); ``emit_line`` is the ``print
     LINES`` sink (raw, caller supplies newlines) writing to ``lines_stream``
-    from :func:`_setup_streams`; ``read_save`` runs a ``*-save`` tool;
-    ``restore`` adapts the backend's three-argument
+    from :func:`_setup_streams`; ``read_save`` runs a ``*-save`` tool and is
+    consumed by ``_run``'s ``capture_previous`` closure over
+    :meth:`pyferm.backend.base.Backend.capture_previous`; ``restore`` adapts
+    the backend's three-argument
     :func:`pyferm.backend.iptables.restore_domain` to the injected two-argument
     shape.  All but ``emit_line`` are no-ops under ``--test`` (never reached).
     """
@@ -489,13 +495,26 @@ def _run(
     scope.top.auto["FILEBNAME"] = splitpath_file(filename)
     scope.top.auto["DIRNAME"] = splitpath_dir(filename)
 
+    backend: Backend = IptablesBackend()
+
+    def capture_previous(domain: str, domain_info: DomainInfo) -> None:
+        # Folds backend + options + execute + read_save into the
+        # two-parameter shape initialize_domain expects (debt design
+        # section 1).
+        backend.capture_previous(
+            domain,
+            domain_info,
+            options,
+            execute=execute,
+            read_save=read_save,
+        )
+
     parser = Parser(
         evaluator,
         {},
         options,
-        execute=execute,
+        capture_previous=capture_previous,
         emit_line=emit_line,
-        read_save=read_save,
     )
     # finally: close the whole include chain (innermost first) on both
     # the success path and a parse abort, so no error path leaks an open
@@ -512,7 +531,6 @@ def _run(
         raise internal_error("parser left the scope stack unbalanced")
 
     domains = parser.domains
-    backend: Backend = IptablesBackend()
 
     # Enable/disable hooks depending on --flush (Perl ``:765-772``).
     if options.flush:

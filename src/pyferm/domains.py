@@ -13,23 +13,24 @@ autovivified.  ``%option`` is passed in as a typed
 ``domains`` stays a near-leaf of the
 dependency graph.
 
-The execution-coupled branches of ``initialize_domain`` -- running the live
-``*-save`` pipe, emitting ``--shell``/``--interactive`` setup lines, and the
-``eb`` atomic-save snapshot -- are reached through injected callables
-(``execute``/``emit_line``/``read_save``) rather than importing the backend, so
-no ``domains -> backend`` edge appears.  In ``--test`` mode (every golden run)
-only the ``mock_previous`` path is taken, so those seams stay inert until the
-ebtables (M7) and ``--interactive`` (M11) milestones wire them.
+The previous-state capture of ``initialize_domain`` (the ``--test`` mock
+branch, the live ``*-save`` pipe, the ``eb`` atomic-save snapshot) goes
+through the injected ``capture_previous`` callable -- the cli's closure over
+:meth:`pyferm.backend.base.Backend.capture_previous` -- and the ``--shell``/
+``--interactive`` setup lines through ``emit_line``.  The only ``backend``
+import here is the ``shell_snapshot`` helper from the abstract
+``backend.base`` (acyclic: ``base`` imports ``domains`` types only under
+``TYPE_CHECKING``); the implementation backend (``backend.iptables``) is
+never imported, and the ``CapturePrevious`` alias references the backend
+only in prose.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 from pyferm.backend.base import shell_snapshot
@@ -54,17 +55,15 @@ _IP_DOMAIN_RE = re.compile(r"^ip6?$")
 #: Split a tool name into ``(base ending in 'tables', suffix)`` (``:886``).
 _LEGACY_RE = re.compile(r"^(.*tables)(.*)$")
 
-#: Runs one shell command (the backend's ``execute_command``); returns its exit
-#: status or ``None`` (Perl ``:2894``).
-ExecuteCommand = Callable[[str], "int | None"]
+#: Captures a family's previous ruleset once its tools are resolved --
+#: the cli's closure over :meth:`pyferm.backend.base.Backend.capture_previous`
+#: (backend + options + execute + read_save folded at the wiring point).
+CapturePrevious = Callable[[str, "DomainInfo"], None]
 #: Writes *raw* text to the ``--lines``/``--shell`` sink (Perl ``print
 #: LINES``).  The caller supplies any trailing newline, mirroring Perl's
 #: ``print`` -- ``execute_fast`` prints a multi-line save blob verbatim
 #: (``:3129``) while line-oriented callers append ``\n`` themselves.
 LineEmitter = Callable[[str], None]
-#: Runs a ``*-save`` tool path and returns its output, or ``None`` if it could
-#: not be run (the live branch of ``:951-952``).
-SaveReader = Callable[[str], "str | None"]
 
 
 @dataclass
@@ -216,20 +215,20 @@ def initialize_domain(
     domains: dict[str, DomainInfo],
     options: Options,
     *,
-    execute: ExecuteCommand,
+    capture_previous: CapturePrevious | None = None,
     emit_line: LineEmitter | None = None,
-    read_save: SaveReader | None = None,
 ) -> None:
     """
     Discover a family's tools and snapshot its current ruleset (``:925``).
 
-    Idempotent (a second call is a no-op once ``initialized``).  Validates the
-    family name, resolves the tool paths via :func:`find_tool`, then captures
-    previous ruleset for rollback: from ``mock_previous`` under ``--test``,
-    otherwise from the live ``*-save`` tool via the injected ``read_save``.
-    The ``--shell``/``--interactive`` setup lines and the ``eb`` atomic-save
-    snapshot are emitted through the injected ``emit_line``/``execute`` seams
-    (see the module docstring); they are unused in ``--test`` mode.
+    Idempotent (a second call is a no-op once ``initialized``).  Validates
+    the family name, resolves the tool paths via :func:`find_tool`, then
+    hands the whole previous-state capture (the ``--test`` mock branch,
+    the live ``*-save`` read, the ``eb`` atomic snapshot) to the injected
+    ``capture_previous`` -- the cli's closure over
+    :meth:`pyferm.backend.base.Backend.capture_previous`.  The ``--shell``/
+    ``--interactive`` setup lines go through ``emit_line``.  ``None`` seams
+    are a unit-test/fuzz convenience: no capture, no setup lines.
     """
     domain_info = domains.setdefault(domain, DomainInfo())
     if domain_info.initialized:
@@ -241,49 +240,17 @@ def initialize_domain(
     tool_keys = ["tables"]
     if _IP_DOMAIN_RE.match(domain) is not None:
         tool_keys += ["tables-save", "tables-restore"]
-    tools = {key: find_tool(domain + key, options) for key in tool_keys}
-    domain_info.tools = tools
+    domain_info.tools = {
+        key: find_tool(domain + key, options) for key in tool_keys
+    }
 
-    # Capture the previous ruleset (for rollback / @preserve).
-    if options.test:
-        mock = options.mock_previous.get(domain)
-        if mock is not None:
-            # Perl: `open ... or die $!` (:948) -- the strerror message is
-            # caught by check_domain and located; a raw OSError would
-            # escape every FermError handler as a traceback.
-            try:
-                # The `with` follows immediately; the open is separate
-                # only so the OSError can be mapped.
-                handle = Path(mock).open(encoding="utf-8")  # noqa: SIM115
-            except OSError as exc:
-                raise FermError(exc.strerror or str(exc)) from exc
-            with handle:
-                domain_info.previous = read_previous(handle, domain_info)
-    elif "tables-save" in tools and read_save is not None:
-        saved = read_save(tools["tables-save"])
-        if saved is not None:
-            domain_info.previous = read_previous(
-                saved.splitlines(keepends=True), domain_info
-            )
+    if capture_previous is not None:
+        capture_previous(domain, domain_info)
 
     if options.shell and options.interactive and emit_line is not None:
-        snapshot_lines = shell_snapshot(domain, tools)
+        snapshot_lines = shell_snapshot(domain, domain_info.tools)
         if snapshot_lines is not None:
             for line in snapshot_lines.setup:
                 emit_line(line)
-
-    if domain == "eb":
-        domain_cmd = tools["tables"]
-        for eb_table in EB_TABLES:
-            # Kept open deliberately (not a context manager): the file must
-            # outlive this call, stored in ``ebt_previous`` for rollback and
-            # unlinked by ``DomainInfo.close()``, mirroring Perl's
-            # ``File::Temp`` ``UNLINK => 1`` (``:966``).
-            snapshot = tempfile.NamedTemporaryFile(prefix="ferm.")  # noqa: SIM115
-            execute(
-                f"{domain_cmd} -t {eb_table} "
-                f"--atomic-file {snapshot.name} --atomic-save"
-            )
-            domain_info.ebt_previous[eb_table] = snapshot
 
     domain_info.initialized = True

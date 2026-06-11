@@ -39,7 +39,7 @@ def _parse(source: str, *, options: Options | None = None) -> Parser:
     scope = Scope()
     scope.push(Frame())
     evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options, execute=lambda _command: None)
+    parser = Parser(evaluator, {}, options)
     parser.enter(0, None)
     return parser
 
@@ -451,7 +451,7 @@ def test_include_pulls_in_another_file(tmp_path: Path) -> None:
     scope = Scope()
     scope.push(Frame())
     evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options, execute=lambda _command: None)
+    parser = Parser(evaluator, {}, options)
     parser.enter(0, None)
     handle.close()
 
@@ -468,7 +468,7 @@ def _parse_file(main: Path, *, options: Options | None = None) -> Parser:
     scope = Scope()
     scope.push(Frame())
     evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options, execute=lambda _command: None)
+    parser = Parser(evaluator, {}, options)
     # finally: like cli.main, close the whole include chain even when a
     # parse abort is the expected outcome (ResourceWarning is an error).
     try:
