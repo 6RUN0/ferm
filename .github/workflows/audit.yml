@@ -6,22 +6,30 @@
 #
 # GitHub fires `schedule` from the workflow file on the default branch
 # only, so the cron becomes active once the port lands on master.
-# Until then run it manually against the branch:
-#   gh workflow run audit.yml --ref python-port
 on:
   workflow_dispatch:
   schedule:
     # Monday 06:20 UTC; an off-peak minute (GitHub throttles the
     # top-of-hour spike).
     - cron: '20 6 * * 1'
-  # Self-validation: exercise the job whenever this file changes.
+  # Stopgap while the port lives on a non-default branch where the
+  # cron above never fires: piggyback on every push.  Once the port
+  # lands on master the cron takes over and this trigger can shrink
+  # back to paths: ['.github/workflows/audit.yml'] (self-validation).
   push:
-    paths: ['.github/workflows/audit.yml']
+    branches: [python-port]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The escalation step files an issue when a scheduled run fails.
+      issues: write
     steps:
       - id: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
@@ -39,3 +47,26 @@ jobs:
 
       - name: Lint the CI workflows (actionlint + zizmor)
         run: uv run nox -s workflows
+
+      # A red scheduled run otherwise only emails the workflow author;
+      # an issue is the durable, visible escalation path.  Push-
+      # triggered failures stay out: the pusher already sees those.
+      - name: Escalate a failed scheduled run to an issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository
+            }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='Weekly audit is red'
+          body="Scheduled audit run failed: $RUN_URL"
+          number=$(gh issue list --state open \
+            --search "\"$title\" in:title" \
+            --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
