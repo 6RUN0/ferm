@@ -79,7 +79,7 @@ def _run(prefix: tuple[str, ...], args: list[str]) -> str:
     proc = subprocess.run(  # fixed argv, no shell
         cmd,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
         env=_ENV,
         cwd=REFERENCE_ROOT,
@@ -95,7 +95,7 @@ def _rel(path: Path) -> str:
 
 
 def _result_of(ferm_file: Path) -> str:
-    return ferm_file.with_suffix(".result").read_text()
+    return ferm_file.with_suffix(".result").read_text(encoding="utf-8")
 
 
 # --- per-category pipelines (one Makefile rule each) -----------------
@@ -131,11 +131,11 @@ def import_case(
     """Round-trip: SAVE == SAVE2 through import-ferm (check-import)."""
     save = sort_output(_run(target.ferm, ["--test", _rel(ferm_file)]))
     save_file = tmp / "round.SAVE"
-    save_file.write_text(save)
+    save_file.write_text(save, encoding="utf-8")
 
     import_out = _run(target.import_ferm, [str(save_file)])
     import_file = tmp / "round.IMPORT"
-    import_file.write_text(import_out)
+    import_file.write_text(import_out, encoding="utf-8")
 
     save2 = sort_output(
         _run(target.ferm, ["--test", "--fast", str(import_file)])
@@ -166,7 +166,7 @@ def diagnostics_case(target: FermTarget, ferm_file: Path) -> tuple[int, str]:
     proc = subprocess.run(  # fixed argv, no shell
         cmd,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
         env=_ENV,
         cwd=REFERENCE_ROOT,
@@ -181,15 +181,15 @@ def build_mock_preserve_save2(
     mock_ferm = reference_root / "test" / "mock" / "preserve.ferm"
     save = sort_output(_run(target.ferm, ["--test", _rel(mock_ferm)]))
     save_file = tmp / "preserve.SAVE"
-    save_file.write_text(save)
+    save_file.write_text(save, encoding="utf-8")
 
     import_out = _run(target.import_ferm, [str(save_file)])
     import_file = tmp / "preserve.IMPORT"
-    import_file.write_text(import_out)
+    import_file.write_text(import_out, encoding="utf-8")
 
     save2 = sort_output(
         _run(target.ferm, ["--test", "--fast", str(import_file)])
     )
     save2_file = tmp / "preserve.SAVE2"
-    save2_file.write_text(save2)
+    save2_file.write_text(save2, encoding="utf-8")
     return save2_file

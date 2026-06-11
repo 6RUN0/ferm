@@ -421,7 +421,7 @@ def test_log_prefix_is_not_truncated() -> None:
 
 def test_collect_filenames_relative_to_parent(tmp_path: Path) -> None:
     included = tmp_path / "rules.ferm"
-    included.write_text("")
+    included.write_text("", encoding="utf-8")
     parent = str(tmp_path / "main.ferm")
     assert collect_filenames(parent, ["rules.ferm"]) == [str(included)]
 
@@ -429,10 +429,10 @@ def test_collect_filenames_relative_to_parent(tmp_path: Path) -> None:
 def test_collect_filenames_directory_sorts_and_filters(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "b.ferm").write_text("")
-    (tmp_path / "a.ferm").write_text("")
-    (tmp_path / ".hidden").write_text("")
-    (tmp_path / "back~").write_text("")
+    (tmp_path / "b.ferm").write_text("", encoding="utf-8")
+    (tmp_path / "a.ferm").write_text("", encoding="utf-8")
+    (tmp_path / ".hidden").write_text("", encoding="utf-8")
+    (tmp_path / "back~").write_text("", encoding="utf-8")
     parent = str(tmp_path / "main.ferm")
     result = collect_filenames(parent, [f"{tmp_path}/"])
     assert result == [str(tmp_path / "a.ferm"), str(tmp_path / "b.ferm")]
@@ -440,9 +440,9 @@ def test_collect_filenames_directory_sorts_and_filters(
 
 def test_include_pulls_in_another_file(tmp_path: Path) -> None:
     included = tmp_path / "sub.ferm"
-    included.write_text("chain INPUT ACCEPT;\n")
+    included.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     main = tmp_path / "main.ferm"
-    main.write_text(f'@include "{included}";\n')
+    main.write_text(f'@include "{included}";\n', encoding="utf-8")
 
     options = Options(test=True)
     handle = main.open(encoding="utf-8")
@@ -469,14 +469,23 @@ def _parse_file(main: Path, *, options: Options | None = None) -> Parser:
     scope.push(Frame())
     evaluator = Evaluator(tokenizer, scope)
     parser = Parser(evaluator, {}, options, execute=lambda _command: None)
-    parser.enter(0, None)
-    handle.close()
+    # finally: like cli.main, close the whole include chain even when a
+    # parse abort is the expected outcome (ResourceWarning is an error).
+    try:
+        parser.enter(0, None)
+    finally:
+        node: Script | None = tokenizer.script
+        while node is not None:
+            node.close()
+            node = node.parent
     return parser
 
 
 def test_include_pipe_parses_command_output(tmp_path: Path) -> None:
     main = tmp_path / "main.ferm"
-    main.write_text("@include \"echo 'chain INPUT ACCEPT;'|\";\n")
+    main.write_text(
+        "@include \"echo 'chain INPUT ACCEPT;'|\";\n", encoding="utf-8"
+    )
     parser = _parse_file(main)
     rules = parser.domains["ip"].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
@@ -486,6 +495,8 @@ def test_include_pipe_nonzero_exit_aborts(tmp_path: Path) -> None:
     # Perl checks ``close $script->{handle}`` and aborts (:2311) so a
     # generator that dies cannot install a truncated ruleset.
     main = tmp_path / "main.ferm"
-    main.write_text("@include \"echo 'chain INPUT ACCEPT;'; exit 3|\";\n")
+    main.write_text(
+        "@include \"echo 'chain INPUT ACCEPT;'; exit 3|\";\n", encoding="utf-8"
+    )
     with pytest.raises(FermError, match="exit status is not 0"):
         _parse_file(main)

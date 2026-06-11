@@ -36,9 +36,15 @@ import nox
 nox.options.default_venv_backend = "none"
 nox.options.sessions = ["lint", "tests", "typecheck"]
 
+#: Emit EncodingWarning wherever IO falls back to the locale encoding;
+#: pytest's ``filterwarnings = error`` then fails the test.  An env var
+#: (not a pytest option) because the interpreter reads it at startup --
+#: and the children the golden/corpus suites spawn inherit it too.
+_WARN_ENV = {"PYTHONWARNDEFAULTENCODING": "1"}
+
 #: The golden harness runs the Python port unless told otherwise; the
 #: ``golden_oracle`` session flips this to validate the harness itself.
-_GOLDEN_ENV = {"FERM_GOLDEN_TARGET": "python"}
+_GOLDEN_ENV = {"FERM_GOLDEN_TARGET": "python", **_WARN_ENV}
 
 #: Every interpreter declared supported in the trove classifiers; keep
 #: in sync with ``[project.classifiers]`` and the CI ``port`` matrix.
@@ -112,7 +118,7 @@ def golden_oracle(session: nox.Session) -> None:
         "pytest",
         "tests/golden",
         *session.posargs,
-        env={"FERM_GOLDEN_TARGET": "perl"},
+        env={"FERM_GOLDEN_TARGET": "perl", **_WARN_ENV},
     )
 
 
@@ -190,6 +196,7 @@ def fuzz(session: nox.Session) -> None:
         "tests/property",
         "--hypothesis-profile=thorough",
         *session.posargs,
+        env=_WARN_ENV,
     )
 
 

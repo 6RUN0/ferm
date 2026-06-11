@@ -51,7 +51,7 @@ def test_interactive_timeout_rolls_back_a_real_lockout() -> None:
     build = subprocess.run(
         ["docker", "build", "-q", "-t", _IMAGE, str(_LOCKOUT_DIR)],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
@@ -75,7 +75,7 @@ def test_interactive_timeout_rolls_back_a_real_lockout() -> None:
             "/work/driver.py",
         ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     verdict = f"driver verdict:\n{run.stdout}\n{run.stderr}"

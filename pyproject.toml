@@ -117,6 +117,16 @@ python_version = "3.11"
 files = ["src", "tests"]
 strict = true
 warn_unreachable = true
+# Stricter-than-strict: TypedDict/Concatenate soundness checks plus the
+# opt-in error codes strict does not enable.  ignore-without-code keeps
+# every suppression auditable (pairs with the pygrep blanket-ignore hook).
+extra_checks = true
+enable_error_code = [
+  "ignore-without-code",
+  "redundant-expr",
+  "truthy-bool",
+  "unused-awaitable",
+]
 
 [tool.pyright]
 # Pin the analysis scope: without it pyright walks the whole worktree
@@ -153,6 +163,11 @@ markers = [
   "lockout: containerized --interactive anti-lockout e2e (opt-in, needs docker)",
 ]
 xfail_strict = true
+# Any warning is a failure: deprecations surface on the oldest
+# interpreter of the matrix instead of breaking on the newest one, and
+# (with PYTHONWARNDEFAULTENCODING=1, set by the nox sessions)
+# EncodingWarning turns every locale-dependent IO default into an error.
+filterwarnings = ["error"]
 # A hung test (interactive prompt, stuck subprocess) must fail, not
 # stall the gate.  The thread method, not signal: the port itself owns
 # SIGALRM (--interactive), so a per-test alarm could be clobbered.
@@ -175,6 +190,54 @@ exclude_also = [
     "if TYPE_CHECKING:",
     # Escape hatch for paths a test cannot exercise (documented per site).
     "pragma: no cover",
+]
+
+[tool.importlinter]
+root_packages = ["pyferm"]
+
+# The render/commit seam the Phase 2 nft backend depends on: the
+# compiler core reaches execution only through injected callables
+# (execute/emit_line/read_save), never by importing the backend.  Only
+# the cli composition root may wire the two sides together.
+[[tool.importlinter.contracts]]
+name = "the compiler core does not import the backend"
+type = "forbidden"
+source_modules = [
+  "pyferm.errors",
+  "pyferm.values",
+  "pyferm.config",
+  "pyferm.tokenizer",
+  "pyferm.modules",
+  "pyferm.resolver",
+  "pyferm.scope",
+  "pyferm.rules",
+  "pyferm.domains",
+  "pyferm.functions",
+  "pyferm.parser",
+  "pyferm.import_ferm",
+]
+forbidden_modules = ["pyferm.backend"]
+
+# The full dependency order, frozen from the measured import graph
+# (TYPE_CHECKING imports included).  Modules sharing a layer (``|``)
+# must stay mutually independent.  A new edge that violates this is
+# either a bug or a deliberate design change -- update the contract
+# explicitly in the latter case.
+[[tool.importlinter.contracts]]
+name = "bottom-up layering"
+type = "layers"
+layers = [
+  "pyferm.cli | pyferm.import_ferm",
+  "pyferm.backend",
+  "pyferm.parser",
+  "pyferm.functions",
+  "pyferm.domains",
+  "pyferm.rules",
+  "pyferm.scope",
+  "pyferm.modules | pyferm.tokenizer | pyferm.resolver",
+  "pyferm.values",
+  "pyferm.config",
+  "pyferm.errors",
 ]
 
 [tool.bandit]
@@ -243,6 +306,7 @@ dev = [
 lint = [
     "bandit[toml]>=1.9.4",
     "deptry>=0.23.1",
+    "import-linter>=2.11",
     "mypy>=2.1.0",
     "pip-audit>=2.10.0",
     "pyright>=1.1.410",

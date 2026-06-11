@@ -60,7 +60,7 @@ def _compile(
     proc = subprocess.run(  # fixed argv, no shell
         [*prefix, *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
         env=_ENV,
         cwd=REPO_ROOT,

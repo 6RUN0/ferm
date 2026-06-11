@@ -260,9 +260,9 @@ def test_builtin_glob(tmp_path: object) -> None:
     import pathlib
 
     base = pathlib.Path(str(tmp_path))
-    (base / "a.conf").write_text("")
-    (base / "b.conf").write_text("")
-    (base / "c.txt").write_text("")
+    (base / "a.conf").write_text("", encoding="utf-8")
+    (base / "b.conf").write_text("", encoding="utf-8")
+    (base / "c.txt").write_text("", encoding="utf-8")
     tokenizer = Tokenizer(
         Script(
             filename=str(base / "rules.ferm"),

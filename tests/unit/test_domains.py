@@ -151,7 +151,7 @@ def test_initialize_domain_arp_has_only_tables_tool() -> None:
 
 def test_initialize_domain_reads_mock_previous(tmp_path: Path) -> None:
     mock = tmp_path / "ip.save"
-    mock.write_text("*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n")
+    mock.write_text("*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n", encoding="utf-8")
     options = Options(test=True, mock_previous={"ip": str(mock)})
     domains: dict[str, DomainInfo] = {}
 

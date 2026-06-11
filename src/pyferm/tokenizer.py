@@ -68,6 +68,22 @@ class Script:
     #: status on close, as Perl's ``close`` does for a piped handle.
     process: subprocess.Popen[str] | None = None
 
+    def close(self) -> None:
+        """
+        Release the input: close the handle, reap a pipe child.
+
+        Perl closes filehandles implicitly when ``$script`` goes out of
+        scope (and ``close`` on a piped handle waits for the child); this
+        port closes explicitly so no error path leaks an open file --
+        the test suite runs with ResourceWarning as an error.  Idempotent;
+        the pipe child's exit status stays readable on :attr:`process`.
+        """
+        if self.handle is not None and self.handle is not sys.stdin:
+            self.handle.close()
+        self.handle = None
+        if self.process is not None:
+            self.process.wait()
+
 
 # The lexer pattern, copied verbatim from Perl (``:997``): quoted strings,
 # single special characters, word runs, ``@function`` names and ``#``.
@@ -126,7 +142,7 @@ def open_script(filename: str, parent: Script | None) -> Script:
                 filename[:-1],
                 shell=True,
                 stdout=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
             )
         except OSError as exc:
             raise FermError(

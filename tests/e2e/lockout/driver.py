@@ -82,7 +82,7 @@ def _step(message: str) -> None:
 def _snapshot() -> list[str]:
     """Kernel ruleset canonicalized: no comment lines, zeroed counters."""
     save = subprocess.run(
-        [IPTABLES_SAVE], capture_output=True, text=True, check=True
+        [IPTABLES_SAVE], capture_output=True, encoding="utf-8", check=True
     )
     return [
         _COUNTERS_RE.sub("[0:0]", line)

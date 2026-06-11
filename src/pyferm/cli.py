@@ -41,7 +41,7 @@ from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
-from pyferm.tokenizer import Tokenizer, open_script, tokenize_string
+from pyferm.tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -238,7 +238,7 @@ def _setup_streams(
     saved_fd = os.dup(stdout_fd)
     # Line-buffered: each emitted line reaches the script file before any
     # subsequent child could have run.
-    lines_stream = os.fdopen(saved_fd, "w", buffering=1)
+    lines_stream = os.fdopen(saved_fd, "w", buffering=1, encoding="utf-8")
     sys.stdout.flush()
     os.dup2(stderr_fd, stdout_fd)
 
@@ -305,7 +305,7 @@ def _make_io(
         # {previous} is set to the empty string, not left unset.
         try:
             completed = subprocess.run(
-                [tool], capture_output=True, text=True, check=False
+                [tool], capture_output=True, encoding="utf-8", check=False
             )
         except OSError:
             return ""
@@ -492,7 +492,17 @@ def _run(
         emit_line=emit_line,
         read_save=read_save,
     )
-    parser.enter(0, None)
+    # finally: close the whole include chain (innermost first) on both
+    # the success path and a parse abort, so no error path leaks an open
+    # file or an unreaped pipe child.  Perl gets this from filehandle
+    # garbage collection; the suite runs with ResourceWarning as error.
+    try:
+        parser.enter(0, None)
+    finally:
+        node: Script | None = tokenizer.script
+        while node is not None:
+            node.close()
+            node = node.parent
     if len(scope.stack) != 2:  # noqa: PLR2004 -- global + script frames
         raise internal_error("parser left the scope stack unbalanced")
 

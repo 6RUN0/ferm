@@ -62,7 +62,7 @@ def test_def_is_evaluated_without_script_context(tmp_path: Path) -> None:
     from pyferm.cli import main
 
     conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n")
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     assert main(["--test", "--def", "$x=(1 2)", str(conf)]) == 0
     assert main(["--test", "--def", "$x=$LINE", str(conf)]) == 1
     assert main(["--test", "--def", "$x=@glob(x*)", str(conf)]) == 1
@@ -77,7 +77,9 @@ def test_invalid_domain_keeps_perl_blank_line(
     from pyferm.cli import main
 
     conf = tmp_path / "t.ferm"
-    conf.write_text("domain p { table filter { chain INPUT { } } }\n")
+    conf.write_text(
+        "domain p { table filter { chain INPUT { } } }\n", encoding="utf-8"
+    )
     assert main(["--test", "--noexec", str(conf)]) == 1
     assert capsys.readouterr().err.endswith("Invalid domain 'p'\n\n")
 
@@ -118,7 +120,9 @@ def test_main_restores_streams_after_shell(
     from pyferm.cli import main
 
     conf = tmp_path / "t.ferm"
-    conf.write_text("domain ip table filter chain INPUT ACCEPT;\n")
+    conf.write_text(
+        "domain ip table filter chain INPUT ACCEPT;\n", encoding="utf-8"
+    )
     assert main(["--shell", "--test", str(conf)]) == 0
     os.write(1, b"after-marker\n")
     assert "after-marker" in capfd.readouterr().out
@@ -141,7 +145,7 @@ def test_confirm_rules_timeout_interrupts_read() -> None:
     completed = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=10,
         check=False,
     )
@@ -155,7 +159,7 @@ def test_read_save_keeps_output_on_nonzero_exit(tmp_path: Path) -> None:
     from pyferm.cli import _make_io
 
     tool = tmp_path / "save-tool"
-    tool.write_text("#!/bin/sh\necho '*filter'\nexit 1\n")
+    tool.write_text("#!/bin/sh\necho '*filter'\nexit 1\n", encoding="utf-8")
     tool.chmod(0o755)
     _execute, _emit, read_save, _restore = _make_io(Options(), sys.stdout)
     assert read_save(str(tool)) == "*filter\n"

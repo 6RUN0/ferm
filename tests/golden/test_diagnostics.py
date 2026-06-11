@@ -38,7 +38,9 @@ _WARNING = _cases("warning")
 
 def _expected_stderr(ferm_file: Path) -> str:
     rel = ferm_file.relative_to(REFERENCE_TEST)
-    return (_EXPECTED / rel.parent / f"{ferm_file.name}.stderr").read_text()
+    return (_EXPECTED / rel.parent / f"{ferm_file.name}.stderr").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize("ferm_file", _FAILURE, ids=_ids(_FAILURE))

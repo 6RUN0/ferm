@@ -147,11 +147,12 @@ def test_open_script_detects_cycles() -> None:
 
 def test_open_script_reads_a_real_file(tmp_path: Path) -> None:
     path = tmp_path / "rules.ferm"
-    path.write_text("proto tcp;\n")
+    path.write_text("proto tcp;\n", encoding="utf-8")
     script = open_script(str(path), None)
     tk = Tokenizer(script)
     assert tk.next_token() == "proto"
     assert script.parent is None
+    script.close()
 
 
 def test_open_script_missing_file_errors() -> None:
@@ -168,3 +169,4 @@ def test_open_script_pipe_runs_command() -> None:
     assert script.handle.read() == "chain INPUT ACCEPT;\n"
     assert script.process is not None
     assert script.process.wait() == 0
+    script.close()

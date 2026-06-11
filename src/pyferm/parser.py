@@ -35,7 +35,6 @@ field -- they exist for the Phase 2 nft translator.
 from __future__ import annotations
 
 import re
-import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -530,18 +529,21 @@ class Parser:
         old_tokens.appendleft(make_line_token(script.line))
         script.handle = None
 
-        for item in items:
-            inner = build_inner(item)
-            if inner is None:
-                continue
-            script.base_level = 0
-            script.tokens = deque(block)
-            self.enter(0, inner)
-
-        script.base_level = old_base_level
-        script.tokens = old_tokens
-        script.handle = old_handle
-        script.line = old_line
+        # finally: a parse error inside the replay must not lose the
+        # detached live handle (the cli closes scripts by walking them).
+        try:
+            for item in items:
+                inner = build_inner(item)
+                if inner is None:
+                    continue
+                script.base_level = 0
+                script.tokens = deque(block)
+                self.enter(0, inner)
+        finally:
+            script.base_level = old_base_level
+            script.tokens = old_tokens
+            script.handle = old_handle
+            script.line = old_line
 
     # -- the core recursion (:2123) --------------------------------------
 
@@ -951,9 +953,7 @@ class Parser:
 
         self.enter(level + 1, prev)
 
-        handle = new_script.handle
-        if handle is not None and handle is not sys.stdin:
-            handle.close()
+        new_script.close()
         if new_script.process is not None and new_script.process.wait() != 0:
             # Perl: close on a piped handle reaps the child and fails on a
             # non-zero exit (:2311) -- a truncated ruleset must not install.

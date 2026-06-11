@@ -268,7 +268,7 @@ def _compile_oracle(args: Sequence[str]) -> tuple[bool, str, str]:
     proc = subprocess.run(  # fixed argv, no shell
         [*_ORACLE, *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
         env=_ENV,
         cwd=REPO_ROOT,
@@ -301,7 +301,7 @@ def test_random_config_matches_oracle(
     config: str, mode_args: tuple[str, ...], fuzz_dir: Path
 ) -> None:
     path = fuzz_dir / f"input-{'-'.join(mode_args) or 'fast'}.ferm"
-    path.write_text(config)
+    path.write_text(config, encoding="utf-8")
     args = ["--test", "--noexec", "--lines", *mode_args, str(path)]
 
     oracle = _compile_oracle(args)

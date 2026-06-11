@@ -866,7 +866,10 @@ def _iptables_save_lines() -> list[str]:
     """Run ``iptables-save`` and return its output lines (Perl ``:502``)."""
     try:
         proc = subprocess.run(
-            ["iptables-save"], capture_output=True, text=True, check=True
+            ["iptables-save"],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise FermError(f"Failed to run iptables-save: {exc}") from exc

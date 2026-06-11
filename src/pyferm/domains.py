@@ -241,7 +241,7 @@ def initialize_domain(
             try:
                 # The `with` follows immediately; the open is separate
                 # only so the OSError can be mapped.
-                handle = Path(mock).open()  # noqa: SIM115
+                handle = Path(mock).open(encoding="utf-8")  # noqa: SIM115
             except OSError as exc:
                 raise FermError(exc.strerror or str(exc)) from exc
             with handle:
