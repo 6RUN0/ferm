@@ -176,6 +176,15 @@ def test_chain_name_too_long_is_rejected() -> None:
         _parse(f"chain {'x' * 30} ACCEPT;")
 
 
+def test_chain_name_at_29_chars_is_accepted() -> None:
+    # The cap rejects names *longer* than 29 (``> 29``); a 29-char name is
+    # the boundary that must still parse -- the off-by-one ``>= 29`` would
+    # wrongly reject the longest legal name.
+    name = "x" * 29
+    parser = _parse(f"chain {name} ACCEPT;")
+    assert len(_rules(parser, "ip", "filter", name)) == 1
+
+
 # -- variables and functions ----------------------------------------------
 
 

@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import io
 
-from pyferm.streams import reconfigure_latin1
+from pyferm.streams import argv_to_latin1, reconfigure_latin1
+
+
+def test_argv_to_latin1_reinterprets_argv_bytes_one_per_char() -> None:
+    # argv reaches ferm already decoded by the interpreter (filesystem
+    # encoding + surrogateescape); argv_to_latin1 reverses that decode so a
+    # value above U+00FF survives as its raw bytes -- one latin-1 char each,
+    # the same model the config file follows -- instead of one high codepoint
+    # that would overflow save.encode("latin-1") downstream.
+    result = argv_to_latin1("€")  # euro, utf-8 bytes b"\xe2\x82\xac"
+    assert result == "\xe2\x82\xac"
+    assert "€" not in result
 
 
 def test_reconfigure_latin1_switches_text_stream() -> None:

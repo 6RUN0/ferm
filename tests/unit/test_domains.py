@@ -16,11 +16,45 @@ import pytest
 from pyferm.config import Options
 from pyferm.domains import (
     DomainInfo,
+    ShellSnapshot,
     find_tool,
     initialize_domain,
     read_previous,
+    shell_snapshot,
 )
 from pyferm.errors import FermError
+
+# --- shell_snapshot --------------------------------------------------------
+
+
+def test_shell_snapshot_embeds_the_save_and_restore_tools() -> None:
+    # The x_tables snapshot pipes *-save into a tempfile and replays it
+    # through *-restore; both tool paths must come from the domain's tools.
+    snapshot = shell_snapshot(
+        "ip",
+        {"tables-save": "iptables-save", "tables-restore": "iptables-restore"},
+    )
+    assert snapshot == ShellSnapshot(
+        setup=(
+            "ip_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
+            "iptables-save >$ip_tmp\n",
+        ),
+        restore="iptables-restore <$ip_tmp\n",
+    )
+
+
+def test_shell_snapshot_without_xtables_tooling_is_none() -> None:
+    # arp/eb (and a future nft backend) have no *-save/*-restore pair, so
+    # the snapshot is skipped rather than built from a missing tool.
+    assert shell_snapshot("eb", {}) is None
+
+
+def test_shell_snapshot_needs_both_tools_not_just_one() -> None:
+    # the guard is "save OR restore missing -> None"; one half present is
+    # still not enough to snapshot (pins the boolean, not just both-absent).
+    assert shell_snapshot("ip", {"tables-save": "iptables-save"}) is None
+    assert shell_snapshot("ip", {"tables-restore": "iptables-restore"}) is None
+
 
 # --- find_tool -------------------------------------------------------------
 

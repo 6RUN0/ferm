@@ -578,6 +578,44 @@ def test_commit_fast_shell_wraps_heredoc() -> None:
     assert text.endswith("EOT\n")
 
 
+def test_commit_fast_noflush_prepends_restore_tool_in_heredoc() -> None:
+    # Under --lines the restore command line is emitted only in the --shell
+    # heredoc header; --noflush must *append* to the tool path ("iptables-
+    # restore --noflush"), never replace it with a bare " --noflush".
+    emitted: list[str] = []
+    domain_info = DomainInfo(tools={"tables-restore": "iptables-restore"})
+    rendered = Rendered(save="*filter\nCOMMIT\n")
+    IptablesBackend().commit(
+        "ip",
+        domain_info,
+        rendered,
+        Options(fast=True, lines=True, noexec=True, shell=True, noflush=True),
+        execute=lambda _c: None,
+        emit_line=emitted.append,
+        restore=lambda _i, _s: None,
+    )
+    assert "".join(emitted).startswith("iptables-restore --noflush <<EOT\n")
+
+
+def test_commit_fast_forwards_domain_info_and_save_to_restore() -> None:
+    # The execute path must hand the *real* domain_info and save text to
+    # restore (not swap either for None); the rest of the suite stubs restore
+    # with an arg-ignoring lambda, so pin the forwarding here.
+    calls: list[tuple[object, object]] = []
+    domain_info = DomainInfo(tools={"tables-restore": "iptables-restore"})
+    rendered = Rendered(save="*filter\nCOMMIT\n")
+    IptablesBackend().commit(
+        "ip",
+        domain_info,
+        rendered,
+        Options(fast=True),
+        execute=lambda _c: None,
+        emit_line=lambda _t: None,
+        restore=lambda info, save: calls.append((info, save)),
+    )
+    assert calls == [(domain_info, "*filter\nCOMMIT\n")]
+
+
 # --- rollback --------------------------------------------------------------
 
 
