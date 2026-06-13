@@ -647,7 +647,11 @@ class Importer:
 
         if option == "protocol":
             value = self._parse_def_option(
-                option, 1, False, pre_negated, tokens
+                option,
+                1,
+                pre_negation=False,
+                negated=pre_negated,
+                tokens=tokens,
             )
             rule.proto = value
             cur.append(MatchEntry("protocol", value))
@@ -828,7 +832,9 @@ class Importer:
             token = tokens.pop(0)
             option = _match_option(token)
             if option is not None:
-                self.parse_option(rule, option, False, tokens)
+                self.parse_option(
+                    rule, option, pre_negated=False, tokens=tokens
+                )
             elif token == "!":
                 if not tokens:
                     raise self._die()
@@ -836,7 +842,9 @@ class Importer:
                 option = _match_option(token)
                 if option is None:
                     raise FermError(f"option expected in line {self.lineno}")
-                self.parse_option(rule, option, True, tokens)
+                self.parse_option(
+                    rule, option, pre_negated=True, tokens=tokens
+                )
             else:
                 self._warn(f"unknown token '{token}' in line {self.lineno}")
 

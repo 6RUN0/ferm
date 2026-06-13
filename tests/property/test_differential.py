@@ -237,10 +237,10 @@ def oracle_read_previous() -> Iterator[OracleProcess]:
 def test_substr_matches_oracle(
     string: str, offset: str, length: str, oracle_substr: OracleProcess
 ) -> None:
-    from pyferm.functions import _perl_int, _perl_substr
+    from pyferm.functions import _perl_substr, _perl_substr_index
 
     assert _perl_substr(
-        string, _perl_int(offset), _perl_int(length)
+        string, _perl_substr_index(offset), _perl_substr_index(length)
     ) == oracle_substr.query_fields(string, offset, length)
 
 

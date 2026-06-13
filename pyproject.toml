@@ -52,6 +52,7 @@ select = [
   "D",                # pydocstyle
   "UP",               # pyupgrade
   "B",                # bugbear
+  "FBT",              # boolean-trap (positional bool args)
   "A",                # builtins shadowing
   "C4",               # comprehensions
   "SIM",              # simplify
@@ -59,6 +60,7 @@ select = [
   "RUF",              # ruff-specific
   "PIE",              # misc lints
   "RET",              # return consistency
+  "RSE",              # raise: drop redundant parens on bare raise
   "TID",              # tidy imports
   "FURB",             # refurb modernisation
   "TRY",              # exception hygiene
@@ -99,6 +101,15 @@ ignore = [
   "PLR0912", # too many branches
   "PLR0913", # too many arguments
   "PLR0915", # too many statements
+  # FBT001/FBT002 (boolean-typed positional parameter) fire only on the
+  # ported recursive-descent signatures -- parse_option/_parse_def_option/
+  # _maybe_consume_negation/negate_value/pick_resolver -- whose positional
+  # bool shape mirrors the Perl oracle verbatim (same Phase 7 / golden-
+  # suite-guarded bucket as the complexity quartet above).  FBT003 (a bare
+  # bool passed positionally at a *call*) stays on: it is a call-site
+  # readability gate that changes no signature.
+  "FBT001", # boolean-typed positional parameter in a definition
+  "FBT002", # boolean default for a positional parameter
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -109,8 +120,11 @@ known-first-party = ["pyferm"]
 
 [tool.ruff.lint.extend-per-file-ignores]
 # Test-method names are their own documentation (D); asserting against
-# literal expected values is the point of a test (PLR2004).
-"tests/*" = ["D", "PLR2004"]
+# literal expected values is the point of a test (PLR2004) -- and passing
+# a bare bool to the unit under test (format_bool(True), pick_resolver(
+# True, ...)) is that same literal-as-input pattern, not a boolean trap
+# (FBT).
+"tests/*" = ["D", "PLR2004", "FBT"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -330,6 +344,7 @@ test = [
     "pytest-cov>=7.1.0",
     "pytest-randomly>=4.1.0",
     "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.6.0",
 ]
 build = [
     "check-wheel-contents>=0.6.3",

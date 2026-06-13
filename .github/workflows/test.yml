@@ -53,11 +53,29 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
         with:
           python-version: '3.11'
+          enable-cache: true
 
       - name: Sync the locked environment
         run: uv sync --locked
 
+      # mypy's incremental cache survives across runs (pyright has no
+      # equivalent); a unique key forces a save every run while
+      # restore-keys pulls the latest snapshot.  The lockfile hash scopes
+      # it so a mypy upgrade starts a fresh cache.
+      - name: Restore the mypy incremental cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # frozen: v5.0.5
+        with:
+          path: .mypy_cache
+          key: mypy-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            mypy-${{ hashFiles('uv.lock') }}-
+
       - name: Lint, typecheck and lint the CI workflows
+        # mypy/pyright run in the typecheck session; SKIP keeps the lint
+        # session's pre-commit pass from re-running them (pyright has no
+        # cross-invocation cache, so a second full analysis is pure waste).
+        env:
+          SKIP: mypy,pyright
         run: uv run nox -s lint typecheck workflows
 
   port:
@@ -80,12 +98,14 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
         with:
           python-version: ${{ matrix.python }}
+          enable-cache: true
 
       - name: Sync the locked environment
         run: uv sync --locked
 
-      - name: Run the tests under coverage (global floor + patch gate)
+      - name: Run the suite (3.11 also under coverage with the patch gate)
         env:
+          MATRIX_PYTHON: ${{ matrix.python }}
           # On pull requests diff-cover compares against the PR base so
           # the 90% patch gate bites in CI too; on pushes the default
           # base equals HEAD, the diff is empty and the gate is a no-op
@@ -94,7 +114,15 @@ jobs:
             ${{ github.event_name == 'pull_request'
                 && format('origin/{0}', github.base_ref)
                 || 'origin/python-port' }}
-        run: uv run nox -s coverage
+        # Coverage % is line-based and identical across interpreters, so
+        # only one leg measures it (and runs the diff-cover patch gate);
+        # the others run the same suite without the instrumentation tax.
+        run: |
+          if [ "$MATRIX_PYTHON" = '3.11' ]; then
+            uv run nox -s coverage
+          else
+            uv run nox -s tests
+          fi
 
       # One leg is enough for trend surfacing: the suite and therefore
       # the percentages are identical across interpreters.
@@ -121,6 +149,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          enable-cache: true
 
       - name: Sync the locked environment
         run: uv sync --locked
@@ -149,6 +179,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          enable-cache: true
 
       - name: Sync the locked environment
         run: uv sync --locked

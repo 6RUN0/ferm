@@ -4,7 +4,7 @@
 #   uv run pre-commit run --all-files       # apply to all files
 #   uv run pre-commit autoupdate --freeze   # update pinned hook revs
 minimum_pre_commit_version: "3.5.0"
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
 
 # reference/ is the frozen Perl oracle (upstream ferm plus its golden
 # files), tests/golden/expected/ holds byte-exact captures of the
@@ -157,6 +157,19 @@ repos:
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
         args: ["lock", "--check"]
+
+      # Fast gate at push time: the unit+golden suite against the port
+      # (parallel under xdist, ~14s).  Stops a red push before it reaches
+      # CI; the heavier preflight (matrix/coverage/fuzz/build) stays a
+      # deliberate `nox -s preflight`.  Runs once per push, not per file.
+      - id: tests
+        name: pytest (port suite, pre-push)
+        entry: uv
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+        args: ["run", "nox", "-s", "tests"]
 
   # Conventional Commits gate on commit subjects, enforced at write
   # time so a malformed message never lands.

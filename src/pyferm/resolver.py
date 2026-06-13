@@ -151,11 +151,13 @@ class ZonefileResolver:
         name = _canonical_name(hostname)
         all_records = self.records.get(name)
         if all_records is None:
-            return SearchResult(False, [], "NXDOMAIN")
+            return SearchResult(found=False, answer=[], errorstring="NXDOMAIN")
         matching = [rr for rr in all_records if rr.type == rrtype]
         if matching:
-            return SearchResult(True, matching, "NOERROR")
-        return SearchResult(False, [], "NOERROR")
+            return SearchResult(
+                found=True, answer=matching, errorstring="NOERROR"
+            )
+        return SearchResult(found=False, answer=[], errorstring="NOERROR")
 
 
 class SystemResolver:
@@ -169,11 +171,13 @@ class SystemResolver:
         try:
             answer = dns.resolver.resolve(hostname, rrtype, search=True)
         except dns.resolver.NXDOMAIN:
-            return SearchResult(False, [], "NXDOMAIN")
+            return SearchResult(found=False, answer=[], errorstring="NXDOMAIN")
         except dns.resolver.NoAnswer:
-            return SearchResult(False, [], "NOERROR")
+            return SearchResult(found=False, answer=[], errorstring="NOERROR")
         except dns.exception.DNSException as exc:
-            return SearchResult(False, [], str(exc) or "SERVFAIL")
+            return SearchResult(
+                found=False, answer=[], errorstring=str(exc) or "SERVFAIL"
+            )
 
         records: list[ResourceRecord] = []
         for rr in answer:

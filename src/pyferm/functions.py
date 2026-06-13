@@ -199,27 +199,22 @@ _NUMERIC_PREFIX_RE = re.compile(
 )
 
 _UV_MAX = 2**64 - 1
-_IV_MAX = 2**63 - 1
 _IV_MIN = -(2**63)
 
 
-def _wrap_uv(uv: int) -> int:
-    """Reinterpret an unsigned 64-bit value as Perl's signed IV."""
-    return uv - 2**64 if uv > _IV_MAX else uv
-
-
-def _perl_int(text: str) -> int:
+def _perl_substr_index(text: str) -> int:
     """
-    Coerce a string to an integer the way Perl numifies it.
+    Coerce a ``substr`` offset/length the way Perl's ``substr`` reads it.
 
-    Perl reads the leading numeric prefix and truncates toward zero;
-    anything non-numeric becomes 0.  ferm runs without ``use warnings``,
-    so the oracle does this silently.  Out-of-IV-range values mirror
-    Perl's two-step conversion (verified against perl 5.42): a pure
-    integer string accumulates exactly into a UV whose bit pattern is
-    then read as signed (``"1e19"`` -> -8446744073709551616), an NV
-    at or beyond 2**64 clamps to UV_MAX (-1 as IV), and anything below
-    -2**63 clamps to IV_MIN.
+    ``@substr`` passes its raw string arguments straight to Perl ``substr``
+    (``reference/src/ferm:1570``), and ``pp_substr`` reads each through a
+    ``SvIsUV``-aware path: a magnitude that fits in a UV stays a large
+    *positive* value -- ``substr(s, 0, 2**63)`` keeps the whole string --
+    unlike general scalar->IV numification, which reinterprets that same bit
+    pattern as a negative IV.  The leading numeric prefix is read and
+    truncated toward zero; a non-numeric string is 0.  Saturation matches
+    perl 5.42: a magnitude past UV_MAX collapses to UV_MAX read as ``-1``,
+    and anything below ``-2**63`` clamps to IV_MIN.
     """
     match = _NUMERIC_PREFIX_RE.match(text)
     if match is None:
@@ -230,14 +225,14 @@ def _perl_int(text: str) -> int:
         magnitude = int(number)
         if negative:
             return max(-magnitude, _IV_MIN)
-        if magnitude <= _UV_MAX:
-            return _wrap_uv(magnitude)
-        return -1  # NV re-parse lands at or beyond 2**64 -> UV_MAX
+        # Keep the full UV magnitude positive (substr's SvIsUV path); only
+        # a value past UV_MAX (which Perl stores as an NV) saturates to -1.
+        return magnitude if magnitude <= _UV_MAX else -1
     value = float(match.group())
     if _IV_MIN <= value < 2**63:
         return int(value)
     if value > 0:
-        return _wrap_uv(_UV_MAX if value >= 2**64 else int(value))
+        return int(value) if value < 2**64 else -1
     return _IV_MIN
 
 
@@ -609,8 +604,8 @@ class Evaluator:
                 error("String expected")
             return _perl_substr(
                 stringify(params[0]),
-                _perl_int(stringify(params[1])),
-                _perl_int(stringify(params[2])),
+                _perl_substr_index(stringify(params[1])),
+                _perl_substr_index(stringify(params[2])),
             )
         if token == "@length":
             params = self._params("@length(string)", 1)

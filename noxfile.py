@@ -69,10 +69,20 @@ def lint(session: nox.Session) -> None:
     )
 
 
+#: Parallelise the suite across cores with pytest-xdist.  The suite is
+#: dominated by subprocess spawns (the Perl oracle, ``python -m pyferm``),
+#: so ``-n auto`` is near-linear: ~59s -> ~14s on a 16-core box.  Kept out
+#: of pytest ``addopts`` on purpose -- mutmut reruns ``tests/unit`` per
+#: mutant and relies on stable per-test timing, and single-test debugging
+#: wants serial; both pass ``-n0`` via posargs to override (last ``-n``
+#: wins).
+_XDIST = ("-n", "auto")
+
+
 @nox.session
 def tests(session: nox.Session) -> None:
     """Run the test suite (unit + golden) against the Python port."""
-    _uv(session, "pytest", *session.posargs, env=_GOLDEN_ENV)
+    _uv(session, "pytest", *_XDIST, *session.posargs, env=_GOLDEN_ENV)
 
 
 @nox.session
@@ -92,6 +102,7 @@ def matrix(session: nox.Session, python: str) -> None:
         "--python",
         python,
         "pytest",
+        *_XDIST,
         *session.posargs,
         external=True,
         env={
@@ -116,6 +127,7 @@ def golden_oracle(session: nox.Session) -> None:
     _uv(
         session,
         "pytest",
+        *_XDIST,
         "tests/golden",
         *session.posargs,
         env={"FERM_GOLDEN_TARGET": "perl", **_WARN_ENV},
@@ -147,6 +159,9 @@ def coverage(session: nox.Session) -> None:
     _uv(
         session,
         "pytest",
+        # pytest-cov combines the per-worker data files automatically, so
+        # the coverage total is identical to a serial run.
+        *_XDIST,
         "--cov",
         "--cov-report=term-missing",
         "--cov-report=xml",
@@ -195,6 +210,7 @@ def fuzz(session: nox.Session) -> None:
     _uv(
         session,
         "pytest",
+        *_XDIST,
         "tests/property",
         "--hypothesis-profile=thorough",
         *session.posargs,
@@ -325,6 +341,7 @@ def deps_lowest(session: nox.Session) -> None:
         ".venv-lowest/bin/python",
         "-m",
         "pytest",
+        *_XDIST,
         *session.posargs,
         external=True,
         env=_GOLDEN_ENV,
