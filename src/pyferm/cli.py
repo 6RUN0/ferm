@@ -45,7 +45,7 @@ from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
-from pyferm.streams import reconfigure_latin1
+from pyferm.streams import argv_to_latin1, reconfigure_latin1
 from pyferm.tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
@@ -477,7 +477,10 @@ def _run(
     # script-context built-ins abort, exactly as the oracle does.
     def_evaluator = Evaluator(Tokenizer(None), scope)
     for spec in args.defs:
-        _apply_def(def_evaluator, spec)
+        # argv is decoded by the interpreter before ferm runs; re-read it as
+        # raw bytes so --def follows the same latin-1 model as every other
+        # input boundary (and never overflows save.encode("latin-1")).
+        _apply_def(def_evaluator, argv_to_latin1(spec))
 
     script = open_script(filename, None)
     tokenizer = Tokenizer(script)

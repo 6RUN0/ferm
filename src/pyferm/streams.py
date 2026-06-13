@@ -12,6 +12,26 @@ an error message is unacceptable.
 
 from __future__ import annotations
 
+import os
+
+
+def argv_to_latin1(value: str) -> str:
+    """
+    Re-read an ``argv`` string as its raw bytes under the latin-1 model.
+
+    ``sys.argv`` is the one ferm input boundary the interpreter decodes
+    before user code runs (filesystem encoding plus ``surrogateescape``);
+    every other boundary reads raw bytes as latin-1.  ``os.fsencode``
+    reverses exactly that decoding, recovering the bytes the user typed,
+    which latin-1 then maps one byte per char -- the same model the config
+    file, backticks and zonefiles already follow.  Without it a ``--def``
+    value above U+00FF reaches ``iptables-restore``'s
+    ``save.encode("latin-1")`` and raises ``UnicodeEncodeError`` (while the
+    ``--lines`` path silently backslash-escapes it) instead of flowing
+    through as bytes, as the Perl oracle's raw-byte ``@ARGV`` does.
+    """
+    return os.fsencode(value).decode("latin-1")
+
 
 def reconfigure_latin1(stream: object, errors: str = "strict") -> None:
     """

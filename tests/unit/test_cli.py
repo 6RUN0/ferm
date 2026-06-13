@@ -465,3 +465,37 @@ def test_cli_error_with_non_latin1_filename_does_not_crash() -> None:
     assert result.returncode == 1
     assert b"Traceback" not in result.stderr
     assert result.stderr  # a usable error message was printed
+
+
+def test_cli_def_high_codepoint_is_byte_faithful(tmp_path: Path) -> None:
+    # argv is the one input boundary Python decodes (utf-8 + surrogateescape)
+    # before ferm runs, so a --def value with a codepoint above U+00FF (here
+    # U+20AC, carried on the wire as the utf-8 bytes 0xe2 0x82 0xac) used to
+    # reach iptables-restore's save.encode("latin-1") and raise a raw
+    # UnicodeEncodeError -- while the same bytes in the config file round-trip
+    # cleanly. Re-reading argv as raw bytes makes the two boundaries agree.
+    config = tmp_path / "def.ferm"
+    config.write_text(
+        "table filter chain INPUT mod comment comment $x ACCEPT;\n",
+        encoding="latin-1",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pyferm",
+            "--test",
+            "--def",
+            '$x="€"',
+            str(config),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert b"Traceback" not in result.stderr
+    # byte-faithful: the euro's three utf-8 bytes appear verbatim, exactly as
+    # if they had been written into the config file and read back latin-1 --
+    # not silently backslash-escaped to the literal text "€"
+    assert b"\xe2\x82\xac" in result.stdout
+    assert b"\\u20ac" not in result.stdout

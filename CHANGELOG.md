@@ -55,10 +55,12 @@ validated byte-for-byte against the Perl oracle kept in `reference/`.
   **`mutmut` mutation** session.
 - **Diagnostics parity** goldens pinning stderr for negative / params /
   warning cases.
-- **Byte-faithful I/O**: config, backtick and zonefile input read as
-  latin-1 bytes and carried across the CLI, restore and `import-ferm`
-  boundaries.
-- **`MAX_BLOCK_DEPTH`** bound on parser nesting.
+- **Byte-faithful I/O**: config, backtick, zonefile and `--def` (`argv`)
+  input read as latin-1 bytes and carried across the CLI, restore and
+  `import-ferm` boundaries.
+- **`MAX_BLOCK_DEPTH`** bound on parser block nesting and **`MAX_VALUE_DEPTH`**
+  bound on value-reader nesting, both failing with a located diagnostic
+  instead of a stack overflow.
 
 ### Project infrastructure
 
