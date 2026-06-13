@@ -55,43 +55,6 @@ SaveReader = Callable[[str], "str | None"]
 
 
 @dataclass
-class ShellSnapshot:
-    """
-    The ``--shell --interactive`` snapshot contract for one domain.
-
-    ``setup`` saves the running ruleset into a shell variable's tempfile
-    at the top of the generated script (Perl ``:954-957``); ``restore``
-    pipes it back if the admin never confirms (Perl ``:810-814``).  Both
-    halves share the ``{domain}_tmp`` variable name, so they must come
-    from the same place -- this dataclass is that place.
-    """
-
-    setup: tuple[str, str]
-    restore: str
-
-
-def shell_snapshot(domain: str, tools: dict[str, str]) -> ShellSnapshot | None:
-    """
-    Build the snapshot lines for ``domain``, or ``None`` without tooling.
-
-    The contract is x_tables-specific (``*-save``/``*-restore`` pairs
-    exist for ip/ip6 only; arp/eb have none, and a native nft backend
-    will snapshot differently), hence one guard for both halves.
-    """
-    save_tool = tools.get("tables-save")
-    restore_tool = tools.get("tables-restore")
-    if save_tool is None or restore_tool is None:
-        return None
-    return ShellSnapshot(
-        setup=(
-            f"{domain}_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
-            f"{save_tool} >${domain}_tmp\n",
-        ),
-        restore=f"{restore_tool} <${domain}_tmp\n",
-    )
-
-
-@dataclass
 class Command:
     """
     One slow-mode shell command plus its Perl ``$status ||=`` guard.

@@ -37,9 +37,9 @@ import sys
 from typing import TYPE_CHECKING, TextIO
 
 from pyferm import __version__
-from pyferm.backend.base import shell_snapshot
 from pyferm.backend.iptables import IptablesBackend, restore_domain
 from pyferm.config import Options
+from pyferm.domains import shell_snapshot
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser

@@ -17,12 +17,13 @@ The previous-state capture of ``initialize_domain`` (the ``--test`` mock
 branch, the live ``*-save`` pipe, the ``eb`` atomic-save snapshot) goes
 through the injected ``capture_previous`` callable -- the cli's closure over
 :meth:`pyferm.backend.base.Backend.capture_previous` -- and the ``--shell``/
-``--interactive`` setup lines through ``emit_line``.  The only ``backend``
-import here is the ``shell_snapshot`` helper from the abstract
-``backend.base`` (acyclic: ``base`` imports ``domains`` types only under
-``TYPE_CHECKING``); the implementation backend (``backend.iptables``) is
-never imported, and the ``CapturePrevious`` alias references the backend
-only in prose.
+``--interactive`` setup lines through ``emit_line``.  The module imports no
+``backend`` symbol at all (not even under ``TYPE_CHECKING``): the
+render/commit seam is reached only through injected callables, so the
+"compiler core does not import the backend" contract holds.  The
+``shell_snapshot`` helper -- a pure ``(domain, tools) -> shell lines``
+function over a family's already-discovered tools -- lives here for that
+reason; the ``CapturePrevious`` alias references the backend only in prose.
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING
 
-from pyferm.backend.base import shell_snapshot
 from pyferm.errors import FermError
 
 # Runtime import, not TYPE_CHECKING: the parametrized default_factory
@@ -208,6 +208,43 @@ def read_previous(lines: Iterable[str], domain_info: DomainInfo) -> str:
             table_info.has_builtin = True
 
     return save
+
+
+@dataclass
+class ShellSnapshot:
+    """
+    The ``--shell --interactive`` snapshot contract for one domain.
+
+    ``setup`` saves the running ruleset into a shell variable's tempfile
+    at the top of the generated script (Perl ``:954-957``); ``restore``
+    pipes it back if the admin never confirms (Perl ``:810-814``).  Both
+    halves share the ``{domain}_tmp`` variable name, so they must come
+    from the same place -- this dataclass is that place.
+    """
+
+    setup: tuple[str, str]
+    restore: str
+
+
+def shell_snapshot(domain: str, tools: dict[str, str]) -> ShellSnapshot | None:
+    """
+    Build the snapshot lines for ``domain``, or ``None`` without tooling.
+
+    The contract is x_tables-specific (``*-save``/``*-restore`` pairs
+    exist for ip/ip6 only; arp/eb have none, and a native nft backend
+    will snapshot differently), hence one guard for both halves.
+    """
+    save_tool = tools.get("tables-save")
+    restore_tool = tools.get("tables-restore")
+    if save_tool is None or restore_tool is None:
+        return None
+    return ShellSnapshot(
+        setup=(
+            f"{domain}_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
+            f"{save_tool} >${domain}_tmp\n",
+        ),
+        restore=f"{restore_tool} <${domain}_tmp\n",
+    )
 
 
 def initialize_domain(
