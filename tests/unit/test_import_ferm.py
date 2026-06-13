@@ -31,6 +31,7 @@ from pyferm.import_ferm import (
     format_array,
     main,
 )
+from pyferm.modules import Keyword
 from pyferm.values import Multi, Negated
 
 
@@ -93,6 +94,26 @@ def test_canon_distinguishes_negation_tag() -> None:
     assert _canon(Negated("x")) != _canon("x")
     assert _canon(Negated("x")) != _canon(["x"])
     assert _canon(Negated("x")) == _canon(Negated("x"))
+
+
+def test_canon_preserves_collection_element_content() -> None:
+    # Two collections differing only in an element must canonicalize
+    # differently; collapsing the element to a sentinel would let _optimize
+    # merge genuinely distinct rules.
+    assert _canon(["a"]) != _canon(["b"])
+    assert _canon(Multi(["a"])) != _canon(Multi(["b"]))
+    assert _canon(Negated("a")) != _canon(Negated("b"))
+    assert _canon(Keyword("x", "1")) != _canon(Keyword("x", "2"))
+
+
+def test_canon_rule_preserves_optional_fields() -> None:
+    # Optional rule fields feed the merge-equality test (_array_matches); two
+    # rules differing only in one such field must not canonicalize equal,
+    # whether the field is dropped or its presence test is inverted.
+    assert _canon(Rule(target=[MatchEntry("-j", "A")])) != _canon(
+        Rule(target=[MatchEntry("-j", "B")])
+    )
+    assert _canon(Rule(jump="A")) != _canon(Rule(jump="B"))
 
 
 def test_optimize_factors_common_prefix_block() -> None:

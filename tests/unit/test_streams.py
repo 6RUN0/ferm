@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from pyferm.streams import argv_to_latin1, reconfigure_latin1
 
 
@@ -34,6 +36,15 @@ def test_reconfigure_latin1_backslashreplace_above_byte_range() -> None:
     stream.flush()
     # chars above U+00FF (localized strerror) must not crash the stream
     assert stream.buffer.getvalue() == b"\\u20ac"
+
+
+def test_reconfigure_latin1_default_errors_is_strict() -> None:
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    reconfigure_latin1(stream)  # default errors must be "strict"
+    # strict refuses a char above the byte range with UnicodeEncodeError; any
+    # other (mutated) handler name would instead raise LookupError at encode.
+    with pytest.raises(UnicodeEncodeError):
+        stream.write("€")
 
 
 def test_reconfigure_latin1_skips_detached_wrapper() -> None:
