@@ -15,6 +15,7 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.functions import (
+    MAX_VALUE_DEPTH,
     Evaluator,
     ipfilter,
     realize_protocol,
@@ -442,3 +443,36 @@ def test_multiport_range_counts_as_two() -> None:
     assert isinstance(result, list)
     assert result[0] == "1:1,2:2,3:3,4:4,5:5,6:6,7:7"
     assert result[1] == "8:8"
+
+
+# -- getvalues depth limit (sanctioned deviation #7) ------------------------
+
+
+def _nested_value(depth: int) -> str:
+    """A value whose read needs ``depth`` getvalues frames: nested arrays."""
+    return "(" * depth + "x" + ")" * depth
+
+
+def test_getvalues_at_depth_limit_reads() -> None:
+    # the innermost getvalues entry sits at pre-increment depth == paren
+    # count, so MAX_VALUE_DEPTH - 1 parens reach the limit and still read
+    ev = _evaluator(_nested_value(MAX_VALUE_DEPTH - 1))
+    assert ev.getvalues() == "x"
+    assert ev._value_depth == 0  # noqa: SLF001 -- counter under test
+
+
+def test_getvalues_over_depth_limit_is_ferm_error() -> None:
+    ev = _evaluator(_nested_value(MAX_VALUE_DEPTH))
+    # a located FermError, never a bare RecursionError traceback
+    with pytest.raises(
+        FermError, match=r"values nested too deeply \(max 100\)"
+    ):
+        ev.getvalues()
+
+
+def test_getvalues_depth_counter_recovers_after_error() -> None:
+    ev = _evaluator(_nested_value(MAX_VALUE_DEPTH))
+    with pytest.raises(FermError):
+        ev.getvalues()
+    # the finally chain unwound every frame
+    assert ev._value_depth == 0  # noqa: SLF001 -- counter under test

@@ -20,18 +20,21 @@ different classes of defect.
   and are neutralized so fuzz input can never cause side effects: backticks
   (`Evaluator._run_shell` stubbed), `@include` (`open_script` blocked), and
   `@resolve` (no resolver provider installed). The allow-list of
-  non-findings is `FermError` and `RecursionError`.
+  non-findings is `FermError`.
 - `fuzz_import.py` — drives `import-ferm`'s `Importer.run` on arbitrary
   byte streams. This is the port's only parser fed genuinely external text
   (the stdout of the system `iptables-save`). `Importer.run` is pure, so no
-  guards are needed.
+  guards are needed. Its allow-list also accepts `RecursionError`, raised by
+  `_optimize`'s recursion on common-prefix blocks.
 
 Both decode input as latin-1, a bijective byte-to-char mapping, so the
 fuzzers exercise the full byte range exactly as the latin-1 byte model on
-the port's I/O boundaries delivers it. The unbounded recursive descent
-(`RecursionError` on deep nesting) is a tracked Phase 2 depth-limit item;
-the oracle recurses the same way, so it is allow-listed here rather than
-treated as a finding.
+the port's I/O boundaries delivers it. The config parser's two recursive
+readers are now depth-bounded (`MAX_BLOCK_DEPTH` for `enter`,
+`MAX_VALUE_DEPTH` for `getvalues`/`_read_array`), so deep nesting fails with
+a located `FermError` rather than a stack overflow. `import-ferm`'s
+`_optimize` still recurses on common-prefix blocks — the oracle nests the
+same way — so `RecursionError` stays on that one harness's allow-list.
 
 ## Running
 

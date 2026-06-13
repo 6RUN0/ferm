@@ -66,6 +66,15 @@ _CLASSID_RE = re.compile(r"([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{1,4})")
 _DECIMAL_RE = re.compile(r"-?\d+")
 _MULTIPORT_PROTO_RE = re.compile(r"tcp|udp|udplite")
 
+#: Cap on value-reader recursion depth (:meth:`Evaluator.getvalues`).
+#: Nested arrays ``((( ... )))``, chained negation ``!!! ...`` and nested
+#: ``@cat(@cat(...))`` calls all recurse back through ``getvalues``, so one
+#: guard there covers them.  Sanctioned deviation #7, the value-reader twin
+#: of :data:`~pyferm.parser.MAX_BLOCK_DEPTH`: Perl recurses until memory runs
+#: out (OOM only at ~200k levels), the port fails earlier with a located
+#: diagnostic.
+MAX_VALUE_DEPTH = 100
+
 
 def _is_ref(value: object) -> bool:
     """Whether ``value`` is a Perl reference (an array or a blessed value)."""
@@ -268,6 +277,8 @@ class Evaluator:
         """Bind the evaluator to a tokenizer and a scope stack."""
         self.tokenizer = tokenizer
         self.scope = scope
+        #: Current value-reader recursion depth (see :data:`MAX_VALUE_DEPTH`).
+        self._value_depth = 0
 
     # -- variable / function stack lookups (:1220-1379) ------------------
 
@@ -324,6 +335,40 @@ class Evaluator:
     ) -> Value:
         """
         Read one value: scalar, array, function call, ... (Perl ``:1416``).
+
+        Guards the value-reader recursion with :data:`MAX_VALUE_DEPTH` (an
+        explicit frame counter); every recursion point -- nested arrays via
+        :meth:`_read_array`, chained ``!`` negation, and nested ``@`` calls
+        via :meth:`get_function_params` -- re-enters here, so one guard
+        covers them all.  Delegates to :meth:`_getvalues_body`.
+        """
+        if self._value_depth >= MAX_VALUE_DEPTH:
+            error(f"values nested too deeply (max {MAX_VALUE_DEPTH})")
+        self._value_depth += 1
+        try:
+            return self._getvalues_body(
+                code,
+                non_empty=non_empty,
+                allow_negation=allow_negation,
+                comma_allowed=comma_allowed,
+                parenthesis_allowed=parenthesis_allowed,
+                allow_array_negation=allow_array_negation,
+            )
+        finally:
+            self._value_depth -= 1
+
+    def _getvalues_body(
+        self,
+        code: TokenSource | None = None,
+        *,
+        non_empty: bool = False,
+        allow_negation: bool = False,
+        comma_allowed: bool = False,
+        parenthesis_allowed: bool = False,
+        allow_array_negation: bool = False,
+    ) -> Value:
+        """
+        Read one value (Perl ``:1416``); see :meth:`getvalues` for the guard.
 
         A faithful transcription of ferm's recursive value reader; the
         keyword flags mirror Perl's ``%options`` (``non_empty`` forbids an

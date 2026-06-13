@@ -29,22 +29,22 @@ later), and the previous-state capture stays inert because no
 ``capture_previous`` closure is injected (the ``None`` seam), so both are
 harmless here too.
 
-The exception allow-list -- inputs that are *not* a finding -- is
-:class:`FermError` plus :class:`RecursionError`.  ``FermError`` covers
-every located ``error()``/``die`` and the ``internal error: ...``
-marker.  ``RecursionError`` is allowed because two recursive readers
-descend the parse tree without sharing one bound: ``Parser.enter`` *is*
-now bounded (it refuses past ``MAX_BLOCK_DEPTH`` with the ``too many
-nested blocks`` diagnostic, sanctioned deviation #6, so ``{}``/array
-nesting no longer overflows), but the value reader
-``Evaluator.getvalues`` / ``_read_array`` (Perl ``:1416``/``:1422``)
-still recurses once per nested ``(`` and overflows Python's limit near
-500 levels.  Both ferm and the oracle die under unbounded value
-nesting -- the oracle by OOM near 200k parens, the port by
-``RecursionError`` near 500 -- the same threshold-not-kind divergence
-as the old block-depth debt, tracked as Phase-2 entry debt #7 (roadmap)
-pending an explicit value-reader limit.  Anything else propagates to
-atheris as a crash with a saved reproducer.
+The exception allow-list -- inputs that are *not* a finding -- is just
+:class:`FermError`, which covers every located ``error()``/``die`` and
+the ``internal error: ...`` marker.  Both recursive readers that descend
+the parse tree are now explicitly bounded, so no input should overflow
+Python's stack: ``Parser.enter`` refuses past ``MAX_BLOCK_DEPTH`` (the
+``too many nested blocks`` diagnostic, sanctioned deviation #6, covering
+``{}``/array nesting) and the value reader ``Evaluator.getvalues`` /
+``_read_array`` (Perl ``:1416``/``:1422``) refuses past
+``MAX_VALUE_DEPTH`` (the ``values nested too deeply`` diagnostic,
+sanctioned deviation #7, covering nested ``(``, chained ``!`` and nested
+``@`` calls) -- both raising a located ``FermError`` instead of a bare
+``RecursionError``.  This closes the Phase-2 entry debt #7 that
+previously kept ``RecursionError`` on the allow-list (Perl still dies by
+OOM near 200k parens; the port now fails earlier with a diagnostic).  A
+``RecursionError`` -- or anything else -- now propagates to atheris as a
+crash with a saved reproducer.
 
 Run via ``nox -s crashfuzz``; standalone::
 
@@ -115,10 +115,7 @@ def test_one_input(data: bytes) -> None:
     ):
         try:
             _parse(source)
-        except (FermError, RecursionError):
-            # RecursionError: residual unbounded value-reader recursion
-            # (getvalues/_read_array), Phase-2 entry debt #7 -- see the
-            # module docstring.  The block path is bounded separately.
+        except FermError:
             return
 
 
