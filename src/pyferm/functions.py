@@ -24,12 +24,13 @@ import glob as globlib
 import re
 import subprocess
 from collections import deque
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Final, TypeAlias
 
 from pyferm.errors import error, internal_error
 from pyferm.modules import PROTO_DEFS
 from pyferm.resolver import resolve
 from pyferm.scope import Rule, Scope, append_option
+from pyferm.streams import BYTE_ENCODING
 from pyferm.tokenizer import Token, Tokenizer, make_line_token
 from pyferm.values import (
     Deferred,
@@ -74,6 +75,13 @@ _MULTIPORT_PROTO_RE = re.compile(r"tcp|udp|udplite")
 #: out (OOM only at ~200k levels), the port fails earlier with a located
 #: diagnostic.
 MAX_VALUE_DEPTH = 100
+
+#: Largest ``classid`` value: the kernel field is an unsigned 32-bit int.
+MAX_CLASSID: Final[int] = 0xFFFFFFFF
+
+#: ``multiport`` match capacity: the kernel accepts at most 15 ports, and a
+#: ``a:b`` range counts as two of them.
+MAX_MULTIPORT_PORTS: Final[int] = 15
 
 
 def _is_ref(value: object) -> bool:
@@ -475,7 +483,7 @@ class Evaluator:
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,
-                encoding="latin-1",
+                encoding=BYTE_ENCODING,
                 check=False,
             )
         except OSError as exc:
@@ -737,7 +745,7 @@ class Evaluator:
                 error("classid must be hex:hex or decimal")
             if number < 0:
                 error("classid must be non-negative")
-            if number > 0xFFFFFFFF:  # noqa: PLR2004 -- classid is 32-bit
+            if number > MAX_CLASSID:
                 error("classid is too large")
             normalized.append(stored)
 
@@ -773,7 +781,7 @@ class Evaluator:
         for ports in value:
             text = stringify(ports)
             increment = 2 if ":" in text else 1
-            if size + increment > 15:  # noqa: PLR2004 -- multiport kernel cap
+            if size + increment > MAX_MULTIPORT_PORTS:
                 params.append(",".join(chunk))
                 chunk = []
                 size = 0

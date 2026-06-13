@@ -49,7 +49,11 @@ from pyferm.rules import (
     is_netfilter_module_target,
     netfilter_canonical_protocol,
 )
-from pyferm.streams import reconfigure_latin1
+from pyferm.streams import (
+    BYTE_ENCODING,
+    HUMAN_STREAM_ERRORS,
+    reconfigure_latin1,
+)
 from pyferm.values import (
     Multi,
     Negated,
@@ -854,7 +858,7 @@ def _gather_input(files: list[str]) -> list[str]:
     lines: list[str] = []
     for name in files:
         try:
-            text = Path(name).read_text(encoding="latin-1")
+            text = Path(name).read_text(encoding=BYTE_ENCODING)
         except OSError as exc:
             sys.stderr.write(f"Can't open {name}: {exc.strerror or exc}\n")
             continue
@@ -868,7 +872,7 @@ def _iptables_save_lines() -> list[str]:
         proc = subprocess.run(
             ["iptables-save"],
             capture_output=True,
-            encoding="latin-1",
+            encoding=BYTE_ENCODING,
             check=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -879,8 +883,8 @@ def _iptables_save_lines() -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     """Run the import-ferm CLI (the script's top-level, ``:495``)."""
     # before any write: argparse renders usage/errors through these streams
-    reconfigure_latin1(sys.stdout, errors="backslashreplace")
-    reconfigure_latin1(sys.stderr, errors="backslashreplace")
+    reconfigure_latin1(sys.stdout, errors=HUMAN_STREAM_ERRORS)
+    reconfigure_latin1(sys.stderr, errors=HUMAN_STREAM_ERRORS)
     args = list(sys.argv[1:] if argv is None else argv)
     if "-h" in args or "--help" in args:
         sys.stdout.write(_USAGE)

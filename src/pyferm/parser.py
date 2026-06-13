@@ -38,7 +38,7 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from pyferm.domains import (
     CapturePrevious,
@@ -113,6 +113,15 @@ DEPRECATED_KEYWORDS = {"realgoto": "goto"}
 #: memory runs out, the port fails with a located diagnostic.
 MAX_BLOCK_DEPTH = 100
 
+#: iptables chain-name cap, shared by every target that names a chain --
+#: chain/subchain/jump/goto (Perl ``:2600``/``:2693``/``:2809``/``:2817``).
+MAX_CHAIN_NAME_LENGTH: Final[int] = 29
+
+#: iptables ``log-prefix`` cap; over-long prefixes are truncated, not
+#: rejected (Perl ``:1998-1999``).  A distinct limit that happens to match
+#: :data:`MAX_CHAIN_NAME_LENGTH`.
+MAX_LOG_PREFIX_LENGTH: Final[int] = 29
+
 _NAME_RE = re.compile(r"\w+")
 _DVAR_RE = re.compile(r"\$(\w+)")
 #: A double-quoted token, for the function-expansion interpolation (``:2484``).
@@ -131,9 +140,12 @@ _DPKG_RE = re.compile(r"\.dpkg-(old|dist|new|tmp)$")
 
 
 def _check_chain_name(name: str) -> None:
-    """Reject a chain name iptables would truncate (the shared 29 limit)."""
-    if len(name) > 29:  # noqa: PLR2004 -- iptables chain-name cap
-        error(f"Chain name too long, must be 29 characters or less: {name}")
+    """Reject a chain name iptables would truncate (shared chain-name cap)."""
+    if len(name) > MAX_CHAIN_NAME_LENGTH:
+        error(
+            "Chain name too long, must be "
+            f"{MAX_CHAIN_NAME_LENGTH} characters or less: {name}"
+        )
 
 
 def _domain_key(value: Value) -> str:
@@ -426,13 +438,14 @@ class Parser:
             if (
                 keyword.name == "log-prefix"
                 and isinstance(value, str)
-                and len(value) > 29  # noqa: PLR2004 -- log-prefix cap
+                and len(value) > MAX_LOG_PREFIX_LENGTH
             ):
                 warning(
-                    "log-prefix is too long; truncating to 29 characters: "
-                    f"'{value[:29]}'"
+                    "log-prefix is too long; truncating to "
+                    f"{MAX_LOG_PREFIX_LENGTH} characters: "
+                    f"'{value[:MAX_LOG_PREFIX_LENGTH]}'"
                 )
-                value = value[:29]
+                value = value[:MAX_LOG_PREFIX_LENGTH]
         else:
             local_negated = self._maybe_consume_negation(
                 keyword, local_negated

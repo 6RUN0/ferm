@@ -34,7 +34,7 @@ import os
 import re
 import subprocess  # live-only: run rules / hooks / *-save / *-restore
 import sys
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, Final, TextIO
 
 from pyferm import __version__
 from pyferm.backend.iptables import IptablesBackend, restore_domain
@@ -45,7 +45,12 @@ from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
-from pyferm.streams import argv_to_latin1, reconfigure_latin1
+from pyferm.streams import (
+    BYTE_ENCODING,
+    HUMAN_STREAM_ERRORS,
+    argv_to_latin1,
+    reconfigure_latin1,
+)
 from pyferm.tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
@@ -59,6 +64,10 @@ if TYPE_CHECKING:
         SaveReader,
     )
     from pyferm.domains import DomainInfo
+
+#: A clean run leaves exactly two scope frames on the stack: the global
+#: frame plus the top-level script frame.  Anything else is an internal bug.
+BALANCED_STACK_DEPTH: Final[int] = 2
 
 # The pod2usage(-verbose => 1) rendering of the POD SYNOPSIS/OPTIONS
 # (reference/src/ferm __END__ section), captured verbatim from
@@ -244,7 +253,9 @@ def _setup_streams(
     saved_fd = os.dup(stdout_fd)
     # Line-buffered: each emitted line reaches the script file before any
     # subsequent child could have run.
-    lines_stream = os.fdopen(saved_fd, "w", buffering=1, encoding="latin-1")
+    lines_stream = os.fdopen(
+        saved_fd, "w", buffering=1, encoding=BYTE_ENCODING
+    )
     sys.stdout.flush()
     os.dup2(stderr_fd, stdout_fd)
 
@@ -313,7 +324,10 @@ def _make_io(
         # {previous} is set to the empty string, not left unset.
         try:
             completed = subprocess.run(
-                [tool], capture_output=True, encoding="latin-1", check=False
+                [tool],
+                capture_output=True,
+                encoding=BYTE_ENCODING,
+                check=False,
             )
         except OSError:
             return ""
@@ -402,7 +416,7 @@ def _confirm_rules(options: Options) -> bool:
 
     try:
         data = os.read(sys.stdin.fileno(), 3)
-        line = data.decode("latin-1")
+        line = data.decode(BYTE_ENCODING)
     except (_ConfirmTimeoutError, OSError):
         line = ""
     finally:
@@ -427,8 +441,8 @@ def _confirm_rules(options: Options) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Run the ferm CLI (Perl's top-level program, ``:620-819``)."""
     # before any write: argparse renders usage/errors through these streams
-    reconfigure_latin1(sys.stdout, errors="backslashreplace")
-    reconfigure_latin1(sys.stderr, errors="backslashreplace")
+    reconfigure_latin1(sys.stdout, errors=HUMAN_STREAM_ERRORS)
+    reconfigure_latin1(sys.stderr, errors=HUMAN_STREAM_ERRORS)
     try:
         return _main(argv)
     except FermError as exc:
@@ -530,7 +544,7 @@ def _run(
         while node is not None:
             node.close()
             node = node.parent
-    if len(scope.stack) != 2:  # noqa: PLR2004 -- global + script frames
+    if len(scope.stack) != BALANCED_STACK_DEPTH:
         raise internal_error("parser left the scope stack unbalanced")
 
     domains = parser.domains

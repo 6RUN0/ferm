@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, TypeAlias
 
 from pyferm.errors import FermError, error, set_error_context
-from pyferm.streams import reconfigure_latin1
+from pyferm.streams import BYTE_ENCODING, reconfigure_latin1
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -147,7 +147,7 @@ def open_script(filename: str, parent: Script | None) -> Script:
                 filename[:-1],
                 shell=True,
                 stdout=subprocess.PIPE,
-                encoding="latin-1",
+                encoding=BYTE_ENCODING,
             )
         except OSError as exc:
             raise FermError(
@@ -159,7 +159,7 @@ def open_script(filename: str, parent: Script | None) -> Script:
         try:
             # The handle is read lazily and closed later by the parser, so
             # a context manager is intentionally not used here.
-            handle = Path(filename).open(encoding="latin-1")  # noqa: SIM115
+            handle = Path(filename).open(encoding=BYTE_ENCODING)  # noqa: SIM115
         except OSError as exc:
             raise FermError(
                 f"Failed to open {filename}: {exc.strerror}"

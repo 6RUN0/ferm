@@ -32,7 +32,7 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import IO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Final
 
 from pyferm.errors import FermError
 
@@ -47,6 +47,12 @@ if TYPE_CHECKING:
 #: deliberate literal, NOT sorted -- arp/eb output is byte-for-byte and not
 #: canonicalized by ``sort.pl`` (design revision 3, the ``@eb_tables`` fix).
 EB_TABLES = ("filter", "nat", "broute")
+
+#: ``DomainInfo.tools`` keys: the resolved netfilter command and, for the
+#: x_tables families (ip/ip6), its save/restore pair (``:931-935``).
+TOOL_TABLES: Final[str] = "tables"
+TOOL_SAVE: Final[str] = "tables-save"
+TOOL_RESTORE: Final[str] = "tables-restore"
 
 #: Valid domain (family) names (``initialize_domain``, ``:931``).
 _DOMAIN_RE = re.compile(r"^(?:ip6?|arp|eb)$")
@@ -234,8 +240,8 @@ def shell_snapshot(domain: str, tools: dict[str, str]) -> ShellSnapshot | None:
     exist for ip/ip6 only; arp/eb have none, and a native nft backend
     will snapshot differently), hence one guard for both halves.
     """
-    save_tool = tools.get("tables-save")
-    restore_tool = tools.get("tables-restore")
+    save_tool = tools.get(TOOL_SAVE)
+    restore_tool = tools.get(TOOL_RESTORE)
     if save_tool is None or restore_tool is None:
         return None
     return ShellSnapshot(
@@ -274,9 +280,9 @@ def initialize_domain(
     if _DOMAIN_RE.match(domain) is None:
         raise FermError(f"Invalid domain '{domain}'")
 
-    tool_keys = ["tables"]
+    tool_keys = [TOOL_TABLES]
     if _IP_DOMAIN_RE.match(domain) is not None:
-        tool_keys += ["tables-save", "tables-restore"]
+        tool_keys += [TOOL_SAVE, TOOL_RESTORE]
     domain_info.tools = {
         key: find_tool(domain + key, options) for key in tool_keys
     }

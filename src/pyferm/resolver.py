@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Protocol
 
 from pyferm.errors import FermError, error
+from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Value, to_array
 
 _NETMASK_RE = re.compile(r"/\d+$")
@@ -115,7 +116,7 @@ class ZonefileResolver:
     def from_file(cls, path: str) -> ZonefileResolver:
         """Parse a zone file into a resolver (Perl ``zonefile_read``)."""
         try:
-            text = Path(path).read_text(encoding="latin-1")
+            text = Path(path).read_text(encoding=BYTE_ENCODING)
         except OSError as exc:
             raise FermError(
                 f"Failed to read zonefile {path}: {exc.strerror}"

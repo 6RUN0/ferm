@@ -13,6 +13,17 @@ an error message is unacceptable.
 from __future__ import annotations
 
 import os
+from typing import Final
+
+#: The encoding of every ferm byte boundary: a bijective byte<->char map
+#: (see the module docstring) that keeps config bytes intact down to the
+#: kernel and lets ``@substr``/``length``/``re.ASCII`` count bytes exactly.
+BYTE_ENCODING: Final[str] = "latin-1"
+
+#: Error handler for human-facing streams (stdout/stderr).  Their only
+#: source of chars above U+00FF is a localized OS ``strerror``; escaping it
+#: keeps an error message from crashing the very stream printing it.
+HUMAN_STREAM_ERRORS: Final[str] = "backslashreplace"
 
 
 def argv_to_latin1(value: str) -> str:
@@ -30,7 +41,7 @@ def argv_to_latin1(value: str) -> str:
     ``--lines`` path silently backslash-escapes it) instead of flowing
     through as bytes, as the Perl oracle's raw-byte ``@ARGV`` does.
     """
-    return os.fsencode(value).decode("latin-1")
+    return os.fsencode(value).decode(BYTE_ENCODING)
 
 
 def reconfigure_latin1(stream: object, errors: str = "strict") -> None:
@@ -48,6 +59,6 @@ def reconfigure_latin1(stream: object, errors: str = "strict") -> None:
     if reconfigure is None:
         return
     try:
-        reconfigure(encoding="latin-1", errors=errors)
+        reconfigure(encoding=BYTE_ENCODING, errors=errors)
     except ValueError:
         return
