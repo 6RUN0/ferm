@@ -81,3 +81,16 @@ def test_serialize_table_noflush_omits_flush() -> None:
     out = serialize_table(table, chains, {"c": []}, noflush=True)
     assert "flush table" not in out
     assert out.startswith("add table ip ferm\nadd chain ip ferm c\n")
+
+
+import pytest
+
+from pyferm.backend.nft import render_comment
+from pyferm.errors import FermError
+
+
+def test_render_comment_rejects_over_limit() -> None:
+    assert render_comment("ok") == 'comment "ok"'
+    assert render_comment("two words") == 'comment "two words"'
+    with pytest.raises(FermError, match="exceeds nft limit"):
+        render_comment("x" * 129)
