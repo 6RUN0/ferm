@@ -851,3 +851,19 @@ def test_capture_previous_live_without_save_tool_skips_to_eb() -> None:
         assert list(info.ebt_previous) == list(EB_TABLES)
     finally:
         info.close()
+
+
+# --- tool_names --------------------------------------------------------------
+
+
+def test_tool_names_ip_family_has_save_restore() -> None:
+    names = IptablesBackend().tool_names("ip")
+    assert names == {
+        "tables": "iptables",
+        "tables-save": "iptables-save",
+        "tables-restore": "iptables-restore",
+    }
+
+
+def test_tool_names_eb_family_tables_only() -> None:
+    assert IptablesBackend().tool_names("eb") == {"tables": "ebtables"}

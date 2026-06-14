@@ -390,6 +390,14 @@ def restore_domain(
 class IptablesBackend(Backend):
     """The iptables/ip6tables/arptables/ebtables backend (Phase 1)."""
 
+    def tool_names(self, domain: str) -> dict[str, str]:
+        """The x_tables tool set: ip/ip6 own save/restore, arp/eb only tables."""
+        names = {TOOL_TABLES: domain + TOOL_TABLES}
+        if domain in ("ip", "ip6"):
+            names[TOOL_SAVE] = domain + TOOL_SAVE
+            names[TOOL_RESTORE] = domain + TOOL_RESTORE
+        return names
+
     def render(
         self, domain: str, domain_info: DomainInfo, options: Options
     ) -> Rendered:

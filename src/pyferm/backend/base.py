@@ -118,6 +118,16 @@ class Backend(ABC):
     """
 
     @abstractmethod
+    def tool_names(self, domain: str) -> dict[str, str]:
+        """Map tool keys to the names ``find_tool`` should resolve.
+
+        Lets the wiring (``initialize_domain``) resolve the right tools
+        per backend without hardcoding x_tables names: iptables returns
+        its ``*tables``/``*-save``/``*-restore`` set, nft returns a single
+        family-independent ``nft`` (design §9, plan decision 2).
+        """
+
+    @abstractmethod
     def render(
         self, domain: str, domain_info: DomainInfo, options: Options
     ) -> Rendered:
