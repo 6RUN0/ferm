@@ -117,6 +117,17 @@ def _chain_header(chain: NftBaseChain | NftRegularChain) -> str:
     return ""
 
 
+def _nft_quote_string(text: str) -> str:
+    """Always wrap *text* in nft double-quotes, escaping backslash and quote.
+
+    Unlike :func:`nft_quote`, this never returns a bare word -- used
+    wherever nft syntax mandates a quoted string (``comment``,
+    ``log prefix``).
+    """
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def render_comment(comment: str) -> str:
     """Render a validated ``comment "<text>"`` suffix (design §3).
 
@@ -126,7 +137,7 @@ def render_comment(comment: str) -> str:
         raise FermError(
             f"comment exceeds nft limit of {NFT_COMMENT_MAX} bytes"
         )
-    return f"comment {nft_quote(comment)}"
+    return f"comment {_nft_quote_string(comment)}"
 
 
 def serialize_table(
