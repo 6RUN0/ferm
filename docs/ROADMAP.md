@@ -5,7 +5,8 @@ program into a Python implementation with a native `nftables` backend. It
 summarises the strategy and phase breakdown.
 
 **Current status:** Phase 1 (faithful Perl → Python port, still emitting
-`iptables`) is complete. See [`CHANGELOG.md`](../CHANGELOG.md).
+`iptables`) is complete, and Phase 2 (opt-in native `nft` backend behind
+`--nft`) has landed. See [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Guiding principle: one variable per phase
 
@@ -55,15 +56,37 @@ it; in Phase 2 an `nft.py` adapter sits over the same seam without
 touching the core. Five sanctioned deviations from a literal 1:1 port are
 documented and none change default behaviour (so golden tests stay green).
 
-### Phase 2 — Native nft backend
+### Phase 2 — Native nft backend ✅
 
 Translate the structured rule into **native nft expressions** (not
-`iptables-nft` compat), preserving the full module vocabulary, atomic
-application, `@preserve` and rollback. The entry debt from Phase 1 review
-(dead `read_previous` seam, eb snapshot behind the backend, parser-depth
-limit, latin-1 decoding policy) is paid down first — completed. Open
-questions: nft text vs. JSON libnftables as the generation format; the
-`@preserve` strategy over nft.
+`iptables-nft` compat), preserving the full module vocabulary and atomic
+application. The entry debt from Phase 1 review (dead `read_previous`
+seam, eb snapshot behind the backend, parser-depth limit, latin-1
+decoding policy) was paid down first.
+
+Resolved decisions and their consequences:
+
+- **Generation format: nft text, not JSON.** The backend emits the nft
+  *text* wire and applies it atomically via `nft -f -`, with no
+  dependency on nft's JSON / `libjansson` build. `--nft` is strictly
+  opt-in; the default stays `iptables`.
+- **DROP-policy semantic shift under the own-table model.** The backend
+  owns a single `table <family> ferm` and does not take over the
+  monolithic kernel `INPUT` / `FORWARD` / `OUTPUT` chains. ferm's base
+  chains coexist with other tables' base chains on the same hook (ordered
+  by priority), so a packet may be accepted by a higher-priority foreign
+  chain before reaching ferm's chain; a `policy DROP` in `table ip ferm`
+  therefore behaves differently from iptables' monolithic `INPUT DROP`.
+  This is the documented, expected behaviour of the own-table model.
+  Admins who need the exact monolithic-DROP semantics stay on the default
+  `iptables` backend.
+- **`@preserve` is not supported under `--nft`** — using it is a clean,
+  explicit error, a deliberate opt-in-backend regression. The default
+  `iptables` backend keeps `@preserve` unchanged.
+
+**Known limitation (deferred):** `--nft --interactive --shell` does not
+emit rollback lines in shell mode, because the nft snapshot needs a live
+`nft list` that shell mode cannot capture. Deferred to a later phase.
 
 ### Phase 3 — Binary packaging (optional)
 

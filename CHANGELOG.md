@@ -15,7 +15,46 @@ The Python port (`src/pyferm/`). Phase 1 reproduces the Perl
 implementation's behaviour and emits `iptables` rulesets; its output is
 validated byte-for-byte against the Perl oracle kept in `reference/`.
 
-### Added
+Phase 2 adds an **opt-in native `nftables` backend** behind `--nft`. The
+default backend stays `iptables`, so existing configurations and output
+are unchanged unless `--nft` is passed.
+
+### Added — Phase 2 (native nft backend)
+
+- **Opt-in `--nft` native nftables backend.** Translates the structured
+  rule into a native nft ruleset and applies it atomically via
+  `nft -f -`. It uses the nft *text* wire only and has no dependency on
+  nft's JSON / `libjansson` build. `--nft` is strictly opt-in; the
+  default remains the `iptables` backend.
+
+### Changed — Phase 2 (native nft backend)
+
+- **`policy DROP` semantics differ under `--nft`.** The nft backend owns
+  a single `table <family> ferm` and does not take over the monolithic
+  kernel `INPUT` / `FORWARD` / `OUTPUT` chains the way the flat iptables
+  ruleset effectively does. ferm's base chains therefore coexist with
+  other tables' base chains on the same hook (ordered by priority), so a
+  packet may be accepted by a higher-priority foreign chain before
+  reaching ferm's chain. A `policy DROP` in `table ip ferm` consequently
+  behaves differently from iptables' monolithic `INPUT DROP`. This is the
+  documented, expected behaviour of the own-table model, not a bug;
+  admins who need the exact monolithic-DROP semantics should stay on the
+  default `iptables` backend.
+
+### Removed / not supported — Phase 2 (native nft backend)
+
+- **`@preserve` is not supported by the `--nft` backend.** Using
+  `@preserve` together with `--nft` is a clean, explicit error rather
+  than a silent no-op. This is a deliberate, opt-in-backend regression;
+  the default `iptables` backend supports `@preserve` exactly as before.
+
+#### Known limitations
+
+- `--nft --interactive --shell` does not emit rollback lines in shell
+  mode: the nft snapshot needs a live `nft list`, which shell mode cannot
+  capture. Deferred to a later phase.
+
+### Added — Phase 1 (faithful port)
 
 - **Configuration language front end** ported from Perl: tokenizer and
   lazy token stream, the recursive-descent `enter()` parser over blocks,
