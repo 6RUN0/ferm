@@ -207,3 +207,32 @@ def test_initialize_domain_is_idempotent() -> None:
     domains["ip"].tools = {"sentinel": "kept"}  # would be clobbered on re-init
     initialize_domain("ip", domains, Options(test=True))
     assert domains["ip"].tools == {"sentinel": "kept"}
+
+
+# --- initialize_domain: resolve_tools seam ---------------------------------
+
+
+def test_initialize_domain_resolves_via_backend_tool_names() -> None:
+    from pyferm.backend.iptables import IptablesBackend
+
+    domains: dict[str, DomainInfo] = {}
+    options = Options(test=True)
+    initialize_domain(
+        "ip", domains, options, resolve_tools=IptablesBackend().tool_names
+    )
+    assert domains["ip"].tools == {
+        "tables": "iptables",
+        "tables-save": "iptables-save",
+        "tables-restore": "iptables-restore",
+    }
+
+
+def test_initialize_domain_resolves_single_nft_binary() -> None:
+    domains: dict[str, DomainInfo] = {}
+    initialize_domain(
+        "ip",
+        domains,
+        Options(test=True),
+        resolve_tools=lambda domain: {"nft": "nft"},
+    )
+    assert domains["ip"].tools == {"nft": "nft"}

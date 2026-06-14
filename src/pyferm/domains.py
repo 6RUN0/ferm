@@ -258,6 +258,7 @@ def initialize_domain(
     domains: dict[str, DomainInfo],
     options: Options,
     *,
+    resolve_tools: Callable[[str], dict[str, str]] | None = None,
     capture_previous: CapturePrevious | None = None,
     emit_line: LineEmitter | None = None,
 ) -> None:
@@ -280,11 +281,15 @@ def initialize_domain(
     if _DOMAIN_RE.match(domain) is None:
         raise FermError(f"Invalid domain '{domain}'")
 
-    tool_keys = [TOOL_TABLES]
-    if _IP_DOMAIN_RE.match(domain) is not None:
-        tool_keys += [TOOL_SAVE, TOOL_RESTORE]
+    if resolve_tools is not None:
+        names = resolve_tools(domain)
+    else:
+        names = {TOOL_TABLES: domain + TOOL_TABLES}
+        if _IP_DOMAIN_RE.match(domain) is not None:
+            names[TOOL_SAVE] = domain + TOOL_SAVE
+            names[TOOL_RESTORE] = domain + TOOL_RESTORE
     domain_info.tools = {
-        key: find_tool(domain + key, options) for key in tool_keys
+        key: find_tool(name, options) for key, name in names.items()
     }
 
     if capture_previous is not None:

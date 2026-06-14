@@ -530,6 +530,7 @@ def _run(
         evaluator,
         {},
         options,
+        resolve_tools=backend.tool_names,
         capture_previous=capture_previous,
         emit_line=emit_line,
     )

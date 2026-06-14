@@ -255,6 +255,7 @@ class Parser:
         domains: dict[str, DomainInfo],
         options: Options,
         *,
+        resolve_tools: Callable[[str], dict[str, str]] | None = None,
         capture_previous: CapturePrevious | None = None,
         emit_line: LineEmitter | None = None,
     ) -> None:
@@ -265,6 +266,7 @@ class Parser:
         self.domains = domains
         self.options = options
         self._block_depth = 0
+        self._resolve_tools = resolve_tools
         self._capture_previous = capture_previous
         self._emit_line = emit_line
         self.pre_hooks: list[str] = []
@@ -290,6 +292,7 @@ class Parser:
                 _domain_key(domain),
                 self.domains,
                 self.options,
+                resolve_tools=self._resolve_tools,
                 capture_previous=self._capture_previous,
                 emit_line=self._emit_line,
             )

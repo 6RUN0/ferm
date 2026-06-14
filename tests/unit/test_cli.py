@@ -309,6 +309,9 @@ def test_rollback_all_restores_enabled_domains_and_exits(
         def __init__(self) -> None:
             self.calls: list[tuple[object, ...]] = []
 
+        def tool_names(self, domain: str) -> dict[str, str]:
+            return {"tables": domain + "tables"}
+
         def render(
             self, domain: str, domain_info: DomainInfo, options: Options
         ) -> Rendered:
