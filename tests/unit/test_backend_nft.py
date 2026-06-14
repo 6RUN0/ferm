@@ -356,6 +356,34 @@ def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
         == "reject with icmpv6 type port-unreachable"
 
 
+def test_build_verdict_log_prefix_bare_keyword_is_quoted() -> None:
+    """A log prefix that is itself an nft keyword must be double-quoted.
+
+    nft's grammar requires a quoted string after ``log prefix``; emitting a
+    bare word such as ``drop`` or ``tcp`` is syntactically invalid/ambiguous.
+    Regression for the bug where ``nft_quote`` returned the text unquoted when
+    it matched ``_NFT_BARE_RE``.
+    """
+    # Bare keyword "drop" -- previously emitted as unquoted `log prefix drop`.
+    log_drop = {"log-prefix": _opt("log-prefix", "drop", module="LOG")}
+    assert (
+        build_verdict("ip", "filter", "jump", "LOG", log_drop).to_text()
+        == 'log prefix "drop"'
+    )
+    # Bare number "22" -- also matches the bare-word regex.
+    log_num = {"log-prefix": _opt("log-prefix", "22", module="LOG")}
+    assert (
+        build_verdict("ip", "filter", "jump", "LOG", log_num).to_text()
+        == 'log prefix "22"'
+    )
+    # Space-containing prefix was already quoted; confirm it still is.
+    log_space = {"log-prefix": _opt("log-prefix", "drop: ", module="LOG")}
+    assert (
+        build_verdict("ip", "filter", "jump", "LOG", log_space).to_text()
+        == 'log prefix "drop: "'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 10: translate_rule
 # ---------------------------------------------------------------------------

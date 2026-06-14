@@ -9,7 +9,6 @@ nft-expression model and serializes it (``to_text``) into one atomic
 
 from __future__ import annotations
 
-import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -46,9 +45,6 @@ NFT_COMMENT_MAX: int = 128
 NFT_TABLE_NAME: str = "ferm"
 #: ``DomainInfo.tools`` key for the single nft binary (decision 2).
 TOOL_NFT: str = "nft"
-
-#: A bare nft token needs no quoting.
-_NFT_BARE_RE = re.compile(r"[-_a-zA-Z0-9./:]+\Z")
 
 
 @dataclass
@@ -129,19 +125,6 @@ class NftRule:
     comment: str | None = None
 
 
-def nft_quote(text: str) -> str:
-    r"""
-    Quote a string for an nft double-quoted token (design §4.1).
-
-    nft uses C-style strings: backslash and double-quote are escaped; a
-    bare word is returned unquoted.  Used for ``log prefix`` payloads
-    where escaping is explicit (no JSON wire).
-    """
-    if _NFT_BARE_RE.match(text):
-        return text
-    return _nft_quote_string(text)
-
-
 def _chain_header(chain: NftBaseChain | NftRegularChain) -> str:
     """Render the ``add chain ...`` body for one chain."""
     if isinstance(chain, NftBaseChain):
@@ -159,7 +142,7 @@ def _nft_quote_string(text: str) -> str:
     """
     Wrap *text* in nft double-quotes, escaping backslash and quote.
 
-    Unlike :func:`nft_quote`, this never returns a bare word -- used
+    Always returns a double-quoted string; never a bare word.  Used
     wherever nft syntax mandates a quoted string (``comment``,
     ``log prefix``).
     """
@@ -522,7 +505,7 @@ def build_verdict(
         comp = companions.get("log-prefix")
         if comp is not None:
             scalar, _ = unwrap_value(comp.value)
-            return NftVerdict(f"log prefix {nft_quote(scalar)}")
+            return NftVerdict(f"log prefix {_nft_quote_string(scalar)}")
         return NftVerdict("log")
     if target_value == "REJECT":
         comp = companions.get("reject-with")
