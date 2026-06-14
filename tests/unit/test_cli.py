@@ -511,3 +511,45 @@ def test_cli_def_high_codepoint_is_byte_faithful(tmp_path: Path) -> None:
     # not silently backslash-escaped to the literal text "€"
     assert b"\xe2\x82\xac" in result.stdout
     assert b"\\u20ac" not in result.stdout
+
+
+# --- Task 15: backend selection --------------------------------------------
+
+
+def test_select_backend_defaults_to_iptables() -> None:
+    from pyferm.backend.iptables import IptablesBackend
+    from pyferm.cli import _select_backend
+
+    assert isinstance(_select_backend(Options()), IptablesBackend)
+
+
+def test_select_backend_nft_opt_in() -> None:
+    from pyferm.backend.nft import NftBackend
+    from pyferm.cli import _select_backend
+
+    assert isinstance(_select_backend(Options(nft=True)), NftBackend)
+
+
+def test_main_nft_end_to_end_resolves_and_emits(tmp_path: Path) -> None:
+    from pyferm.cli import main
+
+    cfg = tmp_path / "e.ferm"
+    cfg.write_text(
+        "domain ip table filter chain INPUT "
+        "{ proto tcp dport 22 ACCEPT; }\n",
+        encoding="utf-8",
+    )
+    rc = main(["--nft", "--test", "--noexec", "--lines", str(cfg)])
+    assert rc == 0
+
+
+def test_nft_with_nolegacy_is_noop(tmp_path: Path) -> None:
+    from pyferm.cli import main
+
+    cfg = tmp_path / "e.ferm"
+    cfg.write_text(
+        "domain ip table filter chain INPUT { ACCEPT; }\n",
+        encoding="utf-8",
+    )
+    argv = ["--nft", "--nolegacy", "--test", "--noexec", "--lines", str(cfg)]
+    assert main(argv) == 0

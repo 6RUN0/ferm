@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Final, TextIO
 
 from pyferm import __version__
 from pyferm.backend.iptables import IptablesBackend, restore_domain
+from pyferm.backend.nft import TOOL_NFT, NftBackend
 from pyferm.config import Options
 from pyferm.domains import shell_snapshot
 from pyferm.errors import FermError, internal_error
@@ -148,6 +149,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--def", dest="defs", action="append", default=[])
     # Sanctioned deviation #4 (no oracle counterpart).
     parser.add_argument("--nolegacy", action="store_true")
+    # Port-only: opt into the native nftables backend.
+    parser.add_argument("--nft", action="store_true")
     parser.add_argument("files", nargs="*")
     return parser
 
@@ -204,6 +207,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
         domain=args.domain,
         mock_previous=mock_previous,
         nolegacy=args.nolegacy,
+        nft=args.nft,
     )
 
 
@@ -338,8 +342,13 @@ def _make_io(
             return ""
         return completed.stdout
 
+    nft_restore = _make_nft_restore(options) if options.nft else None
+
     def restore(domain_info: DomainInfo, save: str) -> None:
-        restore_domain(domain_info, save, options)
+        if nft_restore is not None:
+            nft_restore(domain_info, save)
+        else:
+            restore_domain(domain_info, save, options)
 
     def capture(command: str) -> str | None:
         # Like execute(), but returns stdout for snapshotting (decision 10).
@@ -357,6 +366,40 @@ def _make_io(
         return completed.stdout or None
 
     return execute, emit_line, read_save, restore, capture
+
+
+def _select_backend(options: Options) -> Backend:
+    """Pick the backend (decision 3): nft is opt-in, iptables the default."""
+    return NftBackend() if options.nft else IptablesBackend()
+
+
+def _make_nft_restore(options: Options) -> RestoreDomain:
+    """
+    Build the ``nft -f -`` applier injected when ``--nft`` is set (decision 1).
+
+    Pipes the rendered save to the resolved ``nft`` binary, raising
+    :class:`FermError` (the rollback trigger) if the tool cannot be run or
+    exits non-zero -- the nft analogue of
+    :func:`pyferm.backend.iptables.restore_domain`.
+    """
+    del options  # parity with the iptables wrapper; nft adds no flags
+
+    def restore(domain_info: DomainInfo, save: str) -> None:
+        path = domain_info.tools[TOOL_NFT]
+        try:
+            # the path comes from find_tool; no shell is used.  latin-1:
+            # one byte per char, reproducing the config bytes exactly.
+            completed = subprocess.run(
+                [path, "-f", "-"],
+                input=save.encode(BYTE_ENCODING),
+                check=False,
+            )
+        except OSError as exc:
+            raise FermError(f"Failed to run {path}: {exc}") from exc
+        if completed.returncode != 0:
+            raise FermError(f"Failed to run {path}")
+
+    return restore
 
 
 def _run_hook(command: str, options: Options, emit_line: LineEmitter) -> None:
@@ -534,7 +577,7 @@ def _run(
     scope.top.auto["FILEBNAME"] = splitpath_file(filename)
     scope.top.auto["DIRNAME"] = splitpath_dir(filename)
 
-    backend: Backend = IptablesBackend()
+    backend = _select_backend(options)
 
     def capture_previous(domain: str, domain_info: DomainInfo) -> None:
         # Folds backend + options + execute + read_save into the

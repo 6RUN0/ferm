@@ -59,3 +59,5 @@ class Options:
     #: ``--nolegacy`` (port-only, deviation #4): skip the ``*-legacy`` tool
     #: preference in :func:`pyferm.domains.find_tool`.
     nolegacy: bool = False
+    #: ``--nft`` (port-only): use the native nftables backend (opt-in).
+    nft: bool = False
