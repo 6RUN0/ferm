@@ -12,11 +12,14 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pyferm.errors import FermError
-from pyferm.streams import BYTE_ENCODING
 from pyferm.rules import is_netfilter_builtin_chain
-from pyferm.domains import TableInfo
+from pyferm.streams import BYTE_ENCODING
+
+if TYPE_CHECKING:
+    from pyferm.domains import TableInfo
 
 #: nft comment byte limit (design §3); over -> a plain ferm error.
 NFT_COMMENT_MAX: int = 128
@@ -243,7 +246,8 @@ def map_base_chain(
     table: str,
     chain: str,
 ) -> tuple[str, str, int]:
-    """Map ``(table, built-in chain)`` to ``(nft type, hook, priority)``.
+    """
+    Map ``(table, built-in chain)`` to ``(nft type, hook, priority)``.
 
     A miss (broute/BROUTING, arp nat/mangle, unknown pair) raises
     :class:`~pyferm.errors.FermError` -- "built-in" does not imply
@@ -256,3 +260,56 @@ def map_base_chain(
             f"chain '{table}/{chain}' not yet supported by nft backend"
         )
     return spec
+
+
+# ---------------------------------------------------------------------------
+# Task 6: chain-name disambiguation + chain-list builder (design §5)
+# ---------------------------------------------------------------------------
+
+
+def nft_chain_name(table: str, chain: str) -> str:
+    """
+    Disambiguate a chain name inside the merged ``ferm`` table (decision 9).
+
+    The ``filter`` table keeps bare names (the common case, clean golden);
+    every other table is prefixed ``<table>_<chain>`` so ``filter/INPUT``
+    and ``mangle/INPUT`` do not collide.  Applied identically to chain
+    definitions and to ``jump``/``goto`` targets.
+    """
+    return chain if table == "filter" else f"{table}_{chain}"
+
+
+def build_chains(
+    domain: str,
+    table: str,
+    table_info: TableInfo,
+) -> list[NftBaseChain | NftRegularChain]:
+    """
+    Build the sorted chain list for one table (design §5).
+
+    :func:`is_netfilter_builtin_chain` selects the base-vs-user branch;
+    :func:`map_base_chain` resolves the concrete hook (and errors on
+    unmappable built-ins).  Policy is lowercased to nft spelling
+    (``DROP`` -> ``drop``).  Names are disambiguated via
+    :func:`nft_chain_name` (decision 9).  Output is sorted for
+    deterministic golden output.
+    """
+    chains: list[NftBaseChain | NftRegularChain] = []
+    for name in sorted(table_info.chains):
+        chain_info = table_info.chains[name]
+        nft_name = nft_chain_name(table, name)
+        if is_netfilter_builtin_chain(table, name):
+            chain_type, hook, priority = map_base_chain(domain, table, name)
+            policy = (
+                chain_info.policy.lower()
+                if chain_info.policy is not None
+                else None
+            )
+            chains.append(
+                NftBaseChain(
+                    nft_name, chain_type, hook, priority, policy=policy
+                )
+            )
+        else:
+            chains.append(NftRegularChain(nft_name))
+    return chains

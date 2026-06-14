@@ -104,8 +104,12 @@ def test_nft_family_maps_1to1() -> None:
 def test_map_base_chain_known_pairs() -> None:
     spec = map_base_chain("ip", "filter", "INPUT")
     assert spec == ("filter", "input", 0)
-    assert map_base_chain("ip", "nat", "POSTROUTING") == ("nat", "postrouting", 100)
-    assert map_base_chain("ip", "mangle", "OUTPUT") == ("route", "output", -150)
+    assert map_base_chain("ip", "nat", "POSTROUTING") == (
+        "nat", "postrouting", 100
+    )
+    assert map_base_chain("ip", "mangle", "OUTPUT") == (
+        "route", "output", -150
+    )
 
 
 def test_map_base_chain_unmappable_is_error() -> None:
@@ -113,3 +117,42 @@ def test_map_base_chain_unmappable_is_error() -> None:
         map_base_chain("eb", "broute", "BROUTING")
     with pytest.raises(FermError, match="not yet supported"):
         map_base_chain("arp", "nat", "PREROUTING")
+
+
+# ---------------------------------------------------------------------------
+# Task 6: build_chains + nft_chain_name
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import build_chains  # noqa: E402
+from pyferm.domains import ChainInfo, TableInfo  # noqa: E402
+
+
+def test_build_chains_splits_builtin_and_user() -> None:
+    table = TableInfo(chains={
+        "INPUT": ChainInfo(policy="DROP"),
+        "mychain": ChainInfo(),
+    })
+    chains = build_chains("ip", "filter", table)
+    by_name = {c.name: c for c in chains}
+    assert isinstance(by_name["INPUT"], NftBaseChain)
+    assert by_name["INPUT"].policy == "drop"
+    assert by_name["INPUT"].hook == "input"
+    assert isinstance(by_name["mychain"], NftRegularChain)
+
+
+def test_build_chains_sorted_for_determinism() -> None:
+    table = TableInfo(chains={"zeta": ChainInfo(), "alpha": ChainInfo()})
+    names = [c.name for c in build_chains("ip", "filter", table)]
+    assert names == ["alpha", "zeta"]
+
+
+def test_nft_chain_name_disambiguates_non_filter() -> None:
+    from pyferm.backend.nft import nft_chain_name
+
+    assert nft_chain_name("filter", "INPUT") == "INPUT"
+    assert nft_chain_name("mangle", "INPUT") == "mangle_INPUT"
+    # mangle/INPUT becomes a distinct base chain, not a collision with filter.
+    table = TableInfo(chains={"INPUT": ChainInfo()})
+    chain = build_chains("ip", "mangle", table)[0]
+    assert chain.name == "mangle_INPUT"
+    assert isinstance(chain, NftBaseChain)
+    assert (chain.hook, chain.priority) == ("input", -150)
