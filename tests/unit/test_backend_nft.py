@@ -1,7 +1,12 @@
 # tests/unit/test_backend_nft.py
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from pyferm.backend.nft import (
     NftBaseChain,
@@ -673,3 +678,102 @@ def test_rollback_first_run_deletes_table() -> None:
         restore=lambda _di, _save: None,
     )
     assert calls == ["nft delete table ip ferm"]
+
+
+# --- Fix 2: lifecycle branch coverage ----------------------------------------
+
+
+def test_commit_restore_failure_returns_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+
+    def boom(_di: object, _save: str) -> None:
+        raise FermError("nft rejected")
+
+    rc = NftBackend().commit(
+        "ip",
+        info,
+        Rendered(save="x\n"),
+        Options(noexec=False),
+        execute=lambda _c: None,
+        emit_line=lambda _t: None,
+        restore=boom,
+    )
+    assert rc == 1
+    assert "nft rejected" in capsys.readouterr().err
+
+
+def test_commit_none_save_is_internal_error() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    with pytest.raises(FermError):
+        NftBackend().commit(
+            "ip",
+            info,
+            Rendered(save=None),
+            Options(noexec=False),
+            execute=lambda _c: None,
+            emit_line=lambda _t: None,
+            restore=lambda _di, _s: None,
+        )
+
+
+def test_rollback_disabled_is_noop() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    info.enabled = False
+    info.previous = "table ip ferm {\n}\n"
+    calls: list[str] = []
+    applied: list[str] = []
+    NftBackend().rollback(
+        "ip",
+        info,
+        Options(),
+        execute=calls.append,
+        restore=lambda _di, s: applied.append(s),
+    )
+    assert calls == []
+    assert applied == []
+
+
+def test_read_previous_joins_verbatim() -> None:
+    info = DomainInfo()
+    assert (
+        NftBackend().read_previous(["table ip ferm {\n", "}\n"], info)
+        == "table ip ferm {\n}\n"
+    )
+
+
+def test_render_user_chain_collision_is_error() -> None:
+    # filter/mangle_INPUT (user chain, bare name) collides with
+    # mangle/INPUT after nft_chain_name disambiguates it to "mangle_INPUT".
+    # sorted(tables) -> filter before mangle, so filter's chain is inserted
+    # first and mangle/INPUT hits the collision guard.
+    info = DomainInfo()
+    f = info.tables.setdefault("filter", TableInfo())
+    f.chains.setdefault("mangle_INPUT", ChainInfo())
+    m = info.tables.setdefault("mangle", TableInfo())
+    m.chains.setdefault("INPUT", ChainInfo())
+    with pytest.raises(FermError, match="collision"):
+        NftBackend().render("ip", info, Options(test=True))
+
+
+# --- Fix 1: capture_previous --test reads the mock FILE (not the path string)
+
+
+def test_capture_previous_test_mode_reads_mock_file(tmp_path: Path) -> None:
+    snap = tmp_path / "prev.nft"
+    snap.write_text("table ip ferm {\n}\n", encoding="latin-1")
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    NftBackend().capture_previous(
+        "ip",
+        info,
+        Options(test=True, mock_previous={"ip": str(snap)}),
+        execute=lambda _c: None,
+        read_save=lambda _tool: None,
+        capture=lambda _cmd: None,
+    )
+    assert info.previous == "table ip ferm {\n}\n"

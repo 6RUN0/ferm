@@ -530,7 +530,10 @@ def test_select_backend_nft_opt_in() -> None:
     assert isinstance(_select_backend(Options(nft=True)), NftBackend)
 
 
-def test_main_nft_end_to_end_resolves_and_emits(tmp_path: Path) -> None:
+def test_main_nft_end_to_end_resolves_and_emits(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from pyferm.cli import main
 
     cfg = tmp_path / "e.ferm"
@@ -540,7 +543,10 @@ def test_main_nft_end_to_end_resolves_and_emits(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     rc = main(["--nft", "--test", "--noexec", "--lines", str(cfg)])
+    out = capsys.readouterr().out
     assert rc == 0
+    assert "add table ip ferm" in out
+    assert "tcp dport 22 accept" in out
 
 
 def test_nft_with_nolegacy_is_noop(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pyferm.backend.base import (
@@ -736,11 +737,27 @@ class NftBackend(Backend):
         (``nft list table <family> ferm``), not the whole ``*-save`` dump;
         ``read_save``/``execute`` are unused.  A first run (no ferm table
         yet) leaves ``previous`` ``None``.
+
+        Under ``--test`` the mock path (``--test-mock-previous=fam=path``)
+        is opened and read via :meth:`read_previous` -- the same contract
+        as the iptables backend (design §7).  This makes ``read_previous``
+        an active code path in test mode.
         """
         del read_save, execute
         family = nft_family(domain)
         if options.test:
-            domain_info.previous = options.mock_previous.get(domain) or None
+            mock = options.mock_previous.get(domain)
+            if mock is not None:
+                try:
+                    handle = Path(mock).open(  # noqa: SIM115
+                        encoding=BYTE_ENCODING
+                    )
+                except OSError as exc:
+                    raise FermError(exc.strerror or str(exc)) from exc
+                with handle:
+                    domain_info.previous = self.read_previous(
+                        handle, domain_info
+                    )
             return
         snapshot = capture(
             f"{domain_info.tools[TOOL_NFT]} list table {family} ferm"
@@ -777,6 +794,13 @@ class NftBackend(Backend):
     def read_previous(
         self, lines: Iterable[str], domain_info: DomainInfo
     ) -> str:
-        """Return the raw nft snapshot verbatim (design §7)."""
+        """
+        Return the raw nft snapshot verbatim (design §7).
+
+        Invoked both by :meth:`capture_previous` under ``--test``
+        (reading from the mock-previous file) and by the general
+        ``--test-mock-previous`` path when the test harness opens the
+        file directly.  ``domain_info`` is unused (nft needs no parse).
+        """
         del domain_info
         return "".join(lines)
