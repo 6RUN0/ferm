@@ -344,7 +344,9 @@ def unwrap_value(value: Value) -> tuple[str, bool]:
             value = inner
         negated = True
     if isinstance(value, (Params, Multi)):
-        raise FermError("multi-value match cannot be negated in nft")
+        raise FermError(
+            "multi-value cannot be expressed as a single nft match"
+        )
     if not isinstance(value, str):
         raise FermError("unsupported value shape for nft backend")
     return value, negated
@@ -571,10 +573,19 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     and companion options feed it.  Match statements keep their source order
     (nft is order-sensitive); the verdict is appended last.
     """
+    # First pass: resolve rule-wide context (the l4 protocol and whether a
+    # port match exists) so a port option that textually precedes the
+    # `protocol` option still translates correctly (order-independent).
     has_port = any(o.name in _PORT_KEYWORD for o in rule.options)
+    protocol: str | None = None
+    for option in rule.options:
+        if option.kind == "proto":
+            protocol, _ = unwrap_value(option.value)
+            break
+
+    # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
     comment: str | None = None
-    protocol: str | None = None
     target_name: str | None = None
     target_value: str | None = None
     companions: dict[str, RenderedOption] = {}
@@ -588,7 +599,6 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
             continue
         if kind == "proto":
             scalar, neg = unwrap_value(option.value)
-            protocol = scalar
             if not has_port:  # a port match already implies l4proto
                 l4 = _nft_l4proto(domain, scalar)
                 matches.append(NftMatch(f"meta l4proto {_op(neg)}{l4}"))

@@ -439,3 +439,62 @@ def test_translate_rule_snat_multi_value() -> None:
     assert [s.to_text() for s in nft.statements] == [
         "ip saddr 10.0.0.0/8", "snat to 5.6.7.8",
     ]
+
+
+def test_translate_rule_port_before_proto_is_order_independent() -> None:
+    # A port option textually preceding `protocol` must still resolve.
+    nft = translate_rule("ip", "filter", _rule(
+        _opt("dport", "22"),
+        _opt("protocol", "tcp", kind="proto"),
+        _target("ACCEPT"),
+    ))
+    assert [s.to_text() for s in nft.statements] == ["tcp dport 22", "accept"]
+
+
+def test_translate_rule_goto_user_chain() -> None:
+    nft = translate_rule("ip", "filter", _rule(
+        _opt("goto", "mychain", kind="target"),
+    ))
+    assert [s.to_text() for s in nft.statements] == ["goto mychain"]
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage tests
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import build_verdict  # noqa: E402, F811
+from pyferm.values import PreNegated  # noqa: E402
+
+
+def test_unwrap_value_prenegated() -> None:
+    assert unwrap_value(PreNegated("22")) == ("22", True)
+
+
+def test_unwrap_value_bare_multi_is_error() -> None:
+    with pytest.raises(FermError, match="single nft match"):
+        unwrap_value(Multi(values=["22", "80"]))
+
+
+def test_build_verdict_redirect_to_ports() -> None:
+    comp = {
+        "to-ports": _opt(
+            "to-ports", Multi(values=["8080"]), module="REDIRECT"
+        )
+    }
+    assert (
+        build_verdict("ip", "nat", "jump", "REDIRECT", comp).to_text()
+        == "redirect to :8080"
+    )
+    assert (
+        build_verdict("ip", "nat", "jump", "REDIRECT", {}).to_text()
+        == "redirect"
+    )
+
+
+def test_build_verdict_tcp_reset_reject() -> None:
+    comp = {
+        "reject-with": _opt("reject-with", "tcp-reset", module="REJECT")
+    }
+    assert (
+        build_verdict("ip", "filter", "jump", "REJECT", comp).to_text()
+        == "reject with tcp reset"
+    )
