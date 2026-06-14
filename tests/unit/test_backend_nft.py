@@ -101,6 +101,11 @@ def test_nft_family_maps_1to1() -> None:
     assert nft_family("eb") == "bridge"
 
 
+def test_nft_family_unknown_is_error() -> None:
+    with pytest.raises(FermError, match="not yet supported"):
+        nft_family("bogus")
+
+
 def test_map_base_chain_known_pairs() -> None:
     spec = map_base_chain("ip", "filter", "INPUT")
     assert spec == ("filter", "input", 0)
@@ -136,6 +141,7 @@ def test_build_chains_splits_builtin_and_user() -> None:
     assert isinstance(by_name["INPUT"], NftBaseChain)
     assert by_name["INPUT"].policy == "drop"
     assert by_name["INPUT"].hook == "input"
+    assert by_name["INPUT"].type == "filter"
     assert isinstance(by_name["mychain"], NftRegularChain)
 
 
@@ -153,6 +159,11 @@ def test_nft_chain_name_disambiguates_non_filter() -> None:
     # mangle/INPUT becomes a distinct base chain, not a collision with filter.
     table = TableInfo(chains={"INPUT": ChainInfo()})
     chain = build_chains("ip", "mangle", table)[0]
+    # mangle/OUTPUT -> route hook (the most error-prone mapping).
+    table_out = TableInfo(chains={"OUTPUT": ChainInfo()})
+    chain_out = build_chains("ip", "mangle", table_out)[0]
+    assert chain_out.type == "route"
+
     assert chain.name == "mangle_INPUT"
     assert isinstance(chain, NftBaseChain)
     assert (chain.hook, chain.priority) == ("input", -150)
