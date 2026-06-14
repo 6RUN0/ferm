@@ -48,6 +48,7 @@ from pyferm.domains import (
     TOOL_TABLES,
     ChainInfo,
     DomainInfo,
+    ShellSnapshot,
     TableInfo,
 )
 from pyferm.domains import (
@@ -754,3 +755,27 @@ class IptablesBackend(Backend):
         interface for the Phase 2 seam (``nft`` parses a different format).
         """
         return _domains_read_previous(lines, domain_info)
+
+    def shell_snapshot(
+        self, domain: str, domain_info: DomainInfo
+    ) -> ShellSnapshot | None:
+        """
+        Build the ``--shell`` snapshot from the ``*-save``/``*-restore`` pair.
+
+        ``*-save``/``*-restore`` exist for ip/ip6 only; arp/eb own no such
+        pair, so their tools lack the keys and the snapshot is ``None`` (Perl
+        ``:954-957``/``:810-814``).  Both halves share the ``{domain}_tmp``
+        variable, so they are built together (finding C2 moved this off
+        ``domains`` so each backend owns its snapshot shape).
+        """
+        save_tool = domain_info.tools.get(TOOL_SAVE)
+        restore_tool = domain_info.tools.get(TOOL_RESTORE)
+        if save_tool is None or restore_tool is None:
+            return None
+        return ShellSnapshot(
+            setup=(
+                f"{domain}_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
+                f"{save_tool} >${domain}_tmp\n",
+            ),
+            restore=f"{restore_tool} <${domain}_tmp\n",
+        )

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         Rendered,
         RestoreDomain,
     )
-    from pyferm.domains import DomainInfo
+    from pyferm.domains import DomainInfo, ShellSnapshot
 
 
 def _resolve(
@@ -136,6 +136,31 @@ def test_interactive_shell_emits_confirmation_block(
     assert "iptables-restore <$ip_tmp\n" in out
 
 
+def test_interactive_shell_nft_emits_anti_lockout_net(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # finding C2: under --nft the anti-lockout net was silently absent.  The
+    # nft snapshot must now appear in the emitted script: a `list table` save
+    # before, and a `delete table` + `nft -f` restore after the sleep.
+    from pyferm.cli import main
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    conf = tmp_path / "t.ferm"
+    conf.write_text(
+        "domain ip table filter { chain INPUT ACCEPT; }\n", encoding="utf-8"
+    )
+    assert (
+        main(["--test", "--nft", "--interactive", "--shell", str(conf)]) == 0
+    )
+    out = capfd.readouterr().out
+    assert "nft list table ip ferm >$ip_tmp 2>/dev/null || true\n" in out
+    assert "nft delete table ip ferm 2>/dev/null || true\n" in out
+    assert "nft -f $ip_tmp\n" in out
+
+
 def test_setup_streams_without_shell_is_passthrough() -> None:
     lines_stream, restore = _setup_streams(Options(lines=True))
     assert lines_stream is sys.stdout
@@ -238,9 +263,7 @@ def test_execute_exec_failure_is_fatal(
     # (:2903-2905) -- no status bookkeeping, no rollback.
     from pyferm.cli import _make_io
 
-    execute, _emit, _read, _restore, _capture = _make_io(
-        Options(), sys.stdout
-    )
+    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
     with pytest.raises(SystemExit) as excinfo:
         execute("/nonexistent/ferm-no-such-tool -A INPUT")
     assert excinfo.value.code == 1
@@ -250,9 +273,7 @@ def test_execute_exec_failure_is_fatal(
 def test_execute_returns_status_of_plain_command() -> None:
     from pyferm.cli import _make_io
 
-    execute, _emit, _read, _restore, _capture = _make_io(
-        Options(), sys.stdout
-    )
+    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
     assert execute("true") is None
     assert execute("false") == 1
 
@@ -365,6 +386,12 @@ def test_rollback_all_restores_enabled_domains_and_exits(
             self, lines: Iterable[str], domain_info: DomainInfo
         ) -> str:
             raise NotImplementedError
+
+        def shell_snapshot(
+            self, domain: str, domain_info: DomainInfo
+        ) -> ShellSnapshot | None:
+            del domain, domain_info
+            return None
 
     backend = _RecordingBackend()
     domains = {
@@ -538,8 +565,7 @@ def test_main_nft_end_to_end_resolves_and_emits(
 
     cfg = tmp_path / "e.ferm"
     cfg.write_text(
-        "domain ip table filter chain INPUT "
-        "{ proto tcp dport 22 ACCEPT; }\n",
+        "domain ip table filter chain INPUT { proto tcp dport 22 ACCEPT; }\n",
         encoding="utf-8",
     )
     rc = main(["--nft", "--test", "--noexec", "--lines", str(cfg)])
@@ -572,11 +598,13 @@ class _RunRecorder:
         *,
         returncode: int = 0,
         stdout: str = "",
+        stderr: str = "",
         raises: type[OSError] | None = None,
     ) -> None:
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self._returncode = returncode
         self._stdout = stdout
+        self._stderr = stderr
         self._raises = raises
 
     def __call__(
@@ -586,7 +614,7 @@ class _RunRecorder:
         if self._raises is not None:
             raise self._raises("boom")
         return subprocess.CompletedProcess(
-            command, self._returncode, stdout=self._stdout, stderr=""
+            command, self._returncode, stdout=self._stdout, stderr=self._stderr
         )
 
 
@@ -707,34 +735,32 @@ def test_capture_noexec_returns_none_without_subprocess(
     assert capture("nft list ruleset") is None
 
 
-def test_capture_oserror_returns_none(
+def test_capture_oserror_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # An unspawnable snapshot tool (OSError) yields no snapshot rather than
-    # propagating -- capture is best-effort.
+    # finding C3: an unspawnable snapshot tool (OSError) must NOT collapse to
+    # "no previous table" -- that would let the nft rollback delete an
+    # existing table.  It aborts before any kernel change instead.
     from pyferm.cli import _make_io
 
     monkeypatch.setattr(
         subprocess, "run", _RunRecorder(raises=FileNotFoundError)
     )
-    _execute, _emit, _read, _restore, capture = _make_io(
-        Options(), sys.stdout
-    )
-    assert capture("nft list ruleset") is None
+    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
+    with pytest.raises(FermError, match="failed to snapshot for rollback"):
+        capture("nft list ruleset")
 
 
 def test_capture_returns_stdout_or_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Non-empty stdout is the snapshot; empty stdout collapses to None via
-    # the `or None`, splitting the command on whitespace for the child.
+    # Non-empty stdout is the snapshot; empty stdout (exit 0) collapses to
+    # None, splitting the command on whitespace for the child.
     from pyferm.cli import _make_io
 
     recorder = _RunRecorder(returncode=0, stdout="X")
     monkeypatch.setattr(subprocess, "run", recorder)
-    _execute, _emit, _read, _restore, capture = _make_io(
-        Options(), sys.stdout
-    )
+    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
     assert capture("nft list ruleset") == "X"
     assert recorder.calls[0][0][0] == ["nft", "list", "ruleset"]
 
@@ -745,3 +771,42 @@ def test_capture_returns_stdout_or_none(
         Options(), sys.stdout
     )
     assert capture_empty("nft list ruleset") is None
+
+
+def test_capture_absent_table_is_first_run_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # finding C3: a genuinely-absent table (nft exits 1 with ENOECT on
+    # stderr) is the legitimate first run -> None, so rollback may delete
+    # ferm's own freshly-created table.
+    from pyferm.cli import _make_io
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _RunRecorder(
+            returncode=1, stdout="", stderr="Error: No such file or directory"
+        ),
+    )
+    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
+    assert capture("nft list table ip ferm") is None
+
+
+def test_capture_genuine_failure_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # finding C3: a non-ENOENT failure (exit 1 with some other error) must
+    # NOT masquerade as a first run -- it aborts so the destructive rollback
+    # never deletes an existing populated table on a transient capture error.
+    from pyferm.cli import _make_io
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _RunRecorder(
+            returncode=1, stdout="", stderr="Error: Operation not permitted"
+        ),
+    )
+    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
+    with pytest.raises(FermError, match="Operation not permitted"):
+        capture("nft list table ip ferm")

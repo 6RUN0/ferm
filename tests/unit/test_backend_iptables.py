@@ -29,7 +29,13 @@ from pyferm.backend.iptables import (
     shell_format_option,
 )
 from pyferm.config import Options
-from pyferm.domains import EB_TABLES, ChainInfo, DomainInfo, TableInfo
+from pyferm.domains import (
+    EB_TABLES,
+    ChainInfo,
+    DomainInfo,
+    ShellSnapshot,
+    TableInfo,
+)
 from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
 from pyferm.values import Multi, Negated, Params, PreNegated
@@ -788,7 +794,11 @@ def test_capture_previous_live_reads_save_tool() -> None:
         tools={"tables": "iptables", "tables-save": "iptables-save"}
     )
     IptablesBackend().capture_previous(
-        "ip", info, Options(), execute=_fail_execute, read_save=read_save,
+        "ip",
+        info,
+        Options(),
+        execute=_fail_execute,
+        read_save=read_save,
         capture=lambda _c: None,
     )
 
@@ -850,7 +860,11 @@ def test_capture_previous_live_without_save_tool_skips_to_eb() -> None:
     info = DomainInfo(tools={"tables": "ebtables"})
     # live eb has no *-save tool: no read, straight to the atomic snapshot
     IptablesBackend().capture_previous(
-        "eb", info, Options(), execute=execute, read_save=_fail_read_save,
+        "eb",
+        info,
+        Options(),
+        execute=execute,
+        read_save=_fail_read_save,
         capture=lambda _c: None,
     )
     try:
@@ -874,3 +888,42 @@ def test_tool_names_ip_family_has_save_restore() -> None:
 
 def test_tool_names_eb_family_tables_only() -> None:
     assert IptablesBackend().tool_names("eb") == {"tables": "ebtables"}
+
+
+# --- shell_snapshot (moved from test_domains, finding C2) -------------------
+
+
+def test_shell_snapshot_embeds_the_save_and_restore_tools() -> None:
+    # The x_tables snapshot pipes *-save into a tempfile and replays it
+    # through *-restore; both tool paths come from the domain's tools.
+    info = DomainInfo()
+    info.tools = {
+        "tables-save": "iptables-save",
+        "tables-restore": "iptables-restore",
+    }
+    assert IptablesBackend().shell_snapshot("ip", info) == ShellSnapshot(
+        setup=(
+            "ip_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
+            "iptables-save >$ip_tmp\n",
+        ),
+        restore="iptables-restore <$ip_tmp\n",
+    )
+
+
+def test_shell_snapshot_without_xtables_tooling_is_none() -> None:
+    # arp/eb have no *-save/*-restore pair, so the snapshot is skipped
+    # rather than built from a missing tool.
+    info = DomainInfo()
+    info.tools = {"tables": "ebtables"}
+    assert IptablesBackend().shell_snapshot("eb", info) is None
+
+
+def test_shell_snapshot_needs_both_tools_not_just_one() -> None:
+    # the guard is "save OR restore missing -> None"; one half present is
+    # still not enough to snapshot (pins the boolean, not just both-absent).
+    save_only = DomainInfo()
+    save_only.tools = {"tables-save": "iptables-save"}
+    assert IptablesBackend().shell_snapshot("ip", save_only) is None
+    restore_only = DomainInfo()
+    restore_only.tools = {"tables-restore": "iptables-restore"}
+    assert IptablesBackend().shell_snapshot("ip", restore_only) is None

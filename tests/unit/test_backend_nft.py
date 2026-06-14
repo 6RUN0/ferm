@@ -59,8 +59,12 @@ def test_serialize_table_emits_atomic_transaction() -> None:
     ]
     rules = {
         "INPUT": [
-            NftRule([NftMatch("ct state established,related"),
-                     NftVerdict("accept")]),
+            NftRule(
+                [
+                    NftMatch("ct state established,related"),
+                    NftVerdict("accept"),
+                ]
+            ),
             NftRule([NftVerdict("jump mychain")]),
         ],
         "mychain": [NftRule([NftVerdict("drop")], comment="hi")],
@@ -115,10 +119,14 @@ def test_map_base_chain_known_pairs() -> None:
     spec = map_base_chain("ip", "filter", "INPUT")
     assert spec == ("filter", "input", 0)
     assert map_base_chain("ip", "nat", "POSTROUTING") == (
-        "nat", "postrouting", 100
+        "nat",
+        "postrouting",
+        100,
     )
     assert map_base_chain("ip", "mangle", "OUTPUT") == (
-        "route", "output", -150
+        "route",
+        "output",
+        -150,
     )
 
 
@@ -137,10 +145,12 @@ from pyferm.domains import ChainInfo, TableInfo  # noqa: E402
 
 
 def test_build_chains_splits_builtin_and_user() -> None:
-    table = TableInfo(chains={
-        "INPUT": ChainInfo(policy="DROP"),
-        "mychain": ChainInfo(),
-    })
+    table = TableInfo(
+        chains={
+            "INPUT": ChainInfo(policy="DROP"),
+            "mychain": ChainInfo(),
+        }
+    )
     chains = build_chains("ip", "filter", table)
     by_name = {c.name: c for c in chains}
     assert isinstance(by_name["INPUT"], NftBaseChain)
@@ -215,14 +225,22 @@ def _opt(
 
 
 def test_translate_match_addresses_and_ifaces() -> None:
-    assert translate_match("ip", _opt("source", "10.0.0.1"), None) \
+    assert (
+        translate_match("ip", _opt("source", "10.0.0.1"), None)
         == "ip saddr 10.0.0.1"
-    assert translate_match("ip6", _opt("destination", "fe80::1"), None) \
+    )
+    assert (
+        translate_match("ip6", _opt("destination", "fe80::1"), None)
         == "ip6 daddr fe80::1"
-    assert translate_match("ip", _opt("in-interface", "eth0"), None) \
+    )
+    assert (
+        translate_match("ip", _opt("in-interface", "eth0"), None)
         == 'iifname "eth0"'
-    assert translate_match("ip", _opt("out-interface", "eth1"), None) \
+    )
+    assert (
+        translate_match("ip", _opt("out-interface", "eth1"), None)
         == 'oifname "eth1"'
+    )
 
 
 def test_translate_match_ports_use_rule_protocol() -> None:
@@ -236,19 +254,27 @@ def test_translate_match_port_without_protocol_errors() -> None:
 
 
 def test_translate_match_negation() -> None:
-    assert translate_match("ip", _opt("source", Negated("10.0.0.1")), None) \
+    assert (
+        translate_match("ip", _opt("source", Negated("10.0.0.1")), None)
         == "ip saddr != 10.0.0.1"
-    assert translate_match("ip", _opt("dport", Negated("23")), "tcp") \
+    )
+    assert (
+        translate_match("ip", _opt("dport", Negated("23")), "tcp")
         == "tcp dport != 23"
+    )
 
 
 def test_translate_match_state_and_limit() -> None:
-    assert translate_match(
-        "ip", _opt("state", "ESTABLISHED,RELATED", module="state"), None
-    ) == "ct state established,related"
-    assert translate_match(
-        "ip", _opt("limit", "3/second", module="limit"), None
-    ) == "limit rate 3/second"
+    assert (
+        translate_match(
+            "ip", _opt("state", "ESTABLISHED,RELATED", module="state"), None
+        )
+        == "ct state established,related"
+    )
+    assert (
+        translate_match("ip", _opt("limit", "3/second", module="limit"), None)
+        == "limit rate 3/second"
+    )
 
 
 def test_translate_match_uncovered_is_error() -> None:
@@ -274,10 +300,14 @@ def test_build_verdict_core_targets() -> None:
 
 
 def test_build_verdict_jump_goto_to_chain() -> None:
-    assert build_verdict("ip", "filter", "jump", "mychain", {}).to_text() \
+    assert (
+        build_verdict("ip", "filter", "jump", "mychain", {}).to_text()
         == "jump mychain"
-    assert build_verdict("ip", "nat", "goto", "mychain", {}).to_text() \
+    )
+    assert (
+        build_verdict("ip", "nat", "goto", "mychain", {}).to_text()
         == "goto nat_mychain"
+    )
 
 
 def test_build_verdict_reject_with_companion() -> None:
@@ -343,17 +373,127 @@ def test_build_verdict_jump_to_builtin_is_error() -> None:
 
 
 def test_build_verdict_masquerade_to_ports() -> None:
-    comp = {"to-ports": _opt("to-ports", Multi(values=["1024-2048"]),
-                             module="MASQUERADE")}
-    assert build_verdict("ip", "nat", "jump", "MASQUERADE", comp).to_text() \
+    comp = {
+        "to-ports": _opt(
+            "to-ports", Multi(values=["1024-2048"]), module="MASQUERADE"
+        )
+    }
+    assert (
+        build_verdict(
+            "ip", "nat", "jump", "MASQUERADE", comp, has_transport=True
+        ).to_text()
         == "masquerade to :1024-2048"
+    )
+
+
+def test_build_verdict_port_nat_without_transport_is_error() -> None:
+    # finding C1: nft rejects an `... to <addr>:<port>` mapping that has no
+    # preceding transport match, so fail at translate time instead of
+    # emitting a script that nft would reject at apply (forcing a rollback).
+    masq = {
+        "to-ports": _opt(
+            "to-ports", Multi(values=["1024-2048"]), module="MASQUERADE"
+        )
+    }
+    with pytest.raises(FermError, match="needs a tcp/udp protocol"):
+        build_verdict("ip", "nat", "jump", "MASQUERADE", masq)
+    redir = {
+        "to-ports": _opt("to-ports", Multi(values=["8080"]), module="REDIRECT")
+    }
+    with pytest.raises(FermError, match="needs a tcp/udp protocol"):
+        build_verdict("ip", "nat", "jump", "REDIRECT", redir)
+    snat = {
+        "to-source": _opt(
+            "to-source", Multi(values=["1.2.3.4:1024"]), module="SNAT"
+        )
+    }
+    with pytest.raises(FermError, match="needs a tcp/udp protocol"):
+        build_verdict("ip", "nat", "jump", "SNAT", snat)
+    dnat = {
+        "to-destination": _opt(
+            "to-destination", Multi(values=["10.0.0.1:8080"]), module="DNAT"
+        )
+    }
+    with pytest.raises(FermError, match="needs a tcp/udp protocol"):
+        build_verdict("ip", "nat", "jump", "DNAT", dnat)
+
+
+def test_build_verdict_port_nat_with_transport_renders() -> None:
+    # With a transport match established the port mapping is valid nft.
+    redir = {
+        "to-ports": _opt("to-ports", Multi(values=["8080"]), module="REDIRECT")
+    }
+    assert (
+        build_verdict(
+            "ip", "nat", "jump", "REDIRECT", redir, has_transport=True
+        ).to_text()
+        == "redirect to :8080"
+    )
+    dnat = {
+        "to-destination": _opt(
+            "to-destination", Multi(values=["10.0.0.1:8080"]), module="DNAT"
+        )
+    }
+    assert (
+        build_verdict(
+            "ip", "nat", "jump", "DNAT", dnat, has_transport=True
+        ).to_text()
+        == "dnat to 10.0.0.1:8080"
+    )
+
+
+def test_build_verdict_portless_nat_needs_no_transport() -> None:
+    # A port-less NAT target (the common case) is valid without a transport
+    # match -- only the `:port` form triggers the C1 guard.
+    snat = {
+        "to-source": _opt(
+            "to-source", Multi(values=["1.2.3.4"]), module="SNAT"
+        )
+    }
+    assert (
+        build_verdict("ip", "nat", "jump", "SNAT", snat).to_text()
+        == "snat to 1.2.3.4"
+    )
+
+
+def test_build_verdict_ip6_portless_nat_renders_without_transport() -> None:
+    # An IPv6 NAT host carries its own colons; `_nat_has_port` must NOT treat
+    # them as a port, or a plain `dnat to fe80::1` would falsely require a
+    # transport match (decision C1).
+    plain = {
+        "to-destination": _opt(
+            "to-destination", Multi(values=["fe80::1"]), module="DNAT"
+        )
+    }
+    assert (
+        build_verdict("ip6", "nat", "jump", "DNAT", plain).to_text()
+        == "dnat to fe80::1"
+    )
+
+
+def test_nat_has_port_is_family_aware() -> None:
+    # IPv4: any `:` is the port separator.  IPv6: the host's own colons do
+    # not count -- only a bracketed `]:port` does (decision C1).  The
+    # bracketed form is unreachable through build_verdict (the `[`/`]` fail
+    # address validation first), so this pins the discriminator directly.
+    from pyferm.backend.nft import _nat_has_port
+
+    assert _nat_has_port("ip", "1.2.3.4:1024") is True
+    assert _nat_has_port("ip", "1.2.3.4") is False
+    assert _nat_has_port("ip6", "fe80::1") is False
+    assert _nat_has_port("ip6", "[fe80::1]:80") is True
 
 
 def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
-    comp = {"reject-with": _opt("reject-with", "icmp-port-unreachable",
-                                module="REJECT")}
-    assert build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text() \
+    comp = {
+        "reject-with": _opt(
+            "reject-with", "icmp-port-unreachable", module="REJECT"
+        )
+    }
+    assert (
+        build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text()
         == "reject with icmpv6 type port-unreachable"
+    )
 
 
 def test_build_verdict_log_prefix_bare_keyword_is_quoted() -> None:
@@ -400,94 +540,193 @@ def _target(value: str) -> RenderedOption:
 
 
 def test_translate_rule_skips_match_module_marker() -> None:
-    nft = translate_rule("ip", "filter", _rule(
-        _opt("match", "state", kind="match_module"),
-        _opt("state", "ESTABLISHED,RELATED", module="state"),
-        _target("ACCEPT"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("match", "state", kind="match_module"),
+            _opt("state", "ESTABLISHED,RELATED", module="state"),
+            _target("ACCEPT"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == [
-        "ct state established,related", "accept",
+        "ct state established,related",
+        "accept",
     ]
 
 
 def test_translate_rule_port_suppresses_redundant_proto() -> None:
-    nft = translate_rule("ip", "filter", _rule(
-        _opt("protocol", "tcp", kind="proto"),
-        _opt("dport", "22"),
-        _opt("source", "10.0.0.1"),
-        _target("ACCEPT"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind="proto"),
+            _opt("dport", "22"),
+            _opt("source", "10.0.0.1"),
+            _target("ACCEPT"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == [
-        "tcp dport 22", "ip saddr 10.0.0.1", "accept",
+        "tcp dport 22",
+        "ip saddr 10.0.0.1",
+        "accept",
     ]
 
 
 def test_translate_rule_bare_proto_emits_l4proto() -> None:
-    nft = translate_rule("ip", "filter", _rule(
-        _opt("protocol", "icmp", kind="proto"),
-        _target("DROP"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("protocol", "icmp", kind="proto"),
+            _target("DROP"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == [
-        "meta l4proto icmp", "drop",
+        "meta l4proto icmp",
+        "drop",
     ]
 
 
 def test_translate_rule_ip6_icmp_normalized() -> None:
-    nft = translate_rule("ip6", "filter", _rule(
-        _opt("protocol", "icmp", kind="proto"),
-        _target("ACCEPT"),
-    ))
+    nft = translate_rule(
+        "ip6",
+        "filter",
+        _rule(
+            _opt("protocol", "icmp", kind="proto"),
+            _target("ACCEPT"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == [
-        "meta l4proto ipv6-icmp", "accept",
+        "meta l4proto ipv6-icmp",
+        "accept",
+    ]
+
+
+def test_translate_rule_protocol_injection_is_error() -> None:
+    # finding S1 (CRITICAL): a protocol operand carrying whitespace/`;`/`#`
+    # would break out of `meta l4proto <value>` and flip a DROP into accept;
+    # `nft -c` does not catch the `;#` form, so the ferm side must reject it.
+    with pytest.raises(FermError, match="invalid protocol"):
+        translate_rule(
+            "ip",
+            "filter",
+            _rule(
+                _opt("protocol", "tcp accept;#", kind="proto"),
+                _target("DROP"),
+            ),
+        )
+    # The same value must be rejected on the port-context path (a port match
+    # pins the protocol scalar too), not only the `meta l4proto` emission.
+    with pytest.raises(FermError, match="invalid protocol"):
+        translate_rule(
+            "ip",
+            "filter",
+            _rule(
+                _opt("protocol", "tcp accept", kind="proto"),
+                _opt("dport", "22"),
+                _target("DROP"),
+            ),
+        )
+
+
+def test_translate_rule_legit_protocols_render() -> None:
+    # A numeric proto and a hyphenated service name are legitimate and must
+    # still render (the S1 guard rejects metacharacters, not these).
+    numeric = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("protocol", "47", kind="proto"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in numeric.statements] == [
+        "meta l4proto 47",
+        "accept",
+    ]
+    named = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("protocol", "ipv6-icmp", kind="proto"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in named.statements] == [
+        "meta l4proto ipv6-icmp",
+        "accept",
     ]
 
 
 def test_translate_rule_reject_with_companion_order() -> None:
-    nft = translate_rule("ip", "filter", _rule(
-        _opt("protocol", "tcp", kind="proto"),
-        _opt("dport", "80"),
-        _target("REJECT"),
-        _opt("reject-with", "icmp-port-unreachable", module="REJECT"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind="proto"),
+            _opt("dport", "80"),
+            _target("REJECT"),
+            _opt("reject-with", "icmp-port-unreachable", module="REJECT"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == [
-        "tcp dport 80", "reject with icmp type port-unreachable",
+        "tcp dport 80",
+        "reject with icmp type port-unreachable",
     ]
 
 
 def test_translate_rule_comment_attaches() -> None:
-    nft = translate_rule("ip", "filter", _rule(
-        _target("ACCEPT"),
-        _opt("comment", "allow ssh", module="comment"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _target("ACCEPT"),
+            _opt("comment", "allow ssh", module="comment"),
+        ),
+    )
     assert nft.comment == "allow ssh"
     assert [s.to_text() for s in nft.statements] == ["accept"]
 
 
 def test_translate_rule_snat_multi_value() -> None:
-    nft = translate_rule("ip", "nat", _rule(
-        _opt("source", "10.0.0.0/8"),
-        _target("SNAT"),
-        _opt("to-source", Multi(values=["5.6.7.8"]), module="SNAT"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "nat",
+        _rule(
+            _opt("source", "10.0.0.0/8"),
+            _target("SNAT"),
+            _opt("to-source", Multi(values=["5.6.7.8"]), module="SNAT"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == [
-        "ip saddr 10.0.0.0/8", "snat to 5.6.7.8",
+        "ip saddr 10.0.0.0/8",
+        "snat to 5.6.7.8",
     ]
 
 
 def test_translate_rule_port_before_proto_is_order_independent() -> None:
     # A port option textually preceding `protocol` must still resolve.
-    nft = translate_rule("ip", "filter", _rule(
-        _opt("dport", "22"),
-        _opt("protocol", "tcp", kind="proto"),
-        _target("ACCEPT"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("dport", "22"),
+            _opt("protocol", "tcp", kind="proto"),
+            _target("ACCEPT"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == ["tcp dport 22", "accept"]
 
 
 def test_translate_rule_goto_user_chain() -> None:
-    nft = translate_rule("ip", "filter", _rule(
-        _opt("goto", "mychain", kind="target"),
-    ))
+    nft = translate_rule(
+        "ip",
+        "filter",
+        _rule(
+            _opt("goto", "mychain", kind="target"),
+        ),
+    )
     assert [s.to_text() for s in nft.statements] == ["goto mychain"]
 
 
@@ -509,12 +748,12 @@ def test_unwrap_value_bare_multi_is_error() -> None:
 
 def test_build_verdict_redirect_to_ports() -> None:
     comp = {
-        "to-ports": _opt(
-            "to-ports", Multi(values=["8080"]), module="REDIRECT"
-        )
+        "to-ports": _opt("to-ports", Multi(values=["8080"]), module="REDIRECT")
     }
     assert (
-        build_verdict("ip", "nat", "jump", "REDIRECT", comp).to_text()
+        build_verdict(
+            "ip", "nat", "jump", "REDIRECT", comp, has_transport=True
+        ).to_text()
         == "redirect to :8080"
     )
     assert (
@@ -524,9 +763,7 @@ def test_build_verdict_redirect_to_ports() -> None:
 
 
 def test_build_verdict_tcp_reset_reject() -> None:
-    comp = {
-        "reject-with": _opt("reject-with", "tcp-reset", module="REJECT")
-    }
+    comp = {"reject-with": _opt("reject-with", "tcp-reset", module="REJECT")}
     assert (
         build_verdict("ip", "filter", "jump", "REJECT", comp).to_text()
         == "reject with tcp reset"
@@ -774,6 +1011,39 @@ def test_read_previous_joins_verbatim() -> None:
     )
 
 
+# --- shell_snapshot (finding C2) -------------------------------------------
+
+
+def test_shell_snapshot_emits_nft_save_and_delete_restore() -> None:
+    # finding C2: --nft --interactive --shell must emit a real anti-lockout
+    # net.  Snapshot ferm's table to a tempfile; on restore delete the
+    # freshly-applied table then re-load the dump (mirrors the live
+    # rollback).  `2>/dev/null || true` keep a first-run/already-gone table
+    # from aborting the generated script.
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    snapshot = NftBackend().shell_snapshot("ip", info)
+    assert snapshot is not None
+    assert snapshot.setup == (
+        "ip_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
+        "nft list table ip ferm >$ip_tmp 2>/dev/null || true\n",
+    )
+    assert snapshot.restore == (
+        "nft delete table ip ferm 2>/dev/null || true\nnft -f $ip_tmp\n"
+    )
+
+
+def test_shell_snapshot_maps_eb_family_to_bridge() -> None:
+    # The snapshot list/delete must use the nft family, not the ferm domain
+    # name (eb -> bridge), so it targets the table the backend actually built.
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    snapshot = NftBackend().shell_snapshot("eb", info)
+    assert snapshot is not None
+    assert "list table bridge ferm" in snapshot.setup[1]
+    assert "delete table bridge ferm" in snapshot.restore
+
+
 def test_render_user_chain_collision_is_error() -> None:
     # filter/mangle_INPUT (user chain, bare name) collides with
     # mangle/INPUT after nft_chain_name disambiguates it to "mangle_INPUT".
@@ -805,3 +1075,223 @@ def test_capture_previous_test_mode_reads_mock_file(tmp_path: Path) -> None:
         capture=lambda _cmd: None,
     )
     assert info.previous == "table ip ferm {\n}\n"
+
+
+# ---------------------------------------------------------------------------
+# Operand escaping / validation hardening (review 2026-06-14, fixes 1-5)
+#
+# The nft backend interpolates config-derived operands into the save script;
+# a value carrying whitespace / `;` / `#` / `"` previously broke out of its
+# nft token (a DROP rule silently rendered as `accept`).  Each operand class
+# is now escaped (quoted-string contexts) or grammar-validated (bare-token /
+# bare-identifier contexts).  `INJECT` is the canonical exploit payload.
+# ---------------------------------------------------------------------------
+
+from pyferm.backend.nft import nft_chain_name  # noqa: E402
+
+INJECT = "1.2.3.4 accept;#"
+
+
+# --- Fix 1: chain-name identifier validation (jump/goto + add chain) ---
+
+
+def test_nft_chain_name_rejects_non_identifier() -> None:
+    with pytest.raises(FermError, match="valid nft identifier"):
+        nft_chain_name("filter", 'evil" accept;#')
+
+
+def test_nft_chain_name_rejects_whitespace_in_non_filter() -> None:
+    with pytest.raises(FermError, match="valid nft identifier"):
+        nft_chain_name("nat", "evil accept")
+
+
+def test_build_verdict_jump_to_injected_chain_is_error() -> None:
+    with pytest.raises(FermError, match="valid nft identifier"):
+        build_verdict("ip", "filter", "jump", "FOO accept;#", {})
+
+
+def test_nft_chain_name_accepts_disambiguated_names() -> None:
+    # positive control: valid names must still pass unchanged.
+    assert nft_chain_name("filter", "INPUT") == "INPUT"
+    assert nft_chain_name("mangle", "mychain") == "mangle_mychain"
+
+
+# --- Fix 2: address + NAT-target grammar validation ---
+
+
+def test_translate_match_address_rejects_injection() -> None:
+    with pytest.raises(FermError, match="invalid address"):
+        translate_match("ip", _opt("source", INJECT), None)
+
+
+def test_build_verdict_snat_rejects_injection() -> None:
+    snat = {
+        "to-source": _opt("to-source", Multi(values=[INJECT]), module="SNAT")
+    }
+    with pytest.raises(FermError, match="invalid address"):
+        build_verdict("ip", "nat", "jump", "SNAT", snat)
+
+
+def test_build_verdict_dnat_rejects_injection() -> None:
+    dnat = {
+        "to-destination": _opt(
+            "to-destination", Multi(values=[INJECT]), module="DNAT"
+        )
+    }
+    with pytest.raises(FermError, match="invalid address"):
+        build_verdict("ip", "nat", "jump", "DNAT", dnat)
+
+
+def test_translate_match_address_accepts_cidr_and_ipv6() -> None:
+    # positive control: CIDR / IPv6 / range must not over-reject.
+    assert (
+        translate_match("ip", _opt("source", "10.0.0.0/24"), None)
+        == "ip saddr 10.0.0.0/24"
+    )
+    assert (
+        translate_match("ip6", _opt("destination", "fe80::/64"), None)
+        == "ip6 daddr fe80::/64"
+    )
+
+
+# --- Fix 3: port + to-ports grammar validation ---
+
+
+def test_translate_match_port_rejects_injection() -> None:
+    with pytest.raises(FermError, match="invalid port"):
+        translate_match("ip", _opt("dport", "22 accept;#"), "tcp")
+
+
+def test_build_verdict_masquerade_to_ports_rejects_injection() -> None:
+    # has_transport=True to reach the port validator (the C1 guard is checked
+    # first); the injected port must still be rejected.
+    comp = {
+        "to-ports": _opt(
+            "to-ports", Multi(values=["80 accept;#"]), module="MASQUERADE"
+        )
+    }
+    with pytest.raises(FermError, match="invalid port"):
+        build_verdict(
+            "ip", "nat", "jump", "MASQUERADE", comp, has_transport=True
+        )
+
+
+def test_translate_match_port_accepts_range() -> None:
+    # positive control: a port range must still translate.
+    assert (
+        translate_match("ip", _opt("dport", "1024-2048"), "tcp")
+        == "tcp dport 1024-2048"
+    )
+
+
+# --- Fix 4: interface quoting (quoted-string context) ---
+
+
+def test_translate_match_iface_rejects_embedded_quote() -> None:
+    # nft has no escape for a literal `"`; the old `\"` escape let the value
+    # break out of its token and flip the verdict (DROP->accept).  The value
+    # must now be rejected, not emitted (review 2026-06-14).
+    opt = _opt("in-interface", 'eth0" accept;#')
+    with pytest.raises(FermError, match="cannot quote"):
+        translate_match("ip", opt, None)
+
+
+def test_translate_match_iface_preserves_wildcard() -> None:
+    # positive control: nft string wildcard `*` must still pass.
+    assert (
+        translate_match("ip", _opt("in-interface", "eth*"), None)
+        == 'iifname "eth*"'
+    )
+
+
+# --- Fix 5: state vocabulary + limit-rate validation ---
+
+
+def test_translate_match_state_rejects_unknown_keyword() -> None:
+    with pytest.raises(FermError, match="state"):
+        translate_match("ip", _opt("state", "BOGUS", module="state"), None)
+
+
+def test_translate_match_state_negated_multivalue_is_valid() -> None:
+    # COR-2: negated comma-state is valid nft (anonymous-set negation).
+    assert (
+        translate_match(
+            "ip",
+            _opt("state", Negated("ESTABLISHED,RELATED"), module="state"),
+            None,
+        )
+        == "ct state != established,related"
+    )
+
+
+def test_translate_match_limit_rejects_injection() -> None:
+    with pytest.raises(FermError, match="invalid rate"):
+        translate_match(
+            "ip", _opt("limit", "3/second;drop", module="limit"), None
+        )
+
+
+# --- Review 2026-06-14 C1: quoted-string sinks reject, never escape ---
+
+from pyferm.backend.nft import _nft_quote_string, _validate_port  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ['a" accept #', "a\\b", "line\nfeed", "carriage\rreturn", "ctrl\x01byte"],
+)
+def test_nft_quote_string_rejects_unquotable(payload: str) -> None:
+    # nft has no in-string escape for `"`; escaping it flipped verdicts.
+    with pytest.raises(FermError, match="cannot quote"):
+        _nft_quote_string(payload)
+
+
+@pytest.mark.parametrize(
+    "payload", ["eth*", "ppp+", "lan.10", "INPUT-dropped W: "]
+)
+def test_nft_quote_string_accepts_legitimate(payload: str) -> None:
+    assert _nft_quote_string(payload) == f'"{payload}"'
+
+
+def test_render_comment_rejects_embedded_quote() -> None:
+    # the comment sink shares the chokepoint; a `"` must be rejected.
+    with pytest.raises(FermError, match="cannot quote"):
+        render_comment('legit" accept;#')
+
+
+# --- Review 2026-06-14 H1: colon port ranges normalize to nft dash form ---
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("1000:2000", "1000-2000"),
+        ("ssh:http", "ssh-http"),
+        ("22", "22"),
+        ("1000-2000", "1000-2000"),
+    ],
+)
+def test_validate_port_normalizes_colon_range(
+    given: str, expected: str
+) -> None:
+    assert _validate_port(given) == expected
+
+
+@pytest.mark.parametrize("given", [":2000", "1000:", ":", "a:b:c"])
+def test_validate_port_rejects_half_open_range(given: str) -> None:
+    with pytest.raises(FermError, match="invalid port"):
+        _validate_port(given)
+
+
+def test_translate_match_dport_colon_range() -> None:
+    assert (
+        translate_match("ip", _opt("dport", "60000:61000"), "tcp")
+        == "tcp dport 60000-61000"
+    )
+
+
+def test_translate_match_dport_negated_colon_range() -> None:
+    assert (
+        translate_match("ip", _opt("dport", Negated("1000:2000")), "tcp")
+        == "tcp dport != 1000-2000"
+    )

@@ -32,9 +32,19 @@ assert _CASES, f"No golden .ferm/.nft pairs found under {_HERE / 'nft'}"
 
 def _run_nft(ferm_file: Path) -> str:
     proc = subprocess.run(
-        [sys.executable, "-m", "pyferm",
-         "--nft", "--test", "--noexec", "--lines", str(ferm_file)],
-        capture_output=True, encoding="utf-8", check=False,
+        [
+            sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--test",
+            "--noexec",
+            "--lines",
+            str(ferm_file),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
@@ -48,9 +58,42 @@ def test_nft_golden(ferm_file: Path) -> None:
 
 def test_nft_uncovered_module_errors() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "pyferm", "--nft", "--test", "--noexec",
-         "--lines", str(_HERE / "nft" / "uncovered.ferm")],
-        capture_output=True, encoding="utf-8", check=False,
+        [
+            sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--test",
+            "--noexec",
+            "--lines",
+            str(_HERE / "nft" / "uncovered.ferm"),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
     )
     assert proc.returncode == 1
     assert "not yet supported by nft backend" in proc.stderr
+
+
+def test_nft_port_nat_without_transport_errors() -> None:
+    # finding C1: a port-bearing NAT mapping with no preceding transport
+    # match exits non-zero at translate time (nft would reject the applied
+    # script), rather than emitting a script that fails at apply.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--test",
+            "--noexec",
+            "--lines",
+            str(_HERE / "nft" / "nat_port_no_proto.ferm"),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert "needs a tcp/udp protocol match" in proc.stderr

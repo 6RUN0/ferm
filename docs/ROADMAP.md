@@ -5,8 +5,11 @@ program into a Python implementation with a native `nftables` backend. It
 summarises the strategy and phase breakdown.
 
 **Current status:** Phase 1 (faithful Perl → Python port, still emitting
-`iptables`) is complete, and Phase 2 (opt-in native `nft` backend behind
-`--nft`) has landed. See [`CHANGELOG.md`](../CHANGELOG.md).
+`iptables`) is complete. Phase 2 (native `nft` backend behind `--nft`) is
+available but **opt-in / experimental** — functional and adversarially
+reviewed, but without a Perl-oracle differential test and with the
+documented DROP-policy and `@preserve` differences. The default backend
+stays `iptables`. See [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Guiding principle: one variable per phase
 
@@ -83,10 +86,20 @@ Resolved decisions and their consequences:
 - **`@preserve` is not supported under `--nft`** — using it is a clean,
   explicit error, a deliberate opt-in-backend regression. The default
   `iptables` backend keeps `@preserve` unchanged.
+- **Port-bearing NAT requires a transport match** — `DNAT`/`SNAT` to an
+  `addr:port`, or `REDIRECT`/`MASQUERADE to-ports`, without a preceding
+  `proto tcp`/`udp` is a clean translate-time error, since nft rejects the
+  mapping at apply.
 
-**Known limitation (deferred):** `--nft --interactive --shell` does not
-emit rollback lines in shell mode, because the nft snapshot needs a live
-`nft list` that shell mode cannot capture. Deferred to a later phase.
+A post-merge adversarial review (3 cycles) closed the remaining gaps: the
+protocol operand is now validated like every other sink (it was the last
+fail-open injection), `--nft --interactive --shell` emits a real
+anti-lockout snapshot/restore, a failed rollback snapshot aborts instead
+of deleting an existing table, and golden coverage gained negation,
+dual-stack and port-NAT cases. `--nft` stays opt-in/experimental: it has
+no Perl-oracle differential test (only the golden + `nft -c` harness), and
+the DROP-policy shift and `@preserve` regression above are by design — the
+default `iptables` backend is unchanged.
 
 ### Phase 3 — Binary packaging (optional)
 

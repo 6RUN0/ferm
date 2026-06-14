@@ -27,8 +27,15 @@ implementation to Python:
   the semantic oracle. Run its own test suite with
   `make -C reference check`.
 
-An `nftables` backend is the subject of a later phase. The roadmap lives
-in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Phase 2 (opt-in / experimental)**: a native `nftables` backend behind
+`--nft` translates the same configuration into a native nft ruleset and
+applies it atomically via `nft -f -`. The default backend stays
+`iptables`, so existing configurations and output are unchanged unless
+`--nft` is passed. `--nft` is opt-in and experimental: it carries
+documented semantic differences (a `policy DROP` shift under the own-table
+model, `@preserve` unsupported) and has golden + `nft -c` coverage but no
+Perl-oracle differential test. The roadmap lives in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Branches
 

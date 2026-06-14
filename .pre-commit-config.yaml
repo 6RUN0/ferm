@@ -48,6 +48,7 @@ repos:
             golden/(conftest|runner|normalize|sortpl)\.py$|
             corpus/canon\.py$|
             e2e/lockout/driver\.py$|
+            e2e/nft/driver\.py$|
             property/oracle\.py$
           )
 

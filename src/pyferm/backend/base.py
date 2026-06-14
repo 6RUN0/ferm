@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pyferm.config import Options
-    from pyferm.domains import DomainInfo
+    from pyferm.domains import DomainInfo, ShellSnapshot
 
 
 @runtime_checkable
@@ -195,3 +195,18 @@ class Backend(ABC):
         self, lines: Iterable[str], domain_info: DomainInfo
     ) -> str:
         """Parse a previous save dump, recording its tables/chains."""
+
+    @abstractmethod
+    def shell_snapshot(
+        self, domain: str, domain_info: DomainInfo
+    ) -> ShellSnapshot | None:
+        """
+        Build the ``--shell`` anti-lockout snapshot lines for one family.
+
+        ``--interactive --shell`` emits a save of the live ruleset before the
+        new rules and a restore after the confirmation timeout, so an admin
+        who never confirms is rolled back (Perl ``:810-814``).  The shape is
+        backend-specific -- x_tables uses a ``*-save``/``*-restore`` pair, nft
+        a ``list table``/``delete``+``-f`` pair -- so each backend owns it
+        (finding C2).  ``None`` when the family has no snapshot tooling.
+        """

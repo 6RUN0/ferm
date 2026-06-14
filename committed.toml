@@ -1,0 +1,20 @@
+# Commit-message lint rules (crate-ci/committed), encoding the project's
+# Conventional Commits convention so `committed` agrees with it:
+#   type(scope): description   -- imperative, lowercase, no trailing period,
+#   subject <= 72, body wrapped at 72.
+style = "conventional"
+subject_length = 72
+subject_capitalized = false
+allowed_types = [
+    "fix",
+    "feat",
+    "docs",
+    "style",
+    "refactor",
+    "perf",
+    "test",
+    "build",
+    "ci",
+    "chore",
+    "revert",
+]

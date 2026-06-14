@@ -1,0 +1,4 @@
+# Dual-stack: one block renders BOTH families (ip before ip6, sorted).
+domain (ip ip6) table filter chain INPUT {
+    proto tcp dport 22 ACCEPT;
+}

@@ -1,0 +1,8 @@
+add table ip ferm
+flush table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport 22 accept
+add table ip6 ferm
+flush table ip6 ferm
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add rule ip6 ferm INPUT tcp dport 22 accept

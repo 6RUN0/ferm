@@ -26,6 +26,11 @@ are unchanged unless `--nft` is passed.
   `nft -f -`. It uses the nft *text* wire only and has no dependency on
   nft's JSON / `libjansson` build. `--nft` is strictly opt-in; the
   default remains the `iptables` backend.
+- **`--nft --interactive --shell` emits a working anti-lockout net.** The
+  generated shell script snapshots ferm's table (`nft list table`) before
+  applying, and after the confirmation timeout deletes the freshly-applied
+  table and reloads the snapshot (`nft -f`) — mirroring the live rollback,
+  so an admin who never confirms is restored.
 
 ### Changed — Phase 2 (native nft backend)
 
@@ -48,11 +53,35 @@ are unchanged unless `--nft` is passed.
   than a silent no-op. This is a deliberate, opt-in-backend regression;
   the default `iptables` backend supports `@preserve` exactly as before.
 
-#### Known limitations
+- **Port-bearing NAT requires a transport match under `--nft`.** A NAT
+  verdict that maps a port (`DNAT to ...:port`, `SNAT to ...:port`,
+  `REDIRECT`/`MASQUERADE to-ports`) with no preceding `proto tcp`/`udp`
+  match is now a clean ferm error at translate time, because nft rejects
+  such a mapping at apply (`transport protocol mapping is only valid after
+  transport protocol match`) and would otherwise force a rollback. Add a
+  protocol match to the rule.
 
-- `--nft --interactive --shell` does not emit rollback lines in shell
-  mode: the nft snapshot needs a live `nft list`, which shell mode cannot
-  capture. Deferred to a later phase.
+### Security — Phase 2 (native nft backend)
+
+- **`--nft` operands are escaped or validated before they reach the save
+  script.** A config value carrying whitespace, `;`, `#`, or a double
+  quote could previously break out of its nft token — for example
+  `saddr "1.2.3.4 accept;#" DROP` rendered as
+  `ip saddr 1.2.3.4 accept;# drop`, silently turning a `DROP` rule into
+  `accept` (a form `nft -c` validates without complaint). Interface names
+  are now emitted as escaped nft quoted strings (the `*` wildcard is
+  preserved); addresses, ports, **protocols**, rate limits, and chain
+  identifiers are grammar-validated, raising a plain ferm error rather
+  than a ruleset nft would mis-apply. The protocol operand specifically
+  (`proto "tcp accept;#" DROP` → `meta l4proto tcp accept;# drop`) was the
+  last unguarded sink and is now validated like the others. The default
+  `iptables` backend already escaped these operands and was never affected.
+- **A failed rollback snapshot no longer degrades into a destructive
+  delete.** The `--nft` rollback deletes ferm's own table when there is no
+  previous snapshot (a genuine first run); a transient `nft list table`
+  failure on an *existing* table is now distinguished from a real first run
+  (by its non-`ENOENT` error) and aborts before any kernel change, instead
+  of being mistaken for "no previous table" and deleting it on rollback.
 
 ### Added — Phase 1 (faithful port)
 

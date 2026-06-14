@@ -1,0 +1,4 @@
+domain ip table filter chain INPUT {
+    saddr ! 10.0.0.1 DROP;
+    proto tcp dport ! 22 ACCEPT;
+}

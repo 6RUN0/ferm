@@ -9,6 +9,7 @@ nft-expression model and serializes it (``to_text``) into one atomic
 
 from __future__ import annotations
 
+import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from pyferm.backend.base import (
     RestoreDomain,
     SaveReader,
 )
+from pyferm.domains import ShellSnapshot
 from pyferm.errors import FermError, internal_error
 from pyferm.rules import (
     RenderedOption,
@@ -45,6 +47,90 @@ NFT_COMMENT_MAX: int = 128
 NFT_TABLE_NAME: str = "ferm"
 #: ``DomainInfo.tools`` key for the single nft binary (decision 2).
 TOOL_NFT: str = "nft"
+
+# ---------------------------------------------------------------------------
+# Operand escaping / validation (review 2026-06-14).
+#
+# Config-derived operands are interpolated into the save script.  A value
+# carrying whitespace / ``;`` / ``#`` / ``"`` would otherwise break out of
+# its nft token (turning a DROP rule into ``accept``), and ``nft -c`` does
+# NOT catch the ``;#`` line-comment form -- so the ferm side is the only
+# defense.  Quoted-string contexts (interface, comment, log prefix) are
+# escaped via :func:`_nft_quote_string`; bare-token contexts (address /
+# port / rate) and bare-identifier contexts (chain name) are grammar-
+# validated here, raising a plain ferm error rather than emitting a script
+# nft would mis-apply.
+# ---------------------------------------------------------------------------
+
+#: An nft address operand: IPv4/IPv6/hex digits, CIDR ``/``, range ``-``,
+#: and ``:`` (IPv6 and NAT ``addr:port``).  Rejects every token-breaking
+#: metacharacter.
+_NFT_ADDR_RE = re.compile(r"\A[0-9A-Fa-f.:/-]+\Z")
+#: An nft port operand: a numeric/service port or ``lo-hi`` range.  Service
+#: names (``ssh``) are accepted (nft resolves them); metacharacters are not.
+_NFT_PORT_RE = re.compile(r"\A[0-9A-Za-z][0-9A-Za-z-]*\Z")
+#: ferm/iptables write a closed port range as ``lo:hi``; nft's grammar uses
+#: ``lo-hi``, so a colon range is normalized to the dash form.  Both ends
+#: must be present -- half-open ``:hi`` / ``lo:`` has no nft spelling here
+#: and is rejected (fail-closed) rather than mistranslated (review
+#: 2026-06-14).
+_NFT_PORT_COLON_RANGE_RE = re.compile(r"\A([0-9A-Za-z]+):([0-9A-Za-z]+)\Z")
+#: Bytes nft cannot represent inside a double-quoted string: a literal
+#: quote, a backslash, or any control byte.  nft has no escape for these,
+#: so :func:`_nft_quote_string` rejects rather than escapes them.
+_NFT_UNQUOTABLE_RE = re.compile(r'["\\\x00-\x1f]')
+#: An nft ``limit rate`` value: ``N`` or ``N/unit`` (``3/second``).
+_NFT_RATE_RE = re.compile(r"\A\d+(?:/[A-Za-z]+)?\Z")
+#: An nft chain identifier (bare word; nft has no quoted-chain-name form).
+_NFT_CHAIN_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
+#: ct state keywords nft accepts for ``ct state`` (the ferm ``state`` module
+#: maps to iptables ``--state``, whose vocabulary is this set).
+_CT_STATES: frozenset[str] = frozenset(
+    {"new", "established", "related", "invalid", "untracked"}
+)
+
+
+def _validate_address(scalar: str) -> str:
+    """Return *scalar* if it is a safe nft address operand, else error."""
+    if not _NFT_ADDR_RE.match(scalar):
+        raise FermError(f"invalid address '{scalar}' for nft backend")
+    return scalar
+
+
+def _validate_port(scalar: str) -> str:
+    """
+    Return a safe nft port operand, normalizing colon ranges, else error.
+
+    ferm/iptables spell a closed port range ``lo:hi`` while nft's grammar
+    wants ``lo-hi``; the colon form is rewritten to the dash form so a
+    config that compiles under the iptables backend also compiles under
+    ``--nft`` (review 2026-06-14).  Half-open ranges (``:hi`` / ``lo:``)
+    have no nft equivalent here and fall through to the error rather than
+    being mistranslated.
+    """
+    match = _NFT_PORT_COLON_RANGE_RE.match(scalar)
+    if match:
+        scalar = f"{match.group(1)}-{match.group(2)}"
+    if not _NFT_PORT_RE.match(scalar):
+        raise FermError(f"invalid port '{scalar}' for nft backend")
+    return scalar
+
+
+def _validate_protocol(scalar: str) -> str:
+    """
+    Return *scalar* if it is a safe nft protocol operand, else error.
+
+    The ``protocol`` value reaches ``meta l4proto {value}`` (and the
+    ``tcp/udp dport`` port context) verbatim.  A numeric proto (``47``) or a
+    service-name-shaped token (``tcp``, ``gre``, ``ipv6-icmp``) is the only
+    legitimate shape, so the port regex -- alnum plus ``-`` -- already models
+    it exactly while rejecting every token-breaking metacharacter
+    (whitespace / ``;`` / ``#`` / ``"``) that would otherwise flip a verdict
+    (review 2026-06-14; ``nft -c`` does NOT catch the ``;#`` form).
+    """
+    if not _NFT_PORT_RE.match(scalar):
+        raise FermError(f"invalid protocol '{scalar}' for nft backend")
+    return scalar
 
 
 @dataclass
@@ -129,8 +215,7 @@ def _chain_header(chain: NftBaseChain | NftRegularChain) -> str:
     """Render the ``add chain ...`` body for one chain."""
     if isinstance(chain, NftBaseChain):
         body = (
-            f"type {chain.type} hook {chain.hook} "
-            f"priority {chain.priority};"
+            f"type {chain.type} hook {chain.hook} priority {chain.priority};"
         )
         if chain.policy is not None:
             body += f" policy {chain.policy};"
@@ -140,14 +225,21 @@ def _chain_header(chain: NftBaseChain | NftRegularChain) -> str:
 
 def _nft_quote_string(text: str) -> str:
     """
-    Wrap *text* in nft double-quotes, escaping backslash and quote.
+    Wrap *text* in nft double-quotes, rejecting bytes nft cannot quote.
 
-    Always returns a double-quoted string; never a bare word.  Used
-    wherever nft syntax mandates a quoted string (``comment``,
-    ``log prefix``).
+    nft's string lexer has NO escape for a literal double-quote -- a
+    backslash is kept as content and the quote still terminates the string,
+    so the old backslash-quote escape silently let a value break out of its
+    token and flip a verdict (review 2026-06-14, reproduced on nftables
+    v1.1.6).  A value containing a double-quote, a backslash, or any control
+    byte (newline / CR included) therefore raises a ferm error rather than
+    being emitted.  Used wherever nft mandates a quoted string (``comment``,
+    ``interface``, ``log prefix``); legitimate operands (``eth*``, ``ppp+``,
+    log labels with spaces) contain none of these bytes.
     """
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    if _NFT_UNQUOTABLE_RE.search(text):
+        raise FermError(f"value {text!r} has a character nft cannot quote")
+    return f'"{text}"'
 
 
 def render_comment(comment: str) -> str:
@@ -193,9 +285,7 @@ def serialize_table(
                 parts.append(render_comment(rule.comment))
             tail = " ".join(parts)
             sep = " " if tail else ""
-            lines.append(
-                f"add rule {prefix} {chain.name}{sep}{tail}\n"
-            )
+            lines.append(f"add rule {prefix} {chain.name}{sep}{tail}\n")
     return "".join(lines)
 
 
@@ -279,8 +369,16 @@ def nft_chain_name(table: str, chain: str) -> str:
     every other table is prefixed ``<table>_<chain>`` so ``filter/INPUT``
     and ``mangle/INPUT`` do not collide.  Applied identically to chain
     definitions and to ``jump``/``goto`` targets.
+
+    The final identifier is validated against nft's bare-word grammar (nft
+    has no quoted-chain-name form): a name with whitespace/metacharacters
+    would otherwise inject statements into ``add chain``/``jump`` -> a plain
+    ferm error instead (review 2026-06-14, fix 1).
     """
-    return chain if table == "filter" else f"{table}_{chain}"
+    name = chain if table == "filter" else f"{table}_{chain}"
+    if not _NFT_CHAIN_RE.match(name):
+        raise FermError(f"chain name '{chain}' is not a valid nft identifier")
+    return name
 
 
 def build_chains(
@@ -405,18 +503,28 @@ def translate_match(
     name = option.name
     scalar, neg = unwrap_value(option.value)
     if name in _ADDR_KEYWORD:
-        return f"{domain} {_ADDR_KEYWORD[name]} {_op(neg)}{scalar}"
+        addr = _validate_address(scalar)
+        return f"{domain} {_ADDR_KEYWORD[name]} {_op(neg)}{addr}"
     if name in _IFACE_KEYWORD:
-        return f'{_IFACE_KEYWORD[name]} {_op(neg)}"{scalar}"'
+        # An interface is an nft quoted string (it may carry a `*` wildcard,
+        # preserved inside the quotes), so escape rather than validate.
+        return f"{_IFACE_KEYWORD[name]} {_op(neg)}{_nft_quote_string(scalar)}"
     if name in _PORT_KEYWORD:
         if protocol not in _PORT_PROTOCOLS:
             raise FermError(
                 f"option '{name}' needs a tcp/udp protocol for the nft backend"
             )
-        return f"{protocol} {_PORT_KEYWORD[name]} {_op(neg)}{scalar}"
+        port = _validate_port(scalar)
+        return f"{protocol} {_PORT_KEYWORD[name]} {_op(neg)}{port}"
     if name == "state":
-        return f"ct state {_op(neg)}{scalar.lower()}"
+        members = scalar.lower().split(",")
+        for member in members:
+            if member not in _CT_STATES:
+                raise FermError(f"unknown ct state '{member}' for nft backend")
+        return f"ct state {_op(neg)}{','.join(members)}"
     if name == "limit":
+        if not _NFT_RATE_RE.match(scalar):
+            raise FermError(f"invalid rate '{scalar}' for nft backend")
         return f"limit rate {scalar}"
     raise FermError(f"option '{name}' not yet supported by nft backend")
 
@@ -461,6 +569,32 @@ _ICMP6_REJECT_ALIAS: dict[str, str] = {
 }
 
 
+#: The error a port-bearing NAT verdict raises without a transport match
+#: (decision C1): nft would reject the applied script, so fail at translate.
+_NAT_PORT_NEEDS_PROTO = (
+    "NAT to a port needs a tcp/udp protocol match for the nft backend"
+)
+
+
+def _nat_has_port(domain: str, operand: str) -> bool:
+    """
+    Return whether a NAT address operand carries a ``:port`` (decision C1).
+
+    nft accepts an ``addr:port`` mapping only after a transport match.  In an
+    IPv4 family any ``:`` is the port separator.  An IPv6 host carries its own
+    ``:`` colons, so those must NOT count as a port (else a port-less
+    ``dnat to fe80::1`` would falsely demand a transport match); a port is
+    bracketed (``[2001:db8::1]:80``), i.e. a ``]:``.  That bracketed form is
+    in practice already rejected upstream by :func:`_validate_address` (the
+    ``[``/``]`` are not in ``_NFT_ADDR_RE``), so the ``]:`` arm is defensive;
+    the load-bearing case is the ip6 ``return False`` that avoids the false
+    positive on a plain IPv6 host.
+    """
+    if domain == "ip6":
+        return "]:" in operand
+    return ":" in operand
+
+
 def _reject_for(domain: str, scalar: str) -> str:
     if domain == "ip6":
         scalar = _ICMP6_REJECT_ALIAS.get(scalar, scalar)
@@ -480,6 +614,8 @@ def build_verdict(
     target_name: str,
     target_value: str,
     companions: dict[str, RenderedOption],
+    *,
+    has_transport: bool = False,
 ) -> NftVerdict:
     """
     Build the verdict statement from the ``jump`` marker value (decision 8).
@@ -488,18 +624,29 @@ def build_verdict(
     arrives as ``name='jump'``): core verdicts, NAT/LOG/REJECT (which take
     a companion option), or a ``jump``/``goto`` to a chain in the SAME
     iptables table (name disambiguated via :func:`nft_chain_name`).
+
+    ``has_transport`` reports whether the rule established an L4 protocol
+    (port match or ``meta l4proto tcp/udp``); a port-bearing NAT mapping
+    without one is rejected at translate time (decision C1), since nft would
+    otherwise reject the applied script and force a rollback.
     """
     if target_value in _VERDICT_TARGET:
         return NftVerdict(_VERDICT_TARGET[target_value])
     if target_value == "MASQUERADE":
         comp = companions.get("to-ports")
         if comp is not None:
-            return NftVerdict(f"masquerade to :{first_scalar(comp.value)}")
+            if not has_transport:
+                raise FermError(_NAT_PORT_NEEDS_PROTO)
+            port = _validate_port(first_scalar(comp.value))
+            return NftVerdict(f"masquerade to :{port}")
         return NftVerdict("masquerade")
     if target_value == "REDIRECT":
         comp = companions.get("to-ports")
         if comp is not None:
-            return NftVerdict(f"redirect to :{first_scalar(comp.value)}")
+            if not has_transport:
+                raise FermError(_NAT_PORT_NEEDS_PROTO)
+            port = _validate_port(first_scalar(comp.value))
+            return NftVerdict(f"redirect to :{port}")
         return NftVerdict("redirect")
     if target_value == "LOG":
         comp = companions.get("log-prefix")
@@ -517,12 +664,18 @@ def build_verdict(
         comp = companions.get("to-source")
         if comp is None:
             raise FermError("SNAT target not yet supported by nft backend")
-        return NftVerdict(f"snat to {first_scalar(comp.value)}")
+        addr = _validate_address(first_scalar(comp.value))
+        if _nat_has_port(domain, addr) and not has_transport:
+            raise FermError(_NAT_PORT_NEEDS_PROTO)
+        return NftVerdict(f"snat to {addr}")
     if target_value == "DNAT":
         comp = companions.get("to-destination")
         if comp is None:
             raise FermError("DNAT target not yet supported by nft backend")
-        return NftVerdict(f"dnat to {first_scalar(comp.value)}")
+        addr = _validate_address(first_scalar(comp.value))
+        if _nat_has_port(domain, addr) and not has_transport:
+            raise FermError(_NAT_PORT_NEEDS_PROTO)
+        return NftVerdict(f"dnat to {addr}")
     # A jump/goto to a chain in the same iptables table.  nft forbids
     # jumping to a base chain (one with a hook), so a jump/goto whose
     # target is a built-in chain has NO nft equivalent -> a plain ferm
@@ -542,7 +695,11 @@ def build_verdict(
 #: option names that are companion arguments of a target, consumed by
 #: :func:`build_verdict` rather than emitted as matches (decision 8).
 _TARGET_COMPANIONS: tuple[str, ...] = (
-    "reject-with", "to-source", "to-destination", "log-prefix", "to-ports",
+    "reject-with",
+    "to-source",
+    "to-destination",
+    "log-prefix",
+    "to-ports",
 )
 
 
@@ -580,7 +737,12 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     for option in rule.options:
         if option.kind == "proto":
             protocol, _ = unwrap_value(option.value)
+            protocol = _validate_protocol(protocol)
             break
+    # nft's `... to <addr>:<port>` NAT mapping is "only valid after transport
+    # protocol match" -- a port match or a `meta l4proto tcp/udp` covers it,
+    # both implied by the rule carrying a port-bearing protocol (decision C1).
+    has_transport = protocol in _PORT_PROTOCOLS
 
     # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
@@ -598,6 +760,7 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
             continue
         if kind == "proto":
             scalar, neg = unwrap_value(option.value)
+            scalar = _validate_protocol(scalar)
             if not has_port:  # a port match already implies l4proto
                 l4 = _nft_l4proto(domain, scalar)
                 matches.append(NftMatch(f"meta l4proto {_op(neg)}{l4}"))
@@ -615,7 +778,12 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     if target_value is not None:
         statements.append(
             build_verdict(
-                domain, table, target_name or "jump", target_value, companions
+                domain,
+                table,
+                target_name or "jump",
+                target_value,
+                companions,
+                has_transport=has_transport,
             )
         )
     return NftRule(statements=statements, comment=comment)
@@ -787,3 +955,32 @@ class NftBackend(Backend):
         """
         del domain_info
         return "".join(lines)
+
+    def shell_snapshot(
+        self, domain: str, domain_info: DomainInfo
+    ) -> ShellSnapshot | None:
+        """
+        Build the ``--shell`` anti-lockout snapshot for a family (finding C2).
+
+        Mirrors the live :meth:`rollback`: dump ferm's own table to a tempfile,
+        and on restore delete the freshly-applied table before re-loading the
+        dump.  A first run captures an empty file, so the delete alone removes
+        ferm's table -- the same "nothing to restore" outcome as the live path.
+        ``2>/dev/null`` + ``|| true`` keep a missing table (the first-run dump)
+        or an already-gone table (the delete) from aborting the script.
+        """
+        nft = domain_info.tools[TOOL_NFT]
+        family = nft_family(domain)
+        tmp = f"{domain}_tmp"
+        return ShellSnapshot(
+            setup=(
+                f"{tmp}=$(mktemp ferm.XXXXXXXXXX)\n",
+                f"{nft} list table {family} {NFT_TABLE_NAME} "
+                f">${tmp} 2>/dev/null || true\n",
+            ),
+            restore=(
+                f"{nft} delete table {family} {NFT_TABLE_NAME} "
+                f"2>/dev/null || true\n"
+                f"{nft} -f ${tmp}\n"
+            ),
+        )

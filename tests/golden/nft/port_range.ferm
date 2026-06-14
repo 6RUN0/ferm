@@ -1,0 +1,5 @@
+# Colon port ranges (ferm/iptables idiom) normalize to nft's dash form (H1).
+domain ip table filter chain INPUT {
+    proto tcp dport 60000:61000 ACCEPT;
+    proto udp sport 100:200 dport 1000:2000 ACCEPT;
+}

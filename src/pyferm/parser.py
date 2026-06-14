@@ -45,6 +45,7 @@ from pyferm.domains import (
     ChainInfo,
     DomainInfo,
     LineEmitter,
+    ShellSnapshotBuilder,
     TableInfo,
     initialize_domain,
 )
@@ -258,6 +259,7 @@ class Parser:
         resolve_tools: Callable[[str], dict[str, str]] | None = None,
         capture_previous: CapturePrevious | None = None,
         emit_line: LineEmitter | None = None,
+        shell_snapshot: ShellSnapshotBuilder | None = None,
     ) -> None:
         """Bind the parser to its evaluator, domain state and injected I/O."""
         self.evaluator = evaluator
@@ -269,6 +271,7 @@ class Parser:
         self._resolve_tools = resolve_tools
         self._capture_previous = capture_previous
         self._emit_line = emit_line
+        self._shell_snapshot = shell_snapshot
         self.pre_hooks: list[str] = []
         self.post_hooks: list[str] = []
         self.flush_hooks: list[str] = []
@@ -295,6 +298,7 @@ class Parser:
                 resolve_tools=self._resolve_tools,
                 capture_previous=self._capture_previous,
                 emit_line=self._emit_line,
+                shell_snapshot=self._shell_snapshot,
             )
         except FermError as exc:
             # Perl re-raises ``error($@)``: $@ keeps the die's trailing

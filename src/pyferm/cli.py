@@ -40,7 +40,6 @@ from pyferm import __version__
 from pyferm.backend.iptables import IptablesBackend, restore_domain
 from pyferm.backend.nft import TOOL_NFT, NftBackend
 from pyferm.config import Options
-from pyferm.domains import shell_snapshot
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
@@ -352,6 +351,14 @@ def _make_io(
 
     def capture(command: str) -> str | None:
         # Like execute(), but returns stdout for snapshotting (decision 10).
+        #
+        # A snapshot failure must NOT masquerade as "no previous table": the
+        # nft rollback DELETES the table when `previous` is None, so a
+        # transient capture failure on an EXISTING table would destroy it
+        # (review 2026-06-14, finding C3).  Only a confirmed-absent target
+        # collapses to None -- nft prints "No such file or directory" (ENOENT)
+        # for a missing table, the genuine first run; every other nonzero exit
+        # or spawn error raises, aborting before any kernel change.
         if options.noexec:
             return None
         try:
@@ -361,9 +368,16 @@ def _make_io(
                 encoding=BYTE_ENCODING,
                 check=False,
             )
-        except OSError:
-            return None
-        return completed.stdout or None
+        except OSError as exc:
+            raise FermError(f"failed to snapshot for rollback: {exc}") from exc
+        if completed.returncode == 0:
+            return completed.stdout or None
+        if "No such file or directory" in (completed.stderr or ""):
+            return None  # genuine first run: the target does not exist yet
+        raise FermError(
+            "failed to snapshot for rollback: "
+            + (completed.stderr.strip() or f"exit {completed.returncode}")
+        )
 
     return execute, emit_line, read_save, restore, capture
 
@@ -599,6 +613,7 @@ def _run(
         resolve_tools=backend.tool_names,
         capture_previous=capture_previous,
         emit_line=emit_line,
+        shell_snapshot=backend.shell_snapshot,
     )
     # finally: close the whole include chain (innermost first) on both
     # the success path and a parse abort, so no error path leaks an open
@@ -670,7 +685,7 @@ def _run(
                 emit_line("echo 'Please press Ctrl-C to confirm.'\n")
                 emit_line(f"sleep {options.timeout}\n")
                 for domain in sorted(domains):
-                    snapshot = shell_snapshot(domain, domains[domain].tools)
+                    snapshot = backend.shell_snapshot(domain, domains[domain])
                     if snapshot is None:
                         continue
                     emit_line(snapshot.restore)

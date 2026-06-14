@@ -1,0 +1,7 @@
+# Negative case (finding C1): a port-bearing NAT with NO transport
+# match is rejected at translate time -- nft would reject the applied
+# script.  No .nft sibling: the parametrized golden skips it; the error is
+# asserted explicitly in test_nft_golden.py.
+domain ip table nat chain PREROUTING {
+    daddr 1.2.3.4 DNAT to-destination 10.0.0.1:8080;
+}

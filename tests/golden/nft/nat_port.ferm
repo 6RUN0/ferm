@@ -1,0 +1,4 @@
+# Port-bearing NAT is valid only after a transport match (finding C1).
+domain ip table nat chain PREROUTING {
+    proto tcp dport 80 DNAT to-destination 10.0.0.1:8080;
+}

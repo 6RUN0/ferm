@@ -17,13 +17,16 @@ The previous-state capture of ``initialize_domain`` (the ``--test`` mock
 branch, the live ``*-save`` pipe, the ``eb`` atomic-save snapshot) goes
 through the injected ``capture_previous`` callable -- the cli's closure over
 :meth:`pyferm.backend.base.Backend.capture_previous` -- and the ``--shell``/
-``--interactive`` setup lines through ``emit_line``.  The module imports no
+``--interactive`` setup lines through ``emit_line``.  The ``--shell``
+anti-lockout snapshot is backend-specific (x_tables saves a ``*-save`` pair,
+nft a ``list table`` dump -- finding C2), so it too arrives through an
+injected ``shell_snapshot`` callable over
+:meth:`pyferm.backend.base.Backend.shell_snapshot`.  The module imports no
 ``backend`` symbol at all (not even under ``TYPE_CHECKING``): the
 render/commit seam is reached only through injected callables, so the
-"compiler core does not import the backend" contract holds.  The
-``shell_snapshot`` helper -- a pure ``(domain, tools) -> shell lines``
-function over a family's already-discovered tools -- lives here for that
-reason; the ``CapturePrevious`` alias references the backend only in prose.
+"compiler core does not import the backend" contract holds; the
+``CapturePrevious``/``ShellSnapshotBuilder`` aliases reference the backend
+only in prose.
 """
 
 from __future__ import annotations
@@ -65,6 +68,10 @@ _LEGACY_RE = re.compile(r"^(.*tables)(.*)$")
 #: the cli's closure over :meth:`pyferm.backend.base.Backend.capture_previous`
 #: (backend + options + execute + read_save folded at the wiring point).
 CapturePrevious = Callable[[str, "DomainInfo"], None]
+#: Builds a family's ``--shell`` anti-lockout snapshot -- the cli's closure
+#: over :meth:`pyferm.backend.base.Backend.shell_snapshot`.  Injected (not
+#: imported) so this module keeps no backend symbol (finding C2).
+ShellSnapshotBuilder = Callable[[str, "DomainInfo"], "ShellSnapshot | None"]
 #: Writes *raw* text to the ``--lines``/``--shell`` sink (Perl ``print
 #: LINES``).  The caller supplies any trailing newline, mirroring Perl's
 #: ``print`` -- ``execute_fast`` prints a multi-line save blob verbatim
@@ -232,27 +239,6 @@ class ShellSnapshot:
     restore: str
 
 
-def shell_snapshot(domain: str, tools: dict[str, str]) -> ShellSnapshot | None:
-    """
-    Build the snapshot lines for ``domain``, or ``None`` without tooling.
-
-    The contract is x_tables-specific (``*-save``/``*-restore`` pairs
-    exist for ip/ip6 only; arp/eb have none, and a native nft backend
-    will snapshot differently), hence one guard for both halves.
-    """
-    save_tool = tools.get(TOOL_SAVE)
-    restore_tool = tools.get(TOOL_RESTORE)
-    if save_tool is None or restore_tool is None:
-        return None
-    return ShellSnapshot(
-        setup=(
-            f"{domain}_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
-            f"{save_tool} >${domain}_tmp\n",
-        ),
-        restore=f"{restore_tool} <${domain}_tmp\n",
-    )
-
-
 def initialize_domain(
     domain: str,
     domains: dict[str, DomainInfo],
@@ -261,6 +247,7 @@ def initialize_domain(
     resolve_tools: Callable[[str], dict[str, str]] | None = None,
     capture_previous: CapturePrevious | None = None,
     emit_line: LineEmitter | None = None,
+    shell_snapshot: ShellSnapshotBuilder | None = None,
 ) -> None:
     """
     Discover a family's tools and snapshot its current ruleset (``:925``).
@@ -295,8 +282,13 @@ def initialize_domain(
     if capture_previous is not None:
         capture_previous(domain, domain_info)
 
-    if options.shell and options.interactive and emit_line is not None:
-        snapshot_lines = shell_snapshot(domain, domain_info.tools)
+    if (
+        options.shell
+        and options.interactive
+        and emit_line is not None
+        and shell_snapshot is not None
+    ):
+        snapshot_lines = shell_snapshot(domain, domain_info)
         if snapshot_lines is not None:
             for line in snapshot_lines.setup:
                 emit_line(line)

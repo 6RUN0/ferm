@@ -95,13 +95,33 @@ def main() -> int:
     for cmd in (
         ("nft", "add", "table", "ip", "foreign"),
         (
-            "nft", "add", "chain", "ip", "foreign", "INPUT",
-            "{", "type", "filter", "hook", "input",
-            "priority", "-100", ";", "}",
+            "nft",
+            "add",
+            "chain",
+            "ip",
+            "foreign",
+            "INPUT",
+            "{",
+            "type",
+            "filter",
+            "hook",
+            "input",
+            "priority",
+            "-100",
+            ";",
+            "}",
         ),
         (
-            "nft", "add", "rule", "ip", "foreign", "INPUT",
-            "tcp", "dport", "12345", "accept",
+            "nft",
+            "add",
+            "rule",
+            "ip",
+            "foreign",
+            "INPUT",
+            "tcp",
+            "dport",
+            "12345",
+            "accept",
         ),
     ):
         planted = _sh(*cmd)
@@ -111,8 +131,14 @@ def main() -> int:
 
     # Step 1: render the save file without touching the kernel.
     script = _sh(
-        "python3", "-m", "pyferm", "--nft", "--test", "--noexec",
-        "--lines", "basic.ferm",
+        "python3",
+        "-m",
+        "pyferm",
+        "--nft",
+        "--test",
+        "--noexec",
+        "--lines",
+        "basic.ferm",
     )
     if script.returncode != 0:
         print(f"render failed: {script.stderr}", file=sys.stderr)
