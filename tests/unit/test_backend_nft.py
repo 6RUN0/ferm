@@ -28,3 +28,18 @@ def test_model_constructors_hold_fields() -> None:
 
     rule = NftRule(statements=[], comment=None)
     assert rule.statements == []
+
+
+from pyferm.backend.nft import (
+    NftMatch,
+    NftStatement,
+    NftVerdict,
+)
+
+
+def test_statement_to_text_dispatches_by_type() -> None:
+    assert NftMatch("ip saddr 10.0.0.1").to_text() == "ip saddr 10.0.0.1"
+    assert NftVerdict("accept").to_text() == "accept"
+    # A statement is an abstract base; subclasses own to_text.
+    assert issubclass(NftMatch, NftStatement)
+    assert issubclass(NftVerdict, NftStatement)
