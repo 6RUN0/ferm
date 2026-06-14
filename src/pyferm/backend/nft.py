@@ -14,6 +14,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pyferm.backend.base import (
+    Backend,
+    ExecuteCommand,
+    LineEmitter,
+    Rendered,
+    RestoreDomain,
+    SaveReader,
+)
 from pyferm.errors import FermError
 from pyferm.rules import (
     RenderedOption,
@@ -24,7 +32,10 @@ from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Multi, Negated, Params, PreNegated, Value
 
 if TYPE_CHECKING:
-    from pyferm.domains import TableInfo
+    from collections.abc import Iterable
+
+    from pyferm.config import Options
+    from pyferm.domains import DomainInfo, TableInfo
 
 #: nft comment byte limit (design §3); over -> a plain ferm error.
 NFT_COMMENT_MAX: int = 128
@@ -620,3 +631,92 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
             )
         )
     return NftRule(statements=statements, comment=comment)
+
+
+class NftBackend(Backend):
+    """The native nftables backend (Phase 2, all families via ``nft -f``)."""
+
+    def tool_names(self, domain: str) -> dict[str, str]:
+        """Return the single family-independent ``nft`` binary (decision 2)."""
+        nft_family(domain)  # validates the family early
+        return {"nft": "nft"}
+
+    def render(
+        self, domain: str, domain_info: DomainInfo, options: Options
+    ) -> Rendered:
+        """
+        Build the atomic ``nft -f`` script for one family (design §7).
+
+        nft is always save-shaped: no slow/eb command fallback, so
+        ``Rendered.commands`` stays empty.  All ferm tables merge into ONE
+        ``table <family> ferm`` (design §5); chain names disambiguated via
+        :func:`nft_chain_name` (decision 9) applied identically here and to
+        jump/goto targets in :func:`build_verdict`.  ``@preserve`` is a
+        plain error (design §8); a residual nft-name collision is a ferm
+        error, NOT silent rule loss.
+        """
+        table = NftTable(family=nft_family(domain), name=NFT_TABLE_NAME)
+        chains: list[NftBaseChain | NftRegularChain] = []
+        rules: dict[str, list[NftRule]] = {}
+        for tbl in sorted(domain_info.tables):
+            table_info = domain_info.tables[tbl]
+            if table_info.preserve_regexes:
+                raise FermError("@preserve not yet supported by nft backend")
+            chains.extend(build_chains(domain, tbl, table_info))
+            for original in sorted(table_info.chains):
+                nft_name = nft_chain_name(tbl, original)
+                if nft_name in rules:
+                    raise FermError(
+                        f"nft chain name collision '{nft_name}' in table ferm"
+                    )
+                rules[nft_name] = [
+                    translate_rule(domain, tbl, rule)
+                    for rule in table_info.chains[original].rules
+                ]
+        save = serialize_table(table, chains, rules, noflush=options.noflush)
+        return Rendered(save=save)
+
+    # Temporary stubs so the ABC is concrete NOW; real impls land in Task 14.
+    def commit(
+        self,
+        domain: str,
+        domain_info: DomainInfo,
+        rendered: Rendered,
+        options: Options,
+        *,
+        execute: ExecuteCommand,
+        emit_line: LineEmitter,
+        restore: RestoreDomain,
+    ) -> int | None:
+        """Apply a rendered ruleset (lifecycle impl lands in Task 14)."""
+        raise NotImplementedError
+
+    def rollback(
+        self,
+        domain: str,
+        domain_info: DomainInfo,
+        options: Options,
+        *,
+        execute: ExecuteCommand,
+        restore: RestoreDomain,
+    ) -> None:
+        """Restore the captured snapshot (lifecycle impl lands in Task 14)."""
+        raise NotImplementedError
+
+    def capture_previous(
+        self,
+        domain: str,
+        domain_info: DomainInfo,
+        options: Options,
+        *,
+        execute: ExecuteCommand,
+        read_save: SaveReader,
+    ) -> None:
+        """Snapshot the previous ruleset (lifecycle impl lands in Task 14)."""
+        raise NotImplementedError
+
+    def read_previous(
+        self, lines: Iterable[str], domain_info: DomainInfo
+    ) -> str:
+        """Parse a previous nft dump (lifecycle impl lands in Task 14)."""
+        raise NotImplementedError

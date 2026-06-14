@@ -498,3 +498,51 @@ def test_build_verdict_tcp_reset_reject() -> None:
         build_verdict("ip", "filter", "jump", "REJECT", comp).to_text()
         == "reject with tcp reset"
     )
+
+
+# --- Task 13: NftBackend.render --------------------------------------------
+
+import re  # noqa: E402
+
+from pyferm.backend.nft import NftBackend  # noqa: E402
+from pyferm.config import Options  # noqa: E402
+from pyferm.domains import DomainInfo  # noqa: E402
+
+
+def test_render_emits_save_text_for_one_family() -> None:
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    chain = table.chains.setdefault("INPUT", ChainInfo(policy="DROP"))
+    chain.rules.append(_rule(_target("ACCEPT")))
+    rendered = NftBackend().render("ip", info, Options(test=True))
+    assert rendered.commands == []
+    assert "add table ip ferm\n" in rendered.save
+    assert "flush table ip ferm\n" in rendered.save
+    assert (
+        "add chain ip ferm INPUT "
+        "{ type filter hook input priority 0; policy drop; }\n"
+    ) in rendered.save
+    assert "add rule ip ferm INPUT accept\n" in rendered.save
+
+
+def test_render_merges_tables_without_chain_collision() -> None:
+    info = DomainInfo()
+    f = info.tables.setdefault("filter", TableInfo())
+    f.chains.setdefault("INPUT", ChainInfo()).rules.append(
+        _rule(_target("ACCEPT"))
+    )
+    m = info.tables.setdefault("mangle", TableInfo())
+    m.chains.setdefault("INPUT", ChainInfo()).rules.append(
+        _rule(_target("DROP"))
+    )
+    save = NftBackend().render("ip", info, Options(test=True)).save
+    assert "add rule ip ferm INPUT accept\n" in save
+    assert "add rule ip ferm mangle_INPUT drop\n" in save
+
+
+def test_render_preserve_is_error() -> None:
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    table.preserve_regexes.append(re.compile("foo"))
+    with pytest.raises(FermError, match="@preserve not yet supported"):
+        NftBackend().render("ip", info, Options(test=True))
