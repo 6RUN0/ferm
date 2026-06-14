@@ -189,3 +189,56 @@ def test_unwrap_value_multi_negation_is_error() -> None:
 def test_first_scalar_extracts_from_multi() -> None:
     assert first_scalar(Multi(values=["1.2.3.4"])) == "1.2.3.4"
     assert first_scalar("5.6.7.8") == "5.6.7.8"
+
+
+# ---------------------------------------------------------------------------
+# Task 8: translate_match
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import translate_match  # noqa: E402
+from pyferm.rules import RenderedOption  # noqa: E402
+
+
+def _opt(name: str, value: object, kind: str = "option", module: object = None) -> RenderedOption:
+    return RenderedOption(name=name, value=value, kind=kind, module=module)  # type: ignore[arg-type]
+
+
+def test_translate_match_addresses_and_ifaces() -> None:
+    assert translate_match("ip", _opt("source", "10.0.0.1"), None) \
+        == "ip saddr 10.0.0.1"
+    assert translate_match("ip6", _opt("destination", "fe80::1"), None) \
+        == "ip6 daddr fe80::1"
+    assert translate_match("ip", _opt("in-interface", "eth0"), None) \
+        == 'iifname "eth0"'
+    assert translate_match("ip", _opt("out-interface", "eth1"), None) \
+        == 'oifname "eth1"'
+
+
+def test_translate_match_ports_use_rule_protocol() -> None:
+    assert translate_match("ip", _opt("dport", "22"), "tcp") == "tcp dport 22"
+    assert translate_match("ip", _opt("sport", "53"), "udp") == "udp sport 53"
+
+
+def test_translate_match_port_without_protocol_errors() -> None:
+    with pytest.raises(FermError, match="needs a tcp/udp protocol"):
+        translate_match("ip", _opt("dport", "22"), None)
+
+
+def test_translate_match_negation() -> None:
+    assert translate_match("ip", _opt("source", Negated("10.0.0.1")), None) \
+        == "ip saddr != 10.0.0.1"
+    assert translate_match("ip", _opt("dport", Negated("23")), "tcp") \
+        == "tcp dport != 23"
+
+
+def test_translate_match_state_and_limit() -> None:
+    assert translate_match(
+        "ip", _opt("state", "ESTABLISHED,RELATED", module="state"), None
+    ) == "ct state established,related"
+    assert translate_match(
+        "ip", _opt("limit", "3/second", module="limit"), None
+    ) == "limit rate 3/second"
+
+
+def test_translate_match_uncovered_is_error() -> None:
+    with pytest.raises(FermError, match="not yet supported"):
+        translate_match("ip", _opt("totally-unknown", "x"), None)

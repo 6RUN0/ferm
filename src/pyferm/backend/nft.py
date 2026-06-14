@@ -359,3 +359,55 @@ def first_scalar(value: Value) -> str:
     if isinstance(value, str):
         return value
     raise FermError("unsupported value shape for nft backend")
+
+
+# ---------------------------------------------------------------------------
+# Task 8: translate_match (decision 8)
+# ---------------------------------------------------------------------------
+
+#: canonical option name -> nft address keyword (decision 8).
+_ADDR_KEYWORD: dict[str, str] = {"source": "saddr", "destination": "daddr"}
+#: canonical option name -> nft interface keyword.
+_IFACE_KEYWORD: dict[str, str] = {
+    "in-interface": "iifname",
+    "out-interface": "oifname",
+}
+#: port option names; the nft keyword equals the ferm name.
+_PORT_KEYWORD: dict[str, str] = {"sport": "sport", "dport": "dport"}
+#: protocols that admit a port match (mirrors PORT_PROTOCOLS, modules.py).
+_PORT_PROTOCOLS: tuple[str, ...] = ("tcp", "udp", "udplite", "dccp", "sctp")
+
+
+def _op(neg: bool) -> str:
+    """The nft inequality prefix for a (possibly) negated match."""
+    return "!= " if neg else ""
+
+
+def translate_match(
+    domain: str, option: RenderedOption, protocol: str | None
+) -> str:
+    """Translate one match option to an nft expression (decision 8).
+
+    Keyed on the CANONICAL ``RenderedOption.name`` (``source``/
+    ``in-interface``/...), not the ferm alias.  ``protocol`` is the rule's
+    realized l4 protocol (from the preceding ``protocol`` option), needed
+    because a port match carries ``module=None``.  An uncovered match -> a
+    plain ferm error (design §3).
+    """
+    name = option.name
+    scalar, neg = unwrap_value(option.value)
+    if name in _ADDR_KEYWORD:
+        return f"{domain} {_ADDR_KEYWORD[name]} {_op(neg)}{scalar}"
+    if name in _IFACE_KEYWORD:
+        return f'{_IFACE_KEYWORD[name]} {_op(neg)}"{scalar}"'
+    if name in _PORT_KEYWORD:
+        if protocol not in _PORT_PROTOCOLS:
+            raise FermError(
+                f"option '{name}' needs a tcp/udp protocol for the nft backend"
+            )
+        return f"{protocol} {_PORT_KEYWORD[name]} {_op(neg)}{scalar}"
+    if name == "state":
+        return f"ct state {_op(neg)}{scalar.lower()}"
+    if name == "limit":
+        return f"limit rate {scalar}"
+    raise FermError(f"option '{name}' not yet supported by nft backend")
