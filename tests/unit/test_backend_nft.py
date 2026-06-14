@@ -86,3 +86,30 @@ def test_render_comment_rejects_over_limit() -> None:
     assert render_comment("two words") == 'comment "two words"'
     with pytest.raises(FermError, match="exceeds nft limit"):
         render_comment("x" * 129)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: nft_family + map_base_chain
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import map_base_chain, nft_family  # noqa: E402
+
+
+def test_nft_family_maps_1to1() -> None:
+    assert nft_family("ip") == "ip"
+    assert nft_family("ip6") == "ip6"
+    assert nft_family("arp") == "arp"
+    assert nft_family("eb") == "bridge"
+
+
+def test_map_base_chain_known_pairs() -> None:
+    spec = map_base_chain("ip", "filter", "INPUT")
+    assert spec == ("filter", "input", 0)
+    assert map_base_chain("ip", "nat", "POSTROUTING") == ("nat", "postrouting", 100)
+    assert map_base_chain("ip", "mangle", "OUTPUT") == ("route", "output", -150)
+
+
+def test_map_base_chain_unmappable_is_error() -> None:
+    with pytest.raises(FermError, match="not yet supported"):
+        map_base_chain("eb", "broute", "BROUTING")
+    with pytest.raises(FermError, match="not yet supported"):
+        map_base_chain("arp", "nat", "PREROUTING")
