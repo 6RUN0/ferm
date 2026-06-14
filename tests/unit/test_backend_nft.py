@@ -198,13 +198,44 @@ def test_unwrap_value_plain_and_negated() -> None:
 
 
 def test_unwrap_value_multi_negation_is_error() -> None:
-    with pytest.raises(FermError, match="cannot be negated"):
+    with pytest.raises(
+        FermError, match=r"^multi-value match cannot be negated in nft$"
+    ):
         unwrap_value(Negated(["22", "80"]))
+
+
+def test_unwrap_value_multi_cannot_be_single_match() -> None:
+    with pytest.raises(
+        FermError,
+        match=r"^multi-value cannot be expressed as a single nft match$",
+    ):
+        unwrap_value(Multi(values=["22", "80"]))
+
+
+def test_unwrap_value_unsupported_shape_is_error() -> None:
+    with pytest.raises(
+        FermError, match=r"^unsupported value shape for nft backend$"
+    ):
+        unwrap_value(None)
 
 
 def test_first_scalar_extracts_from_multi() -> None:
     assert first_scalar(Multi(values=["1.2.3.4"])) == "1.2.3.4"
     assert first_scalar("5.6.7.8") == "5.6.7.8"
+
+
+def test_first_scalar_bad_multi_is_error() -> None:
+    with pytest.raises(
+        FermError, match=r"^unsupported value shape for nft backend$"
+    ):
+        first_scalar(Multi(values=[None]))
+
+
+def test_first_scalar_unsupported_shape_is_error() -> None:
+    with pytest.raises(
+        FermError, match=r"^unsupported value shape for nft backend$"
+    ):
+        first_scalar(None)
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +394,26 @@ def test_build_verdict_nat_and_log() -> None:
 
 
 def test_build_verdict_uncovered_target_is_error() -> None:
-    with pytest.raises(FermError, match="not yet supported"):
+    with pytest.raises(
+        FermError, match=r"^SNAT target not yet supported by nft backend$"
+    ):
         build_verdict("ip", "nat", "jump", "SNAT", {})
+    with pytest.raises(
+        FermError, match=r"^DNAT target not yet supported by nft backend$"
+    ):
+        build_verdict("ip", "nat", "jump", "DNAT", {})
+
+
+def test_build_verdict_unsupported_reject_with_is_error() -> None:
+    comp = {
+        "reject-with": _opt("reject-with", "bogus-reject", module="REJECT")
+    }
+    with pytest.raises(
+        FermError,
+        match=r"^reject-with 'bogus-reject' not yet supported by nft "
+        r"backend$",
+    ):
+        build_verdict("ip", "filter", "jump", "REJECT", comp)
 
 
 def test_build_verdict_jump_to_builtin_is_error() -> None:
