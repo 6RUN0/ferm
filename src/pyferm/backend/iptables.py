@@ -34,6 +34,7 @@ from pyferm import __version__
 from pyferm.backend.base import (
     Backend,
     Command,
+    ExecuteCapture,
     ExecuteCommand,
     LineEmitter,
     Rendered,
@@ -391,7 +392,11 @@ class IptablesBackend(Backend):
     """The iptables/ip6tables/arptables/ebtables backend (Phase 1)."""
 
     def tool_names(self, domain: str) -> dict[str, str]:
-        """The x_tables tool set: ip/ip6 own save/restore, arp/eb only tables."""
+        """
+        Resolve the x_tables tool set for one family.
+
+        ip/ip6 own a save/restore pair; arp/eb expose only ``*tables``.
+        """
         names = {TOOL_TABLES: domain + TOOL_TABLES}
         if domain in ("ip", "ip6"):
             names[TOOL_SAVE] = domain + TOOL_SAVE
@@ -681,6 +686,7 @@ class IptablesBackend(Backend):
         *,
         execute: ExecuteCommand,
         read_save: SaveReader,
+        capture: ExecuteCapture,
     ) -> None:
         """
         Capture the previous x_tables state (Perl ``:946-952,963-970``).
@@ -695,6 +701,7 @@ class IptablesBackend(Backend):
         table with ``--atomic-save`` (also under ``--test``: the golden
         eb runs normalize the tempfile names).
         """
+        del capture  # x_tables snapshots via *-save, not stdout capture
         if options.test:
             mock = options.mock_previous.get(domain)
             if mock is not None:

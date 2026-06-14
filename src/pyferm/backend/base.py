@@ -52,6 +52,12 @@ RestoreDomain = Callable[["DomainInfo", str], None]
 #: Runs a ``*-save`` tool path and returns its output, or ``None`` if it
 #: could not be run (the live branch of ``:951-952``).
 SaveReader = Callable[[str], "str | None"]
+#: Runs a command WITH ARGS and returns its stdout, or ``None`` if it
+#: could not be run (or ``--noexec``).  Unlike :data:`ExecuteCommand`
+#: (which returns only an exit status), this captures output: the nft
+#: backend uses it to snapshot ``nft list table <family> ferm`` for
+#: rollback (decision 10); the x_tables backend ignores it.
+ExecuteCapture = Callable[[str], "str | None"]
 
 
 @dataclass
@@ -119,7 +125,8 @@ class Backend(ABC):
 
     @abstractmethod
     def tool_names(self, domain: str) -> dict[str, str]:
-        """Map tool keys to the names ``find_tool`` should resolve.
+        """
+        Map tool keys to the names ``find_tool`` should resolve.
 
         Lets the wiring (``initialize_domain``) resolve the right tools
         per backend without hardcoding x_tables names: iptables returns
@@ -168,6 +175,7 @@ class Backend(ABC):
         *,
         execute: ExecuteCommand,
         read_save: SaveReader,
+        capture: ExecuteCapture,
     ) -> None:
         """
         Snapshot the family's previous state for rollback/``@preserve``.

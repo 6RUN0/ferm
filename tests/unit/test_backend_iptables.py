@@ -736,6 +736,7 @@ def test_capture_previous_reads_mock_previous(tmp_path: Path) -> None:
         options,
         execute=_fail_execute,
         read_save=_fail_read_save,
+        capture=lambda _c: None,
     )
 
     assert info.previous == "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
@@ -754,6 +755,7 @@ def test_capture_previous_mock_keeps_high_bytes(tmp_path: Path) -> None:
         options,
         execute=_fail_execute,
         read_save=_fail_read_save,
+        capture=lambda _c: None,
     )
 
     assert info.previous is not None
@@ -771,6 +773,7 @@ def test_capture_previous_missing_mock_is_ferm_error() -> None:
             options,
             execute=_fail_execute,
             read_save=_fail_read_save,
+            capture=lambda _c: None,
         )
 
 
@@ -785,7 +788,8 @@ def test_capture_previous_live_reads_save_tool() -> None:
         tools={"tables": "iptables", "tables-save": "iptables-save"}
     )
     IptablesBackend().capture_previous(
-        "ip", info, Options(), execute=_fail_execute, read_save=read_save
+        "ip", info, Options(), execute=_fail_execute, read_save=read_save,
+        capture=lambda _c: None,
     )
 
     assert seen == ["iptables-save"]
@@ -803,6 +807,7 @@ def test_capture_previous_live_unreadable_tool_leaves_previous_unset() -> None:
         Options(),
         execute=_fail_execute,
         read_save=lambda _tool: None,
+        capture=lambda _c: None,
     )
     assert info.previous is None
 
@@ -823,6 +828,7 @@ def test_capture_previous_eb_snapshots_each_table_in_order() -> None:
         Options(test=True),
         execute=execute,
         read_save=_fail_read_save,
+        capture=lambda _c: None,
     )
     try:
         assert list(info.ebt_previous) == list(EB_TABLES)
@@ -844,7 +850,8 @@ def test_capture_previous_live_without_save_tool_skips_to_eb() -> None:
     info = DomainInfo(tools={"tables": "ebtables"})
     # live eb has no *-save tool: no read, straight to the atomic snapshot
     IptablesBackend().capture_previous(
-        "eb", info, Options(), execute=execute, read_save=_fail_read_save
+        "eb", info, Options(), execute=execute, read_save=_fail_read_save,
+        capture=lambda _c: None,
     )
     try:
         assert info.previous is None

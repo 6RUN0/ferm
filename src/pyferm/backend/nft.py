@@ -10,19 +10,21 @@ nft-expression model and serializes it (``to_text``) into one atomic
 from __future__ import annotations
 
 import re
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pyferm.backend.base import (
     Backend,
+    ExecuteCapture,
     ExecuteCommand,
     LineEmitter,
     Rendered,
     RestoreDomain,
     SaveReader,
 )
-from pyferm.errors import FermError
+from pyferm.errors import FermError, internal_error
 from pyferm.rules import (
     RenderedOption,
     RenderedRule,
@@ -41,6 +43,8 @@ if TYPE_CHECKING:
 NFT_COMMENT_MAX: int = 128
 #: ferm's own table name in every family (design §5).
 NFT_TABLE_NAME: str = "ferm"
+#: ``DomainInfo.tools`` key for the single nft binary (decision 2).
+TOOL_NFT: str = "nft"
 
 #: A bare nft token needs no quoting.
 _NFT_BARE_RE = re.compile(r"[-_a-zA-Z0-9./:]+\Z")
@@ -676,7 +680,6 @@ class NftBackend(Backend):
         save = serialize_table(table, chains, rules, noflush=options.noflush)
         return Rendered(save=save)
 
-    # Temporary stubs so the ABC is concrete NOW; real impls land in Task 14.
     def commit(
         self,
         domain: str,
@@ -688,8 +691,61 @@ class NftBackend(Backend):
         emit_line: LineEmitter,
         restore: RestoreDomain,
     ) -> int | None:
-        """Apply a rendered ruleset (lifecycle impl lands in Task 14)."""
-        raise NotImplementedError
+        """
+        Emit the save under --lines and pipe it to ``nft -f -`` (design §7).
+
+        nft is always save-shaped, so the slow ``execute`` seam is unused.
+        Under ``--shell`` the save is wrapped in a ``<<EOT`` heredoc; under
+        ``--noexec`` nothing is applied.  A :class:`FermError` from the
+        applier maps to a non-zero status, as the iptables backend does.
+        """
+        del domain, execute  # nft is always save-shaped; no slow commands
+        save = rendered.save
+        if save is None:
+            raise internal_error()
+        if options.lines:
+            tool = domain_info.tools[TOOL_NFT]
+            if options.shell:
+                emit_line(f"{tool} -f - <<EOT\n")
+            emit_line(save)
+            if options.shell:
+                emit_line("EOT\n")
+        if options.noexec:
+            return None
+        try:
+            restore(domain_info, save)
+        except FermError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        return None
+
+    def capture_previous(
+        self,
+        domain: str,
+        domain_info: DomainInfo,
+        options: Options,
+        *,
+        execute: ExecuteCommand,
+        read_save: SaveReader,
+        capture: ExecuteCapture,
+    ) -> None:
+        """
+        Snapshot ONLY ferm's own table for rollback (design §6/§7).
+
+        Unlike x_tables, nft snapshots a single table via ``capture``
+        (``nft list table <family> ferm``), not the whole ``*-save`` dump;
+        ``read_save``/``execute`` are unused.  A first run (no ferm table
+        yet) leaves ``previous`` ``None``.
+        """
+        del read_save, execute
+        family = nft_family(domain)
+        if options.test:
+            domain_info.previous = options.mock_previous.get(domain) or None
+            return
+        snapshot = capture(
+            f"{domain_info.tools[TOOL_NFT]} list table {family} ferm"
+        )
+        domain_info.previous = snapshot or None
 
     def rollback(
         self,
@@ -700,23 +756,27 @@ class NftBackend(Backend):
         execute: ExecuteCommand,
         restore: RestoreDomain,
     ) -> None:
-        """Restore the captured snapshot (lifecycle impl lands in Task 14)."""
-        raise NotImplementedError
+        """
+        Restore ferm's own table, or delete it on a first-run snapshot.
 
-    def capture_previous(
-        self,
-        domain: str,
-        domain_info: DomainInfo,
-        options: Options,
-        *,
-        execute: ExecuteCommand,
-        read_save: SaveReader,
-    ) -> None:
-        """Snapshot the previous ruleset (lifecycle impl lands in Task 14)."""
-        raise NotImplementedError
+        Skips a family no rule enabled.  With a captured snapshot the table
+        is restored verbatim; without one (first run) the table is deleted,
+        since there was nothing to restore.
+        """
+        del options
+        if not domain_info.enabled:
+            return
+        family = nft_family(domain)
+        if domain_info.previous:
+            restore(domain_info, domain_info.previous)
+        else:
+            execute(
+                f"{domain_info.tools[TOOL_NFT]} delete table {family} ferm"
+            )
 
     def read_previous(
         self, lines: Iterable[str], domain_info: DomainInfo
     ) -> str:
-        """Parse a previous nft dump (lifecycle impl lands in Task 14)."""
-        raise NotImplementedError
+        """Return the raw nft snapshot verbatim (design §7)."""
+        del domain_info
+        return "".join(lines)

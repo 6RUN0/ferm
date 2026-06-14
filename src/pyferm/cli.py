@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
     from pyferm.backend.base import (
         Backend,
+        ExecuteCapture,
         ExecuteCommand,
         LineEmitter,
         RestoreDomain,
@@ -269,15 +270,19 @@ def _setup_streams(
 
 def _make_io(
     options: Options, lines_stream: TextIO
-) -> tuple[ExecuteCommand, LineEmitter, SaveReader, RestoreDomain]:
+) -> tuple[
+    ExecuteCommand, LineEmitter, SaveReader, RestoreDomain, ExecuteCapture
+]:
     """
-    Build the four injected I/O callables bound to ``options``.
+    Build the five injected I/O callables bound to ``options``.
 
-    Returns ``(execute, emit_line, read_save, restore)``.  ``execute`` is the
-    port of ``execute_command`` (``:2894``); ``emit_line`` is the ``print
-    LINES`` sink (raw, caller supplies newlines) writing to ``lines_stream``
-    from :func:`_setup_streams`; ``read_save`` runs a ``*-save`` tool and is
-    consumed by ``_run``'s ``capture_previous`` closure over
+    Returns ``(execute, emit_line, read_save, restore, capture)``.  ``execute``
+    is the port of ``execute_command`` (``:2894``); ``emit_line`` is the
+    ``print LINES`` sink (raw, caller supplies newlines) writing to
+    ``lines_stream`` from :func:`_setup_streams`; ``read_save`` runs a
+    ``*-save`` tool and ``capture`` runs a command capturing its stdout (the
+    nft backend's snapshot seam, decision 10) -- both consumed by ``_run``'s
+    ``capture_previous`` closure over
     :meth:`pyferm.backend.base.Backend.capture_previous`; ``restore`` adapts
     the backend's three-argument
     :func:`pyferm.backend.iptables.restore_domain` to the injected two-argument
@@ -336,7 +341,22 @@ def _make_io(
     def restore(domain_info: DomainInfo, save: str) -> None:
         restore_domain(domain_info, save, options)
 
-    return execute, emit_line, read_save, restore
+    def capture(command: str) -> str | None:
+        # Like execute(), but returns stdout for snapshotting (decision 10).
+        if options.noexec:
+            return None
+        try:
+            completed = subprocess.run(
+                command.split(),
+                capture_output=True,
+                encoding=BYTE_ENCODING,
+                check=False,
+            )
+        except OSError:
+            return None
+        return completed.stdout or None
+
+    return execute, emit_line, read_save, restore, capture
 
 
 def _run_hook(command: str, options: Options, emit_line: LineEmitter) -> None:
@@ -479,7 +499,9 @@ def _run(
 ) -> int:
     """Parse and apply the configuration with the streams already set up."""
     filename = args.files[0]
-    execute, emit_line, read_save, restore = _make_io(options, lines_stream)
+    execute, emit_line, read_save, restore, capture = _make_io(
+        options, lines_stream
+    )
 
     # Scope: the global frame (Perl ``:618``) holds --def vars; the script
     # frame (Perl ``:751``) sits above it and carries the auto-variables.
@@ -524,6 +546,7 @@ def _run(
             options,
             execute=execute,
             read_save=read_save,
+            capture=capture,
         )
 
     parser = Parser(

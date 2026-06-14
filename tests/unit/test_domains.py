@@ -233,6 +233,6 @@ def test_initialize_domain_resolves_single_nft_binary() -> None:
         "ip",
         domains,
         Options(test=True),
-        resolve_tools=lambda domain: {"nft": "nft"},
+        resolve_tools=lambda _domain: {"nft": "nft"},
     )
     assert domains["ip"].tools == {"nft": "nft"}

@@ -213,7 +213,9 @@ def test_read_save_keeps_output_on_nonzero_exit(tmp_path: Path) -> None:
     tool = tmp_path / "save-tool"
     tool.write_text("#!/bin/sh\necho '*filter'\nexit 1\n", encoding="utf-8")
     tool.chmod(0o755)
-    _execute, _emit, read_save, _restore = _make_io(Options(), sys.stdout)
+    _execute, _emit, read_save, _restore, _capture = _make_io(
+        Options(), sys.stdout
+    )
     assert read_save(str(tool)) == "*filter\n"
 
 
@@ -222,7 +224,9 @@ def test_read_save_unexecutable_tool_reads_empty() -> None:
     # reads EOF, so {previous} is set to the empty string, not unset.
     from pyferm.cli import _make_io
 
-    _execute, _emit, read_save, _restore = _make_io(Options(), sys.stdout)
+    _execute, _emit, read_save, _restore, _capture = _make_io(
+        Options(), sys.stdout
+    )
     assert read_save("/nonexistent/ferm-no-such-tool") == ""
 
 
@@ -234,7 +238,9 @@ def test_execute_exec_failure_is_fatal(
     # (:2903-2905) -- no status bookkeeping, no rollback.
     from pyferm.cli import _make_io
 
-    execute, _emit, _read, _restore = _make_io(Options(), sys.stdout)
+    execute, _emit, _read, _restore, _capture = _make_io(
+        Options(), sys.stdout
+    )
     with pytest.raises(SystemExit) as excinfo:
         execute("/nonexistent/ferm-no-such-tool -A INPUT")
     assert excinfo.value.code == 1
@@ -244,7 +250,9 @@ def test_execute_exec_failure_is_fatal(
 def test_execute_returns_status_of_plain_command() -> None:
     from pyferm.cli import _make_io
 
-    execute, _emit, _read, _restore = _make_io(Options(), sys.stdout)
+    execute, _emit, _read, _restore, _capture = _make_io(
+        Options(), sys.stdout
+    )
     assert execute("true") is None
     assert execute("false") == 1
 
@@ -349,6 +357,7 @@ def test_rollback_all_restores_enabled_domains_and_exits(
             *,
             execute: ExecuteCommand,
             read_save: object,
+            capture: object,
         ) -> None:
             raise NotImplementedError
 

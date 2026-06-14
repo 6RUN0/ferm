@@ -546,3 +546,127 @@ def test_render_preserve_is_error() -> None:
     table.preserve_regexes.append(re.compile("foo"))
     with pytest.raises(FermError, match="@preserve not yet supported"):
         NftBackend().render("ip", info, Options(test=True))
+
+
+# --- Task 14: commit / capture_previous / rollback -------------------------
+
+from pyferm.backend.base import Rendered  # noqa: E402
+
+
+def test_commit_emits_lines_and_pipes_save() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    emitted: list[str] = []
+    applied: list[str] = []
+    rendered = Rendered(save="add table ip ferm\n")
+    NftBackend().commit(
+        "ip",
+        info,
+        rendered,
+        Options(lines=True, noexec=False),
+        execute=lambda _c: None,
+        emit_line=emitted.append,
+        restore=lambda _di, save: applied.append(save),
+    )
+    assert "add table ip ferm\n" in emitted
+    assert applied == ["add table ip ferm\n"]
+
+
+def test_commit_noexec_does_not_apply() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    applied: list[str] = []
+    NftBackend().commit(
+        "ip",
+        info,
+        Rendered(save="x\n"),
+        Options(noexec=True),
+        execute=lambda _c: None,
+        emit_line=lambda _t: None,
+        restore=lambda _di, save: applied.append(save),
+    )
+    assert applied == []
+
+
+def test_commit_shell_wraps_heredoc() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    emitted: list[str] = []
+    NftBackend().commit(
+        "ip",
+        info,
+        Rendered(save="x\n"),
+        Options(shell=True, lines=True, noexec=True),
+        execute=lambda _c: None,
+        emit_line=emitted.append,
+        restore=lambda _di, _save: None,
+    )
+    assert emitted[0] == "nft -f - <<EOT\n"
+    assert emitted[-1] == "EOT\n"
+
+
+def test_capture_previous_stores_own_table_snapshot() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    calls: list[str] = []
+
+    def cap(cmd: str) -> str:
+        calls.append(cmd)
+        return "table ip ferm {\n}\n"
+
+    NftBackend().capture_previous(
+        "ip",
+        info,
+        Options(),
+        execute=lambda _c: None,
+        read_save=lambda _tool: None,
+        capture=cap,
+    )
+    assert calls == ["nft list table ip ferm"]
+    assert info.previous == "table ip ferm {\n}\n"
+
+
+def test_capture_previous_first_run_is_no_table() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    NftBackend().capture_previous(
+        "ip",
+        info,
+        Options(),
+        execute=lambda _c: None,
+        read_save=lambda _tool: None,
+        capture=lambda _cmd: None,
+    )
+    assert info.previous is None
+
+
+def test_rollback_restores_captured_snapshot() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    info.enabled = True
+    info.previous = "table ip ferm {\n}\n"
+    applied: list[str] = []
+    NftBackend().rollback(
+        "ip",
+        info,
+        Options(),
+        execute=lambda _c: None,
+        restore=lambda _di, save: applied.append(save),
+    )
+    assert applied == ["table ip ferm {\n}\n"]
+
+
+def test_rollback_first_run_deletes_table() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    info.enabled = True
+    info.previous = None
+    calls: list[str] = []
+    NftBackend().rollback(
+        "ip",
+        info,
+        Options(),
+        execute=calls.append,
+        restore=lambda _di, _save: None,
+    )
+    assert calls == ["nft delete table ip ferm"]
