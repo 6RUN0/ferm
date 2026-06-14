@@ -48,7 +48,7 @@ def test_statement_to_text_dispatches_by_type() -> None:
 
 def test_serialize_table_emits_atomic_transaction() -> None:
     table = NftTable(family="ip", name="ferm")
-    chains = [
+    chains: list[NftBaseChain | NftRegularChain] = [
         NftBaseChain("INPUT", "filter", "input", 0, policy="drop"),
         NftRegularChain("mychain"),
     ]
@@ -75,7 +75,7 @@ def test_serialize_table_emits_atomic_transaction() -> None:
 
 def test_serialize_table_noflush_omits_flush() -> None:
     table = NftTable(family="ip", name="ferm")
-    chains = [NftRegularChain("c")]
+    chains: list[NftBaseChain | NftRegularChain] = [NftRegularChain("c")]
     out = serialize_table(table, chains, {"c": []}, noflush=True)
     assert "flush table" not in out
     assert out.startswith("add table ip ferm\nadd chain ip ferm c\n")
@@ -162,6 +162,7 @@ def test_nft_chain_name_disambiguates_non_filter() -> None:
     # mangle/OUTPUT -> route hook (the most error-prone mapping).
     table_out = TableInfo(chains={"OUTPUT": ChainInfo()})
     chain_out = build_chains("ip", "mangle", table_out)[0]
+    assert isinstance(chain_out, NftBaseChain)
     assert chain_out.type == "route"
 
     assert chain.name == "mangle_INPUT"
@@ -196,17 +197,16 @@ def test_first_scalar_extracts_from_multi() -> None:
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_match  # noqa: E402
 from pyferm.rules import RenderedOption  # noqa: E402
+from pyferm.values import Value  # noqa: E402
 
 
 def _opt(
     name: str,
-    value: object,
+    value: Value,
     kind: str = "option",
-    module: object = None,
+    module: str | None = None,
 ) -> RenderedOption:
-    return RenderedOption(  # type: ignore[arg-type]
-        name=name, value=value, kind=kind, module=module
-    )
+    return RenderedOption(name=name, value=value, kind=kind, module=module)
 
 
 def test_translate_match_addresses_and_ifaces() -> None:
@@ -516,13 +516,15 @@ def test_render_emits_save_text_for_one_family() -> None:
     chain.rules.append(_rule(_target("ACCEPT")))
     rendered = NftBackend().render("ip", info, Options(test=True))
     assert rendered.commands == []
-    assert "add table ip ferm\n" in rendered.save
-    assert "flush table ip ferm\n" in rendered.save
+    save = rendered.save
+    assert save is not None
+    assert "add table ip ferm\n" in save
+    assert "flush table ip ferm\n" in save
     assert (
         "add chain ip ferm INPUT "
         "{ type filter hook input priority 0; policy drop; }\n"
-    ) in rendered.save
-    assert "add rule ip ferm INPUT accept\n" in rendered.save
+    ) in save
+    assert "add rule ip ferm INPUT accept\n" in save
 
 
 def test_render_merges_tables_without_chain_collision() -> None:
@@ -536,6 +538,7 @@ def test_render_merges_tables_without_chain_collision() -> None:
         _rule(_target("DROP"))
     )
     save = NftBackend().render("ip", info, Options(test=True)).save
+    assert save is not None
     assert "add rule ip ferm INPUT accept\n" in save
     assert "add rule ip ferm mangle_INPUT drop\n" in save
 
