@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pyferm.errors import FermError
-from pyferm.rules import is_netfilter_builtin_chain
+from pyferm.rules import RenderedOption, RenderedRule, is_netfilter_builtin_chain
 from pyferm.streams import BYTE_ENCODING
+from pyferm.values import Multi, Negated, Params, PreNegated, Value
 
 if TYPE_CHECKING:
     from pyferm.domains import TableInfo
@@ -313,3 +314,48 @@ def build_chains(
         else:
             chains.append(NftRegularChain(nft_name))
     return chains
+
+
+# ---------------------------------------------------------------------------
+# Task 7: value unwrapping helpers (decision 8)
+# ---------------------------------------------------------------------------
+
+
+def unwrap_value(value: Value) -> tuple[str, bool]:
+    """Return ``(scalar, negated)`` for a simple match value (decision 8).
+
+    A ``Negated``/``PreNegated`` tag with a >1-element list payload has no
+    infix nft equivalent (cf. the silent tail-drop in
+    ``iptables.py:148-154``) -> a ferm error, never a silent drop.
+    """
+    negated = False
+    if isinstance(value, (Negated, PreNegated)):
+        inner = value.value
+        if isinstance(inner, list):
+            if len(inner) > 1:
+                raise FermError("multi-value match cannot be negated in nft")
+            value = inner[0] if inner else ""
+        else:
+            value = inner
+        negated = True
+    if isinstance(value, (Params, Multi)):
+        raise FermError("multi-value match cannot be negated in nft")
+    if not isinstance(value, str):
+        raise FermError("unsupported value shape for nft backend")
+    return value, negated
+
+
+def first_scalar(value: Value) -> str:
+    """Extract the first scalar from a NAT-style value (decision 8).
+
+    NAT arguments arrive ``Multi``-wrapped (``to-source`` ->
+    ``Multi(['1.2.3.4'])``); a plain scalar passes through.  Used where a
+    single address/port is expected (SNAT/DNAT/redirect targets).
+    """
+    if isinstance(value, (Multi, Params)):
+        if not value.values or not isinstance(value.values[0], str):
+            raise FermError("unsupported value shape for nft backend")
+        return value.values[0]
+    if isinstance(value, str):
+        return value
+    raise FermError("unsupported value shape for nft backend")

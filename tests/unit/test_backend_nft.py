@@ -167,3 +167,25 @@ def test_nft_chain_name_disambiguates_non_filter() -> None:
     assert chain.name == "mangle_INPUT"
     assert isinstance(chain, NftBaseChain)
     assert (chain.hook, chain.priority) == ("input", -150)
+
+
+# ---------------------------------------------------------------------------
+# Task 7: unwrap_value + first_scalar
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import first_scalar, unwrap_value  # noqa: E402
+from pyferm.values import Multi, Negated  # noqa: E402
+
+
+def test_unwrap_value_plain_and_negated() -> None:
+    assert unwrap_value("22") == ("22", False)
+    assert unwrap_value(Negated("22")) == ("22", True)
+
+
+def test_unwrap_value_multi_negation_is_error() -> None:
+    with pytest.raises(FermError, match="cannot be negated"):
+        unwrap_value(Negated(["22", "80"]))
+
+
+def test_first_scalar_extracts_from_multi() -> None:
+    assert first_scalar(Multi(values=["1.2.3.4"])) == "1.2.3.4"
+    assert first_scalar("5.6.7.8") == "5.6.7.8"
