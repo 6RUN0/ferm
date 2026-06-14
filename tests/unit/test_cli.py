@@ -559,3 +559,189 @@ def test_nft_with_nolegacy_is_noop(tmp_path: Path) -> None:
     )
     argv = ["--nft", "--nolegacy", "--test", "--noexec", "--lines", str(cfg)]
     assert main(argv) == 0
+
+
+# --- Task 20: nft cli applier and capture seams ----------------------------
+
+
+class _RunRecorder:
+    """A ``subprocess.run`` stand-in recording its args and faking a result."""
+
+    def __init__(
+        self,
+        *,
+        returncode: int = 0,
+        stdout: str = "",
+        raises: type[OSError] | None = None,
+    ) -> None:
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self._returncode = returncode
+        self._stdout = stdout
+        self._raises = raises
+
+    def __call__(
+        self, command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(((command,), kwargs))
+        if self._raises is not None:
+            raise self._raises("boom")
+        return subprocess.CompletedProcess(
+            command, self._returncode, stdout=self._stdout, stderr=""
+        )
+
+
+def _nft_domain_info() -> DomainInfo:
+    """A ``DomainInfo`` whose nft tool resolves to a fixed bare path."""
+    from pyferm.backend.nft import TOOL_NFT
+    from pyferm.domains import DomainInfo as RealDomainInfo
+
+    return RealDomainInfo(enabled=True, tools={TOOL_NFT: "nft"})
+
+
+def test_make_nft_restore_pipes_save_as_latin1_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The applier runs the resolved nft binary as `nft -f -`, feeding the
+    # rendered save as one-byte-per-char latin-1 on stdin (decision 1).
+    from pyferm.cli import _make_nft_restore
+
+    recorder = _RunRecorder(returncode=0)
+    monkeypatch.setattr(subprocess, "run", recorder)
+    restore = _make_nft_restore(Options(nft=True))
+    restore(_nft_domain_info(), "add table ip ferm\nh\xfc\n")
+    assert len(recorder.calls) == 1
+    (argv, *_rest), kwargs = recorder.calls[0]
+    assert argv == ["nft", "-f", "-"]
+    assert kwargs["input"] == b"add table ip ferm\nh\xfc\n"
+
+
+def test_make_nft_restore_oserror_raises_ferm_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unspawnable nft (OSError from subprocess.run) becomes a FermError,
+    # the rollback trigger -- the nft analogue of restore_domain.
+    from pyferm.cli import _make_nft_restore
+
+    monkeypatch.setattr(
+        subprocess, "run", _RunRecorder(raises=FileNotFoundError)
+    )
+    restore = _make_nft_restore(Options(nft=True))
+    with pytest.raises(FermError, match="Failed to run nft"):
+        restore(_nft_domain_info(), "add table ip ferm\n")
+
+
+def test_make_nft_restore_nonzero_exit_raises_ferm_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # nft exiting non-zero (a rejected ruleset) is also a rollback-triggering
+    # FermError, never a silent success.
+    from pyferm.cli import _make_nft_restore
+
+    monkeypatch.setattr(subprocess, "run", _RunRecorder(returncode=1))
+    restore = _make_nft_restore(Options(nft=True))
+    with pytest.raises(FermError, match="Failed to run nft"):
+        restore(_nft_domain_info(), "add table ip ferm\n")
+
+
+def test_restore_dispatch_routes_to_nft_applier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With --nft the restore closure routes to the nft applier: the only
+    # subprocess invocation is `nft -f -`, never an iptables-restore call.
+    from pyferm.cli import _make_io
+
+    recorder = _RunRecorder(returncode=0)
+    monkeypatch.setattr(subprocess, "run", recorder)
+    _execute, _emit, _read, restore, _capture = _make_io(
+        Options(nft=True), sys.stdout
+    )
+    restore(_nft_domain_info(), "add table ip ferm\n")
+    assert [call[0][0] for call in recorder.calls] == [["nft", "-f", "-"]]
+
+
+def test_restore_dispatch_default_skips_nft_applier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The default (iptables) restore routes to restore_domain, never the
+    # nft applier; we observe that restore_domain is the call target.
+    from pyferm import cli
+    from pyferm.cli import _make_io
+
+    calls: list[tuple[DomainInfo, str, Options]] = []
+
+    def fake_restore_domain(
+        domain_info: DomainInfo, save: str, options: Options
+    ) -> None:
+        calls.append((domain_info, save, options))
+
+    monkeypatch.setattr(cli, "restore_domain", fake_restore_domain)
+    nft_called = False
+
+    def fail_run(*_args: object, **_kwargs: object) -> object:
+        nonlocal nft_called
+        nft_called = True
+        raise AssertionError("nft applier must not run on the default path")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    options = Options()
+    _execute, _emit, _read, restore, _capture = _make_io(options, sys.stdout)
+    domain_info = _nft_domain_info()
+    restore(domain_info, "*filter\n")
+    assert calls == [(domain_info, "*filter\n", options)]
+    assert nft_called is False
+
+
+def test_capture_noexec_returns_none_without_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Under --noexec capture snapshots nothing and never spawns a child.
+    from pyferm.cli import _make_io
+
+    def fail_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("capture must not spawn under --noexec")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    _execute, _emit, _read, _restore, capture = _make_io(
+        Options(noexec=True), sys.stdout
+    )
+    assert capture("nft list ruleset") is None
+
+
+def test_capture_oserror_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unspawnable snapshot tool (OSError) yields no snapshot rather than
+    # propagating -- capture is best-effort.
+    from pyferm.cli import _make_io
+
+    monkeypatch.setattr(
+        subprocess, "run", _RunRecorder(raises=FileNotFoundError)
+    )
+    _execute, _emit, _read, _restore, capture = _make_io(
+        Options(), sys.stdout
+    )
+    assert capture("nft list ruleset") is None
+
+
+def test_capture_returns_stdout_or_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Non-empty stdout is the snapshot; empty stdout collapses to None via
+    # the `or None`, splitting the command on whitespace for the child.
+    from pyferm.cli import _make_io
+
+    recorder = _RunRecorder(returncode=0, stdout="X")
+    monkeypatch.setattr(subprocess, "run", recorder)
+    _execute, _emit, _read, _restore, capture = _make_io(
+        Options(), sys.stdout
+    )
+    assert capture("nft list ruleset") == "X"
+    assert recorder.calls[0][0][0] == ["nft", "list", "ruleset"]
+
+    monkeypatch.setattr(
+        subprocess, "run", _RunRecorder(returncode=0, stdout="")
+    )
+    _execute2, _emit2, _read2, _restore2, capture_empty = _make_io(
+        Options(), sys.stdout
+    )
+    assert capture_empty("nft list ruleset") is None
