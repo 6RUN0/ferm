@@ -51,7 +51,8 @@ class NftRegularChain:
 
 
 class NftStatement(ABC):
-    """One nft statement (match / verdict / stateful).
+    """
+    One nft statement (match / verdict / stateful).
 
     Serialization dispatches on the subclass via :meth:`to_text` rather
     than a string tag, mirroring the dataclass dispatch ``base.py`` uses
@@ -65,21 +66,31 @@ class NftStatement(ABC):
 
 @dataclass
 class NftMatch(NftStatement):
-    """A match expression already rendered to nft text (e.g. ``tcp dport 22``)."""
+    """
+    A match expression already rendered to nft text.
+
+    Example: ``tcp dport 22``.
+    """
 
     expr: str
 
     def to_text(self) -> str:
+        """Return the pre-rendered match expression verbatim."""
         return self.expr
 
 
 @dataclass
 class NftVerdict(NftStatement):
-    """A verdict/target statement (``accept``/``drop``/``jump X``/``snat to ...``)."""
+    """
+    A verdict/target statement.
+
+    Examples: ``accept``, ``drop``, ``jump X``, ``snat to ...``.
+    """
 
     expr: str
 
     def to_text(self) -> str:
+        """Return the pre-rendered verdict expression verbatim."""
         return self.expr
 
 
@@ -92,11 +103,12 @@ class NftRule:
 
 
 def nft_quote(text: str) -> str:
-    r"""Quote a string for an nft double-quoted token (design §4.1).
+    r"""
+    Quote a string for an nft double-quoted token (design §4.1).
 
     nft uses C-style strings: backslash and double-quote are escaped; a
-    bare word is returned unquoted.  Used for ``log prefix`` and
-    ``comment`` payloads, where escaping is now explicit (no JSON wire).
+    bare word is returned unquoted.  Used for ``log prefix`` payloads
+    where escaping is explicit (no JSON wire).
     """
     if _NFT_BARE_RE.match(text):
         return text
@@ -118,7 +130,8 @@ def _chain_header(chain: NftBaseChain | NftRegularChain) -> str:
 
 
 def _nft_quote_string(text: str) -> str:
-    """Always wrap *text* in nft double-quotes, escaping backslash and quote.
+    """
+    Wrap *text* in nft double-quotes, escaping backslash and quote.
 
     Unlike :func:`nft_quote`, this never returns a bare word -- used
     wherever nft syntax mandates a quoted string (``comment``,
@@ -129,7 +142,8 @@ def _nft_quote_string(text: str) -> str:
 
 
 def render_comment(comment: str) -> str:
-    """Render a validated ``comment "<text>"`` suffix (design §3).
+    """
+    Render a validated ``comment "<text>"`` suffix (design §3).
 
     Over :data:`NFT_COMMENT_MAX` bytes -> a ferm error, never truncation.
     """
@@ -147,7 +161,8 @@ def serialize_table(
     *,
     noflush: bool,
 ) -> str:
-    """Serialize one family's table as an atomic ``nft -f`` script (design §7).
+    """
+    Serialize one family's table as an atomic ``nft -f`` script (design §7).
 
     Emits ``add table`` (idempotent), then ``flush table`` unless
     ``noflush`` (the ``--noflush`` decision lives HERE, not in the
@@ -169,5 +184,7 @@ def serialize_table(
                 parts.append(render_comment(rule.comment))
             tail = " ".join(parts)
             sep = " " if tail else ""
-            lines.append(f"add rule {prefix} {chain.name}{sep}{tail}\n")
+            lines.append(
+                f"add rule {prefix} {chain.name}{sep}{tail}\n"
+            )
     return "".join(lines)

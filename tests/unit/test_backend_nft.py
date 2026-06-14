@@ -1,12 +1,20 @@
 # tests/unit/test_backend_nft.py
 from __future__ import annotations
 
+import pytest
+
 from pyferm.backend.nft import (
     NftBaseChain,
+    NftMatch,
     NftRegularChain,
     NftRule,
+    NftStatement,
     NftTable,
+    NftVerdict,
+    render_comment,
+    serialize_table,
 )
+from pyferm.errors import FermError
 
 
 def test_model_constructors_hold_fields() -> None:
@@ -30,22 +38,12 @@ def test_model_constructors_hold_fields() -> None:
     assert rule.statements == []
 
 
-from pyferm.backend.nft import (
-    NftMatch,
-    NftStatement,
-    NftVerdict,
-)
-
-
 def test_statement_to_text_dispatches_by_type() -> None:
     assert NftMatch("ip saddr 10.0.0.1").to_text() == "ip saddr 10.0.0.1"
     assert NftVerdict("accept").to_text() == "accept"
     # A statement is an abstract base; subclasses own to_text.
     assert issubclass(NftMatch, NftStatement)
     assert issubclass(NftVerdict, NftStatement)
-
-
-from pyferm.backend.nft import serialize_table
 
 
 def test_serialize_table_emits_atomic_transaction() -> None:
@@ -81,12 +79,6 @@ def test_serialize_table_noflush_omits_flush() -> None:
     out = serialize_table(table, chains, {"c": []}, noflush=True)
     assert "flush table" not in out
     assert out.startswith("add table ip ferm\nadd chain ip ferm c\n")
-
-
-import pytest
-
-from pyferm.backend.nft import render_comment
-from pyferm.errors import FermError
 
 
 def test_render_comment_rejects_over_limit() -> None:
