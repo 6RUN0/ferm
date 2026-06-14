@@ -24,6 +24,7 @@ Examples::
     uv run nox -s mutation           # mutmut over the unit suite (slow)
     uv run nox -s crashfuzz          # atheris crash fuzzing of the parsers
     uv run nox -s lockout            # containerized anti-lockout e2e (docker)
+    uv run nox -s nft_e2e            # containerized nft backend e2e (docker)
 """
 
 import os
@@ -306,6 +307,31 @@ def lockout(session: nox.Session) -> None:
         "tests/e2e",
         *session.posargs,
         env={"FERM_LOCKOUT_E2E": "1"},
+    )
+
+
+@nox.session
+def nft_e2e(session: nox.Session) -> None:
+    """
+    Containerized ``--nft`` backend round-trip e2e (needs docker).
+
+    Inside a throwaway container network namespace, renders a ferm
+    config with the native nftables backend, validates the save file
+    against netlink with ``nft -c``, applies it for real, and proves the
+    kernel holds the rules.  It also plants a foreign table beforehand
+    to assert the own-table coexistence invariant (ferm never
+    ``flush ruleset``) and witnesses the documented DROP-policy priority
+    shift.  Netfilter is a namespaced subsystem of the shared kernel, so
+    this is as real as a bare-host run.  Opt-in (needs the docker
+    daemon; the test skips itself when docker is absent) and
+    deliberately absent from ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_nft_e2e.py",
+        *session.posargs,
+        env={"FERM_NFT_E2E": "1"},
     )
 
 
