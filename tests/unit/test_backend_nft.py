@@ -242,3 +242,76 @@ def test_translate_match_state_and_limit() -> None:
 def test_translate_match_uncovered_is_error() -> None:
     with pytest.raises(FermError, match="not yet supported"):
         translate_match("ip", _opt("totally-unknown", "x"), None)
+
+
+# ---------------------------------------------------------------------------
+# Task 9: build_verdict
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import build_verdict  # noqa: E402
+
+
+def test_build_verdict_core_targets() -> None:
+    assert build_verdict("ip", "filter", "jump", "ACCEPT", {}).to_text() == "accept"
+    assert build_verdict("ip", "filter", "jump", "DROP", {}).to_text() == "drop"
+    assert build_verdict("ip", "filter", "jump", "RETURN", {}).to_text() == "return"
+    assert build_verdict("ip", "filter", "jump", "QUEUE", {}).to_text() == "queue"
+    assert build_verdict("ip", "filter", "jump", "MASQUERADE", {}).to_text() \
+        == "masquerade"
+
+
+def test_build_verdict_jump_goto_to_chain() -> None:
+    assert build_verdict("ip", "filter", "jump", "mychain", {}).to_text() \
+        == "jump mychain"
+    assert build_verdict("ip", "nat", "goto", "mychain", {}).to_text() \
+        == "goto nat_mychain"
+
+
+def test_build_verdict_reject_with_companion() -> None:
+    companions = {"reject-with": _opt("reject-with", "icmp-port-unreachable",
+                                      module="REJECT")}
+    assert build_verdict("ip", "filter", "jump", "REJECT", companions).to_text() \
+        == "reject with icmp type port-unreachable"
+    companions6 = {"reject-with": _opt("reject-with", "icmp6-port-unreachable",
+                                       module="REJECT")}
+    assert build_verdict("ip6", "filter", "jump", "REJECT", companions6).to_text() \
+        == "reject with icmpv6 type port-unreachable"
+    assert build_verdict("ip", "filter", "jump", "REJECT", {}).to_text() == "reject"
+
+
+def test_build_verdict_nat_and_log() -> None:
+    snat = {"to-source": _opt("to-source", Multi(values=["1.2.3.4"]),
+                              module="SNAT")}
+    assert build_verdict("ip", "nat", "jump", "SNAT", snat).to_text() \
+        == "snat to 1.2.3.4"
+    dnat = {"to-destination": _opt("to-destination", Multi(values=["10.0.0.5"]),
+                                   module="DNAT")}
+    assert build_verdict("ip", "nat", "jump", "DNAT", dnat).to_text() \
+        == "dnat to 10.0.0.5"
+    log = {"log-prefix": _opt("log-prefix", "DROP: ", module="LOG")}
+    assert build_verdict("ip", "filter", "jump", "LOG", log).to_text() \
+        == 'log prefix "DROP: "'
+    assert build_verdict("ip", "filter", "jump", "LOG", {}).to_text() == "log"
+
+
+def test_build_verdict_uncovered_target_is_error() -> None:
+    with pytest.raises(FermError, match="not yet supported"):
+        build_verdict("ip", "nat", "jump", "SNAT", {})
+
+
+def test_build_verdict_jump_to_builtin_is_error() -> None:
+    with pytest.raises(FermError, match="built-in chain 'INPUT'"):
+        build_verdict("ip", "filter", "jump", "INPUT", {})
+
+
+def test_build_verdict_masquerade_to_ports() -> None:
+    comp = {"to-ports": _opt("to-ports", Multi(values=["1024-2048"]),
+                             module="MASQUERADE")}
+    assert build_verdict("ip", "nat", "jump", "MASQUERADE", comp).to_text() \
+        == "masquerade to :1024-2048"
+
+
+def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
+    comp = {"reject-with": _opt("reject-with", "icmp-port-unreachable",
+                                module="REJECT")}
+    assert build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text() \
+        == "reject with icmpv6 type port-unreachable"

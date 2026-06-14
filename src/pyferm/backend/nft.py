@@ -411,3 +411,116 @@ def translate_match(
     if name == "limit":
         return f"limit rate {scalar}"
     raise FermError(f"option '{name}' not yet supported by nft backend")
+
+
+# ---------------------------------------------------------------------------
+# Task 9: build_verdict (decision 8)
+# ---------------------------------------------------------------------------
+
+#: target VALUE -> nft verdict (decision 8); QUEUE is core, REJECT is not.
+_VERDICT_TARGET: dict[str, str] = {
+    "ACCEPT": "accept",
+    "DROP": "drop",
+    "RETURN": "return",
+    "QUEUE": "queue",
+}
+#: iptables reject-with name -> nft reject spec, ip family.
+_REJECT_WITH: dict[str, str] = {
+    "icmp-port-unreachable": "reject with icmp type port-unreachable",
+    "icmp-net-unreachable": "reject with icmp type net-unreachable",
+    "icmp-host-unreachable": "reject with icmp type host-unreachable",
+    "icmp-admin-prohibited": "reject with icmp type admin-prohibited",
+    "tcp-reset": "reject with tcp reset",
+}
+#: ip6 reject-with spellings (icmpv6).
+_REJECT_WITH_IP6: dict[str, str] = {
+    "icmp6-port-unreachable": "reject with icmpv6 type port-unreachable",
+    "icmp6-no-route": "reject with icmpv6 type no-route",
+    "icmp6-adm-prohibited": "reject with icmpv6 type admin-prohibited",
+    "icmp6-addr-unreachable": "reject with icmpv6 type addr-unreachable",
+}
+#: ip4 reject-with names the oracle remaps to icmp6 under ip6
+#: (``iptables.py:82-89``); a user may write the ip4 spelling in an ip6
+#: domain, so normalize before the ip6 lookup or a valid config would
+#: falsely raise "not yet supported".
+_ICMP6_REJECT_ALIAS: dict[str, str] = {
+    "icmp-net-unreachable": "icmp6-no-route",
+    "icmp-host-unreachable": "icmp6-addr-unreachable",
+    "icmp-port-unreachable": "icmp6-port-unreachable",
+    "icmp-net-prohibited": "icmp6-adm-prohibited",
+    "icmp-host-prohibited": "icmp6-adm-prohibited",
+    "icmp-admin-prohibited": "icmp6-adm-prohibited",
+}
+
+
+def _reject_for(domain: str, scalar: str) -> str:
+    if domain == "ip6":
+        scalar = _ICMP6_REJECT_ALIAS.get(scalar, scalar)
+        spec = _REJECT_WITH_IP6.get(scalar)
+    else:
+        spec = _REJECT_WITH.get(scalar)
+    if spec is None:
+        raise FermError(
+            f"reject-with '{scalar}' not yet supported by nft backend"
+        )
+    return spec
+
+
+def build_verdict(
+    domain: str,
+    table: str,
+    target_name: str,
+    target_value: str,
+    companions: dict[str, RenderedOption],
+) -> NftVerdict:
+    """Build the verdict statement from the ``jump`` marker value (decision 8).
+
+    Dispatches on ``target_value`` (the discriminator, since every target
+    arrives as ``name='jump'``): core verdicts, NAT/LOG/REJECT (which take
+    a companion option), or a ``jump``/``goto`` to a chain in the SAME
+    iptables table (name disambiguated via :func:`nft_chain_name`).
+    """
+    if target_value in _VERDICT_TARGET:
+        return NftVerdict(_VERDICT_TARGET[target_value])
+    if target_value == "MASQUERADE":
+        comp = companions.get("to-ports")
+        if comp is not None:
+            return NftVerdict(f"masquerade to :{first_scalar(comp.value)}")
+        return NftVerdict("masquerade")
+    if target_value == "REDIRECT":
+        comp = companions.get("to-ports")
+        if comp is not None:
+            return NftVerdict(f"redirect to :{first_scalar(comp.value)}")
+        return NftVerdict("redirect")
+    if target_value == "LOG":
+        comp = companions.get("log-prefix")
+        if comp is not None:
+            scalar, _ = unwrap_value(comp.value)
+            return NftVerdict(f"log prefix {nft_quote(scalar)}")
+        return NftVerdict("log")
+    if target_value == "REJECT":
+        comp = companions.get("reject-with")
+        if comp is None:
+            return NftVerdict("reject")
+        scalar, _ = unwrap_value(comp.value)
+        return NftVerdict(_reject_for(domain, scalar))
+    if target_value == "SNAT":
+        comp = companions.get("to-source")
+        if comp is None:
+            raise FermError("SNAT target not yet supported by nft backend")
+        return NftVerdict(f"snat to {first_scalar(comp.value)}")
+    if target_value == "DNAT":
+        comp = companions.get("to-destination")
+        if comp is None:
+            raise FermError("DNAT target not yet supported by nft backend")
+        return NftVerdict(f"dnat to {first_scalar(comp.value)}")
+    # A jump/goto to a chain in the same iptables table.  nft forbids
+    # jumping to a base chain (one with a hook), so a jump/goto whose
+    # target is a built-in chain has NO nft equivalent -> a plain ferm
+    # error (design §3/§5 ontology gap), NOT a silently-broken script.
+    if is_netfilter_builtin_chain(table, target_value):
+        raise FermError(
+            f"jump/goto to built-in chain '{target_value}' not yet "
+            f"supported by nft backend"
+        )
+    return NftVerdict(f"{target_name} {nft_chain_name(table, target_value)}")
