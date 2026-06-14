@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from pyferm.errors import FermError
+from pyferm.streams import BYTE_ENCODING
 
 #: nft comment byte limit (design §3); over -> a plain ferm error.
 NFT_COMMENT_MAX: int = 128
@@ -21,7 +22,7 @@ NFT_COMMENT_MAX: int = 128
 NFT_TABLE_NAME: str = "ferm"
 
 #: A bare nft token needs no quoting.
-_NFT_BARE_RE = re.compile(r"[-_a-zA-Z0-9./:]+$")
+_NFT_BARE_RE = re.compile(r"[-_a-zA-Z0-9./:]+\Z")
 
 
 @dataclass
@@ -112,8 +113,7 @@ def nft_quote(text: str) -> str:
     """
     if _NFT_BARE_RE.match(text):
         return text
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return _nft_quote_string(text)
 
 
 def _chain_header(chain: NftBaseChain | NftRegularChain) -> str:
@@ -147,7 +147,7 @@ def render_comment(comment: str) -> str:
 
     Over :data:`NFT_COMMENT_MAX` bytes -> a ferm error, never truncation.
     """
-    if len(comment.encode("latin-1")) > NFT_COMMENT_MAX:
+    if len(comment.encode(BYTE_ENCODING)) > NFT_COMMENT_MAX:
         raise FermError(
             f"comment exceeds nft limit of {NFT_COMMENT_MAX} bytes"
         )
