@@ -1,0 +1,5 @@
+domain ip table filter chain INPUT {
+    policy DROP;
+    mod state state (ESTABLISHED RELATED) ACCEPT;
+    proto tcp dport 22 ACCEPT;
+}
