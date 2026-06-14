@@ -198,8 +198,15 @@ from pyferm.backend.nft import translate_match  # noqa: E402
 from pyferm.rules import RenderedOption  # noqa: E402
 
 
-def _opt(name: str, value: object, kind: str = "option", module: object = None) -> RenderedOption:
-    return RenderedOption(name=name, value=value, kind=kind, module=module)  # type: ignore[arg-type]
+def _opt(
+    name: str,
+    value: object,
+    kind: str = "option",
+    module: object = None,
+) -> RenderedOption:
+    return RenderedOption(  # type: ignore[arg-type]
+        name=name, value=value, kind=kind, module=module
+    )
 
 
 def test_translate_match_addresses_and_ifaces() -> None:
@@ -251,12 +258,14 @@ from pyferm.backend.nft import build_verdict  # noqa: E402
 
 
 def test_build_verdict_core_targets() -> None:
-    assert build_verdict("ip", "filter", "jump", "ACCEPT", {}).to_text() == "accept"
-    assert build_verdict("ip", "filter", "jump", "DROP", {}).to_text() == "drop"
-    assert build_verdict("ip", "filter", "jump", "RETURN", {}).to_text() == "return"
-    assert build_verdict("ip", "filter", "jump", "QUEUE", {}).to_text() == "queue"
-    assert build_verdict("ip", "filter", "jump", "MASQUERADE", {}).to_text() \
-        == "masquerade"
+    def _v(target: str) -> str:
+        return build_verdict("ip", "filter", "jump", target, {}).to_text()
+
+    assert _v("ACCEPT") == "accept"
+    assert _v("DROP") == "drop"
+    assert _v("RETURN") == "return"
+    assert _v("QUEUE") == "queue"
+    assert _v("MASQUERADE") == "masquerade"
 
 
 def test_build_verdict_jump_goto_to_chain() -> None:
@@ -267,29 +276,54 @@ def test_build_verdict_jump_goto_to_chain() -> None:
 
 
 def test_build_verdict_reject_with_companion() -> None:
-    companions = {"reject-with": _opt("reject-with", "icmp-port-unreachable",
-                                      module="REJECT")}
-    assert build_verdict("ip", "filter", "jump", "REJECT", companions).to_text() \
-        == "reject with icmp type port-unreachable"
-    companions6 = {"reject-with": _opt("reject-with", "icmp6-port-unreachable",
-                                       module="REJECT")}
-    assert build_verdict("ip6", "filter", "jump", "REJECT", companions6).to_text() \
-        == "reject with icmpv6 type port-unreachable"
-    assert build_verdict("ip", "filter", "jump", "REJECT", {}).to_text() == "reject"
+    companions = {
+        "reject-with": _opt(
+            "reject-with", "icmp-port-unreachable", module="REJECT"
+        )
+    }
+    result = build_verdict(
+        "ip", "filter", "jump", "REJECT", companions
+    ).to_text()
+    assert result == "reject with icmp type port-unreachable"
+    companions6 = {
+        "reject-with": _opt(
+            "reject-with", "icmp6-port-unreachable", module="REJECT"
+        )
+    }
+    result6 = build_verdict(
+        "ip6", "filter", "jump", "REJECT", companions6
+    ).to_text()
+    assert result6 == "reject with icmpv6 type port-unreachable"
+    assert (
+        build_verdict("ip", "filter", "jump", "REJECT", {}).to_text()
+        == "reject"
+    )
 
 
 def test_build_verdict_nat_and_log() -> None:
-    snat = {"to-source": _opt("to-source", Multi(values=["1.2.3.4"]),
-                              module="SNAT")}
-    assert build_verdict("ip", "nat", "jump", "SNAT", snat).to_text() \
+    snat = {
+        "to-source": _opt(
+            "to-source", Multi(values=["1.2.3.4"]), module="SNAT"
+        )
+    }
+    assert (
+        build_verdict("ip", "nat", "jump", "SNAT", snat).to_text()
         == "snat to 1.2.3.4"
-    dnat = {"to-destination": _opt("to-destination", Multi(values=["10.0.0.5"]),
-                                   module="DNAT")}
-    assert build_verdict("ip", "nat", "jump", "DNAT", dnat).to_text() \
+    )
+    dnat = {
+        "to-destination": _opt(
+            "to-destination", Multi(values=["10.0.0.5"]), module="DNAT"
+        )
+    }
+    assert (
+        build_verdict("ip", "nat", "jump", "DNAT", dnat).to_text()
         == "dnat to 10.0.0.5"
+    )
     log = {"log-prefix": _opt("log-prefix", "DROP: ", module="LOG")}
-    assert build_verdict("ip", "filter", "jump", "LOG", log).to_text() \
+    assert (
+        build_verdict("ip", "filter", "jump", "LOG", log).to_text()
         == 'log prefix "DROP: "'
+    )
     assert build_verdict("ip", "filter", "jump", "LOG", {}).to_text() == "log"
 
 
@@ -315,3 +349,93 @@ def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
                                 module="REJECT")}
     assert build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text() \
         == "reject with icmpv6 type port-unreachable"
+
+
+# ---------------------------------------------------------------------------
+# Task 10: translate_rule
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import translate_rule  # noqa: E402
+from pyferm.rules import RenderedRule  # noqa: E402
+
+
+def _rule(*options: RenderedOption) -> RenderedRule:
+    return RenderedRule(options=list(options), script=None)
+
+
+def _target(value: str) -> RenderedOption:
+    return _opt("jump", value, kind="target")
+
+
+def test_translate_rule_skips_match_module_marker() -> None:
+    nft = translate_rule("ip", "filter", _rule(
+        _opt("match", "state", kind="match_module"),
+        _opt("state", "ESTABLISHED,RELATED", module="state"),
+        _target("ACCEPT"),
+    ))
+    assert [s.to_text() for s in nft.statements] == [
+        "ct state established,related", "accept",
+    ]
+
+
+def test_translate_rule_port_suppresses_redundant_proto() -> None:
+    nft = translate_rule("ip", "filter", _rule(
+        _opt("protocol", "tcp", kind="proto"),
+        _opt("dport", "22"),
+        _opt("source", "10.0.0.1"),
+        _target("ACCEPT"),
+    ))
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp dport 22", "ip saddr 10.0.0.1", "accept",
+    ]
+
+
+def test_translate_rule_bare_proto_emits_l4proto() -> None:
+    nft = translate_rule("ip", "filter", _rule(
+        _opt("protocol", "icmp", kind="proto"),
+        _target("DROP"),
+    ))
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto icmp", "drop",
+    ]
+
+
+def test_translate_rule_ip6_icmp_normalized() -> None:
+    nft = translate_rule("ip6", "filter", _rule(
+        _opt("protocol", "icmp", kind="proto"),
+        _target("ACCEPT"),
+    ))
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto ipv6-icmp", "accept",
+    ]
+
+
+def test_translate_rule_reject_with_companion_order() -> None:
+    nft = translate_rule("ip", "filter", _rule(
+        _opt("protocol", "tcp", kind="proto"),
+        _opt("dport", "80"),
+        _target("REJECT"),
+        _opt("reject-with", "icmp-port-unreachable", module="REJECT"),
+    ))
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp dport 80", "reject with icmp type port-unreachable",
+    ]
+
+
+def test_translate_rule_comment_attaches() -> None:
+    nft = translate_rule("ip", "filter", _rule(
+        _target("ACCEPT"),
+        _opt("comment", "allow ssh", module="comment"),
+    ))
+    assert nft.comment == "allow ssh"
+    assert [s.to_text() for s in nft.statements] == ["accept"]
+
+
+def test_translate_rule_snat_multi_value() -> None:
+    nft = translate_rule("ip", "nat", _rule(
+        _opt("source", "10.0.0.0/8"),
+        _target("SNAT"),
+        _opt("to-source", Multi(values=["5.6.7.8"]), module="SNAT"),
+    ))
+    assert [s.to_text() for s in nft.statements] == [
+        "ip saddr 10.0.0.0/8", "snat to 5.6.7.8",
+    ]

@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pyferm.errors import FermError
-from pyferm.rules import RenderedOption, RenderedRule, is_netfilter_builtin_chain
+from pyferm.rules import (
+    RenderedOption,
+    RenderedRule,
+    is_netfilter_builtin_chain,
+)
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Multi, Negated, Params, PreNegated, Value
 
@@ -322,7 +326,8 @@ def build_chains(
 
 
 def unwrap_value(value: Value) -> tuple[str, bool]:
-    """Return ``(scalar, negated)`` for a simple match value (decision 8).
+    """
+    Return ``(scalar, negated)`` for a simple match value (decision 8).
 
     A ``Negated``/``PreNegated`` tag with a >1-element list payload has no
     infix nft equivalent (cf. the silent tail-drop in
@@ -346,7 +351,8 @@ def unwrap_value(value: Value) -> tuple[str, bool]:
 
 
 def first_scalar(value: Value) -> str:
-    """Extract the first scalar from a NAT-style value (decision 8).
+    """
+    Extract the first scalar from a NAT-style value (decision 8).
 
     NAT arguments arrive ``Multi``-wrapped (``to-source`` ->
     ``Multi(['1.2.3.4'])``); a plain scalar passes through.  Used where a
@@ -379,14 +385,15 @@ _PORT_PROTOCOLS: tuple[str, ...] = ("tcp", "udp", "udplite", "dccp", "sctp")
 
 
 def _op(neg: bool) -> str:
-    """The nft inequality prefix for a (possibly) negated match."""
+    """Return the nft inequality prefix for a (possibly) negated match."""
     return "!= " if neg else ""
 
 
 def translate_match(
     domain: str, option: RenderedOption, protocol: str | None
 ) -> str:
-    """Translate one match option to an nft expression (decision 8).
+    """
+    Translate one match option to an nft expression (decision 8).
 
     Keyed on the CANONICAL ``RenderedOption.name`` (``source``/
     ``in-interface``/...), not the ferm alias.  ``protocol`` is the rule's
@@ -473,7 +480,8 @@ def build_verdict(
     target_value: str,
     companions: dict[str, RenderedOption],
 ) -> NftVerdict:
-    """Build the verdict statement from the ``jump`` marker value (decision 8).
+    """
+    Build the verdict statement from the ``jump`` marker value (decision 8).
 
     Dispatches on ``target_value`` (the discriminator, since every target
     arrives as ``name='jump'``): core verdicts, NAT/LOG/REJECT (which take
@@ -524,3 +532,81 @@ def build_verdict(
             f"supported by nft backend"
         )
     return NftVerdict(f"{target_name} {nft_chain_name(table, target_value)}")
+
+
+# ---------------------------------------------------------------------------
+# Task 10: translate_rule — two-pass rule assembly (decision 8)
+# ---------------------------------------------------------------------------
+
+#: option names that are companion arguments of a target, consumed by
+#: :func:`build_verdict` rather than emitted as matches (decision 8).
+_TARGET_COMPANIONS: tuple[str, ...] = (
+    "reject-with", "to-source", "to-destination", "log-prefix", "to-ports",
+)
+
+
+def _nft_l4proto(domain: str, proto: str) -> str:
+    """
+    Normalize a protocol for nft ``meta l4proto`` (cf. ``iptables.py``).
+
+    Under ip6 the rendered protocol is still the raw ``icmp`` (the
+    ``icmp``->``icmpv6`` rewrite lives in the iptables backend's
+    ``format_option`` and is NOT in the rule); ``meta l4proto icmp`` in an
+    ip6 table matches proto 1, not 58, so it must become the ip6 ICMP
+    protocol name.  ``ipv6-icmp`` is the /etc/protocols name for proto 58.
+    """
+    if domain == "ip6" and proto in ("icmp", "icmpv6", "ipv6-icmp"):
+        return "ipv6-icmp"
+    return proto
+
+
+def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
+    """
+    Translate one RenderedRule to an NftRule (decision 8, two-pass).
+
+    Pass intent: ``match_module`` markers are dropped (``-m`` is implicit
+    in nft); ``comment`` becomes the rule comment; the ``protocol`` option
+    sets the port context and emits ``meta l4proto`` ONLY when no port
+    match subsumes it; ``kind == 'target'`` records the verdict discriminator
+    and companion options feed it.  Match statements keep their source order
+    (nft is order-sensitive); the verdict is appended last.
+    """
+    has_port = any(o.name in _PORT_KEYWORD for o in rule.options)
+    matches: list[NftStatement] = []
+    comment: str | None = None
+    protocol: str | None = None
+    target_name: str | None = None
+    target_value: str | None = None
+    companions: dict[str, RenderedOption] = {}
+
+    for option in rule.options:
+        name, kind = option.name, option.kind
+        if kind == "match_module":
+            continue  # -m marker is implicit in nft
+        if name == "comment":
+            comment, _ = unwrap_value(option.value)
+            continue
+        if kind == "proto":
+            scalar, neg = unwrap_value(option.value)
+            protocol = scalar
+            if not has_port:  # a port match already implies l4proto
+                l4 = _nft_l4proto(domain, scalar)
+                matches.append(NftMatch(f"meta l4proto {_op(neg)}{l4}"))
+            continue
+        if kind == "target":
+            target_value, _ = unwrap_value(option.value)
+            target_name = name
+            continue
+        if name in _TARGET_COMPANIONS:
+            companions[name] = option
+            continue
+        matches.append(NftMatch(translate_match(domain, option, protocol)))
+
+    statements: list[NftStatement] = list(matches)
+    if target_value is not None:
+        statements.append(
+            build_verdict(
+                domain, table, target_name or "jump", target_value, companions
+            )
+        )
+    return NftRule(statements=statements, comment=comment)
