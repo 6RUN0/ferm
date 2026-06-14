@@ -27,6 +27,7 @@ _CASES = sorted(
     for ferm in (_HERE / "nft").glob("*.ferm")
     if ferm.with_suffix(".nft").exists()
 )
+assert _CASES, f"No golden .ferm/.nft pairs found under {_HERE / 'nft'}"
 
 
 def _run_nft(ferm_file: Path) -> str:
