@@ -219,6 +219,14 @@ def test_unwrap_value_unsupported_shape_is_error() -> None:
         unwrap_value(None)
 
 
+def test_unwrap_value_negated_list_collapses_to_scalar() -> None:
+    # A negated single-element list still has an nft equivalent: the `> 1`
+    # guard does not fire and the value collapses to its sole scalar; an
+    # empty negated list collapses to the empty scalar.  Both keep negation.
+    assert unwrap_value(Negated(["22"])) == ("22", True)
+    assert unwrap_value(Negated([])) == ("", True)
+
+
 def test_first_scalar_extracts_from_multi() -> None:
     assert first_scalar(Multi(values=["1.2.3.4"])) == "1.2.3.4"
     assert first_scalar("5.6.7.8") == "5.6.7.8"
@@ -520,6 +528,22 @@ def test_build_verdict_ip6_portless_nat_renders_without_transport() -> None:
     )
 
 
+def test_build_verdict_ip6_portless_snat_renders_without_transport() -> None:
+    # Mirror of the DNAT ip6 case on the SNAT path: the host's own colons
+    # must not be read as a port, so the family-aware `_nat_has_port` check
+    # must see the real domain (a `None`-substituted domain would mistake the
+    # colons for a port and falsely demand a transport match).
+    plain = {
+        "to-source": _opt(
+            "to-source", Multi(values=["fe80::1"]), module="SNAT"
+        )
+    }
+    assert (
+        build_verdict("ip6", "nat", "jump", "SNAT", plain).to_text()
+        == "snat to fe80::1"
+    )
+
+
 def test_nat_has_port_is_family_aware() -> None:
     # IPv4: any `:` is the port separator.  IPv6: the host's own colons do
     # not count -- only a bracketed `]:port` does (decision C1).  The
@@ -650,6 +674,26 @@ def test_translate_rule_ip6_icmp_normalized() -> None:
         "meta l4proto ipv6-icmp",
         "accept",
     ]
+
+
+def test_nft_l4proto_ip6_icmp_spellings_normalize() -> None:
+    # All three ICMP spellings must normalize to the proto-58 name under ip6
+    # so `meta l4proto` matches ICMPv6, not proto 1.  Each spelling is
+    # asserted so dropping one from the membership tuple is caught.
+    from pyferm.backend.nft import _nft_l4proto
+
+    assert _nft_l4proto("ip6", "icmp") == "ipv6-icmp"
+    assert _nft_l4proto("ip6", "icmpv6") == "ipv6-icmp"
+    assert _nft_l4proto("ip6", "ipv6-icmp") == "ipv6-icmp"
+
+
+def test_nft_l4proto_ip4_and_other_protos_pass_through() -> None:
+    # The rewrite is ip6-only: ip4 keeps the raw `icmp`, and any non-ICMP
+    # protocol is returned verbatim regardless of family.
+    from pyferm.backend.nft import _nft_l4proto
+
+    assert _nft_l4proto("ip", "icmp") == "icmp"
+    assert _nft_l4proto("ip6", "tcp") == "tcp"
 
 
 def test_translate_rule_protocol_injection_is_error() -> None:
