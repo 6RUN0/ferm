@@ -26,11 +26,18 @@ are unchanged unless `--nft` is passed.
   `nft -f -`. It uses the nft *text* wire only and has no dependency on
   nft's JSON / `libjansson` build. `--nft` is strictly opt-in; the
   default remains the `iptables` backend.
+- **`--nft` validates the ruleset with `nft -c -f -` before applying.**
+  The applier runs nft's text `--check` (a netlink validation that
+  installs nothing) first and only pipes the real `nft -f -` once it
+  passes, surfacing nft's own diagnostic *before* any kernel change
+  instead of a generic apply failure.
 - **`--nft --interactive --shell` emits a working anti-lockout net.** The
   generated shell script snapshots ferm's table (`nft list table`) before
   applying, and after the confirmation timeout deletes the freshly-applied
   table and reloads the snapshot (`nft -f`) — mirroring the live rollback,
-  so an admin who never confirms is restored.
+  so an admin who never confirms is restored. The script also echoes the
+  rollback to stderr, so the otherwise-silenced restores (`2>/dev/null`)
+  no longer revert a timed-out admin without a word.
 
 ### Changed — Phase 2 (native nft backend)
 

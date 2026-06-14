@@ -971,6 +971,16 @@ def test_commit_shell_wraps_heredoc() -> None:
     assert emitted[-1] == "EOT\n"
 
 
+def test_shell_rollback_notice_announces_on_stderr() -> None:
+    # nft's --shell restores are silenced (`2>/dev/null`); the notice breaks
+    # that silence with an stderr echo after the restores (parity with the
+    # live "Firewall rules rolled back." message).
+    notice = NftBackend().shell_rollback_notice()
+    assert notice is not None
+    assert notice.endswith(">&2\n")
+    assert "rolled back" in notice
+
+
 def test_capture_previous_stores_own_table_snapshot() -> None:
     info = DomainInfo()
     info.tools = {"nft": "nft"}

@@ -984,3 +984,14 @@ class NftBackend(Backend):
                 f"{nft} -f ${tmp}\n"
             ),
         )
+
+    def shell_rollback_notice(self) -> str | None:
+        """
+        Announce the otherwise-silent ``--shell`` rollback on stderr.
+
+        The per-family :meth:`shell_snapshot` restores swallow their output
+        (``2>/dev/null``), so a timed-out admin would be reverted in silence.
+        This line (emitted once, after every family's restore) mirrors the live
+        path's "Firewall rules rolled back." message.
+        """
+        return "echo 'ferm: rolled back to the previous firewall rules.' >&2\n"

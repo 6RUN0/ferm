@@ -210,3 +210,17 @@ class Backend(ABC):
         a ``list table``/``delete``+``-f`` pair -- so each backend owns it
         (finding C2).  ``None`` when the family has no snapshot tooling.
         """
+
+    def shell_rollback_notice(self) -> str | None:
+        """
+        Return a shell line announcing the ``--interactive --shell`` rollback.
+
+        The live ``--interactive`` path prints "Firewall rules rolled back."
+        after reverting (Perl ``:3181``); the generated ``--shell`` script has
+        no such announcement, so a timed-out admin can be rolled back without a
+        word.  A backend whose shell restores are otherwise silent returns one
+        line (emitted after the per-family restores) echoing the rollback to
+        stderr.  The default ``None`` keeps the script byte-identical to the
+        oracle -- the x_tables backend matches Perl ``:803-814`` exactly.
+        """
+        return None

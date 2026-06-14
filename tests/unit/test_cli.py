@@ -14,7 +14,7 @@ from pyferm.config import Options
 from pyferm.errors import FermError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
     from pathlib import Path
 
     from pyferm.backend.base import (
@@ -159,6 +159,34 @@ def test_interactive_shell_nft_emits_anti_lockout_net(
     assert "nft list table ip ferm >$ip_tmp 2>/dev/null || true\n" in out
     assert "nft delete table ip ferm 2>/dev/null || true\n" in out
     assert "nft -f $ip_tmp\n" in out
+    # The nft restore commands above are silenced (`2>/dev/null`), so a
+    # timed-out admin would otherwise be rolled back without a word.  The
+    # generated script must announce the rollback on stderr after the
+    # restores -- parity with the live path's "Firewall rules rolled back."
+    assert (
+        out.index("ferm: rolled back to the previous firewall rules.")
+        > out.index("nft -f $ip_tmp\n")
+    )
+    assert ">&2" in out[out.index("ferm: rolled back") :]
+
+
+def test_interactive_shell_iptables_has_no_rollback_notice(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The notice is nft-only: the x_tables --shell script must stay
+    # byte-identical to the Perl oracle (reference/src/ferm:803-814), which
+    # emits no rollback announcement.
+    from pyferm.cli import main
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--test", "--interactive", "--shell", str(conf)]) == 0
+    out = capfd.readouterr().out
+    assert "rolled back" not in out
 
 
 def test_setup_streams_without_shell_is_passthrough() -> None:
@@ -597,24 +625,34 @@ class _RunRecorder:
         self,
         *,
         returncode: int = 0,
+        returncodes: Sequence[int] | None = None,
         stdout: str = "",
-        stderr: str = "",
+        stderr: str | bytes = "",
         raises: type[OSError] | None = None,
     ) -> None:
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self._returncode = returncode
+        # Per-call codes (popped in order) model the nft applier's two
+        # subprocesses: a `-c` pre-check followed by the real `-f -` apply.
+        self._returncodes = (
+            list(returncodes) if returncodes is not None else None
+        )
         self._stdout = stdout
         self._stderr = stderr
         self._raises = raises
 
     def __call__(
         self, command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[object]:
         self.calls.append(((command,), kwargs))
         if self._raises is not None:
             raise self._raises("boom")
+        if self._returncodes is not None:
+            returncode = self._returncodes.pop(0)
+        else:
+            returncode = self._returncode
         return subprocess.CompletedProcess(
-            command, self._returncode, stdout=self._stdout, stderr=self._stderr
+            command, returncode, stdout=self._stdout, stderr=self._stderr
         )
 
 
@@ -626,21 +664,60 @@ def _nft_domain_info() -> DomainInfo:
     return RealDomainInfo(enabled=True, tools={TOOL_NFT: "nft"})
 
 
-def test_make_nft_restore_pipes_save_as_latin1_bytes(
+def test_make_nft_restore_checks_then_applies_as_latin1_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The applier runs the resolved nft binary as `nft -f -`, feeding the
-    # rendered save as one-byte-per-char latin-1 on stdin (decision 1).
+    # The applier first validates the ruleset with `nft -c -f -` (a netlink
+    # check that touches nothing), then installs it with `nft -f -`.  Both
+    # runs are fed the rendered save as one-byte-per-char latin-1 on stdin
+    # (decision 1).
     from pyferm.cli import _make_nft_restore
 
     recorder = _RunRecorder(returncode=0)
     monkeypatch.setattr(subprocess, "run", recorder)
     restore = _make_nft_restore(Options(nft=True))
     restore(_nft_domain_info(), "add table ip ferm\nh\xfc\n")
-    assert len(recorder.calls) == 1
-    (argv, *_rest), kwargs = recorder.calls[0]
-    assert argv == ["nft", "-f", "-"]
-    assert kwargs["input"] == b"add table ip ferm\nh\xfc\n"
+    assert [call[0][0] for call in recorder.calls] == [
+        ["nft", "-c", "-f", "-"],
+        ["nft", "-f", "-"],
+    ]
+    for (_argv, *_rest), kwargs in recorder.calls:
+        assert kwargs["input"] == b"add table ip ferm\nh\xfc\n"
+
+
+def test_make_nft_restore_failed_check_surfaces_nft_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A ruleset nft -c rejects aborts BEFORE the apply, surfacing nft's own
+    # stderr diagnostic (early diagnostics) instead of a generic failure, and
+    # never reaches `nft -f -` -- so the kernel is untouched.
+    from pyferm.cli import _make_nft_restore
+
+    recorder = _RunRecorder(
+        returncode=1, stderr=b"Error: syntax error, unexpected newline\n"
+    )
+    monkeypatch.setattr(subprocess, "run", recorder)
+    restore = _make_nft_restore(Options(nft=True))
+    with pytest.raises(FermError, match="syntax error, unexpected newline"):
+        restore(_nft_domain_info(), "bogus\n")
+    assert [call[0][0] for call in recorder.calls] == [
+        ["nft", "-c", "-f", "-"],
+    ]
+
+
+def test_make_nft_restore_failed_check_without_stderr_is_generic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A non-zero `-c` with empty stderr still aborts with a FermError naming
+    # the check, never a silent pass to the apply.
+    from pyferm.cli import _make_nft_restore
+
+    monkeypatch.setattr(
+        subprocess, "run", _RunRecorder(returncode=1, stderr=b"")
+    )
+    restore = _make_nft_restore(Options(nft=True))
+    with pytest.raises(FermError, match="Failed to run nft"):
+        restore(_nft_domain_info(), "add table ip ferm\n")
 
 
 def test_make_nft_restore_oserror_raises_ferm_error(
@@ -658,24 +735,29 @@ def test_make_nft_restore_oserror_raises_ferm_error(
         restore(_nft_domain_info(), "add table ip ferm\n")
 
 
-def test_make_nft_restore_nonzero_exit_raises_ferm_error(
+def test_make_nft_restore_apply_failure_after_check_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # nft exiting non-zero (a rejected ruleset) is also a rollback-triggering
-    # FermError, never a silent success.
+    # The apply guard survives the pre-check: a `-c` that passes (0) followed
+    # by an `-f -` that fails (1) is still a rollback-triggering FermError.
     from pyferm.cli import _make_nft_restore
 
-    monkeypatch.setattr(subprocess, "run", _RunRecorder(returncode=1))
+    recorder = _RunRecorder(returncodes=[0, 1])
+    monkeypatch.setattr(subprocess, "run", recorder)
     restore = _make_nft_restore(Options(nft=True))
     with pytest.raises(FermError, match="Failed to run nft"):
         restore(_nft_domain_info(), "add table ip ferm\n")
+    assert [call[0][0] for call in recorder.calls] == [
+        ["nft", "-c", "-f", "-"],
+        ["nft", "-f", "-"],
+    ]
 
 
 def test_restore_dispatch_routes_to_nft_applier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # With --nft the restore closure routes to the nft applier: the only
-    # subprocess invocation is `nft -f -`, never an iptables-restore call.
+    # With --nft the restore closure routes to the nft applier: it spawns
+    # `nft -c -f -` then `nft -f -`, never an iptables-restore call.
     from pyferm.cli import _make_io
 
     recorder = _RunRecorder(returncode=0)
@@ -684,7 +766,10 @@ def test_restore_dispatch_routes_to_nft_applier(
         Options(nft=True), sys.stdout
     )
     restore(_nft_domain_info(), "add table ip ferm\n")
-    assert [call[0][0] for call in recorder.calls] == [["nft", "-f", "-"]]
+    assert [call[0][0] for call in recorder.calls] == [
+        ["nft", "-c", "-f", "-"],
+        ["nft", "-f", "-"],
+    ]
 
 
 def test_restore_dispatch_default_skips_nft_applier(

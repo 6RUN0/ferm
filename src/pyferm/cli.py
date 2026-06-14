@@ -391,21 +391,46 @@ def _make_nft_restore(options: Options) -> RestoreDomain:
     """
     Build the ``nft -f -`` applier injected when ``--nft`` is set (decision 1).
 
-    Pipes the rendered save to the resolved ``nft`` binary, raising
-    :class:`FermError` (the rollback trigger) if the tool cannot be run or
-    exits non-zero -- the nft analogue of
-    :func:`pyferm.backend.iptables.restore_domain`.
+    Validates the rendered save with ``nft -c -f -`` first, then pipes it to
+    the resolved ``nft`` binary, raising :class:`FermError` (the rollback
+    trigger) if the tool cannot be run or either step exits non-zero -- the
+    nft analogue of :func:`pyferm.backend.iptables.restore_domain`.
+
+    The ``-c`` pre-check is a netlink validation that installs nothing
+    (``--check``).  The design kept it out of the ``--noexec`` path because it
+    needs ``CAP_NET_ADMIN`` even on a valid ruleset; here we are about to apply
+    for real, so that privilege is already in hand and the check is free.  Its
+    stderr is captured so a rejected ruleset surfaces nft's own diagnostic
+    *before* any kernel change, instead of the generic apply failure.
     """
     del options  # parity with the iptables wrapper; nft adds no flags
 
     def restore(domain_info: DomainInfo, save: str) -> None:
         path = domain_info.tools[TOOL_NFT]
+        # the path comes from find_tool; no shell is used.  latin-1:
+        # one byte per char, reproducing the config bytes exactly.
+        payload = save.encode(BYTE_ENCODING)
+
         try:
-            # the path comes from find_tool; no shell is used.  latin-1:
-            # one byte per char, reproducing the config bytes exactly.
+            check = subprocess.run(
+                [path, "-c", "-f", "-"],
+                input=payload,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise FermError(f"Failed to run {path}: {exc}") from exc
+        if check.returncode != 0:
+            # backslashreplace: nft's stderr is a human-facing diagnostic.
+            detail = check.stderr.decode(
+                BYTE_ENCODING, HUMAN_STREAM_ERRORS
+            ).strip()
+            raise FermError(detail or f"Failed to run {path} -c")
+
+        try:
             completed = subprocess.run(
                 [path, "-f", "-"],
-                input=save.encode(BYTE_ENCODING),
+                input=payload,
                 check=False,
             )
         except OSError as exc:
@@ -689,6 +714,9 @@ def _run(
                     if snapshot is None:
                         continue
                     emit_line(snapshot.restore)
+                notice = backend.shell_rollback_notice()
+                if notice is not None:
+                    emit_line(notice)
 
             if not options.noexec and not _confirm_rules(options):
                 _rollback_all(
