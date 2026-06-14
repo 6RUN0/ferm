@@ -1,0 +1,6 @@
+add table ip ferm
+flush table ip ferm
+add chain ip ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add chain ip ferm mangle_mychain
+add rule ip ferm mangle_PREROUTING meta l4proto tcp jump mangle_mychain
+add rule ip ferm mangle_mychain tcp dport 80 accept

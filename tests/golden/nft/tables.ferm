@@ -1,0 +1,10 @@
+# filter/INPUT keeps the bare chain name; mangle/INPUT is disambiguated
+# to mangle_INPUT in the merged ferm table (decision 9).
+domain ip {
+    table filter chain INPUT {
+        proto tcp dport 22 ACCEPT;
+    }
+    table mangle chain INPUT {
+        proto tcp dport 25 ACCEPT;
+    }
+}

@@ -1,0 +1,7 @@
+add table ip ferm
+flush table ip ferm
+add chain ip ferm nat_POSTROUTING { type nat hook postrouting priority 100; }
+add chain ip ferm nat_PREROUTING { type nat hook prerouting priority -100; }
+add rule ip ferm nat_POSTROUTING oifname "eth0" snat to 192.168.1.1
+add rule ip ferm nat_POSTROUTING oifname "ppp0" masquerade
+add rule ip ferm nat_PREROUTING tcp dport 80 dnat to 10.0.0.1

@@ -1,0 +1,8 @@
+add table ip ferm
+flush table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport 22 reject
+add rule ip ferm INPUT tcp dport 23 reject with icmp type host-unreachable
+add rule ip ferm INPUT tcp dport 25 log
+add rule ip ferm INPUT tcp dport 26 log prefix "drop: "
+add rule ip ferm INPUT limit rate 5/second accept

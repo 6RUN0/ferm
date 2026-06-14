@@ -1,0 +1,8 @@
+# Negative case: parses cleanly but exercises a match the nft backend does
+# not yet translate (`mod mac mac-source`).  It must reach the backend's
+# unsupported-feature path and exit non-zero with the canonical message --
+# never a golden expectation.  Hence NO .nft sibling; covered by
+# test_nft_uncovered_module_errors, not the parametrized golden suite.
+domain ip table filter chain INPUT {
+    mod mac mac-source 00:11:22:33:44:55 ACCEPT;
+}

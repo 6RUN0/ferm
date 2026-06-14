@@ -43,3 +43,13 @@ def _run_nft(ferm_file: Path) -> str:
 def test_nft_golden(ferm_file: Path) -> None:
     expected = ferm_file.with_suffix(".nft").read_text(encoding="utf-8")
     assert _run_nft(ferm_file) == expected
+
+
+def test_nft_uncovered_module_errors() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "pyferm", "--nft", "--test", "--noexec",
+         "--lines", str(_HERE / "nft" / "uncovered.ferm")],
+        capture_output=True, encoding="utf-8", check=False,
+    )
+    assert proc.returncode == 1
+    assert "not yet supported by nft backend" in proc.stderr

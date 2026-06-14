@@ -1,0 +1,5 @@
+# Under ip6 the ip4 keyword `proto icmp` MUST normalize to the ip6 ICMP
+# protocol: `meta l4proto ipv6-icmp` (proto 58), never raw `icmp` (proto 1).
+domain ip6 table filter chain INPUT {
+    proto icmp ACCEPT;
+}

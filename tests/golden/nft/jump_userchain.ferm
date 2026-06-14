@@ -1,0 +1,12 @@
+# A user chain and a jump to it inside a NON-filter table.  Both the chain
+# definition and the jump target are renamed to `<table>_<chain>`
+# (mangle_mychain), since only the filter table keeps bare names
+# (decision 9).
+domain ip table mangle {
+    chain PREROUTING {
+        proto tcp jump mychain;
+    }
+    chain mychain {
+        proto tcp dport 80 ACCEPT;
+    }
+}

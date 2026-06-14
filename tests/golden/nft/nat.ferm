@@ -1,0 +1,11 @@
+# nat table: SNAT/DNAT/MASQUERADE/REDIRECT map to nft's stateful NAT
+# statements.  PREROUTING/POSTROUTING are renamed nat_<chain> (decision 9).
+domain ip table nat {
+    chain PREROUTING {
+        proto tcp dport 80 DNAT to-destination 10.0.0.1;
+    }
+    chain POSTROUTING {
+        outerface eth0 SNAT to-source 192.168.1.1;
+        outerface ppp0 MASQUERADE;
+    }
+}

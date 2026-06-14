@@ -1,0 +1,9 @@
+# ip4 filter: REJECT (default and named icmp), LOG (plain and with prefix),
+# and a limit-rate match.
+domain ip table filter chain INPUT {
+    proto tcp dport 22 REJECT;
+    proto tcp dport 23 REJECT reject-with icmp-host-unreachable;
+    proto tcp dport 25 LOG;
+    proto tcp dport 26 LOG log-prefix "drop: ";
+    mod limit limit 5/second ACCEPT;
+}

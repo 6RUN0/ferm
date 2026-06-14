@@ -1,0 +1,6 @@
+# The ip4 reject spelling under ip6 MUST be remapped to the icmpv6 form:
+# `reject-with icmp-port-unreachable` -> `reject with icmpv6 type
+# port-unreachable`, never the ip4 `icmp type ...` spelling.
+domain ip6 table filter chain INPUT {
+    proto tcp dport 22 REJECT reject-with icmp-port-unreachable;
+}
