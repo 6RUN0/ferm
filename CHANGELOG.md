@@ -134,6 +134,14 @@ are unchanged unless `--nft` is passed.
 - **`atheris` crash fuzzing** of both parsers and a **containerised
   anti-lockout e2e** for `--interactive` (both opt-in), plus a periodic
   **`mutmut` mutation** session.
+- **Containerised data-plane e2e** (`nox -s datapath_e2e`, opt-in): drives
+  real traffic with `nmap --reason` / `ncat` through ferm-installed rules
+  across a three-netns topology, asserting ACCEPT / DROP / REJECT / state /
+  NAT behaviour and parity between the `--nft` and default backends. An
+  extensible distro matrix (`nox -s datapath_e2e_matrix`) reruns the same
+  suite on Debian (bookworm + trixie), Ubuntu, Fedora, Arch, Rocky and
+  openSUSE Leap, detecting the package manager (apt / dnf / apk / pacman /
+  zypper) so adding a distro is a one-line entry.
 - **Diagnostics parity** goldens pinning stderr for negative / params /
   warning cases.
 - **Byte-faithful I/O**: config, backtick, zonefile and `--def` (`argv`)
