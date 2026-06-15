@@ -10,14 +10,18 @@ dnspython adapter (``SystemResolver``) against a stubbed ``dns.resolver``.
 
 from __future__ import annotations
 
+import socket
 from typing import TYPE_CHECKING
 
 import pytest
 
 from pyferm.errors import FermError
 from pyferm.resolver import (
+    StubResolver,
     SystemResolver,
     ZonefileResolver,
+    _dnspython_available,
+    _warn_stub_backend,
     identify_numeric_address,
     pick_resolver,
     resolve,
@@ -25,7 +29,7 @@ from pyferm.resolver import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from pyferm.resolver import SearchResult
@@ -42,6 +46,15 @@ ds-rr.example.com.     IN A    192.0.2.4
 ns.example.com         IN NS   ds.example.com.
 mx.example.com         IN MX   10 ds.example.com.
 """
+
+
+@pytest.fixture(autouse=True)
+def _reset_backend_cache() -> Iterator[None]:
+    _dnspython_available.cache_clear()
+    _warn_stub_backend.cache_clear()
+    yield
+    _dnspython_available.cache_clear()
+    _warn_stub_backend.cache_clear()
 
 
 @pytest.fixture
@@ -169,9 +182,60 @@ def test_resolve_without_provider_errors() -> None:
         resolve("ip", "v4.example.com")
 
 
-def test_pick_resolver_production_path_is_system() -> None:
-    # Without --test ferm queries live DNS (Perl pick_resolver, :1286).
+def test_pick_resolver_uses_dnspython_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("pyferm.resolver._dnspython_available", lambda: True)
     assert isinstance(pick_resolver(False, "rules/main.ferm"), SystemResolver)
+
+
+def test_pick_resolver_falls_back_to_stub_without_dnspython(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("pyferm.resolver._dnspython_available", lambda: False)
+    assert isinstance(pick_resolver(False, "rules/main.ferm"), StubResolver)
+
+
+def test_make_live_resolver_real_detect_without_dnspython(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    from pyferm.resolver import _make_live_resolver
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+    _dnspython_available.cache_clear()  # re-evaluate with patched find_spec
+    assert isinstance(_make_live_resolver(), StubResolver)
+
+
+def test_dnspython_available_swallows_find_spec_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    def boom(_name: str) -> object:
+        raise ModuleNotFoundError("half-installed parent")
+
+    monkeypatch.setattr(importlib.util, "find_spec", boom)
+    _dnspython_available.cache_clear()
+    assert _dnspython_available() is False
+
+
+def test_stub_backend_warns_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pyferm.resolver import _make_live_resolver
+
+    monkeypatch.setattr("pyferm.resolver._dnspython_available", lambda: False)
+    calls: list[str] = []
+
+    def record(message: str) -> None:
+        calls.append(message)
+
+    monkeypatch.setattr("pyferm.resolver.warning", record)
+    _make_live_resolver()
+    _make_live_resolver()
+    # lru_cache on _warn_stub_backend fires the diagnostic exactly once.
+    assert len(calls) == 1
+    assert "pyferm[dns]" in calls[0]
 
 
 def test_pick_resolver_test_reads_zonefile_next_to_script(
@@ -298,3 +362,115 @@ def test_system_resolver_failure_carries_message(
     result, _ = _system_search(monkeypatch, raise_failure)
     assert result.found is False
     assert result.errorstring == "connection timed out"
+
+
+def test_stub_resolver_a_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_getaddrinfo(
+        _host: str, _port: object, family: int, socktype: int, **_kwargs: int
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [(family, socktype, 6, "", ("192.0.2.1", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    result = StubResolver().search("v4.example.com", "A")
+    assert result.found is True
+    assert [(rr.type, rr.data) for rr in result.answer] == [("A", "192.0.2.1")]
+
+
+def test_stub_resolver_aaaa_dedup_and_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_getaddrinfo(
+        _host: str, _port: object, family: int, socktype: int, **_kwargs: int
+    ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
+        # duplicates (one per socktype) + a link-local scope suffix
+        return [
+            (family, socktype, 6, "", ("2001:db8::1", 0, 0, 0)),
+            (family, socktype, 17, "", ("2001:db8::1", 0, 0, 0)),
+            (family, socktype, 6, "", ("fe80::1%eth0", 0, 0, 2)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    result = StubResolver().search("v6.example.com", "AAAA")
+    assert [rr.data for rr in result.answer] == ["2001:db8::1", "fe80::1"]
+
+
+def test_stub_resolver_passes_ipv4_mapped_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Guard (spec): with flags=0 AF_INET6 does not yield ::ffff:a.b.c.d on
+    # glibc, so this input is unreachable in practice. The guard pins that
+    # StubResolver does NOT special-case it -- the address is surfaced
+    # verbatim. (Were it ever to reach resolve()'s AAAA path, _expand_ipv6
+    # would raise ValueError on the dotted-quad tail: a loud crash, never a
+    # silent v4-into-ip6 leak.)
+    def fake_getaddrinfo(
+        _host: str, _port: object, family: int, socktype: int, **_kwargs: int
+    ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
+        return [(family, socktype, 6, "", ("::ffff:192.0.2.1", 0, 0, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    result = StubResolver().search("mapped.example.com", "AAAA")
+    assert [rr.data for rr in result.answer] == ["::ffff:192.0.2.1"]
+
+
+def _stub_gaierror(
+    monkeypatch: pytest.MonkeyPatch, errno: int | None
+) -> SearchResult:
+    def fake_getaddrinfo(*_args: object, **_kwargs: object) -> object:
+        raise socket.gaierror(errno, "boom")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    return StubResolver().search("h.example.com", "A")
+
+
+def test_stub_eai_noname_is_silent_nxdomain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _stub_gaierror(monkeypatch, socket.EAI_NONAME)
+    assert result.found is False
+    assert result.errorstring == "NXDOMAIN"
+
+
+def test_stub_eai_nodata_is_silent_noerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # EAI_NODATA/EAI_ADDRFAMILY: name exists, no record of this family.
+    errno = getattr(socket, "EAI_NODATA", None) or socket.EAI_ADDRFAMILY
+    result = _stub_gaierror(monkeypatch, errno)
+    assert result.found is False
+    assert result.errorstring == "NOERROR"
+
+
+def test_stub_eai_again_is_loud_servfail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _stub_gaierror(monkeypatch, socket.EAI_AGAIN)
+    assert result.errorstring == "SERVFAIL"
+
+
+def test_stub_unknown_errno_is_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # errno is None (or any unmapped code) must fail closed, not silent.
+    assert _stub_gaierror(monkeypatch, None).errorstring == "SERVFAIL"
+
+
+def test_stub_servfail_propagates_through_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_getaddrinfo(*_args: object, **_kwargs: object) -> object:
+        raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(FermError, match="DNS query for 'h' failed: SERVFAIL"):
+        resolve("ip", "h", resolver=StubResolver())
+
+
+def test_stub_ns_type_is_clear_error() -> None:
+    with pytest.raises(FermError, match="needs the optional dnspython"):
+        StubResolver().search("ns.example.com", "NS")
+
+
+def test_stub_mx_type_is_clear_error() -> None:
+    with pytest.raises(FermError, match="install pyferm\\[dns\\]"):
+        StubResolver().search("mx.example.com", "MX")

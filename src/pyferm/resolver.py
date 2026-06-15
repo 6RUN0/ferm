@@ -24,13 +24,16 @@ matches the queried family is passed through untouched, as Perl does.
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import ipaddress
 import re
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from pyferm.errors import FermError, error
+from pyferm.errors import FermError, error, warning
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Value, to_array
 
@@ -187,6 +190,80 @@ class SystemResolver:
         return SearchResult(bool(records), records, "NOERROR")
 
 
+class StubResolver:
+    """
+    A/AAAA-only resolver via the system stub (``socket.getaddrinfo``).
+
+    Honors nsswitch (``/etc/hosts``, ``resolv.conf``, mDNS/LDAP). It cannot
+    answer ``NS``/``MX``/...; those raise a clear error pointing at the
+    optional ``pyferm[dns]`` (dnspython) backend.  The error/silent-miss
+    contract mirrors :class:`SystemResolver` so :func:`resolve`
+    cannot tell the two apart.
+    """
+
+    def search(self, hostname: str, rrtype: str) -> SearchResult:
+        """Resolve A/AAAA via getaddrinfo (Perl ``Net::DNS->search`` slice)."""
+        if rrtype not in ("A", "AAAA"):
+            error(
+                f"@resolve type {rrtype!r} needs the optional dnspython "
+                f"backend; install pyferm[dns]"
+            )
+        family = socket.AF_INET if rrtype == "A" else socket.AF_INET6
+        try:
+            # flags=0 pinned: no AI_V4MAPPED (AF_INET6 yields only real AAAA)
+            # and no AI_ADDRCONFIG (AAAA resolves even without local IPv6).
+            infos = socket.getaddrinfo(
+                hostname, None, family, socket.SOCK_STREAM, flags=0
+            )
+        except socket.gaierror as exc:
+            return _gaierror_result(exc)
+
+        seen: set[str] = set()
+        records: list[ResourceRecord] = []
+        for info in infos:
+            sockaddr = info[4]
+            address = sockaddr[0]
+            # getaddrinfo's sockaddr is a union; AF_INET/AF_INET6 yield a
+            # str address, but the type is str | int -- the isinstance check
+            # below narrows it cleanly (pyright verifytypes is 100% here).
+            if not isinstance(address, str):
+                continue
+            address = address.split("%", 1)[0]  # drop link-local %scope
+            if address in seen:
+                continue
+            seen.add(address)
+            records.append(ResourceRecord(rrtype, address))
+        return SearchResult(
+            found=bool(records), answer=records, errorstring="NOERROR"
+        )
+
+
+# Silent getaddrinfo failures (name/record genuinely absent), mirroring
+# Net::DNS NXDOMAIN / NoAnswer. EAI_NODATA/EAI_ADDRFAMILY are absent on
+# some platforms, so build the sets defensively. Everything NOT in these
+# sets -- including errno is None and transient EAI_AGAIN/EAI_FAIL -- maps
+# to a loud SERVFAIL so a resolver hiccup never silently drops a rule.
+_NXDOMAIN_EAI = {
+    code
+    for name in ("EAI_NONAME",)
+    if (code := getattr(socket, name, None)) is not None
+}
+_NOERROR_EAI = {
+    code
+    for name in ("EAI_NODATA", "EAI_ADDRFAMILY")
+    if (code := getattr(socket, name, None)) is not None
+}
+
+
+def _gaierror_result(exc: socket.gaierror) -> SearchResult:
+    """Map a getaddrinfo failure onto SearchResult's silent/loud contract."""
+    if exc.errno in _NXDOMAIN_EAI:
+        return SearchResult(found=False, answer=[], errorstring="NXDOMAIN")
+    if exc.errno in _NOERROR_EAI:
+        return SearchResult(found=False, answer=[], errorstring="NOERROR")
+    return SearchResult(found=False, answer=[], errorstring="SERVFAIL")
+
+
 def _canonical_name(name: str) -> str:
     """Normalize a domain name for lookup: drop a trailing dot, lowercase."""
     return name.rstrip(".").lower()
@@ -234,6 +311,32 @@ def set_resolver_provider(provider: ResolverProvider | None) -> None:
     _provider = provider
 
 
+@functools.lru_cache(maxsize=1)
+def _dnspython_available() -> bool:
+    """Whether dnspython can be imported (cached; tests reset it)."""
+    try:
+        return importlib.util.find_spec("dns.resolver") is not None
+    except (ImportError, ValueError):
+        return False  # a half-installed parent package -> treat as absent
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_stub_backend() -> None:
+    """Announce the reduced stdlib backend once per process (diagnostic)."""
+    warning(
+        "using the stdlib stub resolver (A/AAAA only); "
+        "install pyferm[dns] for NS/MX and other record types"
+    )
+
+
+def _make_live_resolver() -> Resolver:
+    """Pick the live resolver: dnspython if importable, else the stub."""
+    if _dnspython_available():
+        return SystemResolver()
+    _warn_stub_backend()
+    return StubResolver()
+
+
 def pick_resolver(test: bool, script_path: str) -> Resolver:
     """
     Choose a resolver for one ``@resolve`` (Perl ``pick_resolver``).
@@ -246,7 +349,7 @@ def pick_resolver(test: bool, script_path: str) -> Resolver:
     up relative to the *current* script, which changes across ``@include``.
     """
     if not test:
-        return SystemResolver()
+        return _make_live_resolver()
     match = re.match(r"^(.*/)", script_path)
     parent = match.group(1) if match else "./"
     return ZonefileResolver.from_file(parent + "zonefile")

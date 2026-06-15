@@ -96,6 +96,15 @@ are unchanged unless `--nft` is passed.
   only mapped for `ip`), matching the default backend and nftables' own
   family-agnostic `reject with tcp reset`.
 
+### Changed
+
+- `dnspython` is now an optional dependency (`pip install pyferm[dns]`).
+  Without it, `@resolve` uses the system stub resolver (`getaddrinfo`) and
+  supports only `A`/`AAAA` records; `NS`/`MX` and other types raise a clear
+  error. **Migration:** installs that relied on the previously-transitive
+  `dnspython` get the stub backend after upgrading; reinstall with
+  `pyferm[dns]` to restore `NS`/`MX` support.
+
 ### Added — Phase 1 (faithful port)
 
 - **Configuration language front end** ported from Perl: tokenizer and

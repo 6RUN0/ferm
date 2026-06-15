@@ -639,7 +639,9 @@ wheels = [
 name = "ferm"
 version = "0.1.0.dev0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+dns = [
     { name = "dnspython" },
 ]
 
@@ -672,6 +674,7 @@ mutation = [
 ]
 test = [
     { name = "diff-cover" },
+    { name = "dnspython" },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -681,7 +684,8 @@ test = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dnspython", specifier = ">=2.8.0" }]
+requires-dist = [{ name = "dnspython", marker = "extra == 'dns'", specifier = ">=2.8.0" }]
+provides-extras = ["dns"]
 
 [package.metadata.requires-dev]
 build = [
@@ -708,6 +712,7 @@ lint = [
 mutation = [{ name = "mutmut", specifier = ">=3.6.0" }]
 test = [
     { name = "diff-cover", specifier = ">=10.3.0" },
+    { name = "dnspython", specifier = ">=2.8.0" },
     { name = "hypothesis", specifier = ">=6.155.2" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },

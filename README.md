@@ -51,8 +51,15 @@ Perl-oracle differential test. The roadmap lives in
   netfilter-capable kernel, at runtime
 - [`uv`](https://docs.astral.sh/uv/) for development
 
-The only runtime dependency is [`dnspython`](https://www.dnspython.org/)
-(for `@resolve()`).
+There are no required runtime dependencies. `@resolve()` uses
+[`dnspython`](https://www.dnspython.org/) when it is installed (full record
+vocabulary, including `NS`/`MX`); otherwise it falls back to the system stub
+resolver (`getaddrinfo`, honouring `/etc/nsswitch.conf`), which answers only
+`A`/`AAAA` records — other types then raise a clear error. Install the `dns`
+extra (`pip install pyferm[dns]`) for the full set of record types. The stub
+resolver consults system sources such as `/etc/hosts` and mDNS that dnspython
+bypasses, so the two backends can diverge when those local sources differ from
+authoritative DNS.
 
 ## Usage
 
