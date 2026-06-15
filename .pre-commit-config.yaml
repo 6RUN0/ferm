@@ -49,6 +49,7 @@ repos:
             corpus/canon\.py$|
             e2e/lockout/driver\.py$|
             e2e/nft/driver\.py$|
+            e2e/datapath/(driver|netns|oracle|scenarios)\.py$|
             property/oracle\.py$
           )
 

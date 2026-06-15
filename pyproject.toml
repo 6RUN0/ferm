@@ -141,11 +141,28 @@ enable_error_code = [
   "truthy-bool",
   "unused-awaitable",
 ]
+# The datapath e2e harness (tests/e2e/datapath/) is container-only: it runs
+# as flat scripts on the image's sys.path (``python3 /work/datapath/...``),
+# not as an importable package, so its sibling imports (``import netns`` /
+# ``oracle`` / ``scenarios``) cannot resolve under the package type-checker.
+# Like the fuzz harnesses it stays out of the gate; the host-side oracle and
+# scenarios unit tests under tests/unit/ remain fully checked.
+exclude = ['^tests/e2e/datapath/']
+
+[[tool.mypy.overrides]]
+# The flat harness module names exist only on the container's sys.path;
+# off the image they resolve to Any so the host unit tests still import them.
+module = ["netns", "oracle", "scenarios", "driver"]
+ignore_missing_imports = true
 
 [tool.pyright]
 # Pin the analysis scope: without it pyright walks the whole worktree
 # (including throwaway scratch files) and the gate stops being stable.
 include = ["src", "tests", "noxfile.py"]
+# The container-only datapath e2e harness uses a flat-script import model the
+# package checker cannot resolve (see the matching [tool.mypy] exclude); keep
+# its diagnostics out of the gate while leaving it importable for the tests.
+ignore = ["tests/e2e/datapath"]
 pythonVersion = "3.11"
 # Match mypy's strictness: two checkers at different strictness levels
 # only pretend to be redundant -- the weaker one stops catching the
@@ -160,7 +177,11 @@ typeCheckingMode = "strict"
 root = "tests"
 # The env root replaces the project root for import resolution, which
 # would break the suite's absolute self-imports (``tests.corpus.canon``).
-extraPaths = ["."]
+# The datapath dir mirrors the host unit tests' runtime sys.path insert so
+# their flat harness imports (``import oracle`` / ``scenarios``) resolve;
+# the harness's own diagnostics stay suppressed via the [tool.pyright]
+# ``ignore`` above.
+extraPaths = [".", "tests/e2e/datapath"]
 reportPrivateUsage = "none"
 reportUnknownVariableType = "none"
 reportUnknownMemberType = "none"
@@ -281,7 +302,8 @@ skip = ".git,.venv,.nox,uv.lock,reference,tests/corpus/configs,htmlcov,build,dis
 # * iif -- nft "input interface" expression
 # * rsource -- iptables `recent --rsource`
 # * ect -- ECN ECT codepoint (ecn-ip-ect)
-ignore-words-list = "iif,rsource,ect"
+# * nd -- IPv6 Neighbor Discovery (datapath e2e comments)
+ignore-words-list = "iif,rsource,ect,nd"
 
 [tool.deptry]
 # The import name differs from the distribution name (ferm -> pyferm).

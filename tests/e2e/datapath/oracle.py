@@ -54,10 +54,7 @@ def parse_reason(nmap_xml: str, portid: int, proto: str) -> str | None:
     except ET.ParseError:
         return None
     for port in root.iter("port"):
-        if (
-            port.get("protocol") == proto
-            and port.get("portid") == str(portid)
-        ):
+        if port.get("protocol") == proto and port.get("portid") == str(portid):
             state = port.find("state")
             if state is None:
                 return None

@@ -45,9 +45,11 @@ def _render(
 )
 @pytest.mark.parametrize("backend", ["nft", "iptables"])
 def test_scenario_config_is_valid_ferm(
-    scenario: dict, backend: str, tmp_path: Path
+    scenario: dict[str, object], backend: str, tmp_path: Path
 ) -> None:
-    result = _render(scenario["config"], backend, tmp_path)
+    config = scenario["config"]
+    assert isinstance(config, str)
+    result = _render(config, backend, tmp_path)
     assert result.returncode == 0, (
         f"{scenario['name']} ({backend}) did not parse:\n{result.stderr}"
     )

@@ -64,9 +64,15 @@ def _probe_reason(probe: Probe) -> tuple[str | None, str, str]:
 def _run_established_check(check: dict) -> bool:
     proc = subprocess.run(
         [
-            "ip", "netns", "exec", check["from_netns"],
-            "ncat", "-w", str(check["timeout_s"]),
-            check["to_addr"], str(check["port"]),
+            "ip",
+            "netns",
+            "exec",
+            check["from_netns"],
+            "ncat",
+            "-w",
+            str(check["timeout_s"]),
+            check["to_addr"],
+            str(check["port"]),
         ],
         input=_ESTAB_NONCE + "\n",
         capture_output=True,
@@ -112,23 +118,19 @@ def _run_scenario(
     empty, residue = netns.ruleset_empty()
     if not empty:
         fails.append(
-            f"[{name}][{backend}] teardown left ruleset non-empty:\n"
-            f"{residue}"
+            f"[{name}][{backend}] teardown left ruleset non-empty:\n{residue}"
         )
 
     cfg_path = f"/tmp/{name}.ferm"
     Path(cfg_path).write_text(scenario["config"], encoding="utf-8")
     applied = _apply_config(cfg_path, backend)
     if applied.returncode != 0:
-        fails.append(
-            f"[{name}][{backend}] apply failed: {applied.stderr}"
-        )
+        fails.append(f"[{name}][{backend}] apply failed: {applied.stderr}")
         netns.dump_diagnostics(f"{name}/{backend}")
         return fails  # nothing to probe against a failed apply
 
-    if (
-        scenario["type"] == "stateful"
-        and not _run_established_check(scenario["established_check"])
+    if scenario["type"] == "stateful" and not _run_established_check(
+        scenario["established_check"]
     ):
         fails.append(f"[{name}][{backend}] established_check failed")
         netns.dump_diagnostics(f"{name}/{backend}")

@@ -146,15 +146,29 @@ def build_topology() -> None:
 
     # client <-> fw
     _must(
-        "ip", "link", "add", "v_cl_fw",
-        "type", "veth", "peer", "name", _VETH_FW_CLIENT,
+        "ip",
+        "link",
+        "add",
+        "v_cl_fw",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        _VETH_FW_CLIENT,
     )
     _must("ip", "link", "set", "v_cl_fw", "netns", "client")
     _must("ip", "link", "set", _VETH_FW_CLIENT, "netns", "fw")
     # fw <-> backend
     _must(
-        "ip", "link", "add", _VETH_FW_BACKEND,
-        "type", "veth", "peer", "name", "v_be_fw",
+        "ip",
+        "link",
+        "add",
+        _VETH_FW_BACKEND,
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "v_be_fw",
     )
     _must("ip", "link", "set", _VETH_FW_BACKEND, "netns", "fw")
     _must("ip", "link", "set", "v_be_fw", "netns", "backend")
@@ -169,28 +183,72 @@ def build_topology() -> None:
 
     # cross-subnet routes (harmless; NAT path does not require them)
     _must(
-        "ip", "netns", "exec", "client",
-        "ip", "route", "add", "10.0.1.0/24", "via", "10.0.0.1",
+        "ip",
+        "netns",
+        "exec",
+        "client",
+        "ip",
+        "route",
+        "add",
+        "10.0.1.0/24",
+        "via",
+        "10.0.0.1",
     )
     _must(
-        "ip", "netns", "exec", "client",
-        "ip", "-6", "route", "add", "fd00:1::/64", "via", "fd00:0::1",
+        "ip",
+        "netns",
+        "exec",
+        "client",
+        "ip",
+        "-6",
+        "route",
+        "add",
+        "fd00:1::/64",
+        "via",
+        "fd00:0::1",
     )
     _must(
-        "ip", "netns", "exec", "backend",
-        "ip", "route", "add", "10.0.0.0/24", "via", "10.0.1.1",
+        "ip",
+        "netns",
+        "exec",
+        "backend",
+        "ip",
+        "route",
+        "add",
+        "10.0.0.0/24",
+        "via",
+        "10.0.1.1",
     )
     _must(
-        "ip", "netns", "exec", "backend",
-        "ip", "-6", "route", "add", "fd00:0::/64", "via", "fd00:1::1",
+        "ip",
+        "netns",
+        "exec",
+        "backend",
+        "ip",
+        "-6",
+        "route",
+        "add",
+        "fd00:0::/64",
+        "via",
+        "fd00:1::1",
     )
 
 
 def _addr(ns: str, iface: str, v4: str, v6: str) -> None:
     _must("ip", "netns", "exec", ns, "ip", "addr", "add", v4, "dev", iface)
     _must(
-        "ip", "netns", "exec", ns,
-        "ip", "-6", "addr", "add", v6, "dev", iface, "nodad",
+        "ip",
+        "netns",
+        "exec",
+        ns,
+        "ip",
+        "-6",
+        "addr",
+        "add",
+        v6,
+        "dev",
+        iface,
+        "nodad",
     )
     _must("ip", "netns", "exec", ns, "ip", "link", "set", iface, "up")
 
@@ -232,8 +290,12 @@ class Listeners:
             echo = ECHO_PY if spec["kind"] == "udp-echo" else TCP_ECHO_PY
             cmd = [
                 *base,
-                "python3", "-c", echo,
-                str(spec["family"]), spec["addr"], str(spec["port"]),
+                "python3",
+                "-c",
+                echo,
+                str(spec["family"]),
+                spec["addr"],
+                str(spec["port"]),
             ]
         else:
             ncat = ["ncat"]
@@ -290,9 +352,7 @@ class Listeners:
                     break
                 time.sleep(0.2)
             else:
-                raise RuntimeError(
-                    f"listener {spec['name']} not live:\n{out}"
-                )
+                raise RuntimeError(f"listener {spec['name']} not live:\n{out}")
 
 
 def teardown_rules() -> None:
@@ -323,9 +383,7 @@ def ruleset_empty() -> tuple[bool, str]:
     tables into the nft ruleset).  After ``nft flush ruleset`` the
     ruleset is wholly empty, so any residue is a real teardown failure.
     """
-    out = _sh(
-        "ip", "netns", "exec", "fw", "nft", "list", "ruleset"
-    ).stdout
+    out = _sh("ip", "netns", "exec", "fw", "nft", "list", "ruleset").stdout
     stripped = out.strip()
     return (stripped == "", stripped)
 
@@ -369,9 +427,7 @@ def dump_diagnostics(label: str) -> None:
         ("ip", "netns", "exec", "fw", "conntrack", "-L"),
     ):
         out = _sh(*cmd)
-        print(
-            f"$ {' '.join(cmd)}\n{out.stdout}{out.stderr}", file=sys.stderr
-        )
+        print(f"$ {' '.join(cmd)}\n{out.stdout}{out.stderr}", file=sys.stderr)
     for ns in ("client", "fw", "backend"):
         out = _sh("ip", "netns", "exec", ns, "ss", "-tunlH")
         print(f"$ ss in {ns}\n{out.stdout}", file=sys.stderr)
