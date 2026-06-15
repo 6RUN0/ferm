@@ -1,0 +1,5 @@
+# tcp-reset is family-agnostic in nft: an ip6 REJECT reject-with tcp-reset
+# renders to `reject with tcp reset`, not an icmpv6 type.
+domain ip6 table filter chain INPUT {
+    proto tcp dport 23 REJECT reject-with tcp-reset;
+}

@@ -548,12 +548,13 @@ _REJECT_WITH: dict[str, str] = {
     "icmp-admin-prohibited": "reject with icmp type admin-prohibited",
     "tcp-reset": "reject with tcp reset",
 }
-#: ip6 reject-with spellings (icmpv6).
+#: ip6 reject-with spellings (icmpv6, plus the family-agnostic tcp reset).
 _REJECT_WITH_IP6: dict[str, str] = {
     "icmp6-port-unreachable": "reject with icmpv6 type port-unreachable",
     "icmp6-no-route": "reject with icmpv6 type no-route",
     "icmp6-adm-prohibited": "reject with icmpv6 type admin-prohibited",
     "icmp6-addr-unreachable": "reject with icmpv6 type addr-unreachable",
+    "tcp-reset": "reject with tcp reset",
 }
 #: ip4 reject-with names the oracle remaps to icmp6 under ip6
 #: (``iptables.py:82-89``); a user may write the ip4 spelling in an ip6

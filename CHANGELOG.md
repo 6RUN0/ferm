@@ -90,6 +90,12 @@ are unchanged unless `--nft` is passed.
   (by its non-`ENOENT` error) and aborts before any kernel change, instead
   of being mistaken for "no previous table" and deleting it on rollback.
 
+### Fixed
+
+- nft backend: render `reject-with tcp-reset` in the `ip6` family (it was
+  only mapped for `ip`), matching the default backend and nftables' own
+  family-agnostic `reject with tcp reset`.
+
 ### Added — Phase 1 (faithful port)
 
 - **Configuration language front end** ported from Perl: tokenizer and

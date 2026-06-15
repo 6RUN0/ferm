@@ -863,6 +863,16 @@ def test_build_verdict_tcp_reset_reject() -> None:
     )
 
 
+def test_build_verdict_tcp_reset_reject_ip6() -> None:
+    # nft renders `tcp reset` family-agnostically; the ip6 family accepts
+    # `reject with tcp reset` just like ip4 (closes the _REJECT_WITH_IP6 gap).
+    comp = {"reject-with": _opt("reject-with", "tcp-reset", module="REJECT")}
+    assert (
+        build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text()
+        == "reject with tcp reset"
+    )
+
+
 # --- Task 13: NftBackend.render --------------------------------------------
 
 import re  # noqa: E402
