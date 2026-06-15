@@ -35,6 +35,30 @@ while True:
     s.sendto(data, peer)
 """
 
+#: A small TCP echo responder.  bookworm's ``ncat --exec /bin/cat`` does
+#: NOT relay the child's output back to the socket (the established_check
+#: reads an empty reply even with no firewall rules), so the stateful
+#: probe uses this Python responder instead -- the same reason ECHO_PY
+#: exists for UDP.  Serves one connection at a time, which is all the
+#: established_check needs.
+TCP_ECHO_PY = """
+import socket, sys
+fam = socket.AF_INET6 if sys.argv[1] == "6" else socket.AF_INET
+addr, port = sys.argv[2], int(sys.argv[3])
+s = socket.socket(fam, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((addr, port))
+s.listen(8)
+while True:
+    conn, _ = s.accept()
+    with conn:
+        while True:
+            chunk = conn.recv(65535)
+            if not chunk:
+                break
+            conn.sendall(chunk)
+"""
+
 #: Listeners started once at setup and kept alive across both backends
 #: (between backends the ruleset is flushed, the listeners are not).
 LISTENER_SPECS = [
@@ -204,10 +228,11 @@ class Listeners:
     @staticmethod
     def _spawn(spec: dict) -> subprocess.Popen[bytes]:
         base = ["ip", "netns", "exec", spec["netns"]]
-        if spec["kind"] == "udp-echo":
+        if spec["kind"] in ("udp-echo", "tcp-echo"):
+            echo = ECHO_PY if spec["kind"] == "udp-echo" else TCP_ECHO_PY
             cmd = [
                 *base,
-                "python3", "-c", ECHO_PY,
+                "python3", "-c", echo,
                 str(spec["family"]), spec["addr"], str(spec["port"]),
             ]
         else:
@@ -215,8 +240,6 @@ class Listeners:
             if spec["family"] == 6:
                 ncat.append("-6")
             ncat += ["--keep-open", "--listen"]
-            if spec["kind"] == "tcp-echo":
-                ncat += ["--exec", "/bin/cat"]
             ncat += [spec["addr"], str(spec["port"])]
             cmd = [*base, *ncat]
         return subprocess.Popen(
@@ -321,10 +344,17 @@ def conntrack_available() -> bool:
     module is loaded (nft autoloads on first packet).  If conntrack is
     truly absent the scenario apply fails loudly (FAIL), not silently.
     """
+    # nft terminates a rule with a newline (or ``;``) *before* the chain's
+    # closing brace; the canonical multi-line form supplies it.  A
+    # single-line ``... accept }`` is a parse error (unexpected '}'),
+    # which would mis-read as "conntrack absent" and skip the whole suite.
     ruleset = (
-        "table ip ctprobe { chain c "
-        "{ type filter hook input priority 0; "
-        "ct state established accept } }\n"
+        "table ip ctprobe {\n"
+        "  chain c {\n"
+        "    type filter hook input priority 0;\n"
+        "    ct state established accept\n"
+        "  }\n"
+        "}\n"
     )
     return _sh("nft", "-c", "-f", "-", input_text=ruleset).returncode == 0
 

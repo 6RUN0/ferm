@@ -6,6 +6,6 @@ FROM debian:bookworm-slim
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       nftables iptables iproute2 nmap ncat conntrack python3 \
+       nftables iptables iproute2 nmap ncat conntrack procps python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /work
