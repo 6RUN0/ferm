@@ -176,6 +176,7 @@ addopts = "-ra --strict-config --strict-markers"
 markers = [
   "lockout: containerized --interactive anti-lockout e2e (opt-in, needs docker)",
   "nft_e2e: containerized nft backend round-trip + coexistence e2e (opt-in, needs docker)",
+  "datapath_e2e: containerized real-traffic datapath + backend-parity e2e (opt-in, needs docker)",
 ]
 xfail_strict = true
 # Any warning is a failure: deprecations surface on the oldest

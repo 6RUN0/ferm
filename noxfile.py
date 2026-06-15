@@ -336,6 +336,29 @@ def nft_e2e(session: nox.Session) -> None:
 
 
 @nox.session
+def datapath_e2e(session: nox.Session) -> None:
+    """
+    Containerized data-plane e2e: real traffic through ferm rules (docker).
+
+    Builds a three-netns topology (client/fw/backend on veth) in one
+    container, applies each ferm scenario config inside ``fw`` for both
+    the ``--nft`` and the default iptables backend, and probes from
+    ``client`` with ``nmap --reason`` / ``ncat``.  Proves the data plane
+    (allowed traffic passes, blocked is cut) and backend parity on the
+    same config.  Opt-in (needs the docker daemon; the test skips itself
+    when docker is absent or the host kernel lacks conntrack) and
+    deliberately absent from ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_datapath_e2e.py",
+        *session.posargs,
+        env={"FERM_DATAPATH_E2E": "1"},
+    )
+
+
+@nox.session
 def deps_lowest(session: nox.Session) -> None:
     """
     Run the test suite against the lowest declared dependency bounds.
