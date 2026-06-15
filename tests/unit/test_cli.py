@@ -163,10 +163,9 @@ def test_interactive_shell_nft_emits_anti_lockout_net(
     # timed-out admin would otherwise be rolled back without a word.  The
     # generated script must announce the rollback on stderr after the
     # restores -- parity with the live path's "Firewall rules rolled back."
-    assert (
-        out.index("ferm: rolled back to the previous firewall rules.")
-        > out.index("nft -f $ip_tmp\n")
-    )
+    assert out.index(
+        "ferm: rolled back to the previous firewall rules."
+    ) > out.index("nft -f $ip_tmp\n")
     assert ">&2" in out[out.index("ferm: rolled back") :]
 
 
