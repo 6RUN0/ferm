@@ -54,6 +54,17 @@ elif command -v zypper >/dev/null 2>&1; then
         nftables iptables iproute2 nmap ncat \
         conntrack-tools procps python311
     ln -sf "$(command -v python3.11)" /usr/local/bin/python3
+    # Leap's `iptables` package defaults the alternatives to the legacy
+    # xtables backend, which needs the ip_tables kernel module the test
+    # host lacks (every other family here runs the nft engine).  The
+    # nft-backed `xtables-nft-multi` ships in the same package but the
+    # front-end symlinks point at legacy and `iptables-{restore,save}` are
+    # not even alternatives-managed; repoint them at the nft multi-call
+    # binary so the whole iptables front-end speaks nf_tables.
+    for tool in iptables iptables-restore iptables-save \
+                ip6tables ip6tables-restore ip6tables-save; do
+        ln -sf xtables-nft-multi "/usr/sbin/$tool"
+    done
 else
     echo "unsupported package manager" >&2
     exit 1
