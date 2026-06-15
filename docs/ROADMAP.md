@@ -71,8 +71,14 @@ Resolved decisions and their consequences:
 
 - **Generation format: nft text, not JSON.** The backend emits the nft
   *text* wire and applies it atomically via `nft -f -`, with no
-  dependency on nft's JSON / `libjansson` build. `--nft` is strictly
-  opt-in; the default stays `iptables`.
+  dependency on nft's JSON / `libjansson` build. Text is chosen as the
+  *portable floor*: it works on any `nft`, which matters for the Phase 3
+  static binary calling whatever `nft` the user has — JSON support, while
+  near-universal in distro builds, is a build-time option that some builds
+  (e.g. Gentoo with the `json` USE flag off) ship without. A
+  runtime-detected JSON pipe (`nft -j -f -`) with a text fallback is
+  deferred to Phase 4/5, not ruled out. `--nft` is strictly opt-in; the
+  default stays `iptables`.
 - **DROP-policy semantic shift under the own-table model.** The backend
   owns a single `table <family> ferm` and does not take over the
   monolithic kernel `INPUT` / `FORWARD` / `OUTPUT` chains. ferm's base
