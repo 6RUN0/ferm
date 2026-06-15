@@ -354,7 +354,51 @@ def datapath_e2e(session: nox.Session) -> None:
         "pytest",
         "tests/e2e/test_datapath_e2e.py",
         *session.posargs,
-        env={"FERM_DATAPATH_E2E": "1"},
+        env={
+            "FERM_DATAPATH_E2E": "1",
+            "FERM_DATAPATH_TAG": "debian-bookworm",
+            "FERM_DATAPATH_BASE": "debian:bookworm-slim",
+        },
+    )
+
+
+#: Distro matrix for ``datapath_e2e_matrix``.  Each value is the base
+#: image fed to the Dockerfile's ``BASE`` build ARG; the key is both the
+#: parametrize id and the image tag (``FERM_DATAPATH_TAG``).  Adding a
+#: distro is a one-line entry -- install-toolbox.sh already detects the
+#: package manager and installs the family's package names.
+DATAPATH_MATRIX = {
+    "debian-bookworm": "debian:bookworm-slim",
+    "debian-trixie": "debian:trixie-slim",
+    "ubuntu-2404": "ubuntu:24.04",
+    "alpine": "alpine:3.20",
+    "rocky9": "rockylinux:9",
+    "fedora": "fedora:41",
+    "arch": "archlinux:latest",
+    "opensuse-leap": "opensuse/leap:15.6",
+}
+
+
+@nox.session
+@nox.parametrize("distro", list(DATAPATH_MATRIX))
+def datapath_e2e_matrix(session: nox.Session, distro: str) -> None:
+    """
+    Run the datapath e2e on one matrix distro (opt-in, docker).
+
+    Select one with `nox -s "datapath_e2e_matrix(distro='alpine')"`;
+    a bare `nox -s datapath_e2e_matrix` runs every distro in turn.
+    """
+    base = DATAPATH_MATRIX[distro]
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_datapath_e2e.py",
+        *session.posargs,
+        env={
+            "FERM_DATAPATH_E2E": "1",
+            "FERM_DATAPATH_BASE": base,
+            "FERM_DATAPATH_TAG": distro,
+        },
     )
 
 

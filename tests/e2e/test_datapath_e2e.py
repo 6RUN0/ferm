@@ -20,6 +20,11 @@ Opt-in: ``nox -s datapath_e2e`` (or ``FERM_DATAPATH_E2E=1`` by hand);
 skipped otherwise, when docker is absent, and when the driver reports
 ``DATAPATH-E2E-SKIP:`` (e.g. no conntrack on the host kernel).  The
 scenario lives in ``datapath/`` and runs inside the container.
+
+The base image is selectable via ``FERM_DATAPATH_BASE`` (passed to the
+Dockerfile's ``BASE`` build ARG); ``FERM_DATAPATH_TAG`` namespaces the
+built image so distros don't clobber each other.  See the
+``datapath_e2e_matrix`` nox session for the wired distro matrix.
 """
 
 import os
@@ -31,7 +36,11 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DATAPATH_DIR = Path(__file__).parent / "datapath"
-_IMAGE = "ferm-datapath-e2e"
+# The image tag is namespaced per distro so a matrix run never clobbers
+# another distro's image; the base is the Dockerfile's BASE build ARG.
+_TAG = os.environ.get("FERM_DATAPATH_TAG", "default")
+_IMAGE = f"ferm-datapath-e2e-{_TAG}"
+_BASE = os.environ.get("FERM_DATAPATH_BASE")
 
 pytestmark = [
     pytest.mark.datapath_e2e,
@@ -50,8 +59,12 @@ pytestmark = [
 
 
 def test_datapath_through_ferm_rules() -> None:
+    build_cmd = ["docker", "build", "-q", "-t", _IMAGE]
+    if _BASE:
+        build_cmd += ["--build-arg", f"BASE={_BASE}"]
+    build_cmd.append(str(_DATAPATH_DIR))
     build = subprocess.run(
-        ["docker", "build", "-q", "-t", _IMAGE, str(_DATAPATH_DIR)],
+        build_cmd,
         capture_output=True,
         encoding="utf-8",
         check=False,
