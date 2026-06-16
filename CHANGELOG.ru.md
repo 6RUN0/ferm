@@ -11,6 +11,10 @@
 
 ## [Не выпущено]
 
+Пока без изменений после 0.1.0a0.
+
+## [0.1.0a0] — 2026-06-16
+
 Порт на Python (`src/pyferm/`). Фаза 1 воспроизводит поведение
 Perl-реализации и генерирует наборы правил `iptables`; её вывод проверяется
 побайтово против Perl-оракула, хранящегося в `reference/`.
@@ -226,4 +230,5 @@ Perl-реализации и генерирует наборы правил `ipt
   обязательный `preflight` и в CI GitHub Actions (статические проверки
   выделены отдельно, patch-гейт на PR, еженедельный audit + Dependabot).
 
-[Не выпущено]: https://github.com/6RUN0/ferm/tree/develop
+[Не выпущено]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a0...develop
+[0.1.0a0]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a0
