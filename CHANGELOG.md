@@ -11,9 +11,9 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
 
 ## [Unreleased]
 
-No changes yet since 0.1.0a0.
+No changes yet since 0.1.0a1.
 
-## [0.1.0a0] - 2026-06-16
+## [0.1.0a1] - 2026-06-16
 
 The Python port (`src/pyferm/`). Phase 1 reproduces the Perl
 implementation's behaviour and emits `iptables` rulesets; its output is
@@ -219,5 +219,5 @@ are unchanged unless `--nft` is passed.
   `preflight` and into GitHub Actions CI (static checks split out, patch
   gate on PRs, weekly audit + Dependabot).
 
-[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a0...develop
-[0.1.0a0]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a0
+[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a1...develop
+[0.1.0a1]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a1
