@@ -7,6 +7,8 @@ case), and the negation rules.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from pyferm.errors import FermError
@@ -69,7 +71,7 @@ def test_format_bool_and_eval_bool_share_scalar_truthiness(
     # format_bool renders perl_true as "1"/"0"; eval_bool agrees on scalars
     # (the three only diverge on refs).
     assert format_bool(value) == ("1" if expected else "0")
-    assert eval_bool(value) is expected
+    assert eval_bool(cast("Value", value)) is expected
 
 
 def test_flatten_descends_arrays_but_keeps_other_refs() -> None:
