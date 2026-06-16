@@ -61,18 +61,46 @@ def test_run_shell_returns_backtick_bytes_as_latin1() -> None:
 # -- ipfilter ----------------------------------------------------------------
 
 
-def test_ipfilter_ip_drops_ipv6() -> None:
-    assert ipfilter("ip", ["1.2.3.4", "2001:db8::1", "::1"]) == ["1.2.3.4"]
+# ipfilter is a deliberately crude family split: under "ip" it drops a
+# ":hex:" run, under "ip6" anything purely numeric IPv4/CIDR; other families
+# and non-IP tokens (hostnames, deferred) pass through untouched.
+_IPFILTER_CASES = [
+    pytest.param(
+        "ip", ["1.2.3.4", "2001:db8::1", "::1"], ["1.2.3.4"], id="ip-drops-v6"
+    ),
+    pytest.param(
+        "ip6",
+        ["1.2.3.4", "10.0.0.0/8", "2001:db8::1"],
+        ["2001:db8::1"],
+        id="ip6-drops-v4-and-cidr",
+    ),
+    pytest.param("eb", ["anything"], ["anything"], id="other-family-passes"),
+    # empty input is family-agnostic
+    pytest.param("ip", [], [], id="ip-empty"),
+    pytest.param("ip6", [], [], id="ip6-empty"),
+    # an IPv4-mapped IPv6 address counts as IPv6: dropped from ip, kept by ip6
+    pytest.param("ip", ["::ffff:1.2.3.4"], [], id="ip-drops-v4-mapped"),
+    pytest.param(
+        "ip6", ["::ffff:1.2.3.4"], ["::ffff:1.2.3.4"], id="ip6-keeps-v4-mapped"
+    ),
+    # an IPv6 CIDR is dropped from the ip pass, kept by ip6
+    pytest.param("ip", ["2001:db8::/32"], [], id="ip-drops-v6-cidr"),
+    pytest.param(
+        "ip6", ["2001:db8::/32"], ["2001:db8::/32"], id="ip6-keeps-v6-cidr"
+    ),
+    # a hostname is neither shape, so it survives both families (resolved late)
+    pytest.param("ip", ["example.com"], ["example.com"], id="ip-keeps-host"),
+    pytest.param(
+        "ip6", ["example.com"], ["example.com"], id="ip6-keeps-host"
+    ),
+]
 
 
-def test_ipfilter_ip6_drops_ipv4_and_cidr() -> None:
-    assert ipfilter("ip6", ["1.2.3.4", "10.0.0.0/8", "2001:db8::1"]) == [
-        "2001:db8::1"
-    ]
-
-
-def test_ipfilter_other_domain_passes_through() -> None:
-    assert ipfilter("eb", ["anything"]) == ["anything"]
+@pytest.mark.parametrize(("domain", "addrs", "expected"), _IPFILTER_CASES)
+def test_ipfilter_drops_wrong_family(
+    domain: str, addrs: Value, expected: list[Value]
+) -> None:
+    assert ipfilter(domain, addrs) == expected
 
 
 # -- protocol helpers --------------------------------------------------------
