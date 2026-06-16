@@ -1190,6 +1190,54 @@ def test_capture_previous_test_mode_reads_mock_file(tmp_path: Path) -> None:
     assert info.previous == "table ip ferm {\n}\n"
 
 
+import errno  # noqa: E402
+import os  # noqa: E402
+
+
+def test_capture_previous_mock_reads_high_bytes_verbatim(
+    tmp_path: Path,
+) -> None:
+    # The mock-previous file is opened latin-1 (BYTE_ENCODING) so every byte
+    # 0x00-0xFF round-trips into the rollback snapshot.  Reading it under the
+    # locale default would choke on a non-UTF-8 byte (0xFF here) -- the
+    # snapshot the admin must get back verbatim for rollback to restore the
+    # real ruleset.
+    snap = tmp_path / "prev.nft"
+    snap.write_bytes(b"table ip ferm {\n  comment \xff\n}\n")
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    NftBackend().capture_previous(
+        "ip",
+        info,
+        Options(test=True, mock_previous={"ip": str(snap)}),
+        execute=lambda _c: None,
+        read_save=lambda _tool: None,
+        capture=lambda _cmd: None,
+    )
+    assert info.previous == "table ip ferm {\n  comment \xff\n}\n"
+
+
+def test_capture_previous_mock_open_failure_reports_os_reason(
+    tmp_path: Path,
+) -> None:
+    # A missing mock file must surface the OS reason (strerror), never a bare
+    # None or the noisy "[Errno N] ...: '<path>'" repr -- the admin needs to
+    # know why the rollback snapshot could not be read.
+    missing = tmp_path / "does-not-exist.nft"
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    with pytest.raises(FermError) as excinfo:
+        NftBackend().capture_previous(
+            "ip",
+            info,
+            Options(test=True, mock_previous={"ip": str(missing)}),
+            execute=lambda _c: None,
+            read_save=lambda _tool: None,
+            capture=lambda _cmd: None,
+        )
+    assert str(excinfo.value) == os.strerror(errno.ENOENT)
+
+
 # ---------------------------------------------------------------------------
 # Operand escaping / validation hardening (review 2026-06-14, fixes 1-5)
 #
