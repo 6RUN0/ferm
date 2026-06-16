@@ -101,6 +101,6 @@ def test_warning_writes_located_message(
 def test_set_error_context_module_state() -> None:
     script = _Script(line=1)
     set_error_context(script)
-    assert errors._context is script  # noqa: SLF001 -- state under test
+    assert errors._context is script
     set_error_context(None)
-    assert errors._context is None  # noqa: SLF001 -- state under test
+    assert errors._context is None

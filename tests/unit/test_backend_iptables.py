@@ -490,9 +490,7 @@ def test_commit_slow_guard_stops_after_failure() -> None:
 
     commands = [Command("a"), Command("b"), Command("c")]
     backend = IptablesBackend()
-    status = backend._commit_slow(  # noqa: SLF001 -- guard under test
-        commands, execute=execute
-    )
+    status = backend._commit_slow(commands, execute=execute)
     # 'c' is skipped once 'b' failed (the $status ||= short-circuit)
     assert calls == ["a", "b"]
     assert status == 1
@@ -506,9 +504,7 @@ def test_commit_slow_unguarded_always_runs() -> None:
         return 1 if command == "fail" else None
 
     commands = [Command("fail"), Command("always", guarded=False)]
-    IptablesBackend()._commit_slow(  # noqa: SLF001 -- guard under test
-        commands, execute=execute
-    )
+    IptablesBackend()._commit_slow(commands, execute=execute)
     assert "always" in calls
 
 

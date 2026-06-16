@@ -527,7 +527,7 @@ def _nested(depth: int) -> str:
 def test_enter_depth_at_limit_parses() -> None:
     # top-level enter is frame 1; each "{" adds one: MAX-1 braces fit
     parser = _parse(_nested(MAX_BLOCK_DEPTH - 1))
-    assert parser._block_depth == 0  # noqa: SLF001 -- counter under test
+    assert parser._block_depth == 0
 
 
 def test_enter_depth_over_limit_is_located_ferm_error(
@@ -550,7 +550,7 @@ def test_enter_depth_counter_recovers_after_error() -> None:
     with pytest.raises(FermError):
         parser.enter(0, None)
     # the finally chain unwound every frame
-    assert parser._block_depth == 0  # noqa: SLF001 -- counter under test
+    assert parser._block_depth == 0
 
 
 def test_enter_array_replay_does_not_reset_depth() -> None:
@@ -592,4 +592,4 @@ def test_enter_sequential_replays_release_depth() -> None:
         + " } } }"
     )
     parser = _parse(source)
-    assert parser._block_depth == 0  # noqa: SLF001 -- counter under test
+    assert parser._block_depth == 0

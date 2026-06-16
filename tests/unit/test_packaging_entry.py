@@ -56,7 +56,7 @@ def test_invoked_name_reads_proc_cmdline_field0() -> None:
     pytest.importorskip("dns.resolver")  # _load_entry imports pyferm.cli deps
     entry = _load_entry()
     # Reaching into the dispatcher's private helper is the point of this test.
-    assert entry._invoked_name() == os.fsdecode(expected)  # noqa: SLF001
+    assert entry._invoked_name() == os.fsdecode(expected)
 
 
 def test_selfcheck_imports_required_frozen_modules() -> None:

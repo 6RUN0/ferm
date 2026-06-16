@@ -55,7 +55,7 @@ def test_run_shell_returns_backtick_bytes_as_latin1() -> None:
     scope.push(Frame())
     evaluator = Evaluator(Tokenizer(script), scope)
     # backtick output flows into the tokenizer: byte 0xff must survive
-    assert evaluator._run_shell(r"printf '\377'") == "\xff"  # noqa: SLF001 -- seam under test
+    assert evaluator._run_shell(r"printf '\377'") == "\xff"
 
 
 # -- ipfilter ----------------------------------------------------------------
@@ -458,7 +458,7 @@ def test_getvalues_at_depth_limit_reads() -> None:
     # count, so MAX_VALUE_DEPTH - 1 parens reach the limit and still read
     ev = _evaluator(_nested_value(MAX_VALUE_DEPTH - 1))
     assert ev.getvalues() == "x"
-    assert ev._value_depth == 0  # noqa: SLF001 -- counter under test
+    assert ev._value_depth == 0
 
 
 def test_getvalues_over_depth_limit_is_ferm_error() -> None:
@@ -475,4 +475,4 @@ def test_getvalues_depth_counter_recovers_after_error() -> None:
     with pytest.raises(FermError):
         ev.getvalues()
     # the finally chain unwound every frame
-    assert ev._value_depth == 0  # noqa: SLF001 -- counter under test
+    assert ev._value_depth == 0
