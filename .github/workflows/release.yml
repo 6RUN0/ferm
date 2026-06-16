@@ -1,0 +1,110 @@
+---
+# Tag-gated release of the standalone binary.  The published artifact is
+# run as root by end users, so this workflow is the publication trust
+# boundary: minimal token scopes, SHA-pinned actions, a download->verify
+# step before signing, and an environment gate in front of the upload.
+on:
+  push:
+    tags: ['v*']           # only a v* tag publishes a release
+  workflow_dispatch: {}     # manual build + gates WITHOUT publishing
+permissions:
+  contents: read            # explicit minimal top-level scope
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a release mid-publish: a half-created Release with a
+  # detached attestation is worse than a queued second run.
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # the build runs arbitrary Python; no write needed
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0     # release builds need the full tag history
+
+      # Pulls the large manylinux_2_28 image and compiles with Nuitka;
+      # expect this step to take several minutes on a stock runner.
+      - name: Build standalone binary (release mode, clean checkout)
+        run: |
+          python packaging/build.py --action=build --mode=release \
+            --tag "${GITHUB_REF_NAME}" --out dist
+
+      - name: Verify the golden suite against the packaged binary
+        run: python packaging/build.py --action=verify-golden --out dist
+
+      - name: Smoke-test the tag-anchored --version
+        run: python packaging/build.py --action=smoke --out dist
+
+      # glibc-floor gate: load the binary on debian:10 (glibc 2.28, the
+      # advertised floor) -- NOT the manylinux build image -- so a symbol above
+      # the floor surfaces here, not on a user's old distro. A plain tag is
+      # fine: this image only proves the binary loads, it ships nothing, and
+      # debian 10 is a frozen oldstable release.
+      - name: Floor gate -- run on glibc 2.28 image
+        run: |
+          python packaging/build.py --action=run-on-image \
+            --image=debian:10-slim --out dist
+
+      # Hard-required: if the resolver container fails to come up the
+      # release fails.  No skip, no xfail.
+      - name: DNS resolve gate (blocker, no skip)
+        run: python packaging/build.py --action=run-dns-gate --out dist
+
+      # Hard-required: if the confirm-timeout harness fails to come up the
+      # release fails.  No skip, no xfail.  Needs only --cap-add=NET_ADMIN,
+      # which is grantable on a stock runner; rules are really applied then
+      # rolled back inside the throwaway container, and no real traffic flows.
+      - name: Interactive confirm-timeout gate (blocker, no skip)
+        run: python packaging/build.py --action=run-interactive-gate --out dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # frozen: v4.6.2
+        with:
+          name: ferm-dist
+          path: dist/
+
+  publish:
+    needs: build
+    # Ref-guard so workflow_dispatch builds the gates but never publishes;
+    # only a pushed v* tag reaches this job.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Repo-side gate: the `release` environment carries required reviewers
+    # and a tag-matching deployment rule.
+    environment: release
+    # One job-level block replaces the top-level scope for this job.
+    permissions:
+      contents: write         # create the Release and upload assets
+      id-token: write         # OIDC token for the attestation
+      attestations: write     # write the build provenance attestation
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # frozen: v4.3.0
+        with:
+          name: ferm-dist
+          path: dist/
+
+      # attest-build-provenance signs WHATEVER it is handed, so cross-check
+      # the digest this job received against the build job's SHA256SUMS
+      # first; a swap in artifact storage would otherwise be attested as
+      # genuine.
+      - name: Verify artifact integrity before attesting
+        run: cd dist && sha256sum -c SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # frozen: v1.4.4
+        with:
+          subject-path: 'dist/ferm-*-linux-x86_64.tar.gz'
+
+      # The official gh client, not a third-party action.  --verify-tag
+      # refuses if the tag is absent from the remote, closing the window
+      # where an environment approval could target an arbitrary ref; it
+      # layers on top of the tag protection rules, it does not replace them.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/ferm-*-linux-x86_64.tar.gz dist/SHA256SUMS \
+            --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag

@@ -19,6 +19,10 @@ whole ``datapath/`` directory is bind-mounted and on ``sys.path[0]``.
 
 from __future__ import annotations
 
+import os
+import pty
+import re
+import select
 import subprocess
 import sys
 import time
@@ -31,10 +35,24 @@ from oracle import Probe, parse_reason, run_nmap_probe
 _ESTAB_NONCE = "DATAPATH-ESTAB-OK"
 
 
+def _ferm_cmd(prefix: list[str]) -> list[str]:
+    """
+    Build the ferm invocation for ``prefix``.
+
+    With ``FERM_BINARY`` set the packaged binary is invoked directly (the
+    gate that proves the shipped artifact); otherwise the in-tree module is
+    run via ``python3 -m pyferm``.
+    """
+    binary = os.environ.get("FERM_BINARY")
+    if binary:
+        return [*prefix, binary]
+    return [*prefix, "python3", "-m", "pyferm"]
+
+
 def _apply_config(
     cfg_path: str, backend: str
 ) -> subprocess.CompletedProcess[str]:
-    cmd = ["ip", "netns", "exec", "fw", "python3", "-m", "pyferm"]
+    cmd = _ferm_cmd(["ip", "netns", "exec", "fw"])
     if backend == "nft":
         cmd.append("--nft")
     else:
@@ -152,7 +170,114 @@ def _run_scenario(
     return fails
 
 
+# The interactive scenario (selected via DATAPATH_SCENARIO=interactive) is
+# the only path that enters signal.alarm + the function-local `import
+# termios`. It runs the binary under --interactive with a short --timeout
+# and never confirms, so the timeout fires and ferm rolls back. The marker
+# is emitted by THIS driver, never by the binary: a silent
+# --include-module=termios no-op would surface as a ModuleNotFoundError on
+# stderr here instead of failing on the most dangerous (lockout) path.
+
+_INTERACTIVE_CONFIG = """\
+table filter {
+    chain INPUT policy DROP;
+}
+"""
+
+_INTERACTIVE_TIMEOUT = 5
+_PROMPT = b"Please type 'yes' to confirm:"
+_ROLLED_BACK = b"Firewall rules rolled back."
+_MISSING_MODULE_RE = re.compile(
+    rb"ModuleNotFoundError|No module named '(?:termios|signal)'"
+)
+
+
+def _read_until(
+    master: int, needle: bytes, buf: bytearray, deadline: float
+) -> bool:
+    """Drain the pty master until ``needle`` shows up or time runs out."""
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 0.5)
+        if not ready:
+            continue
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            # EIO: the child closed its pty side (it exited).
+            break
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if needle in buf:
+            return True
+    return needle in buf
+
+
+def _run_interactive() -> int:
+    """
+    Exercise --interactive confirm/timeout against the binary; print the
+    marker only when the timeout+rollback path ran with no missing module.
+    """
+    config = Path("/tmp/interactive.ferm")
+    config.write_text(_INTERACTIVE_CONFIG, encoding="utf-8")
+
+    # A pty stands in for the locked-out admin's tty: ferm prompts and the
+    # prompt is never answered, so --timeout has to drive the rollback.
+    master, slave = pty.openpty()
+    cmd = _ferm_cmd([])
+    cmd += [
+        "--interactive",
+        "--timeout",
+        str(_INTERACTIVE_TIMEOUT),
+        "--nolegacy",
+        str(config),
+    ]
+    ferm = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave)
+    os.close(slave)
+    output = bytearray()
+
+    try:
+        if not _read_until(master, _PROMPT, output, time.monotonic() + 30):
+            print(
+                f"FAIL no confirmation prompt; ferm said: {bytes(output)!r}",
+                file=sys.stderr,
+            )
+            return 1
+        if not _read_until(
+            master, _ROLLED_BACK, output, time.monotonic() + 30
+        ):
+            print(
+                f"FAIL no rollback message; ferm said: {bytes(output)!r}",
+                file=sys.stderr,
+            )
+            return 1
+        status = ferm.wait(timeout=30)
+    finally:
+        if ferm.poll() is None:
+            ferm.kill()
+        os.close(master)
+
+    if _MISSING_MODULE_RE.search(output):
+        print(
+            f"FAIL include-flag no-op -- missing module: {bytes(output)!r}",
+            file=sys.stderr,
+        )
+        return 1
+    if status != 1:
+        print(
+            f"FAIL ferm exited {status}, expected 1 (rollback path)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("INTERACTIVE-ROLLBACK-OK")
+    return 0
+
+
 def main() -> int:
+    if os.environ.get("DATAPATH_SCENARIO") == "interactive":
+        return _run_interactive()
+
     if not netns.conntrack_available():
         print("DATAPATH-E2E-SKIP:conntrack")
         return 0

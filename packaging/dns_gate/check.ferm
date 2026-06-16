@@ -1,0 +1,6 @@
+# Exercise the frozen dnspython through a non-A (MX) lookup. getaddrinfo
+# answers A/AAAA only, so an MX resolve proves dnspython really got frozen
+# into the binary: the stub backend would warn and refuse this record type.
+# ferm resolves the MX exchange to an address in a second pass, so the rule
+# below ends up matching the A record behind mail.gate.example.
+domain ip chain INPUT proto tcp dport 25 saddr @resolve(gate.example, 'MX') ACCEPT;

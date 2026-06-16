@@ -61,6 +61,79 @@ resolver consults system sources such as `/etc/hosts` and mDNS that dnspython
 bypasses, so the two backends can diverge when those local sources differ from
 authoritative DNS.
 
+## Installation (standalone binary)
+
+A self-contained binary is published for **Linux x86_64** (glibc **2.28**
+or newer). It carries its own Python runtime and a bundled `dnspython`,
+so no Python installation is needed on the target host. It does **not**
+bundle `iptables` or `nft` — those must already be present on the system,
+because ferm calls them to install the rules.
+
+Download the release tarball `ferm-<version>-linux-x86_64.tar.gz` and
+unpack it, preserving symlinks:
+
+```sh
+tar xzf ferm-<version>-linux-x86_64.tar.gz
+```
+
+This produces a `ferm.dist/` directory containing the `ferm` binary and,
+next to it, an `import-ferm` symlink.
+
+### Keep the binary inside its directory
+
+The `ferm` binary loads its bundled shared objects from its own directory
+(via an `$ORIGIN`-relative runtime path). **Do not move or copy the bare
+`ferm` binary out of `ferm.dist/`** — a lone copy can no longer find its
+libraries and will fail to start. To run it from a directory on `PATH`,
+create a **symlink** to the binary instead of copying it; `$ORIGIN` still
+resolves through the symlink:
+
+```sh
+ln -s /opt/ferm/ferm.dist/ferm /usr/local/bin/ferm
+```
+
+### Unpack into a root-owned directory
+
+ferm runs as root. Because the binary loads shared objects from its own
+directory, a world- or group-writable dist directory lets a local
+attacker plant a malicious shared object next to the binary that then
+runs with root privileges. **Unpack into a directory owned by root and
+not writable by other users** (for example `/opt/ferm`, mode `0755`,
+owner `root`), and verify the permissions *before* the first run as root:
+
+```sh
+sudo install -d -o root -g root -m 0755 /opt/ferm
+sudo tar xzf ferm-<version>-linux-x86_64.tar.gz -C /opt/ferm
+ls -ld /opt/ferm /opt/ferm/ferm.dist
+```
+
+### Verifying the download
+
+The release ships a `SHA256SUMS` file. It guards against accidental
+corruption in transfer — **integrity, not authenticity.** A matching
+checksum does **not** prove the file was not maliciously substituted,
+because an attacker who can replace the tarball can replace the checksum
+file too.
+
+For authenticity, verify the build provenance attestation with the GitHub
+CLI:
+
+```sh
+gh attestation verify ferm-<version>-linux-x86_64.tar.gz --repo 6RUN0/ferm
+```
+
+Attestation only protects those who actually run the check, so verify
+every download rather than trusting the file blindly.
+
+### `@resolve()` and the host resolver
+
+`@resolve()` looks names up through the host's `/etc/resolv.conf`, and
+ferm runs as root. If a rule's correctness depends on the resolved
+address (for example, restricting access to a named host), a tampered or
+spoofed DNS answer can change which addresses the installed ruleset
+trusts. For security-significant rules, use a trusted or local resolver,
+or write static addresses directly.
+
 ## Usage
 
 ```sh

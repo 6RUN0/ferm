@@ -1,8 +1,8 @@
-"""Golden text harness for the nft backend (design section 10, layer 1).
+"""Golden text harness for the nft backend.
 
 Pure string comparison of ``--nft --noexec --lines`` output against a
 checked-in, manually-verified ``.nft`` expectation -- no kernel, no caps,
-runs in preflight (design section 10).
+runs in preflight.
 
 Each ``nft/<name>.ferm`` input is paired with a ``nft/<name>.nft``
 expectation that was generated, cross-checked against the reference
@@ -16,10 +16,13 @@ break the parametrized suite.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from .runner import FermTarget
 
 _HERE = Path(__file__).parent
 _CASES = sorted(
@@ -30,12 +33,17 @@ _CASES = sorted(
 assert _CASES, f"No golden .ferm/.nft pairs found under {_HERE / 'nft'}"
 
 
-def _run_nft(ferm_file: Path) -> str:
+def _skip_if_no_nft(target: FermTarget) -> None:
+    # The nft backend is Python-only; the Perl oracle has no --nft, so these
+    # cases run only against the ``python`` and ``binary`` targets.
+    if target.name == "perl":
+        pytest.skip("the Perl oracle has no nft backend")
+
+
+def _run_nft(target: FermTarget, ferm_file: Path) -> str:
     proc = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "pyferm",
+            *target.ferm,
             "--nft",
             "--test",
             "--noexec",
@@ -51,17 +59,17 @@ def _run_nft(ferm_file: Path) -> str:
 
 
 @pytest.mark.parametrize("ferm_file", _CASES, ids=lambda p: p.stem)
-def test_nft_golden(ferm_file: Path) -> None:
+def test_nft_golden(ferm_file: Path, golden_target: FermTarget) -> None:
+    _skip_if_no_nft(golden_target)
     expected = ferm_file.with_suffix(".nft").read_text(encoding="utf-8")
-    assert _run_nft(ferm_file) == expected
+    assert _run_nft(golden_target, ferm_file) == expected
 
 
-def test_nft_uncovered_module_errors() -> None:
+def test_nft_uncovered_module_errors(golden_target: FermTarget) -> None:
+    _skip_if_no_nft(golden_target)
     proc = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "pyferm",
+            *golden_target.ferm,
             "--nft",
             "--test",
             "--noexec",
@@ -76,15 +84,16 @@ def test_nft_uncovered_module_errors() -> None:
     assert "not yet supported by nft backend" in proc.stderr
 
 
-def test_nft_port_nat_without_transport_errors() -> None:
-    # finding C1: a port-bearing NAT mapping with no preceding transport
-    # match exits non-zero at translate time (nft would reject the applied
-    # script), rather than emitting a script that fails at apply.
+def test_nft_port_nat_without_transport_errors(
+    golden_target: FermTarget,
+) -> None:
+    # A port-bearing NAT mapping with no preceding transport match exits
+    # non-zero at translate time (nft would reject the applied script), rather
+    # than emitting a script that fails at apply.
+    _skip_if_no_nft(golden_target)
     proc = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "pyferm",
+            *golden_target.ferm,
             "--nft",
             "--test",
             "--noexec",

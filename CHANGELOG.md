@@ -19,6 +19,31 @@ Phase 2 adds an **opt-in native `nftables` backend** behind `--nft`. The
 default backend stays `iptables`, so existing configurations and output
 are unchanged unless `--nft` is passed.
 
+### Added — packaging
+
+- **Standalone binary distribution** for **Linux x86_64** (glibc **2.28**
+  or newer), published as `ferm-<version>-linux-x86_64.tar.gz`. It bundles
+  its own Python runtime and `dnspython`, so the target host needs no
+  Python install; it does not bundle `iptables` / `nft`, which must be
+  present at runtime. Unpacking yields a `ferm.dist/` directory with the
+  `ferm` binary and an `import-ferm` symlink. **Install invariant:** the
+  binary loads bundled shared objects from its own directory, so keep it
+  inside `ferm.dist/` and link to it (don't copy the bare binary out);
+  unpack into a root-owned, non-world-writable directory. See the
+  installation section of the [README](README.md) for the full provenance
+  and threat-model notes.
+- **Static release version.** The distribution version is pinned in the
+  project metadata; a release is the tag `vX.Y.Z` matching that version,
+  and the build verifies the two agree before publishing.
+- **Bundled third-party license texts.** The tarball ships a `LICENSES/`
+  directory with the verbatim license text of every native library frozen
+  into the binary (CPython, dnspython, OpenSSL, libffi, bzip2, xz, mpdecimal)
+  plus a manifest. The build fails closed if any bundled library has no
+  license text, so the artifact is never published without its notices.
+- **glibc-floor release gate.** Releases now load the packaged binary on a
+  pinned glibc 2.28 image (not the build image), so a symbol above the
+  advertised floor fails the release rather than a user's old distro.
+
 ### Added — Phase 2 (native nft backend)
 
 - **Opt-in `--nft` native nftables backend.** Translates the structured

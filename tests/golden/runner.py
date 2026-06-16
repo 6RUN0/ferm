@@ -58,6 +58,22 @@ def build_target(name: str, reference_root: Path) -> FermTarget:
             ferm=(sys.executable, "-m", "pyferm"),
             import_ferm=(sys.executable, "-m", "pyferm.import_ferm"),
         )
+    if name == "binary":
+        raw = os.environ.get("FERM_BINARY")
+        if not raw:
+            raise ValueError(
+                "binary target requires FERM_BINARY=<path to ferm in *.dist/>"
+            )
+        binary = Path(raw)
+        # The packaged dist ships ``ferm`` and an in-dist symlink
+        # ``import-ferm`` -> ``ferm`` alongside it; the dispatcher routes by
+        # the invoked basename, so both prefixes are the same binary under a
+        # different name.
+        return FermTarget(
+            name="binary",
+            ferm=(str(binary),),
+            import_ferm=(str(binary.with_name("import-ferm")),),
+        )
     raise ValueError(f"unknown ferm target: {name!r}")
 
 

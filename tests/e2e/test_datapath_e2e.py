@@ -71,31 +71,53 @@ def test_datapath_through_ferm_rules() -> None:
     )
     assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
 
+    run_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        # NET_ADMIN writes netfilter rules; SYS_ADMIN is the broader
+        # grant the driver needs for two things NET_ADMIN cannot do
+        # (empirically established 2026-06-15): `ip netns add`
+        # (mount --make-shared /run/netns) and `mount -o remount,rw
+        # /proc/sys` to lift docker's read-only OCI mount so the fw
+        # sysctls can be written.  Narrower than --privileged.
+        "--cap-add=NET_ADMIN",
+        "--cap-add=SYS_ADMIN",
+        "-v",
+        f"{_REPO_ROOT}/src:/work/src:ro",
+        "-v",
+        f"{_DATAPATH_DIR}:/work/datapath:ro",
+        "-e",
+        "PYTHONPATH=/work/src",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+    ]
+
+    # When the host points FERM_BINARY at an unpacked dist tree, mount it
+    # and run the full datapath against the PACKAGED binary instead of the
+    # in-tree module (opt-in: proves find_tool + the binary on real
+    # traffic).  Absent the var, the run stays on `python3 -m pyferm`.
+    host_binary = os.environ.get("FERM_BINARY")
+    if host_binary:
+        binary_path = Path(host_binary).resolve()
+        dist_root = binary_path.parent.parent  # holds the *.dist/ dir
+        in_container = (
+            f"/work-dist/{binary_path.parent.name}/{binary_path.name}"
+        )
+        run_cmd += [
+            "-v",
+            f"{dist_root}:/work-dist:ro",
+            "-e",
+            f"FERM_BINARY={in_container}",
+        ]
+
+    run_cmd += [
+        _IMAGE,
+        "python3",
+        "/work/datapath/driver.py",
+    ]
     run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            # NET_ADMIN writes netfilter rules; SYS_ADMIN is the broader
-            # grant the driver needs for two things NET_ADMIN cannot do
-            # (empirically established 2026-06-15): `ip netns add`
-            # (mount --make-shared /run/netns) and `mount -o remount,rw
-            # /proc/sys` to lift docker's read-only OCI mount so the fw
-            # sysctls can be written.  Narrower than --privileged.
-            "--cap-add=NET_ADMIN",
-            "--cap-add=SYS_ADMIN",
-            "-v",
-            f"{_REPO_ROOT}/src:/work/src:ro",
-            "-v",
-            f"{_DATAPATH_DIR}:/work/datapath:ro",
-            "-e",
-            "PYTHONPATH=/work/src",
-            "-e",
-            "PYTHONDONTWRITEBYTECODE=1",
-            _IMAGE,
-            "python3",
-            "/work/datapath/driver.py",
-        ],
+        run_cmd,
         capture_output=True,
         encoding="utf-8",
         check=False,

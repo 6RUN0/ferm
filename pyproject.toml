@@ -43,57 +43,59 @@ default-groups = ["dev", "test", "lint"]
 [tool.ruff]
 line-length = 79
 target-version = "py311"
-src = ["src", "tests"]
+src = ["src", "tests", "packaging"]
 
 [tool.ruff.lint]
 select = [
-  "E", "F", "W",      # pycodestyle + pyflakes
-  "I",                # isort
-  "N",                # pep8-naming
-  "D",                # pydocstyle
-  "UP",               # pyupgrade
-  "B",                # bugbear
-  "FBT",              # boolean-trap (positional bool args)
-  "A",                # builtins shadowing
-  "C4",               # comprehensions
-  "SIM",              # simplify
-  "PTH",              # use pathlib
-  "RUF",              # ruff-specific
-  "PIE",              # misc lints
-  "RET",              # return consistency
-  "RSE",              # raise: drop redundant parens on bare raise
-  "TID",              # tidy imports
-  "FURB",             # refurb modernisation
-  "TRY",              # exception hygiene
-  "ARG",              # unused arguments
-  "PERF",             # performance anti-patterns
-  "BLE",              # blind except
-  "TC",               # typing-only imports
-  "SLF",              # private-member access
-  "ICN",              # import naming conventions
-  "PGH",              # pygrep (blanket noqa / type: ignore)
-  "PL",               # pylint (PLE/PLW/PLC/PLR)
-  "DTZ",              # naive datetime
-  "G",                # logging format
-  "LOG",              # logging hygiene
-  "PT",               # pytest style
-  "ERA",              # commented-out code
-  "ISC",              # implicit string concatenation
-  "FLY",              # static str.join -> f-string
-  "SLOT",             # __slots__ on str/tuple subclasses
+  "E",
+  "F",
+  "W",    # pycodestyle + pyflakes
+  "I",    # isort
+  "N",    # pep8-naming
+  "D",    # pydocstyle
+  "UP",   # pyupgrade
+  "B",    # bugbear
+  "FBT",  # boolean-trap (positional bool args)
+  "A",    # builtins shadowing
+  "C4",   # comprehensions
+  "SIM",  # simplify
+  "PTH",  # use pathlib
+  "RUF",  # ruff-specific
+  "PIE",  # misc lints
+  "RET",  # return consistency
+  "RSE",  # raise: drop redundant parens on bare raise
+  "TID",  # tidy imports
+  "FURB", # refurb modernisation
+  "TRY",  # exception hygiene
+  "ARG",  # unused arguments
+  "PERF", # performance anti-patterns
+  "BLE",  # blind except
+  "TC",   # typing-only imports
+  "SLF",  # private-member access
+  "ICN",  # import naming conventions
+  "PGH",  # pygrep (blanket noqa / type: ignore)
+  "PL",   # pylint (PLE/PLW/PLC/PLR)
+  "DTZ",  # naive datetime
+  "G",    # logging format
+  "LOG",  # logging hygiene
+  "PT",   # pytest style
+  "ERA",  # commented-out code
+  "ISC",  # implicit string concatenation
+  "FLY",  # static str.join -> f-string
+  "SLOT", # __slots__ on str/tuple subclasses
 ]
 # D213 (summary on the second line) is the project's docstring shape;
 # it is mutually exclusive with D212, which the pep257 convention
 # enables -- hence the explicit extend-select + D212 ignore.
 extend-select = ["D213"]
 ignore = [
-  "D212",    # we use D213 (summary on second line); see extend-select
-  "TRY003",  # long messages in raise FermError(...) ARE the product's
-             # error text, ported verbatim from the Perl die strings;
-             # a custom exception class per message is over-engineering
+  "D212",   # we use D213 (summary on second line); see extend-select
+  "TRY003", # long messages in raise FermError(...) ARE the product's
+  # error text, ported verbatim from the Perl die strings;
+  # a custom exception class per message is over-engineering
   "PLC0415", # function-local imports are deliberate: signal/termios
-             # mirror the oracle's lazy `require POSIX`, and tests
-             # import the unit under test inside the test function
+  # mirror the oracle's lazy `require POSIX`, and tests
+  # import the unit under test inside the test function
   # The complexity quartet is inherited: enter()/handle() port the
   # oracle's ~770-line recursive-descent monolith verbatim (a sanctioned
   # phase 1 decision); splitting it is the Phase 7 AST refactor, and the
@@ -124,12 +126,13 @@ known-first-party = ["pyferm"]
 # literal expected values is the point of a test (PLR2004) -- and passing
 # a bare bool to the unit under test (format_bool(True), pick_resolver(
 # True, ...)) is that same literal-as-input pattern, not a boolean trap
-# (FBT).
-"tests/*" = ["D", "PLR2004", "FBT"]
+# (FBT). Probing a module's private helpers (SLF001) is legitimate: a unit
+# test exists to pin internal logic like packaging.build._expected_version.
+"tests/*" = ["D", "PLR2004", "FBT", "SLF001"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests"]
+files = ["src", "tests", "packaging"]
 strict = true
 warn_unreachable = true
 # Stricter-than-strict: TypedDict/Concatenate soundness checks plus the
@@ -148,7 +151,12 @@ enable_error_code = [
 # ``oracle`` / ``scenarios``) cannot resolve under the package type-checker.
 # Like the fuzz harnesses it stays out of the gate; the host-side oracle and
 # scenarios unit tests under tests/unit/ remain fully checked.
-exclude = ['^tests/e2e/datapath/']
+#
+# packaging/dns_gate/ is the same kind of beast: a flat container script that
+# imports the untyped dnslib (no stubs published), run only inside its own
+# throwaway image, never on the host. The gate proving it works is the
+# container run itself, not the host type-checker.
+exclude = ['^tests/e2e/datapath/', '^packaging/dns_gate/']
 
 [[tool.mypy.overrides]]
 # The flat harness module names exist only on the container's sys.path;
@@ -159,11 +167,13 @@ ignore_missing_imports = true
 [tool.pyright]
 # Pin the analysis scope: without it pyright walks the whole worktree
 # (including throwaway scratch files) and the gate stops being stable.
-include = ["src", "tests", "noxfile.py"]
+include = ["src", "tests", "noxfile.py", "packaging"]
 # The container-only datapath e2e harness uses a flat-script import model the
 # package checker cannot resolve (see the matching [tool.mypy] exclude); keep
 # its diagnostics out of the gate while leaving it importable for the tests.
-ignore = ["tests/e2e/datapath"]
+# packaging/dns_gate/ is the same: a container-only flat script over the
+# untyped dnslib, so it stays out of the host type gate too.
+ignore = ["tests/e2e/datapath", "packaging/dns_gate"]
 pythonVersion = "3.11"
 # Match mypy's strictness: two checkers at different strictness levels
 # only pretend to be redundant -- the weaker one stops catching the
@@ -224,10 +234,10 @@ show_missing = true
 # the ``coverage`` nox session.
 fail_under = 84
 exclude_also = [
-    # Type-only branches never execute at runtime.
-    "if TYPE_CHECKING:",
-    # Escape hatch for paths a test cannot exercise (documented per site).
-    "pragma: no cover",
+  # Type-only branches never execute at runtime.
+  "if TYPE_CHECKING:",
+  # Escape hatch for paths a test cannot exercise (documented per site).
+  "pragma: no cover",
 ]
 
 [tool.importlinter]
@@ -284,15 +294,15 @@ layers = [
 # subprocess family of findings describes the product, not a defect.
 # New findings outside this list still fail the audit session.
 skips = [
-    "B101", # assert: dev-time invariants; ferm is never run with -O
-    "B105", # hardcoded-password heuristic fires on the lexer's
-            # `token` variables (a parser token is not a credential)
-    "B404", # import subprocess
-    "B602", # shell=True -- the Perl system()/backtick port
-    "B603", # subprocess without shell (tool paths from find_tool)
-    "B604", # shell=True via the injected execute callable
-    "B607", # partial executable path: --test mode uses bare tool
-            # names by design (find_tool returns `iptables` verbatim)
+  "B101", # assert: dev-time invariants; ferm is never run with -O
+  "B105", # hardcoded-password heuristic fires on the lexer's
+  # `token` variables (a parser token is not a credential)
+  "B404", # import subprocess
+  "B602", # shell=True -- the Perl system()/backtick port
+  "B603", # subprocess without shell (tool paths from find_tool)
+  "B604", # shell=True via the injected execute callable
+  "B607", # partial executable path: --test mode uses bare tool
+  # names by design (find_tool returns `iptables` verbatim)
 ]
 
 [tool.codespell]
@@ -311,8 +321,16 @@ ignore-words-list = "iif,rsource,ect,nd"
 known_first_party = ["pyferm"]
 # noxfile.py imports its dev-group tooling by design; mutants/ is
 # mutmut's generated working copy of src and tests; fuzz/ imports
-# atheris from its own opt-in group (crashfuzz).
-extend_exclude = ["reference", "noxfile\\.py", "mutants", "fuzz"]
+# atheris from its own opt-in group (crashfuzz); packaging/dns_gate/ is a
+# container-only harness whose resolver.py imports dnslib, installed only
+# inside the gate's throwaway image and never a project dependency.
+extend_exclude = [
+  "reference",
+  "noxfile\\.py",
+  "mutants",
+  "fuzz",
+  "packaging/dns_gate",
+]
 
 [tool.vulture]
 # Clean at 80 today; the hook is a no-regression gate against dead code
@@ -338,41 +356,33 @@ pytest_add_cli_args_test_selection = ["tests/unit"]
 pytest_add_cli_args = ["-p", "no:randomly"]
 
 [dependency-groups]
-dev = [
-    "nox>=2026.4.10",
-    "pre-commit>=4.6.0",
-]
+dev = ["nox>=2026.4.10", "pre-commit>=4.6.0"]
 lint = [
-    "actionlint-py>=1.7.12.24",
-    "bandit[toml]>=1.9.4",
-    "deptry>=0.23.1",
-    "import-linter>=2.11",
-    "mypy>=2.1.0",
-    "pip-audit>=2.10.0",
-    "pyright>=1.1.410",
-    "ruff>=0.15.16",
-    "vulture>=2.14",
-    "zizmor>=1.25.2",
+  "actionlint-py>=1.7.12.24",
+  "bandit[toml]>=1.9.4",
+  "deptry>=0.23.1",
+  "import-linter>=2.11",
+  "mypy>=2.1.0",
+  "pip-audit>=2.10.0",
+  "pyright>=1.1.410",
+  "ruff>=0.15.16",
+  "vulture>=2.14",
+  "zizmor>=1.25.2",
 ]
-mutation = [
-    "mutmut>=3.6.0",
-]
+mutation = ["mutmut>=3.6.0"]
 crashfuzz = [
-    # atheris 3.0.0 ships cp311-cp313 wheels only; the marker keeps the
-    # lock resolvable on 3.14 (where `nox -s crashfuzz` cannot run yet).
-    "atheris>=3.0.0; python_version < '3.14'",
+  # atheris 3.0.0 ships cp311-cp313 wheels only; the marker keeps the
+  # lock resolvable on 3.14 (where `nox -s crashfuzz` cannot run yet).
+  "atheris>=3.0.0; python_version < '3.14'",
 ]
 test = [
-    "diff-cover>=10.3.0",
-    "dnspython>=2.8.0",
-    "hypothesis>=6.155.2",
-    "pytest>=9.0.3",
-    "pytest-cov>=7.1.0",
-    "pytest-randomly>=4.1.0",
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.6.0",
+  "diff-cover>=10.3.0",
+  "dnspython>=2.8.0",
+  "hypothesis>=6.155.2",
+  "pytest>=9.0.3",
+  "pytest-cov>=7.1.0",
+  "pytest-randomly>=4.1.0",
+  "pytest-timeout>=2.4.0",
+  "pytest-xdist>=3.6.0",
 ]
-build = [
-    "check-wheel-contents>=0.6.3",
-    "twine>=6.2.0",
-]
+build = ["check-wheel-contents>=0.6.3", "twine>=6.2.0"]

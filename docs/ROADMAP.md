@@ -112,6 +112,71 @@ default `iptables` backend is unchanged.
 Optionally ship a self-contained binary (Nuitka). Order-independent: can
 land any time after Phase 1.
 
+#### Deferred packaging debt
+
+The following items are explicitly **out of Phase 3 scope** and recorded
+here so they are not lost.
+
+**YAGNI deferrals** (low-demand or easily addable later):
+
+- *One-file binary* — a single-file bundle (e.g. `--onefile` Nuitka mode)
+  rather than the extracted `*.dist/` directory layout.
+- *aarch64 wheel/binary* — the build driver is parametrised by `--arch` for
+  the artifact name, but a real aarch64 leg is more than a matrix row: the
+  driver currently hard-fails on any non-`x86_64` arch, and the build image
+  is digest-pinned to `manylinux_2_28_x86_64`. It needs an aarch64 base image
+  (own digest), a `--platform`/QEMU or native arm runner, and lifting the
+  arch guard.
+- *musl / fully-static builds* — for Alpine-style or completely glibc-free
+  environments.
+- *Slim variant without dnspython* — a smaller binary that drops the
+  optional DNS resolver dependency for users who never use `@resolve()`.
+- *Alternative bundlers* (PyInstaller, staticx) — Nuitka is the chosen
+  tool; alternatives are not blocked, just not prioritised.
+- *GPG / Sigstore signing with maintainer keys* — build-provenance
+  attestation (SLSA via GitHub Actions) already ships in Phase 3; keyring
+  signing is a separate, deferred step.
+
+**CVE-rebuild of bundled native libraries (debt with an automatable
+trigger):**
+
+`pip-audit` covers only Python-layer dependencies. It does *not* scan the
+native shared objects frozen into the distribution — the OpenSSL, zlib,
+libffi, and libexpat copies pulled in by the stdlib `ssl` module and
+parsers. The OpenSSL bundled by the `manylinux_2_28` build base image is
+the **1.1.x series, which is end-of-life upstream**, making an automatable
+CVE-rebuild trigger especially important.
+
+To give the recall mechanism an automatable trigger rather than relying on
+manual advisory-feed monitoring: add a weekly image scan (e.g. `trivy
+image` or `grype`) of the pinned `@sha256:` build/dist image to `audit.yml`
+or a dedicated cron workflow. Such a scan alerts on CVEs in the native
+libraries specifically; the `.so` versions recorded in the build manifest
+give precise inputs for cross-referencing. On a hit: bump the image
+`@sha256:` pin and re-release (yank and re-release the affected artifact).
+This is the "full distribution lifecycle" owner's ongoing debt.
+
+**Runtime guard of dist directory permissions (optional, deferred):**
+
+The installation README instructs users to unpack the binary into a
+root-owned, non-world-writable directory. That instruction is necessary but
+user-dependent. A lightweight guard in `packaging/entry.py` — checking that
+the `*.dist/` directory is root-owned and not world- or group-writable
+before loading sibling shared objects — is possible and does not conflict
+with the Phase 3 invariant (`entry.py` lives in `packaging/`, not in
+`src/pyferm/`). It is deliberately deferred because it catches a
+world-writable dist directory but not a shared object that has already been
+planted there (a time-of-check / time-of-use gap). Recorded as "possible
+and deferred", not "impossible".
+
+**Exact-vs-normalized `.so` allow-list (minor residual):**
+
+The allow-list normalizes a SONAME's minor version (`libssl.so.1.1` →
+`libssl.so.1`), so a hypothetical `libssl.so.1.0` would still pass the gate.
+This is mitigated today by the digest-pinned build image (the exact `.so`
+set is fixed by the image), so it is recorded as a residual to tighten if
+the normalization ever outlives the digest pin, not an open hole.
+
 ### Phase 4 — Operational safety (diff/apply engine)
 
 Depends on Phase 2 (native nft: handles + atomic transactions). A

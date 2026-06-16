@@ -403,6 +403,93 @@ def datapath_e2e_matrix(session: nox.Session, distro: str) -> None:
 
 
 @nox.session
+def binary(session: nox.Session) -> None:
+    """
+    Build the standalone binary and run golden against it (opt-in, docker).
+
+    Builds with packaging/build.py, then runs the FULL golden suite against
+    the artifact via a pyferm-free venv + scrubbed-env binary child, then the
+    fast smoke checks. Cold Nuitka builds take minutes; absent from
+    ``preflight``.
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=build",
+        "--mode=dev",
+        "--out",
+        "dist",
+        external=True,
+    )
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=verify-golden",
+        "--out",
+        "dist",
+        external=True,
+    )
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=smoke",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+#: Old-glibc runtime image for the glibc-floor gate. debian:10-slim (buster)
+#: ships glibc 2.28, matching the manylinux_2_28 build floor exactly -- a newer
+#: runtime (e.g. bullseye's 2.31) would only prove "runs on 2.31+", never the
+#: 2.28 promise. Deliberately tag-pinned, not @sha256-pinned: buster is EOL, so
+#: its glibc stays frozen at 2.28 (only security patches land within the same
+#: minor), and the tag will not drift to a newer glibc.
+_GLIBC_FLOOR_IMAGE = "debian:10-slim"
+
+
+@nox.session
+def binary_glibc(session: nox.Session) -> None:
+    """
+    Run the packaged binary on a pinned old-glibc image (opt-in, docker).
+
+    The real distribution contract: the finished tarball must load and run on
+    a SEPARATE pinned old-glibc image, not just the build container. Opt-in
+    (needs the docker daemon) and deliberately absent from ``preflight``.
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=run-on-image",
+        "--image",
+        _GLIBC_FLOOR_IMAGE,
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
+def binary_dns(session: nox.Session) -> None:
+    """
+    Verify the frozen dnspython resolves a non-A record (opt-in, docker).
+
+    Runs the hermetic non-A resolve gate against the PACKAGED tar in a
+    one-shot container: a throwaway authoritative resolver answers an MX
+    query the stdlib stub cannot serve, proving dnspython really froze in.
+    Deliberately absent from ``preflight``.
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=run-dns-gate",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
 def deps_lowest(session: nox.Session) -> None:
     """
     Run the test suite against the lowest declared dependency bounds.
