@@ -445,6 +445,37 @@ def test_multiport_range_counts_as_two() -> None:
     assert result[1] == "8:8"
 
 
+def test_multiport_exactly_fifteen_is_one_scalar_chunk() -> None:
+    # 15 ports fill a chunk exactly (no overflow), and a single chunk is
+    # returned as a scalar string -- not a one-element list.
+    ports = " ".join(str(p) for p in range(1, 16))
+    ev = _evaluator(f"({ports})")
+    assert (
+        ev.multiport_params(Rule(protocol="tcp"))
+        == "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+    )
+
+
+def test_multiport_sixteen_splits_after_fifteen() -> None:
+    ports = " ".join(str(p) for p in range(1, 17))
+    ev = _evaluator(f"({ports})")
+    assert ev.multiport_params(Rule(protocol="tcp")) == [
+        "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
+        "16",
+    ]
+
+
+def test_multiport_range_not_split_across_chunk_boundary() -> None:
+    # 14 singles use 14 units, leaving room for 1; a range needs 2, so the
+    # whole range moves to the next chunk rather than being split in half.
+    items = [str(p) for p in range(1, 15)] + ["100:200"]
+    ev = _evaluator("(" + " ".join(items) + ")")
+    assert ev.multiport_params(Rule(protocol="tcp")) == [
+        "1,2,3,4,5,6,7,8,9,10,11,12,13,14",
+        "100:200",
+    ]
+
+
 # -- getvalues depth limit (sanctioned deviation #7) ------------------------
 
 

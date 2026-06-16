@@ -30,17 +30,46 @@ from pyferm.values import (
     to_array,
 )
 
+# Perl scalar truthiness: only undef, the number 0, the empty string and the
+# *exact* string "0" are false.  The "zero but true" family ("0E0", "0.0",
+# "00", signed zeros, a lone space) is all true -- the boundary that catches a
+# port slipping toward Python's float()/int() coercion.
+_SCALAR_TRUTHINESS = [
+    pytest.param("0", False, id="bare-zero-string"),
+    pytest.param("", False, id="empty-string"),
+    pytest.param(None, False, id="undef"),
+    pytest.param(0, False, id="zero-int"),
+    pytest.param(0.0, False, id="zero-float"),
+    pytest.param("0.0", True, id="zero-point-zero"),
+    pytest.param("00", True, id="double-zero"),
+    pytest.param("0E0", True, id="zero-but-true"),
+    pytest.param("+0", True, id="signed-plus-zero"),
+    pytest.param("-0", True, id="signed-minus-zero"),
+    pytest.param(" ", True, id="lone-space"),
+    pytest.param("x", True, id="nonempty"),
+]
 
-def test_perl_true_matches_perl_not_python() -> None:
-    assert perl_true("0") is False
-    assert perl_true("") is False
-    assert perl_true(None) is False
-    assert perl_true(0) is False
-    # Only the exact "0"/"" strings are false; these are true in Perl.
-    assert perl_true("0.0") is True
-    assert perl_true("00") is True
-    assert perl_true("x") is True
-    assert perl_true([]) is True  # a ref is always true
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [*_SCALAR_TRUTHINESS, pytest.param([], True, id="ref-is-always-true")],
+)
+def test_perl_true_matches_perl_not_python(
+    value: object, expected: bool
+) -> None:
+    # A list is a ref, which is always true even when empty -- unlike
+    # eval_bool, which flattens and treats the empty array as false.
+    assert perl_true(value) is expected
+
+
+@pytest.mark.parametrize(("value", "expected"), _SCALAR_TRUTHINESS)
+def test_format_bool_and_eval_bool_share_scalar_truthiness(
+    value: object, expected: bool
+) -> None:
+    # format_bool renders perl_true as "1"/"0"; eval_bool agrees on scalars
+    # (the three only diverge on refs).
+    assert format_bool(value) == ("1" if expected else "0")
+    assert eval_bool(value) is expected
 
 
 def test_flatten_descends_arrays_but_keeps_other_refs() -> None:

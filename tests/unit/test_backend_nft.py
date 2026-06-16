@@ -1430,6 +1430,13 @@ def test_render_comment_rejects_embedded_quote() -> None:
         ("ssh:http", "ssh-http"),
         ("22", "22"),
         ("1000-2000", "1000-2000"),
+        # numeric boundaries: the guard checks shape, not the 0..65535 range.
+        ("0", "0"),
+        ("65535", "65535"),
+        ("0:65535", "0-65535"),
+        # A reversed range is shape-valid and passes through unchanged --
+        # rejecting lo>hi is nft's job downstream, not this injection guard's.
+        ("2000:1000", "2000-1000"),
     ],
 )
 def test_validate_port_normalizes_colon_range(
@@ -1440,6 +1447,24 @@ def test_validate_port_normalizes_colon_range(
 
 @pytest.mark.parametrize("given", [":2000", "1000:", ":", "a:b:c"])
 def test_validate_port_rejects_half_open_range(given: str) -> None:
+    with pytest.raises(FermError, match="invalid port"):
+        _validate_port(given)
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("22 ", id="trailing-space"),
+        pytest.param("22 80", id="embedded-space"),
+        pytest.param("-22", id="leading-dash"),
+        pytest.param("80;#", id="injection-semicolon"),
+        pytest.param('80"', id="injection-quote"),
+    ],
+)
+def test_validate_port_rejects_malformed_shape(given: str) -> None:
+    # The \A...\Z anchors reject any token-breaking metacharacter or stray
+    # whitespace that could otherwise flip an nft verdict.
     with pytest.raises(FermError, match="invalid port"):
         _validate_port(given)
 
