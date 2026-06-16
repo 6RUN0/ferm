@@ -269,7 +269,18 @@ jobs:
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job does NOT check out the repo (it only consumes artifacts),
+          # so gh has no local git remote to resolve the target repository
+          # from; name it explicitly. --verify-tag and --generate-notes both
+          # work over the API and need no working tree.
+          GH_REPO: ${{ github.repository }}
         run: |
+          # A PEP 440 pre-release (aN/bN/rcN) must not be published as the
+          # "Latest" release; flag it so stable tags stay the default.
+          flags=(--title "${GITHUB_REF_NAME}" --generate-notes --verify-tag)
+          case "${GITHUB_REF_NAME}" in
+            *a*|*b*|*rc*) flags+=(--prerelease) ;;
+          esac
           gh release create "${GITHUB_REF_NAME}" \
             dist/ferm-*-linux-x86_64.tar.gz dist/pyferm_*.deb dist/SHA256SUMS \
-            --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+            "${flags[@]}"
