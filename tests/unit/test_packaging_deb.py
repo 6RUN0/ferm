@@ -130,6 +130,15 @@ def test_rules_uses_pybuild_buildsystem() -> None:
     assert re.search(r"dh\s+\$@\s+--buildsystem=pybuild", rules)
 
 
+def test_rules_skips_build_time_tests() -> None:
+    # The build container ships no pytest; pybuild's unittest discovery would
+    # import-fail on every tests/unit module that imports pytest. dh_auto_test
+    # must be overridden to a no-op so the .deb build does not run the suite
+    # (it runs in upstream CI under pytest instead).
+    rules = _read("rules")
+    assert re.search(r"^override_dh_auto_test:", rules, re.MULTILINE)
+
+
 # -- source format / changelog consistency (load-bearing) -----------------
 
 
