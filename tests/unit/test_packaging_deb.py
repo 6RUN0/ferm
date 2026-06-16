@@ -264,7 +264,7 @@ def _compile_default_config(tmp_path: Path) -> str:
             str(config),
         ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=True,
         cwd=_REPO_ROOT,
     )
