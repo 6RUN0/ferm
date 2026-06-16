@@ -1,0 +1,45 @@
+## Install
+
+Verify the SHA-256 checksum of every downloaded asset against the
+`SHA256SUMS` file shipped with this release before installing.
+
+### PyPI — any Linux (needs Python 3.11+)
+
+```sh
+pip install --pre ferm==@VER@
+```
+
+`@resolve()` with record types beyond `A`/`AAAA` needs the optional extra:
+
+```sh
+pip install --pre 'ferm[dns]==@VER@'
+```
+
+### Debian / Ubuntu — native `.deb`
+
+```sh
+curl -fLO @BASE@/pyferm_@VER@_all.deb
+curl -fLO @BASE@/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+sudo apt install ./pyferm_@VER@_all.deb
+```
+
+The package installs `/usr/bin/ferm` and a `ferm.service` unit that is **not**
+enabled or started on install (anti-lockout). Enable it only after writing
+`/etc/ferm/ferm.conf`.
+
+### Standalone binary — Linux x86_64 (glibc 2.28+)
+
+Bundles its own Python runtime; the host needs only `iptables` / `nft`.
+
+```sh
+curl -fLO @BASE@/ferm-@VER@-linux-x86_64.tar.gz
+curl -fLO @BASE@/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+tar xzf ferm-@VER@-linux-x86_64.tar.gz
+# Keep ferm.dist/ intact; link the binary instead of copying it out.
+sudo ln -s "$PWD/ferm.dist/ferm" /usr/local/bin/ferm
+ferm --version
+```
+
+---
