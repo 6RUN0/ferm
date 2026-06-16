@@ -90,9 +90,7 @@ _IPFILTER_CASES = [
     ),
     # a hostname is neither shape, so it survives both families (resolved late)
     pytest.param("ip", ["example.com"], ["example.com"], id="ip-keeps-host"),
-    pytest.param(
-        "ip6", ["example.com"], ["example.com"], id="ip6-keeps-host"
-    ),
+    pytest.param("ip6", ["example.com"], ["example.com"], id="ip6-keeps-host"),
 ]
 
 
