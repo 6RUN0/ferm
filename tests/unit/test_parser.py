@@ -409,6 +409,107 @@ def test_two_actions_error() -> None:
         _parse("chain INPUT ACCEPT DROP;")
 
 
+# -- command-grammar diagnostics -------------------------------------------
+#
+# The high-level command grammar (domain/table/chain conflicts, policy, hook,
+# def, @preserve, TCPMSS) funnels through ``enter``/``_enter_body``; each of
+# these error sinks was previously unpinned by any unit test.  One tiny source
+# per sink, asserted by its located ``FermError`` message.
+
+_GRAMMAR_DIAGNOSTICS = [
+    # Note: "Cannot combine non-IP domains" (parser.py:331) is not surface
+    # reachable -- the ``domain`` keyword replays a list value per item, so a
+    # mixed-family list never reaches that branch of ``set_domain``; it is left
+    # to the differential fuzzer rather than pinned here.
+    pytest.param(
+        "domain ip domain ip6 chain INPUT ACCEPT;",
+        "Domain is already specified",
+        id="domain-respecified",
+    ),
+    pytest.param(
+        ";",
+        'Empty rule before ";" not allowed',
+        id="empty-rule",
+    ),
+    pytest.param(
+        "chain INPUT ACCEPT; }",
+        'Unmatched "}"',
+        id="unmatched-brace",
+    ),
+    pytest.param(
+        "chain INPUT proto tcp policy ACCEPT;",
+        "Cannot specify matches for policy",
+        id="policy-with-matches",
+    ),
+    pytest.param(
+        "chain INPUT policy BOGUS;",
+        "Invalid policy target",
+        id="invalid-policy-target",
+    ),
+    pytest.param(
+        'chain INPUT @hook pre "echo hi";',
+        '"hook" must be the first token in a command',
+        id="hook-not-first",
+    ),
+    pytest.param(
+        '@hook bogus "echo hi";',
+        "Invalid hook position",
+        id="invalid-hook-position",
+    ),
+    pytest.param(
+        "chain INPUT proto tcp def $x = 1;",
+        '"def" must be the first token in a command',
+        id="def-not-first",
+    ),
+    pytest.param(
+        "def $ = 1;",
+        "invalid variable name",
+        id="invalid-variable-name",
+    ),
+    pytest.param(
+        "def & = 1;",
+        "invalid function name",
+        id="invalid-function-name",
+    ),
+    pytest.param(
+        "def foo = 1;",
+        r'\(variable\) or "&" \(function\) expected',
+        id="def-needs-sigil",
+    ),
+    pytest.param(
+        "&nope();",
+        "no such function",
+        id="call-undefined-function",
+    ),
+    pytest.param(
+        "@preserve;",
+        "@preserve without chain",
+        id="preserve-without-chain",
+    ),
+    pytest.param(
+        "chain INPUT proto tcp @preserve;",
+        "Cannot specify matches for @preserve",
+        id="preserve-with-matches",
+    ),
+    pytest.param(
+        "table mangle chain FORWARD TCPMSS set-mss 1400;",
+        "No protocol specified before TCPMSS",
+        id="tcpmss-without-proto",
+    ),
+    pytest.param(
+        "table mangle chain FORWARD proto udp TCPMSS set-mss 1400;",
+        'TCPMSS not available for protocol "udp"',
+        id="tcpmss-wrong-proto",
+    ),
+]
+
+
+@pytest.mark.parametrize(("source", "match"), _GRAMMAR_DIAGNOSTICS)
+def test_grammar_diagnostic_raises(source: str, match: str) -> None:
+    with pytest.raises(FermError, match=match):
+        _parse(source)
+
+
 def test_log_prefix_is_not_truncated() -> None:
     # The 29-char truncation lives only in ``parse_keyword``'s ``params == 1``
     # branch, but ``LOG``'s ``log-prefix`` takes the target default ``"s"`` and
