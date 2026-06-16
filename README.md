@@ -146,6 +146,21 @@ then opt in:
 systemctl enable --now ferm
 ```
 
+**Applying changes — reload, don't restart:** after editing
+`/etc/ferm/ferm.conf` or a fragment, run `systemctl reload ferm`. `reload`
+re-applies the ruleset atomically (via `iptables-restore`) with no window in
+which the firewall is down. `restart` first runs the unit's `ExecStop`, which
+**flushes** the rules (`ferm -F`) and briefly leaves the host open before they
+are re-applied.
+
+**Coexisting with other firewall tools:** ferm owns every table it manages and
+replaces that table wholesale on each apply. Rules another daemon (Docker,
+fail2ban, libvirt) writes into a ferm-managed table are therefore dropped on
+the next reload unless you carry them across explicitly with the `@preserve`
+keyword. The native `--nft` backend instead manages a single
+`table <family> ferm` and leaves other tables untouched — but it does not
+support `@preserve`.
+
 ### Installation (standalone binary)
 
 A self-contained binary is published for **Linux x86_64** (glibc **2.28**
