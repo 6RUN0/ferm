@@ -424,6 +424,82 @@ def test_build_verdict_unsupported_reject_with_is_error() -> None:
         build_verdict("ip", "filter", "jump", "REJECT", comp)
 
 
+from pyferm.backend.nft import _reject_for  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("domain", "scalar", "expected"),
+    [
+        # -- ip: the full _REJECT_WITH map
+        (
+            "ip",
+            "icmp-port-unreachable",
+            "reject with icmp type port-unreachable",
+        ),
+        (
+            "ip",
+            "icmp-net-unreachable",
+            "reject with icmp type net-unreachable",
+        ),
+        (
+            "ip",
+            "icmp-host-unreachable",
+            "reject with icmp type host-unreachable",
+        ),
+        (
+            "ip",
+            "icmp-admin-prohibited",
+            "reject with icmp type admin-prohibited",
+        ),
+        ("ip", "tcp-reset", "reject with tcp reset"),
+        # -- ip6: the native icmp6 spellings
+        (
+            "ip6",
+            "icmp6-port-unreachable",
+            "reject with icmpv6 type port-unreachable",
+        ),
+        ("ip6", "icmp6-no-route", "reject with icmpv6 type no-route"),
+        (
+            "ip6",
+            "icmp6-adm-prohibited",
+            "reject with icmpv6 type admin-prohibited",
+        ),
+        (
+            "ip6",
+            "icmp6-addr-unreachable",
+            "reject with icmpv6 type addr-unreachable",
+        ),
+        ("ip6", "tcp-reset", "reject with tcp reset"),
+        # -- ip6: ip4 reject names remapped to icmp6 (the oracle's aliases)
+        ("ip6", "icmp-net-unreachable", "reject with icmpv6 type no-route"),
+        (
+            "ip6",
+            "icmp-host-unreachable",
+            "reject with icmpv6 type addr-unreachable",
+        ),
+        (
+            "ip6",
+            "icmp-host-prohibited",
+            "reject with icmpv6 type admin-prohibited",
+        ),
+        (
+            "ip6",
+            "icmp-net-prohibited",
+            "reject with icmpv6 type admin-prohibited",
+        ),
+        (
+            "ip6",
+            "icmp-port-unreachable",
+            "reject with icmpv6 type port-unreachable",
+        ),
+    ],
+)
+def test_reject_for_covers_the_full_mapping(
+    domain: str, scalar: str, expected: str
+) -> None:
+    assert _reject_for(domain, scalar) == expected
+
+
 def test_build_verdict_jump_to_builtin_is_error() -> None:
     with pytest.raises(FermError, match="built-in chain 'INPUT'"):
         build_verdict("ip", "filter", "jump", "INPUT", {})
