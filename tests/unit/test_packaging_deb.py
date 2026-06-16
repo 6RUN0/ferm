@@ -22,7 +22,20 @@ import sys
 import tomllib
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _find_repo_root() -> Path:
+    # Anchor on the ``packaging/`` tree rather than a fixed parent depth: the
+    # mutmut sandbox copies only ``src`` + ``tests`` into ``mutants/``, so the
+    # test sits one level deeper there and ``packaging/`` lives in the real
+    # checkout above it. Ascend to the nearest ancestor that actually has it.
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "packaging").is_dir():
+            return parent
+    msg = "could not locate repo root (no ancestor contains packaging/)"
+    raise RuntimeError(msg)
+
+
+_REPO_ROOT = _find_repo_root()
 _DEB = _REPO_ROOT / "packaging" / "deb"
 _DEBIAN = _DEB / "debian"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"

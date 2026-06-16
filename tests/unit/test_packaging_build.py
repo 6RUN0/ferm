@@ -11,7 +11,19 @@ import pytest
 if TYPE_CHECKING:
     from types import ModuleType
 
-_BUILD = Path(__file__).resolve().parents[2] / "packaging" / "build.py"
+def _find_repo_root() -> Path:
+    # Anchor on the ``packaging/`` tree rather than a fixed parent depth: the
+    # mutmut sandbox copies only ``src`` + ``tests`` into ``mutants/``, so the
+    # test sits one level deeper there and ``packaging/`` lives in the real
+    # checkout above it. Ascend to the nearest ancestor that actually has it.
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "packaging").is_dir():
+            return parent
+    msg = "could not locate repo root (no ancestor contains packaging/)"
+    raise RuntimeError(msg)
+
+
+_BUILD = _find_repo_root() / "packaging" / "build.py"
 
 
 def _load_build() -> ModuleType:
