@@ -65,6 +65,58 @@ def test_test_does_not_suppress_interactive(
         )
 
 
+# -- argument validation ---------------------------------------------------
+#
+# The option-resolution guards (timeout shape, timeout-needs-interactive,
+# --test-mock-previous shape, --def shape) had no negative coverage.
+
+
+def test_timeout_must_be_an_integer(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(FermError, match="invalid timeout"):
+        _resolve(["--timeout", "abc", "f"], tty=True, monkeypatch=monkeypatch)
+
+
+def test_timeout_requires_interactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A well-formed timeout without --interactive is a usage error.
+    with pytest.raises(FermError, match="no sense without interactive"):
+        _resolve(["--timeout", "5", "f"], tty=True, monkeypatch=monkeypatch)
+
+
+def test_invalid_mock_previous_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(FermError, match="Invalid --test-mock-previous"):
+        _resolve(
+            ["--test-mock-previous=garbage", "f"],
+            tty=True,
+            monkeypatch=monkeypatch,
+        )
+
+
+def test_invalid_def_specification(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--test", "--def", "noequalssign", str(conf)]) == 1
+    assert "Invalid --def specification" in capsys.readouterr().err
+
+
+def test_extra_tokens_after_def(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--test", "--def", "$x=1 2", str(conf)]) == 1
+    assert "Extra tokens after --def" in capsys.readouterr().err
+
+
 def test_def_is_evaluated_without_script_context(tmp_path: Path) -> None:
     # Perl evaluates --def inside GetOptions, before open_script: plain
     # values work, while script-context built-ins ($LINE, @glob, anything
