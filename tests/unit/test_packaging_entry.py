@@ -12,6 +12,7 @@ import pytest
 if TYPE_CHECKING:
     from types import ModuleType
 
+
 def _find_repo_root() -> Path:
     # Anchor on the ``packaging/`` tree rather than a fixed parent depth: the
     # mutmut sandbox copies only ``src`` + ``tests`` into ``mutants/``, so the
