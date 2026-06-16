@@ -16,7 +16,6 @@ from pyferm.modules import (
     PROTO_DEFS,
     SHORTCUTS,
     TARGET_DEFS,
-    Keyword,
     ModuleDef,
     ParamFunction,
     Registry,
@@ -30,67 +29,83 @@ def _match(*specs: str) -> ModuleDef:
     return _add_def(defs, "ip", 1, "m", specs)
 
 
-def test_plain_keyword_takes_one_argument() -> None:
-    kw = _match("helper").keywords["helper"]
-    assert kw == Keyword(name="helper", params=1)
-
-
-def test_star_zero_means_no_argument() -> None:
-    kw = _match("ashort*0").keywords["ashort"]
-    # *0 yields a falsy "0"; Perl's "if $params" leaves params unset.
-    assert kw.params is None
-    assert kw.name == "ashort"
-
-
-def test_equals_codes_become_param_string() -> None:
-    keywords = _match("aaddr=s", "ctstate=c", "arp-htype=ss").keywords
-    assert keywords["aaddr"].params == "s"
-    assert keywords["ctstate"].params == "c"
-    assert keywords["arp-htype"].params == "ss"
-
-
-def test_multi_code_m() -> None:
-    assert _match("u32=m").keywords["u32"].params == "m"
-
-
-def test_ampersand_records_named_parser() -> None:
-    kw = _match("source&address_magic").keywords["source"]
-    assert kw.params == ParamFunction("address_magic")
-    assert kw.name == "source"
-
-
-def test_leading_bang_sets_negation_and_pre_negation() -> None:
-    kw = _match("!mark").keywords["mark"]
-    assert kw.negation is True
-    assert kw.pre_negation is True
-    assert kw.name == "mark"
-
-
-def test_trailing_bang_sets_negation_only() -> None:
-    kw = _match("ahspi!").keywords["ahspi"]
-    assert kw.negation is True
-    assert kw.pre_negation is False
-
-
-def test_bang_combines_with_equals_and_star() -> None:
-    keywords = _match("!ctstate=c", "!syn*0").keywords
-    ctstate = keywords["ctstate"]
-    assert (ctstate.params, ctstate.negation, ctstate.pre_negation) == (
-        "c",
+# The encoding DSL strips suffixes in a fixed order -- ``*N`` (star), then
+# ``=code`` (eq), then ``&fn`` (amp), then a leading ``!`` (negation +
+# pre_negation), then a trailing ``!`` (negation only) -- each anchored at the
+# end of the progressively shortened keyword.  One table pins every decode,
+# including the combinations the per-suffix tests never crossed.
+_ENCODING = [
+    # -- single suffix, no negation
+    pytest.param("helper", "helper", 1, False, False, id="plain-one-arg"),
+    pytest.param("ashort*0", "ashort", None, False, False, id="star-zero"),
+    pytest.param("aaddr=s", "aaddr", "s", False, False, id="code-s"),
+    pytest.param("ctstate=c", "ctstate", "c", False, False, id="code-c"),
+    pytest.param(
+        "arp-htype=ss", "arp-htype", "ss", False, False, id="code-ss"
+    ),
+    pytest.param("u32=m", "u32", "m", False, False, id="code-m"),
+    pytest.param(
+        "source&address_magic",
+        "source",
+        ParamFunction("address_magic"),
+        False,
+        False,
+        id="amp-function",
+    ),
+    # -- negation
+    pytest.param("!mark", "mark", 1, True, True, id="leading-bang"),
+    pytest.param("ahspi!", "ahspi", 1, True, False, id="trailing-bang"),
+    pytest.param(
+        "!ctstate=c", "ctstate", "c", True, True, id="lead-bang-code"
+    ),
+    pytest.param("!syn*0", "syn", None, True, True, id="lead-bang-star-zero"),
+    pytest.param(
+        # "=0" is not [acs]+/m, so eq never strips it: a faithful upstream
+        # quirk where the keyword name literally keeps "=0" and takes one arg.
+        "!socket-exists=0",
+        "socket-exists=0",
+        1,
         True,
         True,
-    )
-    syn = keywords["syn"]
-    assert (syn.params, syn.negation, syn.pre_negation) == (None, True, True)
+        id="eq-zero-stays-in-name",
+    ),
+    # -- combinations the per-suffix tests never exercised
+    pytest.param(
+        "opt=sac", "opt", "sac", False, False, id="multi-letter-code"
+    ),
+    pytest.param(
+        "retry*5", "retry", "5", False, False, id="star-nonzero-kept"
+    ),
+    pytest.param("!u32=m", "u32", "m", True, True, id="lead-bang-multivalue"),
+    pytest.param(
+        "ctstate!=c", "ctstate", "c", True, False, id="trailing-bang-code"
+    ),
+    pytest.param(
+        "!source&address_magic",
+        "source",
+        ParamFunction("address_magic"),
+        True,
+        True,
+        id="lead-bang-function",
+    ),
+]
 
 
-def test_equals_zero_is_not_a_code_and_stays_in_the_name() -> None:
-    # "=0" is not [acs]+/m, so it is never stripped: a faithful upstream
-    # quirk where the keyword name literally keeps "=0" and takes one arg.
-    kw = _match("!socket-exists=0").keywords["socket-exists=0"]
-    assert kw.name == "socket-exists=0"
-    assert kw.params == 1
-    assert kw.pre_negation is True
+@pytest.mark.parametrize(
+    ("spec", "name", "params", "negation", "pre_negation"), _ENCODING
+)
+def test_encoding_decodes_keyword(
+    spec: str,
+    name: str,
+    params: object,
+    negation: bool,
+    pre_negation: bool,
+) -> None:
+    kw = _match(spec).keywords[name]
+    assert kw.name == name
+    assert kw.params == params
+    assert kw.negation is negation
+    assert kw.pre_negation is pre_negation
 
 
 def test_alias_shares_the_target_object_and_sets_ferm_name() -> None:
