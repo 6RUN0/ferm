@@ -215,6 +215,51 @@ COMMIT
         _imported(save)
 
 
+# -- malformed save-file diagnostics ---------------------------------------
+#
+# The importer parses a trusted iptables-save dump, but a truncated or
+# hand-edited one must abort with a located message rather than emit a
+# silently wrong config.  These pin the rule-parser's error sinks.
+
+
+def test_run_negated_non_negatable_option_is_fatal() -> None:
+    # A leading "!" before a target makes no sense; jump is not negatable.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT ! --jump ACCEPT
+COMMIT
+"""
+    with pytest.raises(
+        FermError, match="option 'jump' in line 3 cannot be negated"
+    ):
+        _imported(save)
+
+
+def test_run_bang_without_an_option_is_fatal() -> None:
+    # "!" must be followed by an option token, not a bare word.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT ! bogus --jump ACCEPT
+COMMIT
+"""
+    with pytest.raises(FermError, match="option expected in line 3"):
+        _imported(save)
+
+
+def test_run_jump_without_target_is_fatal() -> None:
+    # A truncated rule ending at "--jump" has no target to consume.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT --jump
+COMMIT
+"""
+    with pytest.raises(FermError, match="parse error in line 3"):
+        _imported(save)
+
+
 def test_run_negated_port_accepts_both_iptables_spellings() -> None:
     # Real iptables-save writes negation before the option ("! --dport"),
     # older dumps wrote it inline ("--dport ! 22"); ferm has only one
