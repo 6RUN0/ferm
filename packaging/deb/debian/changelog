@@ -1,0 +1,10 @@
+pyferm (0.0.0) unstable; urgency=medium
+
+  * Initial native Debian packaging of the ferm Python port. This is a seed
+    entry: the build pipeline rewrites the version and date (via dch) from the
+    release tag before dpkg-buildpackage runs.
+  * Drop-in for the upstream Perl "ferm" (Provides/Conflicts/Replaces: ferm).
+  * Ships a starter /etc/ferm/ferm.conf and a systemd unit that is NOT
+    enabled on install (anti-lockout).
+
+ -- Boris Talovikov <boris@talovikov.ru>  Tue, 16 Jun 2026 00:00:00 +0000

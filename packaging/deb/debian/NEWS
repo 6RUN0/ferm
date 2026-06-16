@@ -1,0 +1,16 @@
+pyferm (0.0.0) unstable; urgency=medium
+
+  The firewall service is NOT enabled or started automatically on install
+  (anti-lockout). This differs from setups where the previous ferm unit was
+  enabled: after installing pyferm your rules will not be applied on the next
+  reboot until you opt in explicitly.
+
+  Review /etc/ferm/ferm.conf, add your services under /etc/ferm/ferm.d/, then:
+
+      systemctl enable --now ferm
+
+  The shipped default blocks all inbound traffic except SSH (port 22 by the
+  name "ssh") and ICMP. If SSH runs on a non-standard port, set $SSH_PORT in
+  /etc/ferm/ferm.conf BEFORE enabling the service, or you will be locked out.
+
+ -- Boris Talovikov <boris@talovikov.ru>  Tue, 16 Jun 2026 00:00:00 +0000

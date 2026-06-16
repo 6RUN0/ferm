@@ -15,3 +15,20 @@
 
 # Lockfile is machine-written.
 uv.lock linguist-generated=true
+
+# export-ignore: keep these out of `git archive` -- the source tar the deb's
+# `3.0 (native)` format tars whole. This is the deb-channel guard ONLY; the
+# PyPI sdist (hatchling) does NOT read .gitattributes and is guarded by its
+# own mirror allowlist in pyproject.toml ([tool.hatch.build.targets.sdist]).
+# Several of these paths are not tracked today; listing them is fail-closed
+# defense in case they ever get committed.
+docs/superpowers export-ignore
+.github export-ignore
+.omc export-ignore
+.claude export-ignore
+CLAUDE.md export-ignore
+.mcp.json export-ignore
+tests/corpus/configs export-ignore
+scratch export-ignore
+notes export-ignore
+drafts export-ignore

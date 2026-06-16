@@ -510,8 +510,12 @@ def deps_lowest(session: nox.Session) -> None:
         "--quiet",
         "--resolution",
         "lowest-direct",
+        # Install the ``dns`` extra so lowest-direct actually pins the EXTRA's
+        # floor (dnspython 2.2.1, the bookworm version). Without ``.[dns]`` the
+        # only dnspython requirement is the test group's higher pin, and the
+        # lower-bound test would be theatre.
         "-e",
-        ".",
+        ".[dns]",
         "--group",
         "test",
         external=True,
@@ -535,11 +539,13 @@ def build(session: nox.Session) -> None:
 
     Every other gate runs against the editable src-layout install, so
     none of them notices a wheel that ships without ``py.typed`` or with
-    broken entry points.  ``twine check`` and ``check-wheel-contents``
-    validate the artifacts; the explicit zipfile assertion covers
-    ``py.typed`` (the one promise ``--verifytypes`` makes that
-    check-wheel-contents does not test for); then the wheel installs
-    into a throwaway venv where both console scripts must answer.
+    broken entry points.  PyPI publishing uses ``uv`` (no ``twine``), so
+    artifact validation is ``check-wheel-contents`` plus the explicit
+    zipfile assertion that covers ``py.typed`` (the one promise
+    ``--verifytypes`` makes that check-wheel-contents does not test for);
+    the build itself (``uv build``) is the metadata check that
+    ``twine check`` used to provide.  Then the wheel installs into a
+    throwaway venv where both console scripts must answer.
     """
     out = Path(session.create_tmp())
     # create_tmp does not wipe an existing directory: stale artifacts
@@ -548,8 +554,6 @@ def build(session: nox.Session) -> None:
     shutil.rmtree(out)
     out.mkdir()
     session.run("uv", "build", "--out-dir", str(out), external=True)
-    artifacts = sorted(str(path) for path in out.glob("ferm-*"))
-    _uv(session, "--group", "build", "twine", "check", "--strict", *artifacts)
     wheel = next(str(path) for path in out.glob("*.whl"))
     _uv(session, "--group", "build", "check-wheel-contents", wheel)
     session.run(
@@ -576,6 +580,49 @@ def build(session: nox.Session) -> None:
     )
     session.run(str(venv / "bin" / "ferm"), "--version", external=True)
     session.run(str(venv / "bin" / "import-ferm"), "--help", external=True)
+
+
+@nox.session
+def build_deb(session: nox.Session) -> None:
+    """
+    Build the native .deb in the pinned debian image (opt-in, docker).
+
+    Assembles a clean source tree with debian/ at its root, stamps the version
+    via dch, runs dpkg-buildpackage + lintian (E: reds) inside the
+    digest-pinned debian:bookworm-slim toolchain image, and version-anchors
+    the dpkg Version field. Cold runs pull the base image; absent from
+    ``preflight`` (like ``binary``).
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=build-deb",
+        "--mode=dev",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
+def deb_smoke(session: nox.Session) -> None:
+    """
+    Install-smoke the built .deb in clean containers (opt-in, docker).
+
+    Runs the install-smoke cells against the artifact in ``dist/`` (build it
+    first with ``nox -s build_deb``): a clean install (version, config parse,
+    examples, stdlib-resolver fallback, file-based not-enabled assert), the
+    Perl-ferm migration paths, and the fail-closed source-tar / sdist
+    allowlist manifest. Absent from ``preflight``.
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=smoke-deb",
+        "--out",
+        "dist",
+        external=True,
+    )
 
 
 @nox.session

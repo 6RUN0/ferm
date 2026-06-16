@@ -14,9 +14,19 @@ FROM quay.io/pypa/manylinux_2_28_x86_64@sha256:893d0c9d73a8262503fa32f40160aae02
 # the PEP 517 backend for ``pip install .``; pinning it here lets the
 # in-container build run under --network=none (build isolation would
 # otherwise fetch it from PyPI).
+#
+# hatch-vcs + its transitive chain (setuptools-scm is a thin shim over the
+# real engine vcs-versioning) are the dynamic-version backend: the project
+# uses ``[tool.hatch.version] source="vcs"``, so under --no-build-isolation
+# pip needs them present or the ``vcs`` build hook fails to load. The host
+# injects SETUPTOOLS_SCM_PRETEND_VERSION (generic form -- the scoped
+# _FOR_FERM is ignored by hatch-vcs 0.5.0), so no .git is needed at build.
 ARG NUITKA_VERSION=4.1.2
 ARG DNSPYTHON_VERSION=2.8.0
 ARG HATCHLING_VERSION=1.30.1
+ARG HATCH_VCS_VERSION=0.5.0
+ARG SETUPTOOLS_SCM_VERSION=10.0.5
+ARG VCS_VERSIONING_VERSION=1.1.1
 
 ENV PATH=/opt/python/cp313-cp313/bin:${PATH}
 # Build cache home so the in-container build can run with --network=none.
@@ -38,7 +48,10 @@ RUN cd /opt/_internal && tar xf static-libs-for-embedding-only.tar.xz
 RUN python -m pip install --no-cache-dir \
         "nuitka==${NUITKA_VERSION}" \
         "dnspython==${DNSPYTHON_VERSION}" \
-        "hatchling==${HATCHLING_VERSION}"
+        "hatchling==${HATCHLING_VERSION}" \
+        "hatch-vcs==${HATCH_VCS_VERSION}" \
+        "setuptools-scm==${SETUPTOOLS_SCM_VERSION}" \
+        "vcs-versioning==${VCS_VERSIONING_VERSION}"
 
 # A SEPARATE venv that has pytest but NOT pyferm: the verify-golden gate
 # must run the golden harness from an interpreter where ``pyferm`` is

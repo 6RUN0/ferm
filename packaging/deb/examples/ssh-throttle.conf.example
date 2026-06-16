@@ -1,0 +1,41 @@
+# -*- shell-script -*-
+#
+# OPTIONAL SSH brute-force throttle -- NOT active by default.
+#
+# This file ships under /usr/share/doc/pyferm/examples/ and is NEVER loaded
+# automatically. To use it, copy it into the drop-in directory:
+#
+#     cp /usr/share/doc/pyferm/examples/ssh-throttle.conf.example \
+#        /etc/ferm/ferm.d/10-ssh-throttle.conf
+#     ferm --noexec --lines /etc/ferm/ferm.conf   # review the result first
+#     systemctl reload ferm                        # apply when satisfied
+#
+# Why it is OFF by default: an aggressive `mod recent` throttle with a low
+# threshold (or with `--update`, which re-arms the timer on EVERY packet)
+# self-locks the admin on legitimate parallel / reconnecting sessions --
+# tmux, scp, Ansible, a shared NAT egress. This example is deliberately
+# lenient and uses `rcheck` (a read-only check that does NOT refresh the
+# timestamp), so an established interactive session is never re-armed by its
+# own traffic; only a genuine burst of NEW connections from one source trips
+# it.
+#
+# Tune $SSH_PORT to match /etc/ferm/ferm.conf if SSH is non-standard.
+
+@def $SSH_PORT = ssh;
+
+domain (ip ip6) table filter chain INPUT {
+    # Only brand-new inbound SSH connections are rate-limited; established
+    # sessions already passed the ESTABLISHED-ACCEPT rule in ferm.conf.
+    proto tcp dport $SSH_PORT mod state state NEW {
+        # Record every new connection's source address (set only -- no
+        # update, so the window starts at the FIRST hit and ages out). NOP
+        # is the no-jump pseudo-target: record and keep evaluating.
+        mod recent name SSH-THROTTLE set NOP;
+        # Generous margin: more than 10 new SSH connections from one source
+        # within 60 seconds is almost certainly a brute-force scan. Legit
+        # reconnects stay well under this.
+        mod recent name SSH-THROTTLE rcheck seconds 60 hitcount 10
+            LOG log-prefix "ferm-ssh-throttle: ";
+        mod recent name SSH-THROTTLE rcheck seconds 60 hitcount 10 DROP;
+    }
+}

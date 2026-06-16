@@ -1,0 +1,36 @@
+Source: pyferm
+Section: net
+Priority: optional
+Maintainer: Boris Talovikov <boris@talovikov.ru>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-sequence-python3,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-hatchling,
+ python3-hatch-vcs,
+Standards-Version: 4.6.2
+Homepage: https://github.com/6RUN0/ferm
+Rules-Requires-Root: no
+
+Package: pyferm
+Architecture: all
+Depends:
+ ${python3:Depends},
+ ${misc:Depends},
+Recommends: python3-dnspython
+Provides: ferm
+Conflicts: ferm
+Replaces: ferm
+Description: For Easy Rule Making -- iptables/nftables frontend (Python port)
+ ferm reads firewall rules from a structured, high-level configuration
+ language and translates them into iptables/ip6tables (or native nftables)
+ rules, applying them atomically via iptables-restore. It also handles the
+ arptables and ebtables families.
+ .
+ This package is the Python port of ferm; it drops in for the upstream Perl
+ "ferm" package (same /usr/bin/ferm and /usr/bin/import-ferm commands).
+ .
+ A starter /etc/ferm/ferm.conf is shipped but the systemd unit is NOT enabled
+ on install (anti-lockout): review the rules, add your services under
+ /etc/ferm/ferm.d/, then "systemctl enable --now ferm".

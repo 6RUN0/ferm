@@ -1,0 +1,3 @@
+# .install does not rename: the source basename (ferm.conf) is placed into
+# the target directory, becoming /etc/ferm/ferm.conf -- a dpkg conffile.
+packaging/deb/ferm.conf etc/ferm/

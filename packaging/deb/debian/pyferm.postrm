@@ -1,0 +1,17 @@
+#!/bin/sh
+# On purge, remove the posture-downgrade breadcrumb so it does not orphan in
+# /etc/ferm and block / confuse a later reinstall. Only on purge -- a plain
+# remove keeps admin state.
+set -e
+
+BREADCRUMB=/etc/ferm/POSTURE-DOWNGRADE.README
+
+case "$1" in
+    purge)
+        rm -f "$BREADCRUMB"
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

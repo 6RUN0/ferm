@@ -1,0 +1,7 @@
+# Build artifacts of an in-tree pybuild run -- removed so a repeated
+# dpkg-buildpackage starts clean. No _version.py here: the version-file hook
+# is not used (the version flows through METADATA), so nothing is generated
+# into the tree.
+*.egg-info/
+.pybuild/
+build/

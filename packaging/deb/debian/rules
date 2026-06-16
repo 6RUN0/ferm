@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+# PYBUILD_NAME=ferm is required: pybuild takes the dist-info name from it
+# (ferm-<ver>), and only then does importlib.metadata.version("ferm") in
+# src/pyferm/__init__.py resolve; otherwise --version reports 0+unknown.
+export PYBUILD_NAME=ferm
+
+%:
+	dh $@ --buildsystem=pybuild
+
+# Anti-lockout: a firewall must not apply rules on `apt install` (it could
+# lock the admin out over SSH). Install the unit under the name `ferm` but
+# leave it disabled and stopped; the admin opts in with
+# `systemctl enable --now ferm` after writing their config.
+override_dh_installsystemd:
+	dh_installsystemd --name=ferm --no-enable --no-start

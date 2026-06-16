@@ -21,6 +21,23 @@ are unchanged unless `--nft` is passed.
 
 ### Added — packaging
 
+- **PyPI wheel and sdist** (`pip install ferm`). Built with `uv build` and
+  published via Trusted Publishing — no token secrets stored in CI. The
+  package name on PyPI is `ferm`; the `dns` extra (`pip install ferm[dns]`)
+  pulls in `dnspython` for full record-type support in `@resolve()`. Version
+  is derived from the `py-v<PEP440>` git tag through `hatch-vcs`, so the
+  wheel version and the tag are always the same source.
+- **Native `.deb` package** (`pyferm`). Installs `/usr/bin/ferm` and
+  `/usr/bin/import-ferm` and declares `Provides: ferm`, `Conflicts: ferm`,
+  `Replaces: ferm` so it is a drop-in replacement for the Perl `ferm` Debian
+  package — installing `pyferm` removes the Perl package and satisfies any
+  dependency that requires `ferm`. The `.deb` ships a starter
+  `/etc/ferm/ferm.conf` (DROP policy on `INPUT`; only SSH on port 22 by the
+  `ssh` service name and the RFC 4890 ICMPv6 essentials subset are accepted)
+  and a `ferm.service` unit that is **not** enabled or started on install
+  (anti-lockout). Drop-in fragments under `/etc/ferm/ferm.d/*.conf` are
+  merged at runtime. See the installation section of the
+  [README](README.md) for safety notes before enabling the service.
 - **Standalone binary distribution** for **Linux x86_64** (glibc **2.28**
   or newer), published as `ferm-<version>-linux-x86_64.tar.gz`. It bundles
   its own Python runtime and `dnspython`, so the target host needs no
@@ -32,9 +49,11 @@ are unchanged unless `--nft` is passed.
   unpack into a root-owned, non-world-writable directory. See the
   installation section of the [README](README.md) for the full provenance
   and threat-model notes.
-- **Static release version.** The distribution version is pinned in the
-  project metadata; a release is the tag `vX.Y.Z` matching that version,
-  and the build verifies the two agree before publishing.
+- **Dynamic release version from git tag (`hatch-vcs`).** The distribution
+  version is derived from the `py-v<PEP440>` git tag via `hatch-vcs`, so
+  the wheel, sdist, binary, and `.deb` all carry the same version as the tag
+  with no manual edit required. The build verifies the tag and the derived
+  version agree before publishing.
 - **Bundled third-party license texts.** The tarball ships a `LICENSES/`
   directory with the verbatim license text of every native library frozen
   into the binary (CPython, dnspython, OpenSSL, libffi, bzip2, xz, mpdecimal)

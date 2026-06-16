@@ -112,6 +112,16 @@ default `iptables` backend is unchanged.
 Optionally ship a self-contained binary (Nuitka). Order-independent: can
 land any time after Phase 1.
 
+Three release artifacts now ship from one source and one git-tag version
+(`hatch-vcs`, scoped to the port's `py-v<PEP440>` tags): the standalone
+Nuitka binary, a **PyPI wheel + sdist** (`uv build`/`uv publish` via Trusted
+Publishing, no token secrets), and a **native `.deb`** (`debhelper`/
+`dh-python`, drop-in over the upstream Perl `ferm` via
+`Provides/Conflicts/Replaces`). The `.deb` ships a starter `/etc/ferm/ferm.conf`
+and a systemd unit that is **not** enabled on install (anti-lockout); the
+admin opts in with `systemctl enable --now ferm`. Build-provenance
+attestation covers all three.
+
 #### Deferred packaging debt
 
 The following items are explicitly **out of Phase 3 scope** and recorded
@@ -136,6 +146,11 @@ here so they are not lost.
 - *GPG / Sigstore signing with maintainer keys* — build-provenance
   attestation (SLSA via GitHub Actions) already ships in Phase 3; keyring
   signing is a separate, deferred step.
+- *man page from POD* — the POD source exists only for the Perl version;
+  the `.deb`'s unit points `Documentation=man:ferm(1)` forward to a man page
+  not yet generated for the port.
+- *Own apt repository* (reprepro/aptly) — the `.deb` ships as a GitHub
+  Release asset; a signed apt repo is a separate distribution-lifecycle step.
 
 **CVE-rebuild of bundled native libraries (debt with an automatable
 trigger):**

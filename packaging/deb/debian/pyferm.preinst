@@ -1,0 +1,44 @@
+#!/bin/sh
+# Migrate an admin's existing ferm config so the shipped default never
+# overwrites live firewall rules. The upstream Perl `ferm` owns
+# /etc/ferm/ferm.conf as its conffile, and its unit historically also looked
+# at /etc/ferm.conf. dpkg-maintscript-helper mv_conffile does NOT fit here
+# (it moves a conffile WITHIN one package across versions; the source belongs
+# to a DIFFERENT package and no prior pyferm version owned the path), so the
+# migration is explicit, with one rule: never touch an existing config, copy
+# a default only into emptiness.
+set -e
+
+LEGACY=/etc/ferm.conf
+TARGET=/etc/ferm/ferm.conf
+
+case "$1" in
+    install|upgrade)
+        # Only act when the new path has no config yet (idempotency guard:
+        # a repeated install/configure leaves an adopted config untouched).
+        if [ ! -e "$TARGET" ]; then
+            if [ -L "$LEGACY" ]; then
+                # R3: a symlinked legacy config is REFUSED. An archive-mode or
+                # dereference-preserving copy would clone the link verbatim
+                # into /etc/ferm/, leaving ferm (run as root) reading its
+                # ruleset from whatever non-root path the link targets. Refuse
+                # and warn; do not follow. The migration below uses a plain
+                # content copy, reached only for a regular file.
+                echo "pyferm: /etc/ferm.conf is a symlink -- refusing to" \
+                     "migrate it (it could point ferm at a non-root path)." \
+                     "Copy your rules into $TARGET by hand if you want them." >&2
+            elif [ -f "$LEGACY" ]; then
+                # A real admin-edited legacy file: copy it (preserving mode)
+                # to the new conffile path BEFORE dpkg unpacks the shipped
+                # default, so dpkg sees an admin-modified conffile and keeps
+                # it instead of silently installing the package default.
+                mkdir -p /etc/ferm
+                cp -p -- "$LEGACY" "$TARGET"
+            fi
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

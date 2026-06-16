@@ -38,6 +38,7 @@ import argparse
 import atexit
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,14 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _IMAGE = "ferm-build"
+#: Native .deb build image (debian:bookworm-slim + deb toolchain) and the
+#: source dir holding ``debian/`` plus the shipped config/examples.
+_DEB_IMAGE = "ferm-deb-build"
+_DEB_DIR = _REPO_ROOT / "packaging" / "deb"
+#: Maintainer identity for ``dch`` (DEBFULLNAME/DEBEMAIL); a placeholder would
+#: be a lintian E:. Matches debian/control's Maintainer and the git identity.
+_DEB_FULLNAME = "Boris Talovikov"
+_DEB_EMAIL = "boris@talovikov.ru"
 #: Canonical dist directory name inside the shipped tar (``ferm.dist/``).
 #: Nuitka names it after the main module (``entry.dist``); the container
 #: build script renames it so the user-facing path matches docs.
@@ -139,12 +148,109 @@ _FORBIDDEN_SO_SUBSTRINGS = ("libc.so", "libnss_", "libm.so", "libpthread")
 
 _ACTIONS = (
     "build",
+    "build-deb",
+    "smoke-deb",
+    "print-version",
     "verify-golden",
     "smoke",
     "run-dns-gate",
     "run-interactive-gate",
     "run-on-image",
 )
+
+#: Port releases are tagged ``py-v<PEP440>`` -- a namespace distinct from the
+#: upstream Perl ``v*`` tags also reachable from this branch. The host version
+#: function strips THIS prefix, never a bare ``v`` (which would mis-read an
+#: upstream tag as a port release).
+_TAG_PREFIX = "py-v"
+
+#: A pushed tag reaches ``dch``/``docker -e``/the changelog as DATA. Validate
+#: it against the PEP 440 charset (after the py-v prefix) BEFORE any subprocess
+#: so a tag like ``py-v0.1.0;touch x`` fails early and no metacharacter ever
+#: reaches a shell. The body must start with a digit (rejects ``py-vabc`` and
+#: the bare prefix) and admits only PEP 440 / dpkg-version characters.
+_VALID_TAG_RE = re.compile(r"^py-v[0-9][0-9A-Za-z.+!~-]*$")
+
+
+def _strip_tag_prefix(tag: str) -> str:
+    """Drop the ``py-v`` release prefix, leaving the PEP 440 version."""
+    return tag.removeprefix(_TAG_PREFIX)
+
+
+def _validate_tag(tag: str) -> None:
+    """
+    Reject a tag that is not a charset-clean ``py-v<PEP440>`` release tag.
+
+    Fails CLOSED (``SystemExit``) before the tag can flow into any
+    subprocess argument, so shell metacharacters in a crafted tag never
+    reach ``dch``/``docker``/the changelog (injection defense).
+    """
+    if not _VALID_TAG_RE.fullmatch(tag):
+        raise SystemExit(
+            f"refusing tag {tag!r}: not a py-v<PEP440> release tag "
+            "(must match ^py-v[0-9][0-9A-Za-z.+!~-]*$)",
+        )
+
+
+def _sanitize_deb(version: str) -> str:
+    """
+    Normalize a PEP 440 version into a native-dpkg-safe version.
+
+    Native dpkg forbids a debian revision (``-N``) and the local PEP 440
+    segment (``+g<hash>``, plus the ``.dYYYYMMDD`` dirty marker that rides in
+    it) is unwanted in a native version. The chosen strategy DROPS the whole
+    local ``+`` segment (``0.1.1.dev3+gabc1234`` -> ``0.1.1.dev3``), NOT
+    ``+`` -> ``~`` -- one strategy, one dpkg sort order. On a release tag the
+    version is already clean, so this is a no-op there. The SAME function is
+    used for the changelog and the version-anchor gate, or the gate would
+    false-red.
+    """
+    return version.split("+", 1)[0]
+
+
+def _scm_version() -> str:
+    """
+    Return the version hatch-vcs will freeze, via ``hatch version``.
+
+    NOT ``python -m setuptools_scm``: the scoped describe/tag config lives
+    under ``[tool.hatch.version.raw-options]`` (hatch-vcs's namespace), which
+    the bare setuptools-scm CLI does not read -- it would pick an upstream
+    ``v*`` tag and emit the wrong line. ``hatch version`` reads the project's
+    real version source, so it returns EXACTLY what gets frozen into the
+    wheel/binary METADATA. Only reached off-tag (dev / dispatch); a release
+    tag short-circuits in ``_resolve_version`` and never shells out.
+    """
+    result = subprocess.run(
+        ["uvx", "hatch", "version"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    # ``uvx`` prints dependency-sync chatter to stderr; the version is the
+    # last non-empty stdout line.
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise SystemExit(
+            "`uvx hatch version` produced no version on stdout",
+        )
+    return lines[-1].strip()
+
+
+def _resolve_version() -> str:
+    """
+    Resolve the single version string fed to every artifact.
+
+    Release (``GITHUB_REF_TYPE == tag``, e.g. ``py-v0.1.0``): validate the tag
+    (charset gate) and strip the ``py-v`` prefix. Off-tag (dev / dispatch):
+    the setuptools-scm value via ``_scm_version``. The discriminator is
+    ``GITHUB_REF_TYPE``, not the mere presence of ``GITHUB_REF_NAME`` (which
+    GitHub sets on branch pushes / ``workflow_dispatch`` too).
+    """
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        return _strip_tag_prefix(ref)
+    return _scm_version()
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -159,6 +265,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="runtime image for --action=run-on-image",
     )
     parser.add_argument("--out", type=Path, default=_REPO_ROOT / "dist")
+    parser.add_argument(
+        "--deb",
+        action="store_true",
+        help="with --action=print-version: emit the deb-sanitized version",
+    )
     return parser.parse_args(argv)
 
 
@@ -311,13 +422,22 @@ def _container_build_script(out_dir: str, uid: int, gid: int) -> str:
     )
 
 
-def _run_build(source_root: Path) -> Path:
+def _run_build(source_root: Path, version: str) -> Path:
     """
     Build inside the image; return the host path to ``ferm.dist``.
 
     The writable output is a host tempdir OUTSIDE ``source_root`` (dev
     hygiene): writing ``build-out/`` inside the repo tree would show up as
     untracked dirt to the very ``git status`` check that guards the dev path.
+
+    ``version`` is injected as ``SETUPTOOLS_SCM_PRETEND_VERSION`` so hatch-vcs
+    freezes the right version inside the ``.git``-less container (``git
+    archive`` strips ``.git``, so a describe would otherwise fall to the
+    ``fallback_version`` 0.0.0). The GENERIC pretend variable is used, NOT the
+    scoped ``..._FOR_FERM``: hatch-vcs 0.5.0 wraps vcs-versioning and does not
+    pass the dist name through, so the scoped form is silently ignored
+    (verified). The generic form takes absolute precedence over any tree state
+    and is safe here -- only ``ferm`` is built in this container.
     """
     build_out = _scratch_dir("ferm-build-out-")
     out_dir = "/work-out"
@@ -330,6 +450,8 @@ def _run_build(source_root: Path) -> Path:
         f"{source_root}:/work:ro",
         "-v",
         f"{build_out}:{out_dir}",  # writable out, outside the source tree
+        "-e",
+        f"SETUPTOOLS_SCM_PRETEND_VERSION={version}",
         _IMAGE,
         "sh",
         "-c",
@@ -595,9 +717,11 @@ def _detect_version(binary: Path) -> str:
     Return the frozen package version from ``<binary> --version``.
 
     The first stdout line is ``ferm <ver>`` (cli.printversion); parse the
-    second whitespace-separated token. The version is the static metadata
-    frozen in via ``--include-distribution-metadata=ferm`` (pyproject
-    ``project.version``), so no git/hatch-vcs lookup is needed here.
+    second whitespace-separated token. The version is the dynamic hatch-vcs
+    value frozen into the package METADATA via
+    ``--include-distribution-metadata=ferm`` (the pretend version injected at
+    build time, see ``_run_build``), so no git/hatch-vcs lookup is needed
+    here -- this reads back what was frozen.
     """
     result = subprocess.run(
         [str(binary), "--version"],
@@ -620,12 +744,402 @@ def _action_build(args: argparse.Namespace) -> int:
     """Compile, run the BLOCKER build gates, package."""
     source_root = _source_root(args.mode, args.tag)
     _ensure_image(source_root)  # docker build + toolchain hard-fail
-    dist = _run_build(source_root)
+    # Resolve the version on the HOST (where .git / the tag is visible) and
+    # inject it as the container's pretend version -- the keystone that keeps
+    # the frozen METADATA correct in the .git-less build container.
+    version = _resolve_version()
+    dist = _run_build(source_root, version)
     _assert_frozen_imports(dist)  # frozen-import gate (BLOCKER)
     _assert_so_allow_list(dist)  # .so allow-list (BLOCKER)
     _assert_no_unbundled_extras(dist)  # optional-extra radius (BLOCKER)
-    version = _detect_version(dist / "ferm")  # run <binary> --version, parse
-    _package(dist, args.out, version, args.arch)
+    # Package under what actually froze into the binary METADATA (read back
+    # from <binary> --version), not the host string -- the smoke gate then
+    # cross-checks the two against the tag.
+    detected = _detect_version(dist / "ferm")
+    _package(dist, args.out, detected, args.arch)
+    return 0
+
+
+def _ensure_deb_image() -> None:
+    """Build the digest-pinned debian build image (toolchain baked in)."""
+    subprocess.run(
+        ["docker", "build", "-t", _DEB_IMAGE, str(_DEB_DIR)],
+        check=True,
+    )
+
+
+def _deb_source_tree(mode: str, tag: str | None) -> Path:
+    """
+    Assemble a clean source tree with ``debian/`` at its root for dpkg.
+
+    Release: ``git archive`` the tag (clean, tag-bound, export-ignore honored).
+    Dev: copy the working-tree build inputs -- the changes under test are
+    typically uncommitted, so ``git archive`` would miss them. Either way the
+    ``debian/`` dir (which lives under ``packaging/deb/``) is overlaid at the
+    tree root, where ``dpkg-buildpackage`` expects it.
+    """
+    if mode == "release":
+        if not tag:
+            raise SystemExit("--mode=release requires --tag <py-vX.Y.Z>")
+        tree = _git_archive(tag)
+    else:
+        tree = _scratch_dir("ferm-deb-dev-") / "tree"
+        tree.mkdir(parents=True)
+        for rel in ("pyproject.toml", "README.md", "CHANGELOG.md", "COPYING"):
+            shutil.copy2(_REPO_ROOT / rel, tree / rel)
+        shutil.copytree(_REPO_ROOT / "src", tree / "src")
+        shutil.copytree(_DEB_DIR, tree / "packaging" / "deb")
+    shutil.copytree(tree / "packaging" / "deb" / "debian", tree / "debian")
+    return tree
+
+
+def _deb_container_script(uid: int, gid: int) -> str:
+    """
+    Render the in-container deb build: changelog, build, lintian, anchor.
+
+    Copies the read-only source mount into a writable build dir (dch edits the
+    changelog), stamps the version via ``dch`` (the version is charset-
+    validated host-side and passed by env, never interpolated into shell --
+    injection-safe), builds binary-only, gates lintian on ``error`` (``E:``
+    reds, ``W:`` is logged), version-anchors the ``dpkg-deb`` Version field,
+    and hands the artifact to the invoking uid.
+    """
+    return (
+        "set -e\n"
+        "mkdir -p /tmp/b\n"
+        "cp -a /work/. /tmp/b/pyferm\n"
+        "cd /tmp/b/pyferm\n"
+        'export DEBEMAIL="$DEB_EMAIL" DEBFULLNAME="$DEB_NAME"\n'
+        'dch --newversion "$DEB_VER" --distribution unstable -b '
+        '"Automated release build $DEB_VER"\n'
+        "dpkg-buildpackage -us -uc -b\n"
+        "deb=$(ls /tmp/b/pyferm_*.deb)\n"
+        'echo "DEB_ARTIFACT=$deb"\n'
+        # lintian: fail only on E:, W: stays informational (baseline noise
+        # like binary-without-manpage / virtual-package from Provides).
+        'lintian --fail-on error "$deb"\n'
+        'ver=$(dpkg-deb -f "$deb" Version)\n'
+        'echo "DEB_VERSION_FIELD=$ver"\n'
+        # version-anchor: on a tag the deb Version must START WITH the tag;
+        # off-tag it must EQUAL the host-sanitized version (catches a dch /
+        # pretend-version drift and a 0+unknown from a missing PYBUILD_NAME).
+        'if [ -n "$TAG_VER" ]; then\n'
+        '  case "$ver" in "$TAG_VER"*) ;; *) echo "version-anchor: deb'
+        ' $ver does not start with tag $TAG_VER" >&2; exit 1;; esac\n'
+        "else\n"
+        '  [ "$ver" = "$EXPECT_DEB_VER" ] || { echo "version-anchor: deb'
+        ' $ver != expected $EXPECT_DEB_VER" >&2; exit 1; }\n'
+        "fi\n"
+        'cp "$deb" /work-out/\n'
+        f"chown {uid}:{gid} /work-out/pyferm_*.deb\n"
+    )
+
+
+def _action_build_deb(args: argparse.Namespace) -> int:
+    """
+    Build the native ``.deb`` in the pinned debian image; gate it.
+
+    Version flows from the single host function: the full PEP 440 string is
+    injected as the package METADATA pretend version, the deb-sanitized string
+    stamps the changelog and anchors the dpkg Version field.
+    """
+    _ensure_deb_image()
+    version_full = _resolve_version()
+    version_deb = _sanitize_deb(version_full)
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    tag_ver = ""
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        tag_ver = _strip_tag_prefix(ref)
+    tree = _deb_source_tree(args.mode, args.tag)
+    args.out.mkdir(parents=True, exist_ok=True)
+    # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
+    # not a bind mount, so the artifact would never reach the host dir.
+    out = args.out.resolve()
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{tree}:/work:ro",
+        "-v",
+        f"{out}:/work-out",
+        "-e",
+        f"SETUPTOOLS_SCM_PRETEND_VERSION={version_full}",
+        "-e",
+        f"DEB_VER={version_deb}",
+        "-e",
+        f"EXPECT_DEB_VER={version_deb}",
+        "-e",
+        f"TAG_VER={tag_ver}",
+        "-e",
+        f"DEB_NAME={_DEB_FULLNAME}",
+        "-e",
+        f"DEB_EMAIL={_DEB_EMAIL}",
+        _DEB_IMAGE,
+        "sh",
+        "-c",
+        _deb_container_script(os.getuid(), os.getgid()),
+    ]
+    subprocess.run(cmd, check=True)
+    debs = sorted(args.out.glob("pyferm_*.deb"))
+    if not debs:
+        raise SystemExit(f"no pyferm_*.deb produced in {args.out}")
+    return 0
+
+
+#: A clean base for the install-smoke (no toolchain): proves the deb installs
+#: and runs on a stock debian, not just the build image.
+_DEB_SMOKE_BASE = "debian:bookworm-slim"
+
+#: Top-level entries the PyPI sdist is ALLOWED to carry (fail-closed
+#: allowlist, mirrors the .gitattributes export-ignore for the deb channel).
+#: hatchling always adds pyproject.toml / PKG-INFO / .gitignore.
+_SDIST_ALLOWED_TOP = frozenset(
+    {
+        "src",
+        "README.md",
+        "CHANGELOG.md",
+        "COPYING",
+        "pyproject.toml",
+        "PKG-INFO",
+        ".gitignore",
+    },
+)
+
+#: Private top-level paths that must NEVER appear in the deb source-tar.
+_FORBIDDEN_ARCHIVE_PATHS = (
+    "CLAUDE.md",
+    ".mcp.json",
+    ".github/",
+    ".omc/",
+    ".claude/",
+    "docs/superpowers/",
+    "tests/corpus/configs/",
+    "scratch/",
+    "notes/",
+    "drafts/",
+)
+
+
+def _smoke_cell_clean() -> str:
+    """Cell 1: clean install, version-anchor, config, examples, not-enabled."""
+    return (
+        "set -e\n"
+        # The slim base ships /etc/dpkg/dpkg.cfg.d/docker with
+        # `path-exclude /usr/share/doc/*`, which would drop the shipped
+        # example on install. Remove it so the smoke reflects a normal system.
+        "rm -f /etc/dpkg/dpkg.cfg.d/docker\n"
+        "apt-get update >/dev/null\n"
+        "apt-get install -y --no-install-recommends /work-out/pyferm_*.deb"
+        " >/dev/null\n"
+        "ferm --version\n"
+        "import-ferm --help >/dev/null\n"
+        # the shipped default config parses (--test: no real iptables needed)
+        "ferm --noexec --lines --test /etc/ferm/ferm.conf >/dev/null\n"
+        # the throttle example is really installed
+        "test -f /usr/share/doc/pyferm/examples/ssh-throttle.conf.example\n"
+        # anti-lockout: the unit is NOT enabled (no wants symlink on disk)
+        "test ! -L /etc/systemd/system/multi-user.target.wants/ferm.service\n"
+        # resolver stdlib fallback works without python3-dnspython: an
+        # A-record @resolve() (localhost -> 127.0.0.1 via getaddrinfo) must not
+        # fail. REAL resolution -- NOT --test, which would use a mock zonefile
+        # and never exercise the stdlib stub -- so ferm needs the iptables tool
+        # present for find_tool (it is not a package dependency).
+        "apt-get install -y --no-install-recommends iptables >/dev/null\n"
+        "printf 'domain ip table filter chain OUTPUT {\\n"
+        " daddr @resolve(localhost) ACCEPT;\\n}\\n' > /tmp/r.ferm\n"
+        "ferm --noexec --lines /tmp/r.ferm >/dev/null\n"
+        # version-anchor: read BOTH from the installed artifact (not a host
+        # string) -- catches a 0+unknown from a wrong PYBUILD_NAME.
+        "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
+        "vdeb=$(dpkg-deb -f /work-out/pyferm_*.deb Version)\n"
+        "sani=${vferm%%+*}\n"
+        'if [ -n "$TAG_VER" ]; then\n'
+        '  case "$vferm" in *"$TAG_VER") ;; *) echo "ferm $vferm not tag'
+        ' $TAG_VER" >&2; exit 1;; esac\n'
+        '  case "$vdeb" in "$TAG_VER"*) ;; *) echo "deb $vdeb !^ tag'
+        ' $TAG_VER" >&2; exit 1;; esac\n'
+        "else\n"
+        '  [ "$vdeb" = "$sani" ] || { echo "deb $vdeb != sani($vferm)=$sani"'
+        " >&2; exit 1; }\n"
+        "fi\n"
+        "echo CELL1-OK\n"
+    )
+
+
+def _smoke_cell_migration() -> str:
+    """Cell 2: over a Perl-ferm layout -- config kept, downgrade breadcrumb."""
+    return (
+        "set -e\n"
+        "apt-get update >/dev/null\n"
+        "mkdir -p /etc/ferm /lib/systemd/system"
+        " /etc/systemd/system/multi-user.target.wants\n"
+        # an admin-edited config already at the new path + the old unit enabled
+        "printf '# MARKER admin config\\n' > /etc/ferm/ferm.conf\n"
+        "touch /lib/systemd/system/ferm.service\n"
+        "ln -s /lib/systemd/system/ferm.service"
+        " /etc/systemd/system/multi-user.target.wants/ferm.service\n"
+        # An admin-customized conffile already on disk triggers dpkg's
+        # "created by you" prompt; on unattended apt (closed stdin) that would
+        # EOF-error. --force-confold keeps the admin's file non-interactively
+        # -- exactly the migration goal (the README documents this for
+        # unattended upgrades).
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y"
+        " --no-install-recommends"
+        " -o Dpkg::Options::=--force-confold"
+        " -o Dpkg::Options::=--force-confdef"
+        " /work-out/pyferm_*.deb >/dev/null\n"
+        # the admin config is preserved, not clobbered by the shipped default
+        "grep -q 'MARKER admin config' /etc/ferm/ferm.conf\n"
+        # the posture-downgrade breadcrumb is written somewhere durable
+        "test -f /etc/ferm/POSTURE-DOWNGRADE.README\n"
+        "echo CELL2-OK\n"
+    )
+
+
+def _smoke_cell_symlink_refusal() -> str:
+    """Cell 3 (R3): a symlinked legacy config is refused, not followed."""
+    return (
+        "set -e\n"
+        "apt-get update >/dev/null\n"
+        "printf 'evil\\n' > /tmp/evil.conf\n"
+        "ln -sf /tmp/evil.conf /etc/ferm.conf\n"
+        "apt-get install -y --no-install-recommends /work-out/pyferm_*.deb"
+        " >/dev/null 2>/tmp/err.txt || true\n"
+        # the shipped default lands as a REGULAR file, never a symlink to the
+        # attacker-controlled path, and carries no evil content
+        "test ! -L /etc/ferm/ferm.conf\n"
+        "test -f /etc/ferm/ferm.conf\n"
+        "! grep -q evil /etc/ferm/ferm.conf\n"
+        "echo CELL3-OK\n"
+    )
+
+
+def _run_smoke_cell(out: Path, script: str, tag_ver: str, label: str) -> None:
+    """Run one install-smoke cell in a clean debian container."""
+    run = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{out}:/work-out:ro",
+            "-e",
+            f"TAG_VER={tag_ver}",
+            _DEB_SMOKE_BASE,
+            "sh",
+            "-c",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = f"{label}-OK"
+    if run.returncode != 0 or marker not in run.stdout:
+        raise SystemExit(
+            f"deb install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
+        )
+
+
+def _assert_sdist_allowlist(out: Path) -> None:
+    """Build the sdist and assert its top-level entries are all allowed."""
+    subprocess.run(
+        ["uv", "build", "--sdist", "--out-dir", str(out)],
+        check=True,
+        capture_output=True,
+    )
+    tarballs = sorted(out.glob("ferm-*.tar.gz"))
+    if not tarballs:
+        raise SystemExit(f"no sdist tarball in {out}")
+    with tarfile.open(tarballs[-1]) as tar:
+        tops = {
+            name.split("/", 2)[1]
+            for name in tar.getnames()
+            if "/" in name and len(name.split("/", 2)) > 1
+        }
+    leaked = tops - _SDIST_ALLOWED_TOP
+    if leaked:
+        raise SystemExit(
+            f"sdist carries unexpected top-level entries: {sorted(leaked)}",
+        )
+
+
+def _assert_deb_source_tar_clean() -> None:
+    """Assert git archive HEAD carries no private path (the deb source-tar)."""
+    archive = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(_REPO_ROOT),
+            "archive",
+            "--worktree-attributes",
+            "HEAD",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    listing = subprocess.run(
+        ["tar", "t"],
+        input=archive.stdout,
+        capture_output=True,
+        check=True,
+    ).stdout.decode("utf-8", "replace")
+    for forbidden in _FORBIDDEN_ARCHIVE_PATHS:
+        for line in listing.splitlines():
+            if line == forbidden or line.startswith(forbidden):
+                raise SystemExit(
+                    f"deb source-tar leaks a private path: {line}",
+                )
+
+
+def _action_smoke_deb(args: argparse.Namespace) -> int:
+    """
+    Install-smoke the built .deb in clean containers + allowlist manifest.
+
+    Three cells (clean install / Perl-ferm migration / symlinked-legacy
+    refusal) plus the fail-closed manifest over the deb source-tar and the
+    PyPI sdist. Operates on the .deb already in ``--out``.
+    """
+    # Absolute path: docker bind mounts need it (a relative path becomes a
+    # named volume).
+    out = args.out.resolve()
+    debs = sorted(out.glob("pyferm_*.deb"))
+    if not debs:
+        raise SystemExit(
+            f"no pyferm_*.deb in {out} -- run --action=build-deb first",
+        )
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    tag_ver = ""
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        tag_ver = _strip_tag_prefix(ref)
+    _run_smoke_cell(out, _smoke_cell_clean(), tag_ver, "CELL1")
+    _run_smoke_cell(out, _smoke_cell_migration(), tag_ver, "CELL2")
+    _run_smoke_cell(out, _smoke_cell_symlink_refusal(), tag_ver, "CELL3")
+    _assert_deb_source_tar_clean()
+    _assert_sdist_allowlist(out)
+    return 0
+
+
+def _action_print_version(args: argparse.Namespace) -> int:
+    """
+    Print the resolved version to stdout (single host version function).
+
+    The one source every consumer reads: the binary/deb pretend version, the
+    ``debian/changelog`` entry, and the version-anchor gate expectations. On a
+    tag it is the validated, prefix-stripped tag; off-tag it is the
+    setuptools-scm value (``_scm_version``). With ``--deb`` the version is
+    run through ``_sanitize_deb`` (drop the local ``+`` segment) for the
+    native-dpkg changelog and the deb version-anchor gate -- the SAME function
+    on both sides, so they cannot disagree. Printing one line keeps it
+    shell-consumable from nox / the workflow.
+    """
+    version = _resolve_version()
+    if args.deb:
+        version = _sanitize_deb(version)
+    sys.stdout.write(f"{version}\n")
     return 0
 
 
@@ -694,13 +1208,16 @@ def _expected_version(binary: Path) -> str:
     """
     Return the version the binary's ``--version`` first line MUST report.
 
-    Release mode (a TAG ref, e.g. ``v0.1.0``): anchor to the TAG,
-    ``${GITHUB_REF_NAME#v}``. The shipped version is STATIC in pyproject
-    (frozen via ``--include-distribution-metadata=ferm``), so this is NOT a
-    tautology against the binary's self-report: it enforces that the
-    maintainer bumped the static version to match the tag BEFORE tagging. A
-    forgotten bump (binary ``0.1.0.dev0`` vs tag ``v0.1.0``), a stale static
-    version, or a ``0+unknown`` fallback all fail this check.
+    Release mode (a TAG ref, e.g. ``py-v0.1.0``): anchor to the TAG,
+    ``${GITHUB_REF_NAME#py-v}`` (the py-v prefix, NOT a bare v -- the repo
+    also carries upstream v* tags). hatch-vcs derives the version from the
+    tag, so in release mode the binary version equals the tag BY
+    CONSTRUCTION; this gate is NOT a tautology against the binary's
+    self-report, it is the thin check that the pretend-version INJECTION
+    actually worked. A ``0.0.0`` fallback (a shallow / git-less build that
+    skipped injection) or a ``0+unknown`` reports something other than the
+    tag and fails here. The tag is charset-validated first, so a crafted tag
+    cannot smuggle metacharacters this far.
 
     Dev mode (no tag ref): no tag to anchor to, so fall back to the binary's
     own reported version via ``_detect_version`` (which already rejects an
@@ -713,7 +1230,8 @@ def _expected_version(binary: Path) -> str:
     """
     ref = os.environ.get("GITHUB_REF_NAME", "")
     if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        return ref.removeprefix("v")
+        _validate_tag(ref)
+        return _strip_tag_prefix(ref)
     return _detect_version(binary)
 
 
@@ -964,6 +1482,12 @@ def main(argv: list[str] | None = None) -> int:
     # build/gate step and is selected by name.
     if args.action == "build":
         return _action_build(args)
+    if args.action == "build-deb":
+        return _action_build_deb(args)
+    if args.action == "smoke-deb":
+        return _action_smoke_deb(args)
+    if args.action == "print-version":
+        return _action_print_version(args)
     if args.action == "verify-golden":
         return _action_verify_golden(args)
     if args.action == "smoke":

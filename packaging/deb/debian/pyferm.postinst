@@ -1,0 +1,47 @@
+#!/bin/sh
+# Posture-downgrade signal. If the host had the (Perl) ferm unit ENABLED --
+# detected FILE-wise by the on-disk wants symlink, not the systemctl
+# enabled-state query (unreliable in a chroot / PID1-less container) -- but
+# this package ships
+# the unit --no-enable, then the firewall will NOT come up on the next reboot
+# on a host where it DID. Warn DURABLY: a postinst stderr line is swallowed
+# by unattended apt, so the authoritative signal is a breadcrumb file plus
+# NEWS.Debian (apt-listchanges).
+set -e
+
+WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
+BREADCRUMB=/etc/ferm/POSTURE-DOWNGRADE.README
+
+case "$1" in
+    configure)
+        # Trigger: the old unit's wants symlink exists AND this package did
+        # not enable the unit (we always ship --no-enable). Write the
+        # breadcrumb only if absent, so a repeated dpkg-reconfigure does not
+        # clobber/duplicate the signal (idempotency) yet never silences it.
+        if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
+            mkdir -p /etc/ferm
+            # Atomic write: render to a temp file, then rename into place.
+            tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
+            cat > "$tmp" <<'EOF'
+PYFERM POSTURE DOWNGRADE -- ACTION REQUIRED
+
+The previous ferm service was enabled on this host, but the pyferm package
+installs its systemd unit WITHOUT enabling or starting it (anti-lockout).
+
+As a result your firewall will NOT be applied automatically on the next
+reboot. Review /etc/ferm/ferm.conf (and /etc/ferm/ferm.d/), then opt in:
+
+    systemctl enable --now ferm
+
+Delete this file once you have re-enabled the service (or decided not to).
+EOF
+            mv -f "$tmp" "$BREADCRUMB"
+            echo "pyferm: previous ferm was enabled; this package does NOT" \
+                 "auto-enable the unit. See $BREADCRUMB." >&2
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

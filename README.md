@@ -61,7 +61,92 @@ resolver consults system sources such as `/etc/hosts` and mDNS that dnspython
 bypasses, so the two backends can diverge when those local sources differ from
 authoritative DNS.
 
-## Installation (standalone binary)
+## Installation
+
+Three distribution forms are available. All carry the same version derived
+from the same git tag.
+
+### WARNING: the default configuration blocks all inbound traffic
+
+Before enabling the `ferm` systemd service, read this section carefully.
+
+The starter `/etc/ferm/ferm.conf` installed by the `.deb` package applies a
+**DROP policy to the `INPUT` chain**. Only two narrow exceptions are open by
+default: SSH on port 22 (identified by the service name `ssh`) and the
+ICMPv6 essentials required by RFC 4890 (neighbour discovery, etc.). Any
+other inbound traffic is dropped immediately on service start.
+
+**Before running `systemctl enable --now ferm`:**
+
+- Add every service you need to reachable through your firewall as a
+  drop-in fragment in `/etc/ferm/ferm.d/` (for example, HTTP/HTTPS,
+  custom application ports).
+- If SSH runs on a port other than 22, edit `$SSH_PORT` in
+  `/etc/ferm/ferm.conf` before enabling. Enabling the service with the
+  wrong SSH port will lock you out of a remote machine.
+- Fragments in `/etc/ferm/ferm.d/*.conf` are executed as root. Keep them
+  owned by `root:root` with permissions `0644` or stricter. A
+  world-writable fragment is a privilege-escalation vector.
+
+**Migrating from the Perl `ferm` package:** the `pyferm` `.deb` installs
+over the Perl package via `Provides/Conflicts/Replaces: ferm`, but it does
+**not** automatically enable or start `ferm.service`. If you relied on the
+Perl package having the service enabled, you must re-enable it explicitly
+after installing `pyferm`. This is intentional: the default configuration
+above would otherwise lock you out on first boot.
+
+**Third-party packages that declare `Depends: ferm`** (automation tooling,
+configuration managers) will have their dependency satisfied by `pyferm`,
+but any `systemctl enable ferm` those tools may run will apply the default
+DROP configuration. Audit what your automation does before installing.
+
+### PyPI (pip)
+
+```sh
+pip install ferm
+```
+
+For full DNS record-type support in `@resolve()` (including `NS`/`MX`),
+install the `dns` extra:
+
+```sh
+pip install ferm[dns]
+```
+
+The `ferm` and `import-ferm` console scripts are placed on `PATH` by pip.
+
+### Native .deb package
+
+Download `pyferm_<version>_all.deb` from the
+[GitHub Releases](https://github.com/6RUN0/ferm/releases) page and install
+it:
+
+```sh
+sudo apt install ./pyferm_<version>_all.deb
+```
+
+`apt install ./...` (with the explicit `./` path) resolves dependencies
+automatically. Do not use `dpkg -i` directly unless you handle dependencies
+yourself.
+
+The package name is `pyferm` but it declares `Provides: ferm`,
+`Conflicts: ferm`, and `Replaces: ferm`. Installing it removes any
+existing Perl `ferm` package and satisfies packages that depend on `ferm`.
+
+When migrating from the Perl `ferm`, your edited `/etc/ferm/ferm.conf` is
+kept: an interactive `apt` prompts you to keep it (the default), and for an
+unattended upgrade pass `-o Dpkg::Options::=--force-confold` to keep it
+without prompting.
+
+After installation the service is **not** enabled. Review the warning above,
+customise `/etc/ferm/ferm.conf` and add fragments to `/etc/ferm/ferm.d/`,
+then opt in:
+
+```sh
+systemctl enable --now ferm
+```
+
+### Installation (standalone binary)
 
 A self-contained binary is published for **Linux x86_64** (glibc **2.28**
 or newer). It carries its own Python runtime and a bundled `dnspython`,

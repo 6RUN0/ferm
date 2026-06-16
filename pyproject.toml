@@ -1,12 +1,15 @@
 [project]
 name = "ferm"
-version = "0.1.0.dev0"
+# Version is dynamic: hatch-vcs derives it from the git tag (see
+# [tool.hatch.version] below). No static version string lives here.
+dynamic = ["version"]
 description = "For Easy Rule Making - a frontend for iptables (Python port)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-2.0-or-later"
+license-files = ["COPYING"]
 authors = [{ name = "Auke Kok" }, { name = "Max Kellermann" }]
-maintainers = [{ name = "Boris Talovikov" }]
+maintainers = [{ name = "Boris Talovikov", email = "boris@talovikov.ru" }]
 keywords = ["firewall", "iptables", "nftables", "netfilter"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -23,19 +26,61 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dns = ["dnspython>=2.8.0"]
+# Floor is 2.2.1, not the latest: Debian bookworm ships dnspython 2.2.1, so
+# the deb's unversioned ``Recommends: python3-dnspython`` must be satisfiable
+# there. The resolver only uses ``resolve(..., search=...)`` (a 2.0+ kwarg),
+# so 2.2.1 is sufficient; the lowest bound is exercised by the deps_lowest
+# nox session. Without the package the resolver falls back to stdlib
+# getaddrinfo (A/AAAA only).
+dns = ["dnspython>=2.2.1"]
+
+[project.urls]
+Homepage = "https://github.com/6RUN0/ferm"
+Repository = "https://github.com/6RUN0/ferm"
+Changelog = "https://github.com/6RUN0/ferm/blob/main/CHANGELOG.md"
 
 [project.scripts]
 ferm = "pyferm.cli:main"
 import-ferm = "pyferm.import_ferm:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+# The repository carries TWO foreign tag namespaces reachable from this
+# branch -- upstream Perl tags v1.*/v2.* and annotated port/phase-*. Left
+# unrestricted, setuptools-scm would either fail (HEAD on port/phase-3) or
+# pick v2.6 and emit 2.7.devN. So describe/regex are scoped EXCLUSIVELY to
+# the port's own release scheme py-v<PEP440> (e.g. py-v0.1.0). Until the
+# first py-v* tag this yields 0.0.1.devN+g<hash> (verified); fallback_version
+# covers a git-less checkout (archive/source tarball).
+[tool.hatch.version.raw-options]
+git_describe_command = [
+  "git", "describe", "--dirty", "--tags", "--long", "--match", "py-v[0-9]*",
+]
+tag_regex = "^py-v(?P<version>[0-9].*)$"
+fallback_version = "0.0.0"
+
+# No [tool.hatch.build.hooks.vcs]/version-file hook: it would write
+# src/pyferm/_version.py, a file with no consumer (__version__ is read only
+# via importlib.metadata.version("ferm")). The version flows through METADATA
+# alone -- one channel, no dangling second file.
 
 [tool.hatch.build.targets.wheel]
 # src-layout is not auto-detected by hatchling; name the package explicitly.
 packages = ["src/pyferm"]
+
+# sdist allowlist -- the mirror of the .gitattributes export-ignore that
+# guards the deb source-tar. hatchling does NOT read .gitattributes, so the
+# PyPI sdist needs its own explicit list, or private paths (CLAUDE.md, .omc,
+# the internal specs, the wild-config corpus) would ship in the unrevocable
+# ferm-<ver>.tar.gz. only-include is fail-closed: anything not named is
+# absent.
+[tool.hatch.build.targets.sdist]
+only-include = ["src/pyferm", "README.md", "CHANGELOG.md", "COPYING"]
 
 [tool.uv]
 default-groups = ["dev", "test", "lint"]
@@ -377,7 +422,12 @@ crashfuzz = [
 ]
 test = [
   "diff-cover>=10.3.0",
-  "dnspython>=2.8.0",
+  # Floor matches the ``dns`` extra (2.2.1, the bookworm version): the test
+  # group must not pin dnspython HIGHER than the extra, or ``deps_lowest``
+  # (--resolution lowest-direct, installing both the test group and .[dns])
+  # would resolve to the test floor and the lower-bound test would be theatre.
+  # uv.lock still resolves the normal suite to the latest dnspython.
+  "dnspython>=2.2.1",
   "hypothesis>=6.155.2",
   "pytest>=9.0.3",
   "pytest-cov>=7.1.0",
@@ -385,4 +435,4 @@ test = [
   "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.6.0",
 ]
-build = ["check-wheel-contents>=0.6.3", "twine>=6.2.0"]
+build = ["check-wheel-contents>=0.6.3"]

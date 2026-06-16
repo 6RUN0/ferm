@@ -1,11 +1,16 @@
 ---
-# Tag-gated release of the standalone binary.  The published artifact is
-# run as root by end users, so this workflow is the publication trust
-# boundary: minimal token scopes, SHA-pinned actions, a download->verify
-# step before signing, and an environment gate in front of the upload.
+# Tag-gated release of three artifacts: the standalone binary (GitHub
+# Release), the native .deb (GitHub Release asset), and the PyPI
+# wheel+sdist. The published artifacts run as root on end users' hosts, so
+# this workflow is the publication trust boundary: minimal token scopes,
+# SHA-pinned actions, download->verify before signing, an environment gate in
+# front of every upload, and the single irreversible step (uv publish) last.
 on:
   push:
-    tags: ['v*']           # only a v* tag publishes a release
+    # ONLY a py-v* tag publishes. This REPLACES the old v* trigger on purpose:
+    # the repo also carries upstream Perl v* tags, and leaving a v* trigger
+    # would re-run this release on, e.g., v2.7 and mis-resolve the version.
+    tags: ['py-v*']
   workflow_dispatch: {}     # manual build + gates WITHOUT publishing
 permissions:
   contents: read            # explicit minimal top-level scope
@@ -24,6 +29,18 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0     # release builds need the full tag history
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          # No cache on the release trust boundary: a tag-triggered publish
+          # must not consume a potentially poisoned runtime cache (zizmor
+          # cache-poisoning). Releases are rare; cache speed is irrelevant.
+          enable-cache: false
+
+      # The lockfile must match pyproject on every version-reading job.
+      - name: Verify the lockfile is in sync
+        run: uv lock --check
 
       # Pulls the large manylinux_2_28 image and compiles with Nuitka;
       # expect this step to take several minutes on a stock runner.
@@ -65,11 +82,150 @@ jobs:
           name: ferm-dist
           path: dist/
 
+  build-deb:
+    # Parallel to `build`: the native .deb is an independent reversible stage.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          # No cache on the release trust boundary: a tag-triggered publish
+          # must not consume a potentially poisoned runtime cache (zizmor
+          # cache-poisoning). Releases are rare; cache speed is irrelevant.
+          enable-cache: false
+
+      - name: Verify the lockfile is in sync
+        run: uv lock --check
+
+      # Builds the digest-pinned debian image, stamps the version via dch,
+      # runs dpkg-buildpackage + lintian (E: reds), version-anchors the dpkg
+      # Version field.
+      - name: Build the native .deb (release mode, clean checkout)
+        run: |
+          python packaging/build.py --action=build-deb --mode=release \
+            --tag "${GITHUB_REF_NAME}" --out dist
+
+      # Install-smoke in clean containers: clean install, Perl-ferm migration,
+      # symlinked-legacy refusal, and the fail-closed source-tar/sdist manifest.
+      - name: Install-smoke the .deb
+        run: python packaging/build.py --action=smoke-deb --out dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # frozen: v4.6.2
+        with:
+          name: pyferm-deb
+          path: dist/pyferm_*.deb
+
+  dry-run-pypi:
+    # Tokenless early diagnostics on workflow_dispatch: build + a publish
+    # dry-run with NO id-token, so the token topology is pinned statically --
+    # the OIDC-bearing publish-pypi job is structurally unreachable off a tag.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          # No cache on the release trust boundary: a tag-triggered publish
+          # must not consume a potentially poisoned runtime cache (zizmor
+          # cache-poisoning). Releases are rare; cache speed is irrelevant.
+          enable-cache: false
+
+      - name: Verify the lockfile is in sync
+        run: uv lock --check
+
+      - name: Build wheel + sdist
+        run: uv build --out-dir dist
+
+      - name: Validate wheel contents
+        run: uvx check-wheel-contents dist/*.whl
+
+      # --dry-run does NOT mint an OIDC token; this job has no id-token: write,
+      # so it cannot publish even by accident.
+      - name: Publish dry-run (no token)
+        run: uv publish --dry-run
+
+  publish-pypi:
+    # The single IRREVERSIBLE step, last: both reversible stages must pass.
+    needs: [build, build-deb]
+    # Ref-guard ON THE JOB so workflow_dispatch never enters the token-bearing
+    # job at all (not merely skips a step).
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    runs-on: ubuntu-latest
+    # Repo-side gate: the `release` environment carries required reviewers and
+    # a tag-matching rule. MANDATORY -- an empty environment lets any workflow
+    # publish (the real ACL is the PyPI Trusted Publisher's environment field).
+    environment: release
+    permissions:
+      contents: read
+      id-token: write         # OIDC for Trusted Publishing + attestation
+      attestations: write     # PEP 740 build-provenance attestation
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          # No cache on the release trust boundary: a tag-triggered publish
+          # must not consume a potentially poisoned runtime cache (zizmor
+          # cache-poisoning). Releases are rare; cache speed is irrelevant.
+          enable-cache: false
+
+      - name: Verify the lockfile is in sync
+        run: uv lock --check
+
+      - name: Build wheel + sdist into a clean dist
+        run: |
+          rm -rf dist
+          uv build --out-dir dist
+
+      - name: Validate wheel contents
+        run: uvx check-wheel-contents dist/*.whl
+
+      # Assert dist holds EXACTLY one wheel + one sdist before attesting: a
+      # stray or missing file would otherwise be attested (or globbed to zero).
+      - name: Assert the dist composition
+        run: |
+          set -eu
+          whl=$(find dist -maxdepth 1 -name '*.whl' | wc -l)
+          sdist=$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)
+          test "$whl" -eq 1 || { echo "expected 1 wheel, found $whl" >&2; exit 1; }
+          test "$sdist" -eq 1 || { echo "expected 1 sdist, found $sdist" >&2; exit 1; }
+
+      - name: Attest build provenance (wheel + sdist)
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # frozen: v1.4.4
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+
+      # Trusted Publishing (OIDC): no token secret. uv generates and uploads
+      # PEP 740 attestations to the index. Fails closed if the PyPI Trusted
+      # Publisher (with its `release` environment) is not configured.
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
+
   publish:
-    needs: build
+    needs: [build, build-deb]
     # Ref-guard so workflow_dispatch builds the gates but never publishes;
-    # only a pushed v* tag reaches this job.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # only a pushed py-v* tag reaches this job.
+    if: startsWith(github.ref, 'refs/tags/py-v')
     runs-on: ubuntu-latest
     # Repo-side gate: the `release` environment carries required reviewers
     # and a tag-matching deployment rule.
@@ -85,17 +241,26 @@ jobs:
           name: ferm-dist
           path: dist/
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # frozen: v4.3.0
+        with:
+          name: pyferm-deb
+          path: dist/
+
       # attest-build-provenance signs WHATEVER it is handed, so cross-check
       # the digest this job received against the build job's SHA256SUMS
       # first; a swap in artifact storage would otherwise be attested as
-      # genuine.
-      - name: Verify artifact integrity before attesting
-        run: cd dist && sha256sum -c SHA256SUMS
+      # genuine. Then append the .deb digest to the same manifest.
+      - name: Verify artifact integrity and extend the manifest
+        run: |
+          cd dist && sha256sum -c SHA256SUMS
+          sha256sum pyferm_*.deb >> SHA256SUMS
 
-      - name: Attest build provenance
+      - name: Attest build provenance (binary + deb)
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # frozen: v1.4.4
         with:
-          subject-path: 'dist/ferm-*-linux-x86_64.tar.gz'
+          subject-path: |
+            dist/ferm-*-linux-x86_64.tar.gz
+            dist/pyferm_*.deb
 
       # The official gh client, not a third-party action.  --verify-tag
       # refuses if the tag is absent from the remote, closing the window
@@ -106,5 +271,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            dist/ferm-*-linux-x86_64.tar.gz dist/SHA256SUMS \
+            dist/ferm-*-linux-x86_64.tar.gz dist/pyferm_*.deb dist/SHA256SUMS \
             --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
