@@ -77,11 +77,13 @@ def _run_plan_nft(ferm_file: Path, fmt: str) -> tuple[int, str]:
 
 @pytest.mark.parametrize("ferm_file", _CASES, ids=[p.stem for p in _CASES])
 def test_plan_nft_golden(ferm_file: Path) -> None:
-    """Each fixture's stdout must exactly match its checked-in .result."""
+    """Each fixture stdout and exit code must match its checked-in .result."""
     fmt = "diff" if ferm_file.stem in _DIFF_FORMAT_STEMS else "structured"
     expected = ferm_file.with_suffix(".result").read_text(encoding="utf-8")
-    _code, generated = _run_plan_nft(ferm_file, fmt)
+    expected_code = 0 if "No changes" in expected else 2
+    code, generated = _run_plan_nft(ferm_file, fmt)
     assert generated == expected
+    assert code == expected_code
 
 
 def test_canon_ip_golden_is_clean_no_changes() -> None:
