@@ -62,10 +62,12 @@ def _run_plan(
 @pytest.mark.parametrize("ferm_file", _CASES, ids=[p.stem for p in _CASES])
 def test_plan_golden(ferm_file: Path) -> None:
     expected = ferm_file.with_suffix(".result").read_text(encoding="utf-8")
-    _code, generated = _run_plan(
+    expected_code = 0 if "No changes" in expected else 2
+    code, generated = _run_plan(
         ferm_file, "structured", noflush=ferm_file.stem in _NOFLUSH_STEMS
     )
     assert generated == expected
+    assert code == expected_code
 
 
 def test_canon_golden_is_clean_no_changes() -> None:
