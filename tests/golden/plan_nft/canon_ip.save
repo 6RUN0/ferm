@@ -1,0 +1,14 @@
+table ip ferm {
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+	}
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		ct state established,related accept
+		limit rate 1/second burst 5 packets reject
+		tcp dport 22 ip saddr 10.0.0.0/8 accept
+	}
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+	}
+}

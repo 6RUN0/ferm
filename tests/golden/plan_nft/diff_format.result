@@ -1,0 +1,7 @@
+--- ip (current)
++++ ip (desired)
+@@ -1,2 +1,3 @@
+ *ferm
+-:INPUT type filter hook input priority 0 policy accept
++:INPUT type filter hook input priority 0 policy drop
++-A INPUT tcp dport 22 accept

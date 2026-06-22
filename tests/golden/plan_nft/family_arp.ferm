@@ -1,0 +1,7 @@
+domain arp table filter {
+    chain INPUT {
+        policy ACCEPT;
+        proto tcp dport 22 ACCEPT;
+    }
+    chain OUTPUT policy ACCEPT;
+}

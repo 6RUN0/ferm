@@ -1,0 +1,19 @@
+table bridge ferm {
+	chain FORWARD {
+		type filter hook forward priority 0; policy drop;
+	}
+	chain INPUT {
+		type filter hook input priority 0; policy accept;
+		tcp dport 22 accept
+	}
+	chain OUTPUT {
+		type filter hook output priority 0; policy accept;
+	}
+	chain raw_OUTPUT {
+		type filter hook output priority -300; policy accept;
+	}
+	chain raw_PREROUTING {
+		type filter hook prerouting priority dstnat; policy accept;
+		tcp dport 80 accept
+	}
+}

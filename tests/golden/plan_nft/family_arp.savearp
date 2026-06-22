@@ -1,0 +1,8 @@
+table arp ferm {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+	}
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+	}
+}

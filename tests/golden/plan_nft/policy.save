@@ -1,0 +1,11 @@
+table ip ferm {
+	chain FORWARD {
+		type filter hook forward priority filter; policy accept;
+	}
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+	}
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+	}
+}

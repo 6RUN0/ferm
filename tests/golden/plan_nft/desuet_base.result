@@ -1,0 +1,3 @@
+family ip
+  ~ chain ferm/FORWARD removed (base chain no longer declared)
+  Plan: 0 to add, 0 to remove, 0 policy changes

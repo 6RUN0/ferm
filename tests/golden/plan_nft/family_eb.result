@@ -1,0 +1,4 @@
+family eb
+  + iifname "eth0" accept
+  + tcp dport 22 accept
+  Plan: 2 to add, 0 to remove, 0 policy changes

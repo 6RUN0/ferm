@@ -1,0 +1,5 @@
+domain ip table filter {
+    chain INPUT policy DROP;
+    chain FORWARD policy ACCEPT;
+    chain OUTPUT policy ACCEPT;
+}

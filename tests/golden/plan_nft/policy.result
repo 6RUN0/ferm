@@ -1,0 +1,3 @@
+family ip
+  ~ policy ferm/INPUT: type filter hook input priority 0 policy accept -> type filter hook input priority 0 policy drop
+  Plan: 0 to add, 0 to remove, 1 policy change

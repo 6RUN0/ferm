@@ -688,6 +688,14 @@ class ForeignChain:
 
 
 @dataclass
+class DesuetChain:
+    """A base chain present in the kernel but absent from the config."""
+
+    table: str
+    chain: str
+
+
+@dataclass
 class PlanDiff:
     """The diff for one family: what applying the config would change."""
 
@@ -699,6 +707,7 @@ class PlanDiff:
     foreign_chains: list[ForeignChain] = field(
         default_factory=list[ForeignChain]
     )
+    desuet_chains: list[DesuetChain] = field(default_factory=list[DesuetChain])
     noflush: bool = False
     current_empty: bool = False
 
@@ -709,6 +718,7 @@ class PlanDiff:
             or self.rules_added
             or self.rules_removed
             or self.foreign_chains
+            or self.desuet_chains
         )
 
 
@@ -824,7 +834,8 @@ def diff_tables(
             if chain_name in desired_table.chains:
                 continue
             if _is_builtin(current_chain):
-                continue  # an undeclared built-in is not a foreign user chain
+                diff.desuet_chains.append(DesuetChain(table_name, chain_name))
+                continue
             if noflush:
                 continue  # undeclared user chains survive under --noflush
             diff.foreign_chains.append(ForeignChain(table_name, chain_name))
@@ -890,6 +901,14 @@ def render_structured(plan: Plan) -> str:
                 key=lambda fchain: (fchain.table, fchain.chain),
             )
         )
+        lines.extend(
+            f"  ~ chain {dchain.table}/{dchain.chain} removed"
+            " (base chain no longer declared)"
+            for dchain in sorted(
+                diff.desuet_chains,
+                key=lambda dchain: (dchain.table, dchain.chain),
+            )
+        )
         lines.append(f"  {_summary_line(diff)}")
 
     return "\n".join(lines) + "\n"
@@ -912,6 +931,7 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
         | {r.table for r in diff.rules_removed}
         | {r.table for r in diff.rules_added}
         | {f.table for f in diff.foreign_chains}
+        | {d.table for d in diff.desuet_chains}
     )
     current: list[str] = []
     desired: list[str] = []
@@ -929,6 +949,13 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
             for fchain in sorted(
                 (fc for fc in diff.foreign_chains if fc.table == table),
                 key=lambda fchain: fchain.chain,
+            )
+        )
+        current.extend(
+            f"# base chain {dchain.chain} removed (no longer declared)"
+            for dchain in sorted(
+                (dc for dc in diff.desuet_chains if dc.table == table),
+                key=lambda dchain: dchain.chain,
             )
         )
         current.extend(
