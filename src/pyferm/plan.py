@@ -436,8 +436,6 @@ _NFT_TABLE_PARTS = 4
 _NFT_CHAIN_MIN_PARTS = 5
 # add rule: add rule <fam> ferm <chain> <body-token>
 _NFT_RULE_MIN_PARTS = 6
-# user chain: exactly 5 tokens (no brace payload)
-_NFT_USER_CHAIN_PARTS = 5
 
 
 def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
@@ -844,15 +842,26 @@ def diff_tables(
 
 
 def _summary_line(diff: PlanDiff) -> str:
-    """Build the ``Plan: N to add, M to remove, K policy changes`` tail."""
+    """
+    Build the ``Plan: N to add, M to remove, K policy changes`` tail.
+
+    When desuet or foreign chains are present an extra
+    ``, C chain(s) removed`` clause is appended so the summary reflects
+    every change that will be applied -- not just rule-level deltas.
+    """
     adds = len(diff.rules_added)
     removes = len(diff.rules_removed)
     policies = len(diff.policy_changes)
+    chains_removed = len(diff.desuet_chains) + len(diff.foreign_chains)
     pol_word = "change" if policies == 1 else "changes"
-    return (
+    summary = (
         f"Plan: {adds} to add, {removes} to remove,"
         f" {policies} policy {pol_word}"
     )
+    if chains_removed:
+        chain_word = "chain" if chains_removed == 1 else "chains"
+        summary += f", {chains_removed} {chain_word} removed"
+    return summary
 
 
 def render_structured(plan: Plan) -> str:
