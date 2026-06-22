@@ -12,6 +12,7 @@ runs a command -- the cli hands it text.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 
 from pyferm.errors import FermError
@@ -120,16 +121,92 @@ def parse_save(text: str, *, host_mask: str) -> dict[str, ParsedTable]:
     return tables
 
 
+#: Whole-token option aliases (source of truth: Makefile RESULT_SED, plus the
+#: multiport long->short pair).  Matched as whole tokens, never as prefixes.
+_OPTION_ALIASES = {
+    "--protocol": "-p",
+    "--source": "-s",
+    "--destination": "-d",
+    "--match": "-m",
+    "--jump": "-j",
+    "--goto": "-g",
+    "--in-interface": "-i",
+    "--out-interface": "-o",
+    "--fragment": "-f",
+    "--destination-ports": "--dports",
+    "--source-ports": "--sports",
+}
+#: ``-m <proto>`` matches the kernel injects as implied by ``-p <proto>``.
+_IMPLIED_MATCHES = frozenset({"tcp", "udp", "icmp", "icmpv6"})
+
+
+def _tokenize_rule(body: str) -> list[str]:
+    """
+    Split a rule body into tokens, keeping quoted comments intact.
+
+    Safe bias: if the body cannot be lexed (unbalanced quote), fall back to
+    a whitespace split.  Worst case is a phantom diff, never a hidden one.
+    """
+    try:
+        return shlex.split(body, posix=False)
+    except ValueError:
+        return body.split()
+
+
+def _proto_of(tokens: list[str]) -> str | None:
+    """Return the value following ``-p`` (already alias-normalized), if any."""
+    for index, token in enumerate(tokens):
+        if token == "-p" and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return None
+
+
+def _strip_host_mask(operand: str, host_mask: str) -> str:
+    """Strip the family host mask (``/32`` or ``/128``) from an address."""
+    if operand.endswith(host_mask):
+        return operand[: -len(host_mask)]
+    return operand
+
+
 def _canonicalize_rule(body: str, host_mask: str) -> str:
     """
-    Strip a leading ``-c pkts bytes`` counter from a rule body.
+    Normalize one rule body to canonical form via whitelisted transforms.
 
-    Placeholder for the canonicalization pass; full canonicalization is
-    added by that pass.  ``host_mask`` is reserved for that expansion
-    and unused here.
+    Strips a leading ``-c pkts bytes`` counter, normalizes option aliases to
+    their short form, collapses a repeated ``-m <module>`` to one, drops an
+    injected ``-m <proto>`` implied by ``-p <proto>``, and strips the family
+    host mask from ``-s``/``-d`` operands only.  Anything outside the
+    whitelist is left untouched (safe bias).
     """
-    del host_mask
-    tokens = body.split()
+    tokens = _tokenize_rule(body)
     if tokens[:1] == ["-c"] and len(tokens) >= _COUNTER_TOKENS:
         tokens = tokens[_COUNTER_TOKENS:]
-    return " ".join(tokens)
+    tokens = [_OPTION_ALIASES.get(token, token) for token in tokens]
+
+    proto = _proto_of(tokens)
+    seen_modules: set[str] = set()
+    out: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-m" and index + 1 < len(tokens):
+            module = tokens[index + 1]
+            if module in _IMPLIED_MATCHES and module == proto:
+                index += 2
+                continue
+            if module in seen_modules:
+                index += 2
+                continue
+            seen_modules.add(module)
+            out.append(token)
+            out.append(module)
+            index += 2
+            continue
+        if token in ("-s", "-d") and index + 1 < len(tokens):
+            out.append(token)
+            out.append(_strip_host_mask(tokens[index + 1], host_mask))
+            index += 2
+            continue
+        out.append(token)
+        index += 1
+    return " ".join(out)
