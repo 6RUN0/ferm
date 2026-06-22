@@ -634,6 +634,12 @@ def _run_plan(
         if not domain_info.enabled:
             continue
         if options.nft:
+            # Reaching here with noflush is a logic error: _resolve_options
+            # already rejects --plan --noflush --nft before this is called.
+            if options.noflush:
+                raise internal_error(
+                    "_run_plan: noflush set under --plan --nft"
+                )
             family = nft_family(domain)
             current = parse_nft_list(domain_info.previous or "", family=family)
             rendered = backend.render(domain, domain_info, options)
@@ -641,12 +647,12 @@ def _run_plan(
                 desired_save = rendered.save
                 if desired_save is None:
                     raise internal_error("nft render returned no save text")
+                desired = parse_nft_script(desired_save)
+                plan.families[domain] = diff_tables(
+                    current, desired, noflush=False
+                )
             finally:
                 rendered.close()
-            desired = parse_nft_script(desired_save)
-            plan.families[domain] = diff_tables(
-                current, desired, noflush=False
-            )
         else:
             if domain_info.plan_unsupported:
                 plan.unsupported.append(domain)

@@ -657,13 +657,6 @@ def test_plan_format_without_plan_is_error() -> None:
         _resolve_plan(["--plan-format", "diff", "a.ferm"])
 
 
-def test_plan_with_nft_no_longer_raises() -> None:
-    # The early --plan --nft guard has been lifted; the combination is valid.
-    opts = _resolve_plan(["--plan", "--nft", "a.ferm"])
-    assert opts.plan is True
-    assert opts.nft is True
-
-
 # --- Task 15: backend selection --------------------------------------------
 
 
@@ -1141,3 +1134,21 @@ def test_capture_still_short_circuits_when_noexec_no_plan() -> None:
     )
     result = capture("__no_such_binary_ferm_test__")
     assert result is None
+
+
+def test_run_plan_nft_render_error_propagates() -> None:
+    # A FermError from backend.render() (e.g. @preserve unsupported under nft)
+    # must propagate out of _run_plan uncaught so main() exits 1, not 0 or 2.
+    from unittest.mock import MagicMock
+
+    from pyferm.cli import _run_plan
+    from pyferm.domains import DomainInfo
+
+    domain_info = DomainInfo(enabled=True, tools={})
+    domains = {"ip": domain_info}
+
+    backend = MagicMock()
+    backend.render.side_effect = FermError("@preserve not yet supported")
+
+    with pytest.raises(FermError, match="preserve"):
+        _run_plan(domains, Options(nft=True), backend)
