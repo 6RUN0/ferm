@@ -74,6 +74,12 @@ def test_add_table_and_flush_table_ignored() -> None:
     assert tables == {}
 
 
+def test_flush_table_bridge_ignored() -> None:
+    """flush table accepts any nft family, not just ip/ip6."""
+    text = "flush table bridge ferm\n"
+    assert parse_nft_script(text) == {}
+
+
 def test_empty_input_returns_empty_dict() -> None:
     assert parse_nft_script("") == {}
 
@@ -104,8 +110,8 @@ def test_family_taken_from_script() -> None:
     )
     tables = parse_nft_script(text)
     policy = tables["ferm"].chains["INPUT"].policy
-    # ip6 maps 'filter' -> 0 (same landmark table as ip)
-    assert "priority 0" in policy
+    # ip6 maps 'filter' -> 0 (same landmark table as ip); full equality check
+    assert policy == "type filter hook input priority 0 policy accept"
 
 
 def test_base_vs_user_distinction() -> None:
@@ -117,7 +123,10 @@ def test_base_vs_user_distinction() -> None:
         "add chain ip ferm mychain\n"
     )
     tables = parse_nft_script(text)
-    assert tables["ferm"].chains["INPUT"].policy != "-"
+    # base chain: full canonical header string (not just "not -")
+    assert tables["ferm"].chains["INPUT"].policy == (
+        "type filter hook input priority 0 policy accept"
+    )
     assert tables["ferm"].chains["mychain"].policy == "-"
 
 
@@ -184,6 +193,29 @@ def test_wrong_table_name_raises() -> None:
     text = (
         "add table ip nat\n"
         "add chain ip nat INPUT"
+        " { type filter hook input priority 0; policy accept; }\n"
+    )
+    with pytest.raises(FermError):
+        parse_nft_script(text)
+
+
+def test_add_table_extra_token_raises() -> None:
+    """add table with an extra token beyond the 4-token production raises."""
+    with pytest.raises(FermError):
+        parse_nft_script("add table ip ferm extra\n")
+
+
+def test_flush_table_extra_token_raises() -> None:
+    """flush table with an extra token beyond the 4-token production raises."""
+    with pytest.raises(FermError):
+        parse_nft_script("flush table ip ferm extra\n")
+
+
+def test_add_chain_extra_token_before_brace_raises() -> None:
+    """Extra token between chain name and '{' is invalid -- parse error."""
+    text = (
+        "add table ip ferm\n"
+        "add chain ip ferm INPUT extra"
         " { type filter hook input priority 0; policy accept; }\n"
     )
     with pytest.raises(FermError):

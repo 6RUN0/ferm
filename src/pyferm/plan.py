@@ -422,15 +422,35 @@ def canonicalize_nft_header(header: str, *, family: str) -> str:
     return " ".join(out)
 
 
-# Minimum token counts for the recognized productions.
-# table/flush: add|flush table <fam> ferm
-_NFT_TABLE_MIN_PARTS = 4
+# Exact token counts for the recognized table/flush productions.
+# add table <fam> ferm  /  flush table <fam> ferm  -- exactly 4 tokens.
+_NFT_TABLE_PARTS = 4
 # add chain: add chain <fam> ferm <chain>
 _NFT_CHAIN_MIN_PARTS = 5
 # add rule: add rule <fam> ferm <chain> <body-token>
 _NFT_RULE_MIN_PARTS = 6
 # user chain: exactly 5 tokens (no brace payload)
 _NFT_USER_CHAIN_PARTS = 5
+
+
+def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
+    """Insert an empty ``ferm`` table entry if not already present."""
+    if "ferm" not in tables:
+        tables["ferm"] = ParsedTable()
+
+
+def _check_family(
+    current: str | None, seen: str, lineno: int, raw: str
+) -> str:
+    """
+    Verify that ``seen`` matches ``current`` (if already set), return it.
+
+    All lines in a single nft script share the same nft family; a mismatch
+    signals a corrupted or mixed-family input and is a parse error.
+    """
+    if current is not None and seen != current:
+        raise _parse_error(lineno, raw)
+    return seen
 
 
 def parse_nft_script(text: str) -> dict[str, ParsedTable]:
@@ -465,15 +485,11 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         verb = parts[0]
 
         # -- table envelope / flush directive: both are silently ignored ----
-        if (
-            parts[1:2] == ["table"]
-            and verb in ("add", "flush")
-            and len(parts) >= _NFT_TABLE_MIN_PARTS
-        ):
-            fam_tok = parts[2]
-            if parts[3] != "ferm":
+        # Exact 4-token match: any extra token is a parse error.
+        if parts[1:2] == ["table"] and verb in ("add", "flush"):
+            if len(parts) != _NFT_TABLE_PARTS or parts[3] != "ferm":
                 raise _parse_error(lineno, raw)
-            family = _check_family(family, fam_tok, lineno, raw)
+            family = _check_family(family, parts[2], lineno, raw)
             continue
 
         if verb != "add":
@@ -489,17 +505,18 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             family = _check_family(family, fam_tok, lineno, raw)
             assert family is not None  # assigned by _check_family above
 
-            # Base chain has inline braces; user chain has no braces.
-            rest = line[len("add chain") :].strip()
-            brace_start = rest.find("{")
-            if brace_start == -1:
-                # user chain: no brace payload allowed
-                if len(parts) != _NFT_USER_CHAIN_PARTS:
-                    raise _parse_error(lineno, raw)
+            # parts[5:] is the payload after <chain>.  Valid shapes:
+            #   [] (user chain) or ['{', ..., '}'] (base chain).
+            # Any non-'{' first token is extra garbage -> parse error.
+            tail = parts[5:]
+            if not tail:
+                # user chain: nothing after the chain name
                 _ensure_ferm_table(tables)
                 tables["ferm"].chains[chain_name] = ParsedChain(policy="-")
-            else:
+            elif tail[0] == "{":
                 # base chain: closing brace must be present on the same line
+                rest = line[len("add chain") :].strip()
+                brace_start = rest.find("{")
                 brace_end = rest.rfind("}")
                 if brace_end == -1 or brace_end <= brace_start:
                     raise _parse_error(lineno, raw)
@@ -507,6 +524,9 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
                 canon = canonicalize_nft_header(header, family=family)
                 _ensure_ferm_table(tables)
                 tables["ferm"].chains[chain_name] = ParsedChain(policy=canon)
+            else:
+                # extra token before the brace (or instead of it) is invalid
+                raise _parse_error(lineno, raw)
             continue
 
         # -- add rule --------------------------------------------------------
@@ -531,26 +551,6 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         raise _parse_error(lineno, raw)
 
     return tables
-
-
-def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
-    """Insert an empty ``ferm`` table entry if not already present."""
-    if "ferm" not in tables:
-        tables["ferm"] = ParsedTable()
-
-
-def _check_family(
-    current: str | None, seen: str, lineno: int, raw: str
-) -> str:
-    """
-    Verify that ``seen`` matches ``current`` (if already set), return it.
-
-    All lines in a single nft script share the same nft family; a mismatch
-    signals a corrupted or mixed-family input and is a parse error.
-    """
-    if current is not None and seen != current:
-        raise _parse_error(lineno, raw)
-    return seen
 
 
 @dataclass
