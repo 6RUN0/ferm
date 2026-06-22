@@ -42,12 +42,19 @@ from pyferm.backend.iptables import (
     restore_domain,
     rules_to_save,
 )
-from pyferm.backend.nft import TOOL_NFT, NftBackend
+from pyferm.backend.nft import TOOL_NFT, NftBackend, nft_family
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
-from pyferm.plan import Plan, diff_tables, parse_save, render_plan
+from pyferm.plan import (
+    Plan,
+    diff_tables,
+    parse_nft_list,
+    parse_nft_script,
+    parse_save,
+    render_plan,
+)
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
 from pyferm.streams import (
@@ -205,8 +212,8 @@ def _resolve_options(args: argparse.Namespace) -> Options:
 
     if args.plan_format != "structured" and not args.plan:
         raise FermError("ferm --plan-format has no sense without --plan")
-    if args.plan and args.nft:
-        raise FermError("ferm --plan is not yet supported with --nft")
+    if args.plan and args.nft and args.noflush:
+        raise FermError("--noflush is not supported with --plan --nft yet")
 
     return Options(
         test=args.test,
@@ -388,7 +395,7 @@ def _make_io(
         # collapses to None -- nft prints "No such file or directory" (ENOENT)
         # for a missing table, the genuine first run; every other nonzero exit
         # or spawn error raises, aborting before any kernel change.
-        if options.noexec:
+        if options.noexec and not options.plan:
             return None
         try:
             completed = subprocess.run(
@@ -605,33 +612,53 @@ def _main(argv: list[str] | None = None) -> int:
         restore_streams()
 
 
-def _run_plan(domains: dict[str, DomainInfo], options: Options) -> int:
+def _run_plan(
+    domains: dict[str, DomainInfo], options: Options, backend: Backend
+) -> int:
     """
     Build and print the read-only plan; return the detailed exit code.
 
-    Runs no hooks and never commits.  Desired is ``rules_to_save`` (which
-    already folds ``@preserve`` from the single ``previous`` snapshot);
-    current is that same ``previous``.  Both are parsed and canonicalized
-    identically.  Returns 0 (no changes) or 2 (changes); a ``FermError``
-    raised on the way (e.g. a strict save-read failure) still exits 1 via
-    :func:`main`.
+    Runs no hooks and never commits.  Returns 0 (no changes) or 2 (changes);
+    a ``FermError`` raised on the way (e.g. a strict save-read failure or an
+    unsupported construct under nft) still exits 1 via :func:`main`.
+
+    Under iptables the desired side comes from ``rules_to_save`` and both
+    sides are parsed with ``parse_save``.  Under nft the desired side is
+    rendered by the backend and both sides are parsed with the nft parsers;
+    ``noflush`` is always ``False`` under nft because the append-only model
+    differs fundamentally from the iptables ``--noflush`` semantics.
     """
     plan = Plan()
     for domain in sorted(domains):
         domain_info = domains[domain]
         if not domain_info.enabled:
             continue
-        if domain_info.plan_unsupported:
-            plan.unsupported.append(domain)
-            continue
-        host_mask = "/32" if domain == "ip" else "/128"
-        desired_text = rules_to_save(domain, domain_info, options)
-        current_text = domain_info.previous or ""
-        current = parse_save(current_text, host_mask=host_mask)
-        desired = parse_save(desired_text, host_mask=host_mask)
-        plan.families[domain] = diff_tables(
-            current, desired, noflush=options.noflush
-        )
+        if options.nft:
+            family = nft_family(domain)
+            current = parse_nft_list(domain_info.previous or "", family=family)
+            rendered = backend.render(domain, domain_info, options)
+            try:
+                desired_save = rendered.save
+                if desired_save is None:
+                    raise internal_error("nft render returned no save text")
+            finally:
+                rendered.close()
+            desired = parse_nft_script(desired_save)
+            plan.families[domain] = diff_tables(
+                current, desired, noflush=False
+            )
+        else:
+            if domain_info.plan_unsupported:
+                plan.unsupported.append(domain)
+                continue
+            host_mask = "/32" if domain == "ip" else "/128"
+            desired_text = rules_to_save(domain, domain_info, options)
+            current_text = domain_info.previous or ""
+            current = parse_save(current_text, host_mask=host_mask)
+            desired = parse_save(desired_text, host_mask=host_mask)
+            plan.families[domain] = diff_tables(
+                current, desired, noflush=options.noflush
+            )
 
     sys.stdout.write(render_plan(plan, fmt=options.plan_format))
     return 2 if plan.has_changes() else 0
@@ -718,7 +745,7 @@ def _run(
     domains = parser.domains
 
     if options.plan:
-        return _run_plan(domains, options)
+        return _run_plan(domains, options, backend)
 
     # Enable/disable hooks depending on --flush (Perl ``:765-772``).
     if options.flush:

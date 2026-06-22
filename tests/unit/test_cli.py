@@ -657,9 +657,11 @@ def test_plan_format_without_plan_is_error() -> None:
         _resolve_plan(["--plan-format", "diff", "a.ferm"])
 
 
-def test_plan_with_nft_is_error() -> None:
-    with pytest.raises(FermError, match="not yet supported with --nft"):
-        _resolve_plan(["--plan", "--nft", "a.ferm"])
+def test_plan_with_nft_no_longer_raises() -> None:
+    # The early --plan --nft guard has been lifted; the combination is valid.
+    opts = _resolve_plan(["--plan", "--nft", "a.ferm"])
+    assert opts.plan is True
+    assert opts.nft is True
 
 
 # --- Task 15: backend selection --------------------------------------------
@@ -1096,3 +1098,46 @@ def test_plan_runs_no_hooks(
     out = capsys.readouterr().out
     assert code == 0
     assert "HOOK_RAN" not in out
+
+
+# --- Task 4 (nft --plan wiring) -------------------------------------------
+
+
+def test_plan_nft_no_longer_raises() -> None:
+    # The early --plan --nft reject is lifted; the combination is now valid.
+    opts = _resolve_plan(["--plan", "--nft", "a.ferm"])
+    assert opts.plan is True
+    assert opts.nft is True
+
+
+def test_plan_nft_noflush_raises() -> None:
+    # --plan --nft --noflush is fail-closed until the append-only model is
+    # implemented; mixing it silently would produce a wrong plan.
+    with pytest.raises(FermError, match="noflush"):
+        _resolve_plan(["--plan", "--nft", "--noflush", "a.ferm"])
+
+
+def test_plan_noflush_iptables_still_works() -> None:
+    # The noflush guard is nft-only; iptables --plan --noflush is unaffected.
+    opts = _resolve_plan(["--plan", "--noflush", "a.ferm"])
+    assert opts.noflush is True
+
+
+def test_capture_not_short_circuited_under_plan_noexec() -> None:
+    # Under plan=True + noexec=True, capture() must NOT return None early --
+    # it proceeds to spawn so the nft snapshot can be read.  Verify via a
+    # non-existent command: the strict FermError path fires, not silent None.
+    _execute, _emit, _read, _restore, capture = _make_io(
+        Options(plan=True, noexec=True), sys.stdout
+    )
+    with pytest.raises(FermError, match="failed to snapshot"):
+        capture("__no_such_binary_ferm_test__")
+
+
+def test_capture_still_short_circuits_when_noexec_no_plan() -> None:
+    # Without plan, noexec=True still returns None immediately (no spawn).
+    _execute, _emit, _read, _restore, capture = _make_io(
+        Options(plan=False, noexec=True), sys.stdout
+    )
+    result = capture("__no_such_binary_ferm_test__")
+    assert result is None
