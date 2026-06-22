@@ -213,6 +213,207 @@ def _canonicalize_rule(body: str, host_mask: str) -> str:
     return " ".join(out)
 
 
+#: nft's fixed ct-state bitmask order (NOT alphabetical, NOT sorted()).
+#: A rule's members are re-ordered to this sequence on both sides.
+_NFT_CT_STATE_ORDER: tuple[str, ...] = (
+    "invalid",
+    "established",
+    "related",
+    "new",
+    "untracked",
+)
+
+#: Standard nft priority landmark names -> numeric, keyed by nft family.
+#: ip/ip6/arp share nft's inet-style landmarks; bridge has its own numbers.
+#: The full table is kept per family so a hand-written foreign chain that hits
+#: any landmark name canonicalizes too; for ferm-managed chains only a subset
+#: is exercised (bridge: only dstnat).
+_NFT_PRIORITY_NAMES_INET: dict[str, int] = {
+    "raw": -300,
+    "mangle": -150,
+    "dstnat": -100,
+    "filter": 0,
+    "security": 50,
+    "srcnat": 100,
+}
+_NFT_PRIORITY_NAMES_BRIDGE: dict[str, int] = {
+    "dstnat": -300,
+    "filter": -200,
+    "out": 100,
+    "srcnat": 300,
+}
+_NFT_PRIORITY_NAMES: dict[str, dict[str, int]] = {
+    "ip": _NFT_PRIORITY_NAMES_INET,
+    "ip6": _NFT_PRIORITY_NAMES_INET,
+    "arp": _NFT_PRIORITY_NAMES_INET,
+    "bridge": _NFT_PRIORITY_NAMES_BRIDGE,
+}
+
+#: ip-family reject default: nft collapses to bare 'reject'.
+_NFT_REJECT_DEFAULTS: dict[str, str] = {
+    "ip": "icmp",
+    "ip6": "icmpv6",
+}
+#: nft's default reject message type for both icmp families.
+_NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
+
+
+def canonicalize_nft_rule(body: str, *, family: str) -> str:
+    """
+    Normalize one nft rule body to canonical form (idempotent, both sides).
+
+    Applies three whitelisted transforms to the tokenized rule body and
+    rejoins with single spaces.  Everything not matched by a transform is
+    left verbatim (safe-bias: a false 'no changes' is worse than a noisy
+    diff for a firewall).
+
+    Transforms applied:
+    - ct state member reordering to nft's fixed bitmask order.
+    - Removal of the literal word 'type' in 'reject with <fam> type <X>',
+      then collapsing to bare 'reject' when the result is the family default.
+    - Appending 'burst 5 packets' after 'limit rate <value>' when absent.
+    """
+    tokens = _tokenize_rule(body)
+    out: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+
+        # C: ct state reorder
+        if (
+            token == "ct"
+            and index + 1 < len(tokens)
+            and tokens[index + 1] == "state"
+        ):
+            out.append(token)
+            out.append(tokens[index + 1])
+            index += 2
+            # optional negation operator
+            if index < len(tokens) and tokens[index] == "!=":
+                out.append(tokens[index])
+                index += 1
+            if index < len(tokens):
+                members_token = tokens[index]
+                members = members_token.split(",")
+                if all(m in _NFT_CT_STATE_ORDER for m in members):
+                    ordered = sorted(members, key=_NFT_CT_STATE_ORDER.index)
+                    out.append(",".join(ordered))
+                else:
+                    # unknown member -> safe-bias: leave verbatim
+                    out.append(members_token)
+                index += 1
+            continue
+
+        # D: reject normalization
+        if (
+            token == "reject"
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "with"
+        ):
+            fam_token = tokens[index + 2]
+            # drop the literal word 'type' if present:
+            # 'reject with <fam> type <X>' -> 'reject with <fam> <X>'
+            if index + 4 < len(tokens) and tokens[index + 3] == "type":
+                reject_type = tokens[index + 4]
+                # check whether this is the family default
+                default_fam = _NFT_REJECT_DEFAULTS.get(family)
+                if (
+                    fam_token == default_fam
+                    and reject_type == _NFT_REJECT_DEFAULT_TYPE
+                ):
+                    out.append("reject")
+                else:
+                    out.append("reject")
+                    out.append("with")
+                    out.append(fam_token)
+                    out.append(reject_type)
+                index += 5
+                continue
+            # already-normalized 'reject with <fam> <X>' (no 'type' word)
+            # check whether it is the family default
+            if index + 3 < len(tokens):
+                reject_type = tokens[index + 3]
+                default_fam = _NFT_REJECT_DEFAULTS.get(family)
+                if (
+                    fam_token == default_fam
+                    and reject_type == _NFT_REJECT_DEFAULT_TYPE
+                ):
+                    out.append("reject")
+                    index += 4
+                    continue
+            # not the default or not enough tokens:
+            # leave 'reject with <fam> ...' verbatim
+            out.append(token)
+            index += 1
+            continue
+
+        # E: limit rate burst injection
+        if (
+            token == "limit"
+            and index + 2 < len(tokens)
+            and tokens[index + 1] == "rate"
+        ):
+            out.append(token)
+            out.append(tokens[index + 1])
+            out.append(tokens[index + 2])
+            index += 3
+            # only inject burst if it is not already present
+            if not (index < len(tokens) and tokens[index] == "burst"):
+                out.append("burst")
+                out.append("5")
+                out.append("packets")
+            continue
+
+        out.append(token)
+        index += 1
+
+    return " ".join(out)
+
+
+def canonicalize_nft_header(header: str, *, family: str) -> str:
+    """
+    Normalize a base-chain header to the canonical policy-field string.
+
+    Strips semicolons, collapses whitespace, maps priority landmark names
+    to their numeric values for the given family, and appends 'policy accept'
+    when no policy token is present.  Tokens not explicitly transformed are
+    preserved verbatim (safe-bias).  The result is idempotent.
+    """
+    # Strip semicolons and normalize whitespace before splitting into tokens.
+    clean = header.replace(";", " ")
+    tokens = clean.split()
+
+    out: list[str] = []
+    has_policy = False
+    priority_map = _NFT_PRIORITY_NAMES.get(family, _NFT_PRIORITY_NAMES_INET)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "policy":
+            has_policy = True
+            out.append(token)
+            index += 1
+            continue
+        if token == "priority" and index + 1 < len(tokens):
+            out.append(token)
+            next_tok = tokens[index + 1]
+            if next_tok in priority_map:
+                out.append(str(priority_map[next_tok]))
+            else:
+                # numeric or unrecognized name: leave verbatim
+                out.append(next_tok)
+            index += 2
+            continue
+        out.append(token)
+        index += 1
+
+    if not has_policy:
+        out.append("policy")
+        out.append("accept")
+
+    return " ".join(out)
+
+
 @dataclass
 class PolicyChange:
     """A built-in chain's default policy changed (``old`` -> ``new``)."""
