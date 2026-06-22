@@ -38,9 +38,9 @@ def test_injected_m_tcp_dropped_when_proto_tcp() -> None:
 
 
 def test_non_implied_m_kept() -> None:
-    # -m conntrack is NOT whitelisted away -- stays visible
+    # -m conntrack is NOT whitelisted away -- stays visible verbatim
     out = canon("-p tcp -m conntrack --ctstate NEW", "/32")
-    assert "-m conntrack" in out
+    assert out == "-p tcp -m conntrack --ctstate NEW"
 
 
 def test_host_mask_stripped_on_source_ipv4() -> None:
