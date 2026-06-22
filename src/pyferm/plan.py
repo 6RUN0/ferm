@@ -12,6 +12,7 @@ runs a command -- the cli hands it text.
 
 from __future__ import annotations
 
+import difflib
 import shlex
 from dataclasses import dataclass, field
 
@@ -210,3 +211,175 @@ def _canonicalize_rule(body: str, host_mask: str) -> str:
         out.append(token)
         index += 1
     return " ".join(out)
+
+
+@dataclass
+class PolicyChange:
+    """A built-in chain's default policy changed (``old`` -> ``new``)."""
+
+    table: str
+    chain: str
+    old: str
+    new: str
+
+
+@dataclass
+class RuleChange:
+    """One rule added to (or removed from) a chain."""
+
+    table: str
+    chain: str
+    rule: str
+
+
+@dataclass
+class ForeignChain:
+    """A user chain present in the kernel but absent from the config."""
+
+    table: str
+    chain: str
+
+
+@dataclass
+class PlanDiff:
+    """The diff for one family: what applying the config would change."""
+
+    policy_changes: list[PolicyChange] = field(
+        default_factory=list[PolicyChange]
+    )
+    rules_added: list[RuleChange] = field(default_factory=list[RuleChange])
+    rules_removed: list[RuleChange] = field(default_factory=list[RuleChange])
+    foreign_chains: list[ForeignChain] = field(
+        default_factory=list[ForeignChain]
+    )
+    noflush: bool = False
+    current_empty: bool = False
+
+    def has_changes(self) -> bool:
+        """Return True if applying the config would change the kernel."""
+        return bool(
+            self.policy_changes
+            or self.rules_added
+            or self.rules_removed
+            or self.foreign_chains
+        )
+
+
+@dataclass
+class Plan:
+    """The whole plan: a per-family diff plus any unsupported families."""
+
+    families: dict[str, PlanDiff] = field(default_factory=dict[str, PlanDiff])
+    unsupported: list[str] = field(default_factory=list[str])
+
+    def has_changes(self) -> bool:
+        """Return True if any family's diff carries a change."""
+        return any(diff.has_changes() for diff in self.families.values())
+
+
+def _is_builtin(chain: ParsedChain) -> bool:
+    """
+    Return True when the chain is built-in (carries a real policy).
+
+    User chains carry ``-`` as their policy placeholder.
+    """
+    return chain.policy != "-"
+
+
+def _diff_rules(
+    current: list[str], desired: list[str]
+) -> tuple[list[str], list[str]]:
+    """
+    Compute a positional multiset diff of two ordered rule lists.
+
+    Uses :class:`difflib.SequenceMatcher` so order is significant and a
+    duplicated rule body is not collapsed (a set-diff would silently
+    under-count a removed copy).  Returns ``(added, removed)``.
+    """
+    added: list[str] = []
+    removed: list[str] = []
+    matcher = difflib.SequenceMatcher(a=current, b=desired, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("replace", "delete"):
+            removed.extend(current[i1:i2])
+        if tag in ("replace", "insert"):
+            added.extend(desired[j1:j2])
+    return added, removed
+
+
+def diff_tables(
+    current: dict[str, ParsedTable],
+    desired: dict[str, ParsedTable],
+    *,
+    noflush: bool,
+) -> PlanDiff:
+    """
+    Diff one family's current (kernel) model against the desired (config).
+
+    Tables present in ``desired`` are diffed.  ferm's save text carries every
+    table it read from the kernel (``rules_to_save`` iterates the dump-seeded
+    ``domain_info.tables``), so an unmanaged kernel table (nat/mangle) appears
+    in ``desired`` as an empty skeleton and its live rules diff as removals --
+    there is no "untouched foreign table" case.  A table only in ``current``
+    would genuinely not be in ferm's restore input, so it is not touched and
+    produces no diff.  Within a table: built-in policies diff by chain name;
+    rules diff positionally; a user chain only in ``current`` is a foreign
+    chain (warning, flushed unless ``--noflush``).
+
+    Under ``--noflush``: rule removals are suppressed for built-in and
+    undeclared chains (their rules survive) but kept for declared user chains
+    (those are flushed); policy changes and foreign-chain warnings follow the
+    same survives/flushed split.
+    """
+    diff = PlanDiff(noflush=noflush, current_empty=not current)
+
+    for table_name, desired_table in desired.items():
+        current_table = current.get(table_name)
+        current_chains = current_table.chains if current_table else {}
+
+        for chain_name, desired_chain in desired_table.chains.items():
+            current_chain = current_chains.get(chain_name)
+            current_rules = current_chain.rules if current_chain else []
+
+            if (
+                current_chain is not None
+                and _is_builtin(current_chain)
+                and desired_chain.policy != current_chain.policy
+            ):
+                diff.policy_changes.append(
+                    PolicyChange(
+                        table_name,
+                        chain_name,
+                        current_chain.policy,
+                        desired_chain.policy,
+                    )
+                )
+
+            added, removed = _diff_rules(current_rules, desired_chain.rules)
+            diff.rules_added.extend(
+                RuleChange(table_name, chain_name, r) for r in added
+            )
+            # --noflush: only a declared user chain is flushed; built-in and
+            # undeclared chains keep their rules, so suppress their removals.
+            builtin = current_chain is not None and _is_builtin(current_chain)
+            declared_user = current_chain is not None and not builtin
+            # Always emit the removal, unless --noflush keeps the rules of a
+            # chain that is not a declared user chain (built-in/undeclared
+            # chains survive).
+            emit_removal = not noflush or declared_user
+            if emit_removal:
+                diff.rules_removed.extend(
+                    RuleChange(table_name, chain_name, r) for r in removed
+                )
+
+        # foreign chains: user chains in the managed table absent from config
+        for chain_name, current_chain in current_chains.items():
+            if chain_name in desired_table.chains:
+                continue
+            if _is_builtin(current_chain):
+                continue  # an undeclared built-in is not a foreign user chain
+            if noflush:
+                continue  # undeclared user chains survive under --noflush
+            diff.foreign_chains.append(ForeignChain(table_name, chain_name))
+
+    return diff
