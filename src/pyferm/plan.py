@@ -279,7 +279,7 @@ def canonicalize_nft_rule(body: str, *, family: str) -> str:
     while index < len(tokens):
         token = tokens[index]
 
-        # C: ct state reorder
+        # reorder ct state members to nft's fixed bitmask sequence
         if (
             token == "ct"
             and index + 1 < len(tokens)
@@ -304,7 +304,8 @@ def canonicalize_nft_rule(body: str, *, family: str) -> str:
                 index += 1
             continue
 
-        # D: reject normalization
+        # normalize reject: drop the literal 'type' keyword,
+        # collapse the family default to bare reject
         if (
             token == "reject"
             and index + 2 < len(tokens)
@@ -347,7 +348,7 @@ def canonicalize_nft_rule(body: str, *, family: str) -> str:
             index += 1
             continue
 
-        # E: limit rate burst injection
+        # append nft's implicit burst default when not already present
         if (
             token == "limit"
             and index + 2 < len(tokens)
@@ -385,7 +386,8 @@ def canonicalize_nft_header(header: str, *, family: str) -> str:
 
     out: list[str] = []
     has_policy = False
-    priority_map = _NFT_PRIORITY_NAMES.get(family, _NFT_PRIORITY_NAMES_INET)
+    # Unknown family -> empty map so priority tokens pass through verbatim.
+    priority_map = _NFT_PRIORITY_NAMES.get(family, {})
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -397,10 +399,16 @@ def canonicalize_nft_header(header: str, *, family: str) -> str:
         if token == "priority" and index + 1 < len(tokens):
             out.append(token)
             next_tok = tokens[index + 1]
-            if next_tok in priority_map:
+            # Offset form: 'priority <name> +|- <n>' — leave all three verbatim
+            # so we never partially map a compound priority expression.
+            is_offset = index + 2 < len(tokens) and tokens[index + 2] in (
+                "+",
+                "-",
+            )
+            if next_tok in priority_map and not is_offset:
                 out.append(str(priority_map[next_tok]))
             else:
-                # numeric or unrecognized name: leave verbatim
+                # numeric, unrecognized name, or offset form: leave verbatim
                 out.append(next_tok)
             index += 2
             continue

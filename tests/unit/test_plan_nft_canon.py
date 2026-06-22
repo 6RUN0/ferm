@@ -181,3 +181,40 @@ def test_header_idempotent() -> None:
     once = canonicalize_nft_header(h, family="ip")
     twice = canonicalize_nft_header(once, family="ip")
     assert once == twice
+
+
+def test_header_full_string_equality() -> None:
+    # Full-string check: semicolons stripped, priority mapped, policy kept.
+    h = "type filter hook input priority filter; policy accept;"
+    assert canonicalize_nft_header(h, family="ip") == (
+        "type filter hook input priority 0 policy accept"
+    )
+
+
+def test_header_priority_offset_form_verbatim() -> None:
+    # Offset form 'priority <name> + <n>' must not be partially mapped.
+    h = "type filter hook input priority filter + 7;"
+    out = canonicalize_nft_header(h, family="ip")
+    assert "priority filter + 7" in out
+
+
+def test_header_priority_unknown_family_verbatim() -> None:
+    # An unknown family must not silently apply inet mappings.
+    h = "type filter hook input priority filter;"
+    out = canonicalize_nft_header(h, family="netdev")
+    assert "priority filter" in out
+    assert "priority 0" not in out
+
+
+def test_reject_already_normalized_non_default_unchanged() -> None:
+    # Already-normalized form without 'type' keyword, non-default: stays as-is.
+    body = "reject with icmpv6 admin-prohibited"
+    out = canonicalize_nft_rule(body, family="ip6")
+    assert out == "reject with icmpv6 admin-prohibited"
+
+
+def test_limit_non_default_burst_unchanged() -> None:
+    # A burst value other than the default 5 must be left alone.
+    body = "limit rate 3/second burst 3 packets accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == body
