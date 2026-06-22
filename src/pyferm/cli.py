@@ -37,12 +37,17 @@ import sys
 from typing import TYPE_CHECKING, Final, TextIO
 
 from pyferm import __version__
-from pyferm.backend.iptables import IptablesBackend, restore_domain
+from pyferm.backend.iptables import (
+    IptablesBackend,
+    restore_domain,
+    rules_to_save,
+)
 from pyferm.backend.nft import TOOL_NFT, NftBackend
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.parser import Parser
+from pyferm.plan import Plan, diff_tables, parse_save, render_plan
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
 from pyferm.streams import (
@@ -600,6 +605,38 @@ def _main(argv: list[str] | None = None) -> int:
         restore_streams()
 
 
+def _run_plan(domains: dict[str, DomainInfo], options: Options) -> int:
+    """
+    Build and print the read-only plan; return the detailed exit code.
+
+    Runs no hooks and never commits.  Desired is ``rules_to_save`` (which
+    already folds ``@preserve`` from the single ``previous`` snapshot);
+    current is that same ``previous``.  Both are parsed and canonicalized
+    identically.  Returns 0 (no changes) or 2 (changes); a ``FermError``
+    raised on the way (e.g. a strict save-read failure) still exits 1 via
+    :func:`main`.
+    """
+    plan = Plan()
+    for domain in sorted(domains):
+        domain_info = domains[domain]
+        if not domain_info.enabled:
+            continue
+        if domain_info.plan_unsupported:
+            plan.unsupported.append(domain)
+            continue
+        host_mask = "/32" if domain == "ip" else "/128"
+        desired_text = rules_to_save(domain, domain_info, options)
+        current_text = domain_info.previous or ""
+        current = parse_save(current_text, host_mask=host_mask)
+        desired = parse_save(desired_text, host_mask=host_mask)
+        plan.families[domain] = diff_tables(
+            current, desired, noflush=options.noflush
+        )
+
+    sys.stdout.write(render_plan(plan, fmt=options.plan_format))
+    return 2 if plan.has_changes() else 0
+
+
 def _run(
     args: argparse.Namespace, options: Options, lines_stream: TextIO
 ) -> int:
@@ -679,6 +716,9 @@ def _run(
         raise internal_error("parser left the scope stack unbalanced")
 
     domains = parser.domains
+
+    if options.plan:
+        return _run_plan(domains, options)
 
     # Enable/disable hooks depending on --flush (Perl ``:765-772``).
     if options.flush:

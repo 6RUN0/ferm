@@ -15,6 +15,7 @@ from pyferm.cli import (
     _make_io,
     _resolve_options,
     _setup_streams,
+    main,
 )
 from pyferm.config import Options
 from pyferm.errors import FermError
@@ -1010,3 +1011,88 @@ def test_read_save_lenient_without_plan_returns_empty() -> None:
         options, io.StringIO()
     )
     assert read_save("/nonexistent/iptables-save") == ""
+
+
+# ---------------------------------------------------------------------------
+# --plan integration tests
+# ---------------------------------------------------------------------------
+
+
+def _write(tmp_path: Path, name: str, text: str) -> Path:
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+_PREV = """\
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -p tcp --dport 22 -j ACCEPT
+COMMIT
+"""
+
+
+def test_plan_no_change_exit_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prev = _write(tmp_path, "prev.save", _PREV)
+    cfg = _write(
+        tmp_path,
+        "c.ferm",
+        "domain ip table filter chain INPUT proto tcp dport 22 ACCEPT;",
+    )
+    code = main(
+        [
+            "--plan",
+            "--test",
+            f"--test-mock-previous=ip={prev}",
+            str(cfg),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "No changes" in out
+
+
+def test_plan_with_change_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prev = _write(tmp_path, "prev.save", _PREV)
+    cfg = _write(
+        tmp_path,
+        "c.ferm",
+        "domain ip table filter chain INPUT proto tcp dport 80 ACCEPT;",
+    )
+    code = main(
+        [
+            "--plan",
+            "--test",
+            f"--test-mock-previous=ip={prev}",
+            str(cfg),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "+ -p tcp --dport 80 -j ACCEPT" in out
+    assert "- -p tcp --dport 22 -j ACCEPT" in out
+
+
+def test_plan_runs_no_hooks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prev = _write(tmp_path, "prev.save", _PREV)
+    # a hook that would print if run; under --plan it must not execute
+    cfg = _write(
+        tmp_path,
+        "c.ferm",
+        '@hook pre "echo HOOK_RAN";\n'
+        "domain ip table filter chain INPUT proto tcp dport 22 ACCEPT;",
+    )
+    code = main(
+        ["--plan", "--test", f"--test-mock-previous=ip={prev}", str(cfg)]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "HOOK_RAN" not in out
