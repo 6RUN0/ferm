@@ -41,6 +41,7 @@ fuzz/crashes/
 # local agent/tooling directories (not part of ferm)
 .omc/
 .codegraph/
+.serena/
 .claude/
 CLAUDE.md
 docs/superpowers/
