@@ -923,3 +923,46 @@ def test_shell_snapshot_needs_both_tools_not_just_one() -> None:
     restore_only = DomainInfo()
     restore_only.tools = {"tables-restore": "iptables-restore"}
     assert IptablesBackend().shell_snapshot("ip", restore_only) is None
+
+
+# --- capture_previous plan guard -------------------------------------------
+
+
+def _noop_execute(_cmd: str) -> None:
+    raise AssertionError("execute must not run under --plan for eb/arp")
+
+
+@pytest.mark.parametrize("domain", ["eb", "arp"])
+def test_capture_previous_plan_guard_marks_unsupported(domain: str) -> None:
+    # Under --plan, arp/eb families must not trigger the atomic-save side
+    # effect and must set plan_unsupported so the cli can report them.
+    backend = IptablesBackend()
+    tool = "ebtables" if domain == "eb" else "arptables"
+    info = DomainInfo(tools={"tables": tool})
+    backend.capture_previous(
+        domain,
+        info,
+        Options(plan=True),
+        execute=_noop_execute,
+        read_save=lambda _t: "",
+        capture=lambda _c: None,
+    )
+    assert info.plan_unsupported is True
+    assert info.ebt_previous == {}
+
+
+def test_capture_previous_plan_leaves_ip_supported() -> None:
+    # ip/ip6 have a *-save tool so they are fully supported under --plan;
+    # plan_unsupported must remain False and previous must be populated.
+    backend = IptablesBackend()
+    info = DomainInfo(tools={"tables-save": "iptables-save"})
+    backend.capture_previous(
+        "ip",
+        info,
+        Options(plan=True),
+        execute=lambda _c: None,
+        read_save=lambda _t: "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n",
+        capture=lambda _c: None,
+    )
+    assert info.plan_unsupported is False
+    assert info.previous is not None

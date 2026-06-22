@@ -698,10 +698,20 @@ class IptablesBackend(Backend):
         ``mock_previous``, the live branch reads the ``*-save`` tool (a
         partial dump on non-zero exit still becomes ``previous``, an
         unrunnable tool yields the empty string -- the injected
-        ``read_save`` owns that contract), and ``eb`` snapshots each
+        ``read_save`` owns that contract (strict under ``--plan``: it
+        raises ``FermError`` on a non-zero exit or spawn failure
+        instead)), and ``eb`` snapshots each
         table with ``--atomic-save`` (also under ``--test``: the golden
         eb runs normalize the tempfile names).
         """
+        # --plan supports only families with a parser-backed *-save tool
+        # (ip/ip6).  For arp/eb, skip the snapshot entirely -- crucially the
+        # eb branch below spawns `ebtables --atomic-save` even under --test,
+        # a side effect a read-only plan must not cause -- and mark the family
+        # so the cli notes it as unsupported.
+        if options.plan and domain not in ("ip", "ip6"):
+            domain_info.plan_unsupported = True
+            return
         del capture  # x_tables snapshots via *-save, not stdout capture
         if options.test:
             mock = options.mock_previous.get(domain)

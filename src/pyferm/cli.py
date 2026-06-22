@@ -342,6 +342,10 @@ def _make_io(
         # dump still becomes {previous}.  An unspawnable tool matches the
         # pipe-open whose child fails to exec: the parent reads EOF, so
         # {previous} is set to the empty string, not left unset.
+        #
+        # Under --plan a partial/empty current would under-count removals
+        # and produce a falsely-clean plan, so the plan branch reads the
+        # return code itself and fails loud instead.
         try:
             completed = subprocess.run(
                 [tool],
@@ -349,8 +353,16 @@ def _make_io(
                 encoding=BYTE_ENCODING,
                 check=False,
             )
-        except OSError:
+        except OSError as exc:
+            if options.plan:
+                raise FermError(
+                    f"failed to read current ruleset via {tool}: {exc}"
+                ) from exc
             return ""
+        if options.plan and completed.returncode != 0:
+            raise FermError(
+                f"{tool} exited {completed.returncode}; cannot build a plan"
+            )
         return completed.stdout
 
     nft_restore = _make_nft_restore(options) if options.nft else None

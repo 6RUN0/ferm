@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -9,7 +10,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pyferm.cli import _build_parser, _resolve_options, _setup_streams
+from pyferm.cli import (
+    _build_parser,
+    _make_io,
+    _resolve_options,
+    _setup_streams,
+)
 from pyferm.config import Options
 from pyferm.errors import FermError
 
@@ -982,3 +988,25 @@ def test_capture_genuine_failure_raises(
     _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
     with pytest.raises(FermError, match="Operation not permitted"):
         capture("nft list table ip ferm")
+
+
+def test_read_save_strict_under_plan_raises_on_missing_tool() -> None:
+    # Under --plan a spawn failure must raise FermError rather than silently
+    # returning empty: an empty current ruleset would under-count removals
+    # and produce a falsely-clean plan.
+    options = Options(plan=True)
+    _execute, _emit, read_save, _restore, _capture = _make_io(
+        options, io.StringIO()
+    )
+    with pytest.raises(FermError, match="current ruleset"):
+        read_save("/nonexistent/iptables-save")
+
+
+def test_read_save_lenient_without_plan_returns_empty() -> None:
+    # Outside --plan the Perl pipe-open semantics are preserved: an
+    # unspawnable tool returns the empty string rather than aborting.
+    options = Options(plan=False)
+    _execute, _emit, read_save, _restore, _capture = _make_io(
+        options, io.StringIO()
+    )
+    assert read_save("/nonexistent/iptables-save") == ""
