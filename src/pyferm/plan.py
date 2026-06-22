@@ -13,6 +13,7 @@ runs a command -- the cli hands it text.
 from __future__ import annotations
 
 import difflib
+import re
 import shlex
 from dataclasses import dataclass, field
 
@@ -549,6 +550,106 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             continue
 
         raise _parse_error(lineno, raw)
+
+    return tables
+
+
+# Regex anchors for the brace-delimited nft-list grammar.
+# These match only the structural openers; rule bodies at chain depth are
+# never tested against them (so a '{' inside a rule body is invisible).
+_NFT_LIST_TABLE_RE = re.compile(r"^table\s+(\S+)\s+ferm\s*\{$")
+_NFT_LIST_CHAIN_RE = re.compile(r"^chain\s+(\S+)\s*\{$")
+# A base-chain header starts with 'type' followed by the hook/priority tokens.
+_NFT_LIST_HEADER_RE = re.compile(r"^type\s+\S+\s+hook\s+\S+\s+priority\b")
+
+
+def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
+    """
+    Parse ``nft list table <fam> ferm`` output into {table: ParsedTable}.
+
+    Recognizes the brace-delimited block grammar emitted by ``nft list``.
+    Block open/close is structural only: a ``{`` inside a rule body (e.g.
+    an anonymous set) never changes the depth counter.  Any line at
+    chain-body depth that is not a block-close anchor is treated as a rule
+    body and passed verbatim to the canonicalizer (safe-bias).
+
+    ``family`` is the nft family the snapshot was captured for; it must
+    match the inline family token in the ``table`` header, and is forwarded
+    to the canonicalizers.
+
+    Empty input (genuine first-run "no table" case) returns ``{}``.
+    """
+    tables: dict[str, ParsedTable] = {}
+
+    # depth 0 = outside everything
+    # depth 1 = inside the table block
+    # depth 2 = inside a chain block
+    depth = 0
+    current_chain: ParsedChain | None = None
+    # whether this chain's first non-blank body line has been seen
+    chain_header_seen = False
+
+    lines = text.splitlines()
+    total = len(lines)
+
+    for lineno, raw in enumerate(lines, start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if depth == 0:
+            # Only valid production: 'table <fam> ferm {'
+            m = _NFT_LIST_TABLE_RE.match(line)
+            if not m:
+                raise _parse_error(lineno, raw)
+            inline_fam = m.group(1)
+            if inline_fam != family:
+                raise _parse_error(lineno, raw)
+            _ensure_ferm_table(tables)
+            depth = 1
+            continue
+
+        if depth == 1:
+            # Inside the table: expect 'chain <name> {' or '}'
+            if line == "}":
+                depth = 0
+                continue
+            m = _NFT_LIST_CHAIN_RE.match(line)
+            if not m:
+                raise _parse_error(lineno, raw)
+            chain_name = m.group(1)
+            # policy will be set when the first body line arrives
+            current_chain = ParsedChain(policy="-")
+            tables["ferm"].chains[chain_name] = current_chain
+            chain_header_seen = False
+            depth = 2
+            continue
+
+        # depth == 2: inside a chain body
+        if line == "}":
+            current_chain = None
+            depth = 1
+            continue
+
+        # Any other line at this depth is a rule body (or the base-chain
+        # header).  Never count braces here -- an anonymous set on one line
+        # (e.g. 'tcp dport { 22, 80 } accept') must not be mistaken for a
+        # block opener.
+        assert current_chain is not None
+        if not chain_header_seen:
+            chain_header_seen = True
+            if _NFT_LIST_HEADER_RE.match(line):
+                # Base chain: this line is the header, not a rule body.
+                current_chain.policy = canonicalize_nft_header(
+                    line, family=family
+                )
+                continue
+            # User chain: first line is a rule; fall through to append it.
+
+        current_chain.rules.append(canonicalize_nft_rule(line, family=family))
+
+    if depth != 0:
+        raise _parse_error(total or 1, "<EOF: unterminated block>")
 
     return tables
 
