@@ -1,0 +1,3 @@
+family ip
+  - -s 10.0.0.0/8 -j MASQUERADE
+  Plan: 0 to add, 1 to remove, 0 policy changes

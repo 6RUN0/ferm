@@ -1,0 +1,4 @@
+family ip
+  note: current ruleset is empty
+  + -p tcp --dport 22 -j ACCEPT
+  Plan: 1 to add, 0 to remove, 0 policy changes

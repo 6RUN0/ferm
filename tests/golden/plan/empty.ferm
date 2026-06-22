@@ -1,0 +1,6 @@
+domain ip table filter {
+    chain INPUT {
+        policy ACCEPT;
+        proto tcp dport 22 ACCEPT;
+    }
+}

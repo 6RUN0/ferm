@@ -1,0 +1,8 @@
+domain ip table filter {
+    chain INPUT {
+        policy ACCEPT;
+        proto tcp dport 80 ACCEPT;
+    }
+    chain FORWARD policy ACCEPT;
+    chain OUTPUT policy ACCEPT;
+}
