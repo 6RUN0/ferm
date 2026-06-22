@@ -61,3 +61,8 @@ class Options:
     nolegacy: bool = False
     #: ``--nft`` (port-only): use the native nftables backend (opt-in).
     nft: bool = False
+    #: ``--plan`` (port-only): read-only diff preview of desired-vs-kernel,
+    #: no commit/hooks/restore.  Exit 0 = no changes, 2 = changes, 1 = error.
+    plan: bool = False
+    #: ``--plan-format``: ``structured`` (default) or ``diff`` (unified).
+    plan_format: str = "structured"

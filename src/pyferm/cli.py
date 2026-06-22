@@ -150,6 +150,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nolegacy", action="store_true")
     # Port-only: opt into the native nftables backend.
     parser.add_argument("--nft", action="store_true")
+    # Port-only: read-only diff preview.
+    parser.add_argument("--plan", action="store_true")
+    parser.add_argument(
+        "--plan-format", choices=("structured", "diff"), default="structured"
+    )
     parser.add_argument("files", nargs="*")
     return parser
 
@@ -193,6 +198,11 @@ def _resolve_options(args: argparse.Namespace) -> Options:
             raise FermError(f"Invalid --test-mock-previous: '{spec}'")
         mock_previous[match.group(1)] = match.group(2)
 
+    if args.plan_format != "structured" and not args.plan:
+        raise FermError("ferm --plan-format has no sense without --plan")
+    if args.plan and args.nft:
+        raise FermError("ferm --plan is not yet supported with --nft")
+
     return Options(
         test=args.test,
         noexec=noexec,
@@ -207,6 +217,8 @@ def _resolve_options(args: argparse.Namespace) -> Options:
         mock_previous=mock_previous,
         nolegacy=args.nolegacy,
         nft=args.nft,
+        plan=args.plan,
+        plan_format=args.plan_format,
     )
 
 

@@ -619,6 +619,42 @@ def test_cli_def_high_codepoint_is_byte_faithful(tmp_path: Path) -> None:
     assert b"\\u20ac" not in result.stdout
 
 
+# --- Task 1 (plan): --plan / --plan-format flag plumbing -------------------
+
+
+def _resolve_plan(argv: list[str]) -> Options:
+    """Parse ``argv`` and derive options (plan tests need no tty patching)."""
+    args = _build_parser().parse_args(argv)
+    return _resolve_options(args)
+
+
+def test_plan_flag_defaults_off() -> None:
+    opts = _resolve_plan(["a.ferm"])
+    assert opts.plan is False
+    assert opts.plan_format == "structured"
+
+
+def test_plan_flag_sets_plan() -> None:
+    opts = _resolve_plan(["--plan", "a.ferm"])
+    assert opts.plan is True
+    assert opts.plan_format == "structured"
+
+
+def test_plan_format_diff() -> None:
+    opts = _resolve_plan(["--plan", "--plan-format", "diff", "a.ferm"])
+    assert opts.plan_format == "diff"
+
+
+def test_plan_format_without_plan_is_error() -> None:
+    with pytest.raises(FermError, match="plan-format"):
+        _resolve_plan(["--plan-format", "diff", "a.ferm"])
+
+
+def test_plan_with_nft_is_error() -> None:
+    with pytest.raises(FermError, match="not yet supported with --nft"):
+        _resolve_plan(["--plan", "--nft", "a.ferm"])
+
+
 # --- Task 15: backend selection --------------------------------------------
 
 

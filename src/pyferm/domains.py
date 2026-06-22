@@ -137,6 +137,10 @@ class DomainInfo:
         default_factory=dict[str, IO[bytes]]
     )
     tables: dict[str, TableInfo] = field(default_factory=dict[str, TableInfo])
+    #: Set by the plan guard in ``capture_previous`` for families that own
+    #: no parser-supported ``*-save`` tool (arp/eb): ``--plan`` notes them as
+    #: unsupported rather than producing a wrong diff.
+    plan_unsupported: bool = False
 
     def close(self) -> None:
         """
