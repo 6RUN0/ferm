@@ -148,7 +148,7 @@ def test_base_chain_header_without_policy_gets_policy_accept() -> None:
     )
     tables = parse_nft_list(text, family="ip")
     policy = tables["ferm"].chains["INPUT"].policy
-    assert "policy accept" in policy
+    assert policy == "type filter hook input priority 0 policy accept"
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +264,9 @@ def test_chain_line_outside_table_raises() -> None:
     """A 'chain' line that appears outside any table block is a parse error."""
     with pytest.raises(FermError):
         parse_nft_list("table ip ferm {\n}\nchain X {\n}\n", family="ip")
+
+
+def test_extra_close_brace_after_table_raises() -> None:
+    """A stray '}' after the table block closes raises FermError."""
+    with pytest.raises(FermError):
+        parse_nft_list("table ip ferm {\n}\n}\n", family="ip")

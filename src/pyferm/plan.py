@@ -1,13 +1,19 @@
 """
-Read-only diff preview for ``ferm --plan`` (iptables backend).
+Read-only diff preview for ``ferm --plan``.
 
-Parses an ``iptables-save`` dump into a structural model, canonicalizes
-both the desired (ferm ``rules_to_save``, long-form options) and the current
-(kernel ``iptables-save``, short-form) sides through a whitelist of
-proven-equivalent transforms, diffs them, and renders the result.  The diff
-engine is backend-agnostic; the parser is specific to the ``iptables-save``
-grammar.  Read-only by construction: this module never
-runs a command -- the cli hands it text.
+Provides three parsers that each produce a ``{table: ParsedTable}`` model:
+
+- :func:`parse_save` -- parses an ``iptables-save`` dump (iptables backend,
+  current side).
+- :func:`parse_nft_script` -- parses a ``nft -f`` script produced by the
+  nft backend (desired side).
+- :func:`parse_nft_list` -- parses the output of ``nft list table <fam>
+  ferm`` (nft backend, current side).
+
+The diff engine (:func:`diff_tables`) and renderers
+(:func:`render_structured`, :func:`render_unified`) are backend-agnostic and
+consume whichever parser's output is passed to them.  Read-only by
+construction: this module never runs a command -- the cli hands it text.
 """
 
 from __future__ import annotations
