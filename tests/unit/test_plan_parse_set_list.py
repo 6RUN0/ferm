@@ -73,3 +73,13 @@ def test_join_multiline_elements_is_noop_on_plain_text() -> None:
         "table ip ferm {\n\tchain INPUT {\n\t\ttcp dport 22 accept\n\t}\n}\n"
     )
     assert _join_multiline_elements(text) == text
+
+
+def test_join_multiline_elements_is_noop_on_inline_elements() -> None:
+    """_join_multiline_elements is identity on a single-line elements line."""
+    from pyferm.plan import _join_multiline_elements
+
+    inline = (
+        "table ip ferm {\n\tset ssh {\n\t\telements = { 22, 2222 }\n\t}\n}\n"
+    )
+    assert _join_multiline_elements(inline) == inline

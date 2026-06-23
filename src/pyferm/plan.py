@@ -788,11 +788,16 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                 depth = _NL_DEPTH_TABLE
                 continue
             if line.startswith("elements"):
-                inner = line[line.find("{") + 1 : line.rfind("}")]
-                members = [e.strip() for e in inner.split(",") if e.strip()]
-                current_set.elements = sort_set_elements(
-                    current_set.elements + members
-                )
+                brace_open = line.find("{")
+                brace_close = line.rfind("}")
+                if brace_open != -1 and brace_close > brace_open:
+                    inner = line[brace_open + 1 : brace_close]
+                    members = [
+                        e.strip() for e in inner.split(",") if e.strip()
+                    ]
+                    current_set.elements = sort_set_elements(
+                        current_set.elements + members
+                    )
             # 'type ...'/'flags ...' lines carry no diff-relevant data; skip.
             continue
 
