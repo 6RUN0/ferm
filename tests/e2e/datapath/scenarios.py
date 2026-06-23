@@ -123,6 +123,89 @@ domain ip {
 
 _BOTH = ["nft", "iptables"]
 
+# --- multiport: three TCP ports collapsed into one anonymous set ---
+_MULTIPORT_V4 = """\
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        proto tcp dport (22 80 443) ACCEPT;
+    }
+    chain OUTPUT { policy ACCEPT; }
+}
+"""
+
+# --- multi-address: source address list folded into anonymous set ---
+# Client (.2) is inside the allow list; fw itself (.1) is the target.
+_MULTI_ADDR_V4 = """\
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        saddr (10.0.0.2 10.0.0.3) proto tcp dport 22 ACCEPT;
+    }
+    chain OUTPUT { policy ACCEPT; }
+}
+"""
+
+# --- proto x port (two-set, stays two rules): separate tcp and udp dport sets.
+# nft emits:
+#   tcp dport { 22, 80 } accept
+#   udp dport { 53, 54 } accept
+# iptables expands to two rules per block via cartesian product.
+# fw listeners: tcp:22, udp:53.  tcp:80 gets syn-ack (ACCEPT rule hits) but
+# the kernel RSTs it (no listener) -- not probed.  udp:54 has no listener,
+# not probed.
+_PROTO_PORT_V4 = """\
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        proto tcp dport (22 80) ACCEPT;
+        proto udp dport (53 54) ACCEPT;
+    }
+    chain OUTPUT { policy ACCEPT; }
+}
+"""
+
+# --- negated source: saddr ! scalar stays linear (no set) on both backends ---
+_NEGATED_SADDR_V4 = """\
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        proto tcp dport 22 saddr ! 10.0.0.3 ACCEPT;
+    }
+    chain OUTPUT { policy ACCEPT; }
+}
+"""
+
+# --- explicit port range: continuous range expressed as lo-hi ---
+# Range 1-1024 covers the only fw TCP listener (port 22).
+# nft emits ``tcp dport 1-1024 accept``.
+# Port 8080 is outside the range; policy DROP -> no-response.
+_PORT_RANGE_V4 = """\
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        proto tcp dport 1-1024 ACCEPT;
+    }
+    chain OUTPUT { policy ACCEPT; }
+}
+"""
+
+# --- overlapping intervals: union {1-1024, 22} semantically == 1-1024 ---
+# Port 22 is redundant inside the range.  Tested against both backends:
+# iptables expands to two independent rules (no overlap); nft may fold into
+# a set whose overlap causes a kernel load error depending on nft version.
+# The host-unit gate verifies ferm parse succeeds; the docker lane exercises
+# the actual nft/iptables load.
+_OVERLAP_RANGE_V4 = """\
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        proto tcp dport (1-1024 22) ACCEPT;
+    }
+    chain OUTPUT { policy ACCEPT; }
+}
+"""
+
 SCENARIOS: list[dict] = [
     {
         "type": "probe",
@@ -215,5 +298,89 @@ SCENARIOS: list[dict] = [
             "stop_listener": "be-tcp80-v4",
             "probe": Probe("tcp", "client", "10.0.0.1", 8080, 4, "reset", 1),
         },
+    },
+    # --- multiport: three TCP dports collapsed into one anonymous set ---
+    # Only port 22 has a fw listener; port 8080 is outside the set.
+    {
+        "type": "probe",
+        "name": "multiport-v4",
+        "config": _MULTIPORT_V4,
+        "backends": _BOTH,
+        "probes": [
+            # Port 22 is in the set and has a listener -> syn-ack.
+            Probe("tcp", "client", "10.0.0.1", 22, 4, "syn-ack", 1),
+            # Port 8080 is not in the set; policy DROP -> no-response.
+            Probe("tcp", "client", "10.0.0.1", 8080, 4, "no-response", 1),
+        ],
+    },
+    # --- multi-address: saddr list folded into anonymous set on nft ---
+    # Client (.2) is inside the allow list; port 22 has a listener on fw.
+    {
+        "type": "probe",
+        "name": "multi-addr-v4",
+        "config": _MULTI_ADDR_V4,
+        "backends": _BOTH,
+        "probes": [
+            # client (10.0.0.2) is in the allowed saddr set -> syn-ack.
+            Probe("tcp", "client", "10.0.0.1", 22, 4, "syn-ack", 1),
+        ],
+    },
+    # --- proto x port: separate tcp and udp dport sets, two rules on nft ---
+    # fw listeners: tcp:22 (syn-ack), udp:53 (udp-response).
+    # tcp:80 and udp:54 are ACCEPTed by the firewall but have no listeners;
+    # not probed to avoid ambiguous kernel RST / timeout results.
+    {
+        "type": "probe",
+        "name": "proto-port-v4",
+        "config": _PROTO_PORT_V4,
+        "backends": _BOTH,
+        "probes": [
+            Probe("tcp", "client", "10.0.0.1", 22, 4, "syn-ack", 1),
+            Probe("udp", "client", "10.0.0.1", 53, 4, "udp-response", 2),
+        ],
+    },
+    # --- negated saddr scalar: saddr ! 10.0.0.3 stays linear ---
+    # client (.2) is NOT 10.0.0.3, so the negation matches -> ACCEPT.
+    {
+        "type": "probe",
+        "name": "negated-saddr-v4",
+        "config": _NEGATED_SADDR_V4,
+        "backends": _BOTH,
+        "probes": [
+            Probe("tcp", "client", "10.0.0.1", 22, 4, "syn-ack", 1),
+        ],
+    },
+    # --- explicit port range: range 1-1024 covers fw's tcp:22 listener ---
+    # nft backend only: iptables-restore emits ranges with a colon separator
+    # internally, but ferm's save-format writer uses a dash which older
+    # nf_tables-backed iptables-restore rejects at load time.
+    {
+        "type": "probe",
+        "name": "port-range-v4",
+        "config": _PORT_RANGE_V4,
+        "backends": ["nft"],
+        "probes": [
+            # Port 22 is inside [1, 1024] and has a listener -> syn-ack.
+            Probe("tcp", "client", "10.0.0.1", 22, 4, "syn-ack", 1),
+            # Port 8080 is outside the range; policy DROP -> no-response.
+            Probe("tcp", "client", "10.0.0.1", 8080, 4, "no-response", 1),
+        ],
+    },
+    # --- overlapping intervals: {1-1024, 22} union == 1-1024 ---
+    # Port 22 is redundant inside the range.  nft backend only (same
+    # iptables-restore range-format constraint as port-range-v4 above).
+    # nft may reject the overlapping set at kernel load depending on version;
+    # the docker lane exercises the actual load and probe.
+    {
+        "type": "probe",
+        "name": "overlap-range-v4",
+        "config": _OVERLAP_RANGE_V4,
+        "backends": ["nft"],
+        "probes": [
+            # Port 22 is inside the range and has a listener -> syn-ack.
+            Probe("tcp", "client", "10.0.0.1", 22, 4, "syn-ack", 1),
+            # Port 8080 is outside all intervals; policy DROP -> no-response.
+            Probe("tcp", "client", "10.0.0.1", 8080, 4, "no-response", 1),
+        ],
     },
 ]
