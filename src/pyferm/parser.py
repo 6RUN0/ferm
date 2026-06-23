@@ -86,8 +86,11 @@ from pyferm.tokenizer import Token, make_line_token
 from pyferm.values import (
     Multi,
     Params,
+    SetRef,
     Value,
+    contains_deferred,
     eval_bool,
+    flatten,
     negate_value,
     realize_deferred,
     stringify,
@@ -124,6 +127,9 @@ MAX_CHAIN_NAME_LENGTH: Final[int] = 29
 MAX_LOG_PREFIX_LENGTH: Final[int] = 29
 
 _NAME_RE = re.compile(r"\w+")
+#: nft set identifier: letter-led word chars only, no digit-leading names.
+#: Early UX reject; authoritative check is on the nft emit boundary.
+_NFT_SET_NAME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
 _DVAR_RE = re.compile(r"\$(\w+)")
 #: A double-quoted token, for the function-expansion interpolation (``:2484``).
 _DQUOTE_RE = re.compile(r'".*"', re.DOTALL)
@@ -718,6 +724,12 @@ class Parser:
                 self._parse_def(rule)
                 return "next"
 
+            # named set declaration -- dispatch ONLY on @set, never bareword
+            # "set", which is the live ipset match keyword
+            if keyword == "@set":
+                self._parse_set(rule)
+                return "next"
+
             if keyword == "@preserve":
                 self._parse_preserve(rule)
                 rule = new_level(prev)
@@ -1061,6 +1073,39 @@ class Parser:
                 )
         else:
             error('"$" (variable) or "&" (function) expected')
+
+    def _parse_set(self, rule: Rule) -> None:
+        """
+        Define a named nft set (``@set $name = (...)``).
+
+        Binds a :class:`~pyferm.values.SetRef` on the innermost scope frame
+        (unless the global frame already carries the name, mirroring
+        ``_parse_def``).  Rejects deferred elements and non-nft-identifier
+        names early with a clean error rather than a late ``nft -f`` crash.
+        """
+        if rule.non_empty:
+            error('"set" must be the first token in a command')
+        kind = self.tokenizer.require_next_token()
+        if kind != "$":
+            error('"$" and set name expected')
+        name = self.tokenizer.require_next_token()
+        if not (isinstance(name, str) and _NAME_RE.fullmatch(name)):
+            error("invalid set name")
+        if not _NFT_SET_NAME_RE.match(name):
+            error(
+                f"invalid nft set name '{name}': "
+                "must be a letter-led identifier"
+            )
+        self.tokenizer.expect_token("=")
+        value = self.evaluator.getvalues(allow_negation=False)
+        self.tokenizer.expect_token(";")
+        if contains_deferred(value):
+            error("deferred values are not allowed in a named set")
+        elements = (
+            flatten(*value) if isinstance(value, list) else flatten(value)
+        )
+        if name not in self.scope.globals.vars:
+            self.scope.top.vars[name] = SetRef(name, elements)
 
     def _call_function(self, rule: Rule) -> None:
         """
