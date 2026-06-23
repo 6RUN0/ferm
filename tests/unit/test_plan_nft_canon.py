@@ -218,3 +218,61 @@ def test_limit_non_default_burst_unchanged() -> None:
     body = "limit rate 3/second burst 3 packets accept"
     out = canonicalize_nft_rule(body, family="ip")
     assert out == body
+
+
+def test_set_spacing_normalized_from_glued_form() -> None:
+    # Kernel/glued spelling -> canonical spaced form.
+    body = "tcp dport {22,80} accept"
+    assert canonicalize_nft_rule(body, family="ip") == (
+        "tcp dport { 22, 80 } accept"
+    )
+
+
+def test_set_elements_sorted_numerically() -> None:
+    body = "tcp dport { 443, 22, 80 } accept"
+    assert canonicalize_nft_rule(body, family="ip") == (
+        "tcp dport { 22, 80, 443 } accept"
+    )
+
+
+def test_set_canon_idempotent() -> None:
+    once = canonicalize_nft_rule("tcp dport {80,22} accept", family="ip")
+    assert canonicalize_nft_rule(once, family="ip") == once
+
+
+def test_set_canon_converges_both_spellings() -> None:
+    # The emitter's spaced form and a kernel glued form canon-equal.
+    emitted = "tcp dport { 22, 80 } accept"
+    kernel = "tcp dport {80, 22} accept"
+    assert canonicalize_nft_rule(
+        emitted, family="ip"
+    ) == canonicalize_nft_rule(kernel, family="ip")
+
+
+def test_set_injectivity_distinct_sets_differ() -> None:
+    a = canonicalize_nft_rule("tcp dport { 22, 80 } accept", family="ip")
+    b = canonicalize_nft_rule("tcp dport { 22, 81 } accept", family="ip")
+    assert a != b
+
+
+def test_set_braces_inside_comment_not_reordered() -> None:
+    # Braces inside a quoted comment are free text: two rules differing ONLY
+    # inside the comment braces must NOT canonicalize equal (a false "no
+    # changes" would be a firewall-honesty bug).
+    a = canonicalize_nft_rule(
+        'tcp dport 22 accept comment "p { 80, 22 }"', family="ip"
+    )
+    b = canonicalize_nft_rule(
+        'tcp dport 22 accept comment "p { 22, 80 }"', family="ip"
+    )
+    assert a != b
+
+
+def test_canon_unicode_in_comment_braces_does_not_crash() -> None:
+    # A non-ASCII digit inside comment braces must not crash the canon: the
+    # quote-aware skip never feeds it to the sorter, and even a genuine set
+    # element would fall through to unparsable rather than raise.
+    result = canonicalize_nft_rule(
+        'tcp dport 22 accept comment "x { ² }"', family="ip"
+    )
+    assert isinstance(result, str)

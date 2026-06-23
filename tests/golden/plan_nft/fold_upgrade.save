@@ -1,0 +1,7 @@
+table ip ferm {
+	chain INPUT {
+		tcp dport 22 accept
+		tcp dport 80 accept
+		tcp dport 443 accept
+	}
+}

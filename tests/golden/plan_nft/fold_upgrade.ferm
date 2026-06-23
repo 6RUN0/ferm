@@ -1,0 +1,3 @@
+domain ip table filter chain INPUT {
+    proto tcp dport (22 80 443) ACCEPT;
+}

@@ -24,6 +24,7 @@ import shlex
 from dataclasses import dataclass, field
 
 from pyferm.errors import FermError
+from pyferm.nftset import sort_set_elements
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
 _CHAIN_PARTS_MIN = 2
@@ -265,6 +266,50 @@ _NFT_REJECT_DEFAULTS: dict[str, str] = {
 _NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
 
 
+#: One ``{ ... }`` anonymous-set run (no nesting in v1).
+_NFT_SET_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _normalize_set_run(match: re.Match[str]) -> str:
+    """Rewrite one ``{ ... }`` operand run to canonical ``{ a, b, c }``."""
+    raw = match.group(1).replace(",", " ").split()
+    if not raw:
+        return "{ }"
+    return "{ " + ", ".join(sort_set_elements(raw)) + " }"
+
+
+def _normalize_sets(body: str) -> str:
+    """
+    Rewrite every UNQUOTED ``{ ... }`` run to canonical ``{ a, b, c }``.
+
+    Only braces outside quoted spans are anonymous-set operands.  Braces inside
+    a quoted ``comment``/``log prefix`` value are free text: rewriting them
+    would let two distinct comments (``"{ 80, 22 }"`` vs ``"{ 22, 80 }"``)
+    canonicalize equal -- a false "no changes", the exact dishonesty the canon
+    exists to prevent.  Both diff sides run this, so the quoted text stays
+    byte-faithful on each side.
+    """
+    out: list[str] = []
+    start = 0
+    quote: str | None = None
+    for index, char in enumerate(body):
+        if quote is None and char in "\"'":
+            out.append(_NFT_SET_RE.sub(_normalize_set_run, body[start:index]))
+            start = index
+            quote = char
+        elif quote is not None and char == quote:
+            out.append(body[start : index + 1])  # quoted span, verbatim
+            start = index + 1
+            quote = None
+    tail = body[start:]
+    out.append(
+        tail
+        if quote is not None
+        else _NFT_SET_RE.sub(_normalize_set_run, tail)
+    )
+    return "".join(out)
+
+
 def canonicalize_nft_rule(body: str, *, family: str) -> str:
     """
     Normalize one nft rule body to canonical form (idempotent, both sides).
@@ -375,7 +420,7 @@ def canonicalize_nft_rule(body: str, *, family: str) -> str:
         out.append(token)
         index += 1
 
-    return " ".join(out)
+    return _normalize_sets(" ".join(out))
 
 
 def canonicalize_nft_header(header: str, *, family: str) -> str:

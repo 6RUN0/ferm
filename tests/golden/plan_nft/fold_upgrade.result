@@ -1,0 +1,6 @@
+family ip
+  - tcp dport 22 accept
+  - tcp dport 80 accept
+  - tcp dport 443 accept
+  + tcp dport { 22, 80, 443 } accept
+  Plan: 1 to add, 3 to remove, 0 policy changes
