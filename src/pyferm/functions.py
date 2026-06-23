@@ -713,6 +713,11 @@ class Evaluator:
         elif isinstance(value, Negated):
             ips = realize_deferred(family, value.value)
             negated = True
+        elif isinstance(value, SetRef):
+            filtered = realize_deferred(family, *value.elements)
+            if rule.domain_both:
+                filtered = ipfilter(family, filtered)
+            return SetRef(value.name, filtered)
         elif _is_ref(value):
             raise internal_error()
         else:
