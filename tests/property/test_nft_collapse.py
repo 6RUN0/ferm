@@ -20,7 +20,14 @@ _ports = st.lists(
     unique=True,
 )
 
-#: Mixed element types the slice newly admits: CIDR, bare address, interval.
+#: Mixed element types the slice admits: CIDR, bare address, interval.  The
+#: generators are kept PAIRWISE DISJOINT (a /24 in 10.0.0.0/8, a host in
+#: 172.16.0.0/16, a numeric range on a stride-100 grid) so neither the kernel's
+#: contained-network absorption nor a range/CIDR spelling collapse can fire --
+#: both legitimately map two distinct raw sets to one canon, which would break
+#: the strict-injectivity invariant below.  Absorption correctness is pinned
+#: directly in ``test_nftset.py``; here the concern is the false-"no-changes"
+#: guard, i.e. that two genuinely distinct sets never canonicalize equal.
 _mixed_elements = st.lists(
     st.one_of(
         st.builds(
@@ -29,11 +36,11 @@ _mixed_elements = st.lists(
             st.integers(0, 255),
         ),
         st.builds(
-            lambda a, b: f"10.{a}.{b}.5",
+            lambda a, b: f"172.16.{a}.{b}",
             st.integers(0, 255),
             st.integers(0, 255),
         ),
-        st.builds(lambda lo: f"{lo}-{lo + 10}", st.integers(1, 60000)),
+        st.builds(lambda k: f"{100 * k}-{100 * k + 10}", st.integers(1, 600)),
     ),
     min_size=1,
     max_size=6,
