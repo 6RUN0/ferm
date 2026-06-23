@@ -51,6 +51,25 @@ def test_statement_to_text_dispatches_by_type() -> None:
     assert issubclass(NftVerdict, NftStatement)
 
 
+def test_nftmatch_renders_singleton_as_expr() -> None:
+    m = NftMatch("tcp dport 22", set_key="tcp dport", element="22")
+    assert m.to_text() == "tcp dport 22"
+
+
+def test_nftmatch_renders_collapsed_set_sorted() -> None:
+    m = NftMatch(
+        "tcp dport 22",
+        set_key="tcp dport",
+        elements=["443", "22", "80"],
+    )
+    assert m.to_text() == "tcp dport { 22, 80, 443 }"
+
+
+def test_nftmatch_non_eligible_renders_expr() -> None:
+    m = NftMatch("ct state new")
+    assert m.to_text() == "ct state new"
+
+
 def test_serialize_table_emits_atomic_transaction() -> None:
     table = NftTable(family="ip", name="ferm")
     chains: list[NftBaseChain | NftRegularChain] = [

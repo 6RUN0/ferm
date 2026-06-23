@@ -27,6 +27,7 @@ from pyferm.backend.base import (
 )
 from pyferm.domains import ShellSnapshot
 from pyferm.errors import FermError, internal_error
+from pyferm.nftset import sort_set_elements
 from pyferm.rules import (
     RenderedOption,
     RenderedRule,
@@ -178,13 +179,27 @@ class NftMatch(NftStatement):
     """
     A match expression already rendered to nft text.
 
-    Example: ``tcp dport 22``.
+    ``expr`` is the rendered single/non-eligible form (e.g. ``tcp dport 22``).
+    A set-eligible match also carries ``set_key`` (the selector left of the
+    set, e.g. ``tcp dport``) and ``element`` (the operand, e.g. ``22``) as
+    structured comparison keys.  ``elements`` is set only after the collapse
+    pass merges a run; ``to_text`` then renders an anonymous set.
     """
 
     expr: str
+    set_key: str | None = None
+    element: str | None = None
+    elements: list[str] | None = None
 
     def to_text(self) -> str:
-        """Return the pre-rendered match expression verbatim."""
+        """Render the match, as an anonymous set once a run is collapsed."""
+        if self.elements is not None:
+            # A collapsed run always carries set_key (the merge pass
+            # copies it from the anchor); fail loud rather than emit
+            # a literal "None {...}".
+            assert self.set_key is not None
+            joined = ", ".join(sort_set_elements(self.elements))
+            return f"{self.set_key} {{ {joined} }}"
         return self.expr
 
 
