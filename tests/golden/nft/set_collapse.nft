@@ -1,0 +1,7 @@
+add table ip ferm
+flush table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport { 22, 80, 443 } accept
+add rule ip ferm INPUT ip saddr { 10.0.0.1, 10.0.0.2 } tcp dport 22 accept
+add rule ip ferm INPUT tcp dport { 53, 67 } accept
+add rule ip ferm INPUT udp dport { 53, 67 } accept

@@ -852,6 +852,124 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     return NftRule(statements=statements, comment=comment)
 
 
+# ---------------------------------------------------------------------------
+# Collapse pass: fold adjacent leaf rules into anonymous sets
+# ---------------------------------------------------------------------------
+
+
+def _elements_equal(a: list[str] | None, b: list[str] | None) -> bool:
+    """
+    Compare folded element lists by canonical order (order-insensitive).
+
+    A second-dimension fold leaves siblings with already-merged element lists;
+    comparing them order-sensitively would miss the fold when the first axis
+    accumulated them in different orders ([c, d] vs [d, c]).  Canonical order
+    makes the equality robust by construction.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    return sort_set_elements(a) == sort_set_elements(b)
+
+
+def _stmt_equal(a: NftStatement, b: NftStatement) -> bool:
+    """Return True if two statements are identical for collapse purposes."""
+    if isinstance(a, NftMatch) and isinstance(b, NftMatch):
+        if a.set_key is not None and b.set_key is not None:
+            return (
+                a.set_key == b.set_key
+                and a.element == b.element
+                and _elements_equal(a.elements, b.elements)
+            )
+        return a.expr == b.expr
+    return type(a) is type(b) and a.to_text() == b.to_text()
+
+
+def _collapse_axis(a: NftRule, b: NftRule) -> int | None:
+    """Return the single differing eligible position, or None."""
+    if a.comment != b.comment or len(a.statements) != len(b.statements):
+        return None
+    pairs = zip(a.statements, b.statements, strict=False)
+    differing = [
+        k for k, (sa, sb) in enumerate(pairs) if not _stmt_equal(sa, sb)
+    ]
+    if len(differing) != 1:
+        return None
+    k = differing[0]
+    sa, sb = a.statements[k], b.statements[k]
+    if (
+        isinstance(sa, NftMatch)
+        and isinstance(sb, NftMatch)
+        and sa.set_key is not None
+        and sa.set_key == sb.set_key
+    ):
+        return k
+    return None
+
+
+def _merge_run(
+    rules: list[NftRule], start: int, end: int, axis: int
+) -> NftRule:
+    """Merge ``rules[start..end]`` into one rule with a set at *axis*."""
+    base = rules[start]
+    anchor = base.statements[axis]
+    assert isinstance(anchor, NftMatch)
+    elements: list[str] = []
+    for rule in rules[start : end + 1]:
+        match = rule.statements[axis]
+        assert isinstance(match, NftMatch)
+        if match.elements is not None:
+            elements.extend(match.elements)
+        elif match.element is not None:
+            elements.append(match.element)
+    statements = list(base.statements)
+    statements[axis] = NftMatch(
+        anchor.expr, set_key=anchor.set_key, elements=elements
+    )
+    return NftRule(statements=statements, comment=base.comment)
+
+
+def _collapse_one_pass(rules: list[NftRule]) -> tuple[list[NftRule], bool]:
+    """One left-to-right merge pass; returns (rules, changed)."""
+    out: list[NftRule] = []
+    changed = False
+    count = len(rules)
+    index = 0
+    while index < count:
+        axis = (
+            _collapse_axis(rules[index], rules[index + 1])
+            if index + 1 < count
+            else None
+        )
+        if axis is None:
+            out.append(rules[index])
+            index += 1
+            continue
+        end = index + 1
+        while (
+            end + 1 < count
+            and _collapse_axis(rules[index], rules[end + 1]) == axis
+        ):
+            end += 1
+        out.append(_merge_run(rules, index, end, axis))
+        changed = True
+        index = end + 1
+    return out, changed
+
+
+def _collapse_chain_rules(rules: list[NftRule]) -> list[NftRule]:
+    """
+    Fold adjacent rules differing in one eligible value into anonymous sets.
+
+    Iterates to a fixpoint: each pass strictly reduces the rule count, so the
+    loop terminates.  Only adjacent rules merge (nft is order-sensitive); the
+    predicate is the safety boundary, not array provenance.
+    """
+    changed = True
+    while changed:
+        rules, changed = _collapse_one_pass(rules)
+    return rules
+
+
 class NftBackend(Backend):
     """The native nftables backend (Phase 2, all families via ``nft -f``)."""
 
@@ -888,10 +1006,12 @@ class NftBackend(Backend):
                     raise FermError(
                         f"nft chain name collision '{nft_name}' in table ferm"
                     )
-                rules[nft_name] = [
-                    translate_rule(domain, tbl, rule)
-                    for rule in table_info.chains[original].rules
-                ]
+                rules[nft_name] = _collapse_chain_rules(
+                    [
+                        translate_rule(domain, tbl, rule)
+                        for rule in table_info.chains[original].rules
+                    ]
+                )
         save = serialize_table(table, chains, rules, noflush=options.noflush)
         return Rendered(save=save)
 

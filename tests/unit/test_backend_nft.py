@@ -1633,3 +1633,128 @@ def test_translate_match_dport_negated_colon_range() -> None:
         translate_match("ip", _opt("dport", Negated("1000:2000")), "tcp")
         == "tcp dport != 1000-2000"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: collapse pass (_collapse_chain_rules)
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import _collapse_chain_rules  # noqa: E402
+
+
+def _port_rule(port: str, verdict: str = "accept") -> NftRule:
+    return NftRule(
+        statements=[
+            NftMatch(f"tcp dport {port}", set_key="tcp dport", element=port),
+            NftVerdict(verdict),
+        ]
+    )
+
+
+def test_collapse_merges_adjacent_ports() -> None:
+    out = _collapse_chain_rules(
+        [_port_rule("22"), _port_rule("80"), _port_rule("443")]
+    )
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "tcp dport { 22, 80, 443 }"
+    assert out[0].statements[1].to_text() == "accept"
+
+
+def test_collapse_stops_at_differing_verdict() -> None:
+    out = _collapse_chain_rules(
+        [_port_rule("22", "accept"), _port_rule("80", "drop")]
+    )
+    assert len(out) == 2  # different verdict -> not collapse-equivalent
+
+
+def test_collapse_stops_at_differing_comment() -> None:
+    a = _port_rule("22")
+    b = _port_rule("80")
+    b.comment = "note"
+    out = _collapse_chain_rules([a, b])
+    assert len(out) == 2
+
+
+def test_collapse_only_adjacent() -> None:
+    # An intervening non-equivalent rule splits the run into two singletons.
+    middle = NftRule(statements=[NftVerdict("drop")])
+    out = _collapse_chain_rules([_port_rule("22"), middle, _port_rule("80")])
+    assert len(out) == 3
+
+
+def test_collapse_negated_stays_linear() -> None:
+    def neg(port: str) -> NftRule:
+        return NftRule(
+            statements=[NftMatch(f"tcp dport != {port}"), NftVerdict("drop")]
+        )
+
+    out = _collapse_chain_rules([neg("22"), neg("80")])
+    assert len(out) == 2  # set_key is None -> non-eligible
+
+
+def test_collapse_two_independent_dimensions_to_fixpoint() -> None:
+    def rule(saddr: str, daddr: str) -> NftRule:
+        return NftRule(
+            statements=[
+                NftMatch(
+                    f"ip saddr {saddr}", set_key="ip saddr", element=saddr
+                ),
+                NftMatch(
+                    f"ip daddr {daddr}", set_key="ip daddr", element=daddr
+                ),
+                NftVerdict("accept"),
+            ]
+        )
+
+    out = _collapse_chain_rules(
+        [rule("a", "c"), rule("a", "d"), rule("b", "c"), rule("b", "d")]
+    )
+    # daddr collapses within each saddr, then saddr collapses across the two.
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "ip saddr { a, b }"
+    assert out[0].statements[1].to_text() == "ip daddr { c, d }"
+
+
+def test_collapse_idempotent() -> None:
+    once = _collapse_chain_rules([_port_rule("22"), _port_rule("80")])
+    assert _collapse_chain_rules(once) == once
+
+
+def test_collapse_meta_l4proto_no_port() -> None:
+    # Two adjacent proto-only rules fold into meta l4proto { tcp, udp }
+    # (the no-port construction site tags element=l4; selector is eligible).
+    def proto_rule(l4: str) -> NftRule:
+        return NftRule(
+            statements=[
+                NftMatch(
+                    f"meta l4proto {l4}", set_key="meta l4proto", element=l4
+                ),
+                NftVerdict("accept"),
+            ]
+        )
+
+    out = _collapse_chain_rules([proto_rule("tcp"), proto_rule("udp")])
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "meta l4proto { tcp, udp }"
+
+
+def test_collapse_second_axis_order_insensitive() -> None:
+    # Siblings with daddr lists accumulated in different orders must still
+    # fold on the saddr axis: equality is by canonical order, not list ==.
+    def rule(saddr: str, daddrs: list[str]) -> NftRule:
+        return NftRule(
+            statements=[
+                NftMatch("ip saddr p", set_key="ip saddr", element=saddr),
+                NftMatch("ip daddr p", set_key="ip daddr", elements=daddrs),
+                NftVerdict("accept"),
+            ]
+        )
+
+    out = _collapse_chain_rules(
+        [
+            rule("10.0.0.1", ["10.0.0.3", "10.0.0.4"]),
+            rule("10.0.0.2", ["10.0.0.4", "10.0.0.3"]),
+        ]
+    )
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "ip saddr { 10.0.0.1, 10.0.0.2 }"
+    assert out[0].statements[1].to_text() == "ip daddr { 10.0.0.3, 10.0.0.4 }"
