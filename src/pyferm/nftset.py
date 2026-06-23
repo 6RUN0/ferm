@@ -186,9 +186,19 @@ def _nft_network_text(
     network: ipaddress.IPv4Network | ipaddress.IPv6Network,
 ) -> str:
     """Spell a network the way nft stores it: a host loses its full prefix."""
-    if network.prefixlen == network.max_prefixlen:
-        return str(network.network_address)
-    return str(network)
+    if network.prefixlen != network.max_prefixlen:
+        return str(network)
+    host = network.network_address
+    # nft stores an IPv4-mapped IPv6 host in dotted ``::ffff:a.b.c.d`` form
+    # (verified on the kernel readback), but ``str(IPv6Address)`` renders it in
+    # hex on CPython before the dotted-notation change shipped -- so building
+    # the dotted form explicitly keeps the canon matching nft's readback on
+    # every interpreter (a NAT64 ``64:ff9b::`` address is NOT ipv4_mapped and
+    # stays hex, also matching nft).
+    mapped = getattr(host, "ipv4_mapped", None)
+    if mapped is not None:
+        return f"::ffff:{mapped}"
+    return str(host)
 
 
 def _collapse_address_range(low: str, high: str) -> str | None:
