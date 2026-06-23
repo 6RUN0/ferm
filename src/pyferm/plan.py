@@ -283,13 +283,22 @@ _NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
 #: map is told apart from a plain anonymous set (no nesting in v1).  The marker
 #: is required because an IPv6 set element carries ``:`` too, so the colon
 #: alone cannot discriminate a vmap.
-_NFT_SET_RE = re.compile(r"(vmap\s*)?\{([^{}]*)\}")
+#: The ``vmap`` marker is anchored on its left (``(?<![\w@])``) so a token
+#: that merely ends in ``vmap`` (an identifier, an ``@foovmap`` set reference)
+#: is not misread as a verdict map on the untrusted kernel-readback side.
+_NFT_SET_RE = re.compile(r"((?<![\w@])vmap\s*)?\{([^{}]*)\}")
 
 
 def _normalize_set_run(match: re.Match[str]) -> str:
     """Rewrite one ``{ ... }`` operand run (set or vmap) to canonical form."""
     if match.group(1) is not None:
         return _normalize_vmap_run(match.group(2))
+    # A ``map { k : v }`` statement (e.g. ``... map { 1.2.3.4 : 0x1 }``)
+    # carries ``" : "`` members but no ``vmap`` marker; it is not a set, so
+    # splitting it on whitespace would mangle it.  An anonymous set never holds
+    # a ``" : "`` member, so leave any such run verbatim (safe on both sides).
+    if " : " in match.group(2):
+        return match.group(0)
     raw = match.group(2).replace(",", " ").split()
     if not raw:
         return "{ }"
@@ -648,7 +657,11 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             elements = [e.strip() for e in rest.split(",") if e.strip()]
             _ensure_ferm_table(tables)
             ps = tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))
-            ps.elements = canonicalize_set_elements(ps.elements + elements)
+            # A named set is not anonymous: nft rejects a contained-interval
+            # overlap rather than absorbing it, so keep every element.
+            ps.elements = canonicalize_set_elements(
+                ps.elements + elements, absorb_contained=False
+            )
             continue
 
         # -- add rule --------------------------------------------------------
@@ -830,7 +843,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                         e.strip() for e in inner.split(",") if e.strip()
                     ]
                     current_set.elements = canonicalize_set_elements(
-                        current_set.elements + members
+                        current_set.elements + members, absorb_contained=False
                     )
             # 'type ...'/'flags ...' lines carry no diff-relevant data; skip.
             continue

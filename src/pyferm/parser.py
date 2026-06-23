@@ -1137,6 +1137,12 @@ class Parser:
         elements = (
             flatten(*value) if isinstance(value, list) else flatten(value)
         )
+        # A lone ``@set $b = ($a)`` keeps the inner SetRef as an element (the
+        # mixing guard permits a single reference); a set nested in a set is
+        # supported by neither backend, so reject it here with a clean message
+        # rather than leaking an internal error / a ``SetRef(...)`` repr later.
+        if any(isinstance(element, SetRef) for element in elements):
+            error("a named set cannot contain another named set")
         if name not in self.scope.globals.vars:
             self.scope.top.vars[name] = SetRef(name, elements)
 

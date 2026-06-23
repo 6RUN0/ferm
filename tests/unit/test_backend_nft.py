@@ -916,7 +916,9 @@ def test_translate_rule_protocol_injection_is_error() -> None:
 
 def test_translate_rule_legit_protocols_render() -> None:
     # A numeric proto and a hyphenated service name are legitimate and must
-    # still render (the S1 guard rejects metacharacters, not these).
+    # still render (the S1 guard rejects metacharacters, not these).  A known
+    # protocol number folds to the name the kernel stores it as (47 -> gre) so
+    # --plan does not show a phantom diff against the readback.
     numeric = translate_rule(
         "ip",
         "filter",
@@ -926,7 +928,7 @@ def test_translate_rule_legit_protocols_render() -> None:
         ),
     )
     assert [s.to_text() for s in numeric.statements] == [
-        "meta l4proto 47",
+        "meta l4proto gre",
         "accept",
     ]
     named = translate_rule(

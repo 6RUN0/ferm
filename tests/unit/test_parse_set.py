@@ -91,6 +91,12 @@ def test_parse_set_rejects_deferred() -> None:
         _set_var("@set $x = (@resolve(localhost));\n", "x")
 
 
+def test_parse_set_rejects_nested_set() -> None:
+    # A set whose lone element is another set is supported by neither backend.
+    with pytest.raises(FermError, match="cannot contain another named set"):
+        _set_var("@set $a = (22 80);\n@set $b = ($a);\n", "b")
+
+
 def test_parse_set_rejects_numeric_name() -> None:
     with pytest.raises(FermError, match=r"set name|identifier"):
         _set_var("@set $22 = (1 2);\n", "22")

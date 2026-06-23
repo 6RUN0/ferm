@@ -31,6 +31,7 @@ from pyferm.nftset import (
     RANK_ADDRESS,
     RANK_INTERVAL,
     classify,
+    l4proto_name,
     sort_set_elements,
     sort_vmap_pairs,
 )
@@ -215,8 +216,9 @@ class NftMatch(NftStatement):
         if self.elements is not None:
             # A collapsed run always carries set_key (the merge pass
             # copies it from the anchor); fail loud rather than emit
-            # a literal "None {...}".
-            assert self.set_key is not None
+            # a literal "None {...}" (an `assert` would vanish under -O).
+            if self.set_key is None:
+                raise internal_error()
             # A non-adjacent repeated operand can merge into one run twice;
             # dedup so the set has no duplicate member.
             unique = list(dict.fromkeys(self.elements))
@@ -395,7 +397,8 @@ def _collect_set_declarations(
                     continue
                 setref = stmt.setref
                 name = _validate_set_name(setref.name)
-                assert stmt.set_selector is not None
+                if stmt.set_selector is None:
+                    raise internal_error()  # structural; -O would void assert
                 selector = stmt.set_selector
                 type_, flags_interval, elements = _set_type_and_elements(
                     domain, selector, setref
@@ -978,7 +981,26 @@ def _nft_l4proto(domain: str, proto: str) -> str:
     """
     if domain == "ip6" and proto in ("icmp", "icmpv6", "ipv6-icmp"):
         return "ipv6-icmp"
-    return proto
+    # A bare protocol NUMBER reads back from the kernel as its canonical nft
+    # name (`meta l4proto 6` -> `tcp`); fold a known number so the desired side
+    # matches the readback and --plan shows no phantom change.
+    return l4proto_name(proto)
+
+
+def _references_empty_named_set(rule: RenderedRule) -> bool:
+    """
+    Whether *rule* matches on a named set that filtered empty for its family.
+
+    A v4-only set on the ip6 pass of a dual-stack rule (or a ``@set $x = ()``)
+    matches nothing.  The caller drops such a rule before translation, exactly
+    as an empty inline address list drops one under the iptables backend and
+    the Perl oracle -- otherwise the family would emit a dangling ``@name``
+    reference plus an empty ``add set`` declaration.
+    """
+    return any(
+        isinstance(o.value, SetRef) and not o.value.elements
+        for o in rule.options
+    )
 
 
 def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
@@ -1321,6 +1343,7 @@ class NftBackend(Backend):
                     [
                         translate_rule(domain, tbl, rule)
                         for rule in table_info.chains[original].rules
+                        if not _references_empty_named_set(rule)
                     ]
                 )
         decls = _collect_set_declarations(domain, rules)

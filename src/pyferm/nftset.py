@@ -57,6 +57,28 @@ _NFT_L4PROTO_NUMBER: dict[str, int] = {
     "mpls-in-ip": 137,
 }
 
+#: Inverse of :data:`_NFT_L4PROTO_NUMBER` (number -> canonical nft name).
+#: nft reads a numeric ``meta l4proto`` operand back as its name (``6`` ->
+#: ``tcp``), so the emitter normalizes a known number to the name the kernel
+#: will store; a number with no well-known name has none and stays numeric.
+_NFT_L4PROTO_NAME: dict[int, str] = {
+    number: name for name, number in _NFT_L4PROTO_NUMBER.items()
+}
+
+
+def l4proto_name(proto: str) -> str:
+    """
+    Map a numeric L4 protocol to the nft name the kernel stores it as.
+
+    ``meta l4proto 6`` reads back from the kernel as ``meta l4proto tcp``, so a
+    desired side keeping the number shows a phantom ``--plan`` change.  A known
+    number folds to its name; a name, a range, or an unknown number is returned
+    verbatim (nft keeps an unknown number numeric).
+    """
+    if proto.isascii() and proto.isdigit():
+        return _NFT_L4PROTO_NAME.get(int(proto), proto)
+    return proto
+
 
 def _classify_address_range(
     low: str, high: str
@@ -267,16 +289,27 @@ def _drop_contained_networks(canonical: list[str]) -> list[str]:
     return kept
 
 
-def canonicalize_set_elements(elements: list[str]) -> list[str]:
+def canonicalize_set_elements(
+    elements: list[str], *, absorb_contained: bool = True
+) -> list[str]:
     """
     Rewrite each element to nft's stored form, dedup, then order canonically.
 
     Two distinct source spellings can collapse to one kernel form
     (``10.0.0.0-10.0.0.255`` and ``10.0.0.0/24``); a set is a union, so the
     kernel readback holds one.  Deduping keeps the desired side from carrying
-    a phantom duplicate the current side can never have.  A contained address
-    (a host inside a prefix, a prefix inside a wider one) is likewise absorbed
-    by the kernel, so :func:`_drop_contained_networks` removes it too.
+    a phantom duplicate the current side can never have.
+
+    ``absorb_contained`` mirrors the kernel's *anonymous*-set absorption (a
+    host inside a prefix, a prefix inside a wider one is silently swallowed)
+    via :func:`_drop_contained_networks`.  A *named* interval set does the
+    opposite: nft rejects the overlap (``conflicting intervals``) rather than
+    absorbing it, so the named-set diff side passes ``absorb_contained=False``
+    to keep both elements.  That matches the emitter (which never absorbs) and
+    lets the ``nft -c`` precheck surface the bad config rather than a false
+    'no changes'.
     """
     canonical = list(dict.fromkeys(canonicalize_element(e) for e in elements))
-    return sort_set_elements(_drop_contained_networks(canonical))
+    if absorb_contained:
+        canonical = _drop_contained_networks(canonical)
+    return sort_set_elements(canonical)

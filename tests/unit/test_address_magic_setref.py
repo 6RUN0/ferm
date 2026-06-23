@@ -77,3 +77,59 @@ def test_single_family_domain_setref_unchanged() -> None:
 
     assert "10.0.0.1" in proc.stdout
     assert "192.168.0.1" in proc.stdout
+
+
+def _run_nft(src: str) -> subprocess.CompletedProcess[str]:
+    """Run pyferm's nft backend in test/noexec/lines mode on stdin."""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--test",
+            "--noexec",
+            "--lines",
+            "-",
+        ],
+        input=src,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def test_nft_v4_only_set_emits_no_ip6_set_or_rule() -> None:
+    """A v4-only dual-stack set must leave the ip6 family with no set/rule.
+
+    Under ``--nft`` the per-family filter empties the set for ip6; the rule
+    references nothing and must be dropped along with the (empty) declaration,
+    matching the iptables backend and the Perl oracle.  A regression would emit
+    a dangling ``@x`` reference plus an empty ``add set ip6 ferm x``.
+    """
+    src = (
+        "@set $x = (10.0.0.1 10.0.0.2);\n"
+        "domain (ip ip6) table filter chain INPUT { saddr $x ACCEPT; }\n"
+    )
+    proc = _run_nft(src)
+    assert proc.returncode == 0, proc.stderr
+
+    ip6_block = proc.stdout[proc.stdout.index("add table ip6 ferm") :]
+    assert "add set ip6 ferm x" not in ip6_block
+    assert "add element ip6 ferm x" not in ip6_block
+    assert "@x" not in ip6_block
+    # The ip family is unaffected: it still carries the set and the rule.
+    assert "add element ip ferm x { 10.0.0.1, 10.0.0.2 }" in proc.stdout
+    assert "add rule ip ferm INPUT ip saddr @x accept" in proc.stdout
+
+
+def test_nft_empty_named_set_drops_rule() -> None:
+    """A globally empty ``@set`` emits no set and no referencing rule."""
+    src = (
+        "@set $e = ();\n"
+        "domain ip table filter chain INPUT { saddr $e ACCEPT; }\n"
+    )
+    proc = _run_nft(src)
+    assert proc.returncode == 0, proc.stderr
+    assert "add set ip ferm e" not in proc.stdout
+    assert "@e" not in proc.stdout

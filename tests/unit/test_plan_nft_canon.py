@@ -255,6 +255,27 @@ def test_set_injectivity_distinct_sets_differ() -> None:
     assert a != b
 
 
+def test_vmap_marker_needs_left_word_boundary() -> None:
+    # A real, space-separated vmap still folds by key order...
+    real = canonicalize_nft_rule(
+        "tcp dport vmap { 80 : accept, 22 : drop }", family="ip"
+    )
+    assert real == "tcp dport vmap { 22 : drop, 80 : accept }"
+    # ...but a token merely ending in 'vmap' is NOT a marker: its braces are
+    # a plain set and get sorted, not mistaken for a verbatim malformed vmap.
+    glued = canonicalize_nft_rule(
+        "tcp dport xvmap { 80, 22 } accept", family="ip"
+    )
+    assert "{ 22, 80 }" in glued
+
+
+def test_map_statement_not_mangled_as_set() -> None:
+    # A 'map { k : v }' carries ' : ' members but is not an anonymous set;
+    # splitting it on whitespace would corrupt it, so it is left verbatim.
+    body = "meta mark set ip saddr map { 1.2.3.4 : 0x1 } accept"
+    assert canonicalize_nft_rule(body, family="ip") == body
+
+
 def test_set_braces_inside_comment_not_reordered() -> None:
     # Braces inside a quoted comment are free text: two rules differing ONLY
     # inside the comment braces must NOT canonicalize equal (a false "no

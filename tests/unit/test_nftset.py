@@ -6,8 +6,38 @@ from pyferm.nftset import (
     canonicalize_element,
     canonicalize_set_elements,
     classify,
+    l4proto_name,
     sort_set_elements,
 )
+
+
+def test_l4proto_name_maps_known_numbers() -> None:
+    # nft reads a numeric meta l4proto operand back as its name.
+    assert l4proto_name("6") == "tcp"
+    assert l4proto_name("17") == "udp"
+    assert l4proto_name("1") == "icmp"
+    assert l4proto_name("58") == "ipv6-icmp"
+
+
+def test_l4proto_name_passes_through_names_and_unknown() -> None:
+    assert l4proto_name("tcp") == "tcp"  # already a name
+    assert l4proto_name("253") == "253"  # no well-known name: stays numeric
+    assert l4proto_name("6-8") == "6-8"  # a range is not a bare number
+
+
+def test_named_set_keeps_contained_member() -> None:
+    # A named interval set is rejected (not absorbed) by nft on overlap, so the
+    # diff side must keep both elements; the precheck surfaces the bad config.
+    assert canonicalize_set_elements(
+        ["10.0.0.0/24", "10.0.0.5"], absorb_contained=False
+    ) == ["10.0.0.0/24", "10.0.0.5"]
+
+
+def test_anonymous_set_absorbs_contained_member() -> None:
+    # The default (anonymous) path mirrors nft's silent absorption.
+    assert canonicalize_set_elements(["10.0.0.0/24", "10.0.0.5"]) == [
+        "10.0.0.0/24"
+    ]
 
 
 def test_ports_sort_numerically_not_lexically() -> None:
