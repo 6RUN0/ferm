@@ -232,6 +232,16 @@ prefix), the plan diff canonicalizes both sides to that stored form, so a
 showing a phantom diff. nft rejects overlapping intervals at apply time
 (`nft -c`), so overlap detection stays the kernel's job (fail-closed).
 
+The fourth slice — **native `reject-with`** under `--nft` — is also
+implemented on `python-port` (not yet released): every `reject-with` value
+that `iptables`/`ip6tables -j REJECT` accepts (all canonical icmp/icmpv6
+types and their short aliases such as `net-unreach`, `tcp-rst`, `no-route`)
+translates to a native nft `reject with icmp[v6] type ...` /
+`reject with tcp reset`. nft spells the iptables name `icmp-proto-unreachable`
+as `prot-unreachable`; the spellings are checked against a live `nft -c`. An
+unknown value stays a translate-time error (fail-closed) rather than being
+silently applied.
+
 #### Deferred debt
 
 The following items are explicitly **out of scope** of the anonymous-set
@@ -243,10 +253,9 @@ slice and recorded here so they are not lost.
   oracle, so changing it is a deliberate behaviour decision, not a bug fix:
   it makes the iptables port-range data path untestable on `nft`-backed
   distros. Track as an oracle-divergence decision.
-- *Maps / concatenations / native `reject-with`* — the rest of the
-  Phase 5 payoff, building on the set primitives above. Nested `{ ... }`
-  operands (concatenations, verdict maps) are deliberately not parsed yet
-  (`no nesting in v1`).
+- *Maps / concatenations* — the rest of the Phase 5 payoff, building on
+  the set primitives above. Nested `{ ... }` operands (concatenations,
+  verdict maps) are deliberately not parsed yet (`no nesting in v1`).
 
 ### Phase 6 — Standard rule library (ready-made patterns)
 

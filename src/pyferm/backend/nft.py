@@ -741,21 +741,52 @@ _VERDICT_TARGET: dict[str, str] = {
     "RETURN": "return",
     "QUEUE": "queue",
 }
-#: iptables reject-with name -> nft reject spec, ip family.
+#: iptables ``reject-with`` canonical name -> nft reject spec, ip family.
+#: Covers every type ``iptables -j REJECT`` accepts; the short aliases
+#: (``net-unreach`` ...) resolve to these keys via :data:`_REJECT_ALIAS`.
+#: nft spells iptables ``icmp-proto-unreachable`` as ``prot-unreachable``
+#: (verified against nft v1.1.6).
 _REJECT_WITH: dict[str, str] = {
-    "icmp-port-unreachable": "reject with icmp type port-unreachable",
     "icmp-net-unreachable": "reject with icmp type net-unreachable",
     "icmp-host-unreachable": "reject with icmp type host-unreachable",
+    "icmp-proto-unreachable": "reject with icmp type prot-unreachable",
+    "icmp-port-unreachable": "reject with icmp type port-unreachable",
+    "icmp-net-prohibited": "reject with icmp type net-prohibited",
+    "icmp-host-prohibited": "reject with icmp type host-prohibited",
     "icmp-admin-prohibited": "reject with icmp type admin-prohibited",
     "tcp-reset": "reject with tcp reset",
 }
-#: ip6 reject-with spellings (icmpv6, plus the family-agnostic tcp reset).
+#: iptables ip-family short alias -> canonical :data:`_REJECT_WITH` key.
+_REJECT_ALIAS: dict[str, str] = {
+    "net-unreach": "icmp-net-unreachable",
+    "host-unreach": "icmp-host-unreachable",
+    "proto-unreach": "icmp-proto-unreachable",
+    "port-unreach": "icmp-port-unreachable",
+    "net-prohib": "icmp-net-prohibited",
+    "host-prohib": "icmp-host-prohibited",
+    "admin-prohib": "icmp-admin-prohibited",
+    "tcp-rst": "tcp-reset",
+}
+#: ip6 ``reject-with`` canonical name -> nft reject spec (icmpv6 types plus
+#: the family-agnostic tcp reset).  Covers every type ``ip6tables -j REJECT``
+#: accepts; short aliases resolve via :data:`_REJECT_ALIAS_IP6`.
 _REJECT_WITH_IP6: dict[str, str] = {
-    "icmp6-port-unreachable": "reject with icmpv6 type port-unreachable",
     "icmp6-no-route": "reject with icmpv6 type no-route",
     "icmp6-adm-prohibited": "reject with icmpv6 type admin-prohibited",
     "icmp6-addr-unreachable": "reject with icmpv6 type addr-unreachable",
+    "icmp6-port-unreachable": "reject with icmpv6 type port-unreachable",
+    "icmp6-policy-fail": "reject with icmpv6 type policy-fail",
+    "icmp6-reject-route": "reject with icmpv6 type reject-route",
     "tcp-reset": "reject with tcp reset",
+}
+#: ip6 short alias -> canonical :data:`_REJECT_WITH_IP6` key.
+_REJECT_ALIAS_IP6: dict[str, str] = {
+    "no-route": "icmp6-no-route",
+    "adm-prohibited": "icmp6-adm-prohibited",
+    "addr-unreach": "icmp6-addr-unreachable",
+    "port-unreach": "icmp6-port-unreachable",
+    "policy-fail": "icmp6-policy-fail",
+    "reject-route": "icmp6-reject-route",
 }
 #: ip4 reject-with names the oracle remaps to icmp6 under ip6
 #: (``iptables.py:82-89``); a user may write the ip4 spelling in an ip6
@@ -800,8 +831,10 @@ def _nat_has_port(domain: str, operand: str) -> bool:
 def _reject_for(domain: str, scalar: str) -> str:
     if domain == "ip6":
         scalar = _ICMP6_REJECT_ALIAS.get(scalar, scalar)
+        scalar = _REJECT_ALIAS_IP6.get(scalar, scalar)
         spec = _REJECT_WITH_IP6.get(scalar)
     else:
+        scalar = _REJECT_ALIAS.get(scalar, scalar)
         spec = _REJECT_WITH.get(scalar)
     if spec is None:
         raise FermError(

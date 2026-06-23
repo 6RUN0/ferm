@@ -1,0 +1,8 @@
+# Native reject-with for ip6: the newer icmpv6 types (policy-fail,
+# reject-route) and a short alias (`port-unreach`) that resolves to the
+# `icmpv6 type port-unreachable` form.
+domain ip6 table filter chain INPUT {
+    proto tcp dport 22 REJECT reject-with icmp6-policy-fail;
+    proto tcp dport 23 REJECT reject-with icmp6-reject-route;
+    proto tcp dport 24 REJECT reject-with port-unreach;
+}

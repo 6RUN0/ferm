@@ -1,0 +1,9 @@
+# Native reject-with for ip: the proto/prohibited icmp types plus a short
+# alias (`net-unreach`).  nft spells iptables `icmp-proto-unreachable` as
+# `prot-unreachable`, and the alias renders the same as its canonical name.
+domain ip table filter chain INPUT {
+    proto tcp dport 22 REJECT reject-with icmp-proto-unreachable;
+    proto tcp dport 23 REJECT reject-with icmp-net-prohibited;
+    proto tcp dport 24 REJECT reject-with icmp-host-prohibited;
+    proto tcp dport 25 REJECT reject-with net-unreach;
+}

@@ -568,6 +568,34 @@ from pyferm.backend.nft import _reject_for  # noqa: E402
             "icmp-port-unreachable",
             "reject with icmpv6 type port-unreachable",
         ),
+        # -- ip: the canonical types Phase 5 added (nft 'prot', not 'proto')
+        (
+            "ip",
+            "icmp-proto-unreachable",
+            "reject with icmp type prot-unreachable",
+        ),
+        ("ip", "icmp-net-prohibited", "reject with icmp type net-prohibited"),
+        (
+            "ip",
+            "icmp-host-prohibited",
+            "reject with icmp type host-prohibited",
+        ),
+        # -- ip6: the canonical types Phase 5 added
+        ("ip6", "icmp6-policy-fail", "reject with icmpv6 type policy-fail"),
+        ("ip6", "icmp6-reject-route", "reject with icmpv6 type reject-route"),
+        # -- ip: short aliases resolve to the same nft spec as the canonical
+        ("ip", "net-unreach", "reject with icmp type net-unreachable"),
+        ("ip", "proto-unreach", "reject with icmp type prot-unreachable"),
+        ("ip", "host-prohib", "reject with icmp type host-prohibited"),
+        ("ip", "admin-prohib", "reject with icmp type admin-prohibited"),
+        ("ip", "tcp-rst", "reject with tcp reset"),
+        # -- ip6: short aliases resolve to the icmpv6 spec
+        ("ip6", "no-route", "reject with icmpv6 type no-route"),
+        ("ip6", "adm-prohibited", "reject with icmpv6 type admin-prohibited"),
+        ("ip6", "addr-unreach", "reject with icmpv6 type addr-unreachable"),
+        ("ip6", "port-unreach", "reject with icmpv6 type port-unreachable"),
+        ("ip6", "policy-fail", "reject with icmpv6 type policy-fail"),
+        ("ip6", "reject-route", "reject with icmpv6 type reject-route"),
     ],
 )
 def test_reject_for_covers_the_full_mapping(
