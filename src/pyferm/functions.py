@@ -458,26 +458,27 @@ class Evaluator:
                         "only a space"
                     )
                 wordlist.append(token)
-                if any(isinstance(item, SetRef) for item in wordlist[:-1]):
-                    error(
-                        "a named set cannot be mixed with other values "
-                        "in one selector"
-                    )
             elif isinstance(token, list):
                 wordlist.extend(token)
-            elif isinstance(token, Deferred):
-                wordlist.append(token)
-            elif isinstance(token, SetRef):
-                if wordlist:
-                    error(
-                        "a named set cannot be mixed with other values "
-                        "in one selector"
-                    )
+            elif isinstance(token, (Deferred, SetRef)):
                 wordlist.append(token)
             else:
                 error("unknown token type")
         if not wordlist and non_empty:
             error("empty array not allowed here")
+        # A named set is opaque to nft and cannot share a selector with any
+        # other value.  This one post-loop invariant covers every element kind
+        # and order; guarding inside the per-branch appends left the list and
+        # Deferred branches unchecked, so a ``($set $list)`` selector slipped
+        # past under --nft (the iptables pre-pass masked it under the default
+        # backend) and unfolded into separate rules.
+        if (
+            any(isinstance(item, SetRef) for item in wordlist)
+            and len(wordlist) != 1
+        ):
+            error(
+                "a named set cannot be mixed with other values in one selector"
+            )
         return wordlist[0] if len(wordlist) == 1 else wordlist
 
     def _run_shell(self, command: str) -> Value:

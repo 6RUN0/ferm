@@ -161,6 +161,45 @@ def test_mixed_literal_before_set_rejected_under_nft() -> None:
     )
 
 
+def test_mixed_set_before_list_rejected_under_nft() -> None:
+    """A set followed by a list variable in one selector is rejected.
+
+    The list branch of ``_read_array`` extends ``wordlist`` without its own
+    prior-SetRef guard; under --nft (where the iptables pre-pass does not run)
+    this silently emitted a ``@name`` rule plus a separate set rule for the
+    leaked list, instead of failing closed.  Regression for that hole.
+    """
+    proc = _run(
+        "@def $hosts = (1.1.1.1 2.2.2.2);\n"
+        "@set $p = (80);\n"
+        "domain ip table filter chain INPUT "
+        "{ proto tcp saddr ($p $hosts) ACCEPT; }\n",
+        extra_flags=["--nft"],
+    )
+    assert proc.returncode != 0, (
+        f"expected rejection of set+list mix under --nft, got:\n{proc.stdout}"
+    )
+    assert "mixed with other values" in proc.stderr, (
+        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
+    )
+
+
+def test_mixed_set_before_list_rejected_under_iptables() -> None:
+    """The same set+list selector is rejected under the default backend too."""
+    proc = _run(
+        "@def $hosts = (1.1.1.1 2.2.2.2);\n"
+        "@set $p = (80);\n"
+        "domain ip table filter chain INPUT "
+        "{ proto tcp saddr ($p $hosts) ACCEPT; }\n",
+    )
+    assert proc.returncode != 0, (
+        "expected rejection of set+list mix under iptables"
+    )
+    assert "mixed with other values" in proc.stderr, (
+        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
+    )
+
+
 def test_nft_does_not_silently_expand_set() -> None:
     """Under --nft the nft backend renders SetRef as a @name reference.
 
