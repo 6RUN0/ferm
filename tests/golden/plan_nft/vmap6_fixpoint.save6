@@ -1,0 +1,6 @@
+table ip6 ferm {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		ip6 daddr vmap { 2001:db8::2 : drop, 2001:db8::1 : accept }
+	}
+}

@@ -1,0 +1,5 @@
+domain ip6 table filter chain INPUT {
+    policy ACCEPT;
+    daddr 2001:db8::1 ACCEPT;
+    daddr 2001:db8::2 DROP;
+}
