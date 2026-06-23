@@ -328,3 +328,41 @@ def test_ipv6_set_not_misread_as_vmap() -> None:
         "ip6 saddr { 2001:db8::2, 2001:db8::1 } accept", family="ip6"
     )
     assert out == "ip6 saddr { 2001:db8::1, 2001:db8::2 } accept"
+
+
+def test_vmap_ipv6_key_not_split_on_colon() -> None:
+    # An IPv6 vmap key carries its own ':'; splitting on the first colon
+    # would mangle it.  The separator is ' : ', so the key survives whole.
+    out = canonicalize_nft_rule(
+        "ip6 daddr vmap { 2001:db8::1 : accept, 2001:db8::2 : drop }",
+        family="ip6",
+    )
+    assert out == (
+        "ip6 daddr vmap { 2001:db8::1 : accept, 2001:db8::2 : drop }"
+    )
+
+
+def test_vmap_ipv6_key_converges_both_orders() -> None:
+    # The same IPv6-keyed vmap in either source order canonicalizes equal, so
+    # an unchanged ruleset does not read as a perpetual plan modification.
+    one = canonicalize_nft_rule(
+        "ip6 daddr vmap { 2001:db8::1 : accept, 2001:db8::2 : drop }",
+        family="ip6",
+    )
+    two = canonicalize_nft_rule(
+        "ip6 daddr vmap { 2001:db8::2 : drop, 2001:db8::1 : accept }",
+        family="ip6",
+    )
+    assert one == two
+
+
+def test_vmap_key_canonicalized_to_kernel_form() -> None:
+    # A long-form IPv6 key from our emitter must converge with nft's
+    # zero-compressed readback form via canonicalize_element on the key.
+    desired = canonicalize_nft_rule(
+        "ip6 daddr vmap { 2001:db8:0:0:0:0:0:1 : accept }", family="ip6"
+    )
+    current = canonicalize_nft_rule(
+        "ip6 daddr vmap { 2001:db8::1 : accept }", family="ip6"
+    )
+    assert desired == current

@@ -24,7 +24,11 @@ import shlex
 from dataclasses import dataclass, field
 
 from pyferm.errors import FermError
-from pyferm.nftset import canonicalize_set_elements, sort_vmap_pairs
+from pyferm.nftset import (
+    canonicalize_element,
+    canonicalize_set_elements,
+    sort_vmap_pairs,
+)
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
 _CHAIN_PARTS_MIN = 2
@@ -296,18 +300,23 @@ def _normalize_vmap_run(inner: str) -> str:
     """
     Rewrite a ``vmap { k : v, ... }`` run to canonical key order.
 
-    Each member splits on its first ``:`` into a key and a (possibly
-    multi-token, e.g. ``jump foo``) verdict; the pairs are reordered by the
-    key's canonical rank so a folded vmap converges on both diff sides.  A
-    member that is not a well-formed pair leaves the whole run verbatim
-    (safe-bias: a noisy diff beats a false 'no changes').
+    Each member splits on the ``" : "`` separator into a key and a (possibly
+    multi-token, e.g. ``jump foo``) verdict; the key is canonicalized to its
+    kernel-readback form and the pairs are reordered by the key's canonical
+    rank so a folded vmap converges on both diff sides.  Splitting on the bare
+    ``:`` would mangle an IPv6 address key (``2001:db8::1``), which carries its
+    own colons; the emitter always renders the separator with surrounding
+    spaces and a verdict (``jump``/``goto`` target) can never contain ``" : "``
+    (the chain-name grammar forbids it), so ``rpartition`` isolates the key
+    cleanly.  A member that is not a well-formed pair leaves the whole run
+    verbatim (safe-bias: a noisy diff beats a false 'no changes').
     """
     pairs: list[tuple[str, str]] = []
     for member in inner.split(","):
-        key, sep, verdict = member.partition(":")
+        key, sep, verdict = member.rpartition(" : ")
         if not sep:
             return "vmap {" + inner + "}"
-        pairs.append((key.strip(), verdict.strip()))
+        pairs.append((canonicalize_element(key.strip()), verdict.strip()))
     rendered = ", ".join(f"{k} : {v}" for k, v in sort_vmap_pairs(pairs))
     return "vmap { " + rendered + " }"
 
