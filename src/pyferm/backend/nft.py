@@ -34,7 +34,7 @@ from pyferm.rules import (
     is_netfilter_builtin_chain,
 )
 from pyferm.streams import BYTE_ENCODING
-from pyferm.values import Multi, Negated, Params, PreNegated, Value
+from pyferm.values import Multi, Negated, Params, PreNegated, SetRef, Value
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -84,6 +84,10 @@ _NFT_UNQUOTABLE_RE = re.compile(r'["\\\x00-\x1f]')
 _NFT_RATE_RE = re.compile(r"\A\d+(?:/[A-Za-z]+)?\Z")
 #: An nft chain identifier (bare word; nft has no quoted-chain-name form).
 _NFT_CHAIN_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
+#: An nft set/map identifier: must start with a letter, then word chars only.
+_NFT_SET_NAME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
+#: First rejected name length (empirically confirmed: 255 accepted, 256 not).
+_NFT_NAME_MAXLEN: int = 256
 #: ct state keywords nft accepts for ``ct state`` (the ferm ``state`` module
 #: maps to iptables ``--state``, whose vocabulary is this set).
 _CT_STATES: frozenset[str] = frozenset(
@@ -96,6 +100,13 @@ def _validate_address(scalar: str) -> str:
     if not _NFT_ADDR_RE.match(scalar):
         raise FermError(f"invalid address '{scalar}' for nft backend")
     return scalar
+
+
+def _validate_set_name(name: str) -> str:
+    """Return *name* if it is a safe nft set identifier, else error."""
+    if not _NFT_SET_NAME_RE.match(name) or len(name) >= _NFT_NAME_MAXLEN:
+        raise FermError(f"invalid set name '{name}' for nft backend")
+    return name
 
 
 def _validate_port(scalar: str) -> str:
@@ -190,6 +201,8 @@ class NftMatch(NftStatement):
     set_key: str | None = None
     element: str | None = None
     elements: list[str] | None = None
+    setref: SetRef | None = None
+    set_selector: str | None = None
 
     def to_text(self) -> str:
         """Render the match, as an anonymous set once a run is collapsed."""
@@ -582,6 +595,27 @@ def translate_match(
     return _translate_match_parts(domain, option, protocol)[0]
 
 
+def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
+    """
+    Return the nft selector left of a set reference (@name).
+
+    Mirrors the key computation in :func:`_translate_match_parts` but without
+    an operand.  Used in :func:`translate_rule` when the option value is a
+    :class:`~pyferm.values.SetRef`.
+    """
+    if name in _ADDR_KEYWORD:
+        return f"{domain} {_ADDR_KEYWORD[name]}"
+    if name in _IFACE_KEYWORD:
+        return _IFACE_KEYWORD[name]
+    if name in _PORT_KEYWORD:
+        if protocol not in _PORT_PROTOCOLS:
+            raise FermError(
+                f"option '{name}' needs a tcp/udp protocol for the nft backend"
+            )
+        return f"{protocol} {_PORT_KEYWORD[name]}"
+    raise FermError(f"option '{name}' cannot reference a named set")
+
+
 # ---------------------------------------------------------------------------
 # Task 9: build_verdict (decision 8)
 # ---------------------------------------------------------------------------
@@ -798,6 +832,12 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     # both implied by the rule carrying a port-bearing protocol (decision C1).
     has_transport = protocol in _PORT_PROTOCOLS
 
+    # Guard: at most one SetRef option per rule (a second would need two
+    # named-set declarations sharing one rule, which is not supported yet).
+    setref_count = sum(isinstance(o.value, SetRef) for o in rule.options)
+    if setref_count > 1:
+        raise FermError("at most one named set per rule in this version")
+
     # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
     comment: str | None = None
@@ -831,6 +871,14 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
             continue
         if name in _TARGET_COMPANIONS:
             companions[name] = option
+            continue
+        if isinstance(option.value, SetRef):
+            setref = option.value
+            key = _setref_selector(domain, name, protocol)
+            expr = f"{key} @{_validate_set_name(setref.name)}"
+            matches.append(
+                NftMatch(expr, set_key=None, setref=setref, set_selector=key)
+            )
             continue
         expr, set_key, element = _translate_match_parts(
             domain, option, protocol
