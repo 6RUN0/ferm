@@ -1,0 +1,2 @@
+@set $r = (2001:db8::1-2001:db8::ff 2001:db8:1::/48);
+domain ip6 table filter chain INPUT { daddr $r DROP; }

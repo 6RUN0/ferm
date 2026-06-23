@@ -1,0 +1,2 @@
+@set $r = (10.0.0.0-10.0.0.255 192.168.0.0/16 172.16.0.5);
+domain ip table filter chain INPUT { source $r ACCEPT; }

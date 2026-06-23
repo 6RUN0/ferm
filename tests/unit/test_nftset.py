@@ -1,4 +1,10 @@
-from pyferm.nftset import sort_set_elements
+from pyferm.nftset import (
+    RANK_ADDRESS,
+    RANK_INTERVAL,
+    RANK_UNPARSABLE,
+    classify,
+    sort_set_elements,
+)
 
 
 def test_ports_sort_numerically_not_lexically() -> None:
@@ -78,3 +84,58 @@ def test_host_address_with_host_bits_sorts_as_address() -> None:
     assert result[0] == "80"
     assert result[1] == "10.0.0.1/8"
     assert result[2] == "10.0.0.5"
+
+
+def test_ipv4_address_range_classifies_as_interval() -> None:
+    # An address range a-b (both ends host addresses) is an interval, not an
+    # unparsable token: nft needs `flags interval` to hold it, and the order
+    # must be stable against a kernel readback.
+    rank, _ = classify("10.0.0.0-10.0.0.255")
+    assert rank == RANK_INTERVAL
+
+
+def test_ipv6_address_range_classifies_as_interval() -> None:
+    rank, _ = classify("2001:db8::1-2001:db8::ff")
+    assert rank == RANK_INTERVAL
+
+
+def test_address_range_sorts_before_cidr_and_after_number() -> None:
+    # RANK ordering: number (0) < interval (1) < address/CIDR (2).  A range
+    # sorts before a bare CIDR even when its low address is numerically
+    # larger, because the rank dominates the key.
+    result = sort_set_elements(
+        ["192.168.0.0/16", "10.0.0.0-10.0.0.255", "10.0.0.5"]
+    )
+    assert result == ["10.0.0.0-10.0.0.255", "10.0.0.5", "192.168.0.0/16"]
+
+
+def test_address_ranges_sort_by_low_then_high() -> None:
+    result = sort_set_elements(
+        ["10.0.1.0-10.0.1.255", "10.0.0.0-10.0.0.255", "10.0.0.0-10.0.0.10"]
+    )
+    assert result == [
+        "10.0.0.0-10.0.0.10",
+        "10.0.0.0-10.0.0.255",
+        "10.0.1.0-10.0.1.255",
+    ]
+
+
+def test_cross_version_range_is_unparsable() -> None:
+    # A range whose ends are different families is not a valid nft interval;
+    # it must not masquerade as one (fail-closed to the unparsable bucket).
+    rank, _ = classify("10.0.0.0-2001:db8::1")
+    assert rank == RANK_UNPARSABLE
+
+
+def test_malformed_address_range_is_unparsable() -> None:
+    # A non-address high end drops the whole token to the unparsable bucket
+    # rather than crashing the sort (runs on unvalidated kernel-side text).
+    assert classify("10.0.0.0-nonsense")[0] == RANK_UNPARSABLE
+    assert classify("10.0.0.0-")[0] == RANK_UNPARSABLE
+    assert classify("-10.0.0.0")[0] == RANK_UNPARSABLE
+
+
+def test_bare_cidr_stays_address_not_interval() -> None:
+    # A CIDR has no dash, so it remains RANK_ADDRESS; the set-level
+    # flags-interval detection handles CIDR separately via the "/" check.
+    assert classify("192.168.0.0/16")[0] == RANK_ADDRESS

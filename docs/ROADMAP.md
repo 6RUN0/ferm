@@ -221,6 +221,15 @@ blocks so set additions, element-set changes, and removals each surface as a
 the `iptables` backend keeps expanding the values inline at parse time, so a
 named set is a no-op there.
 
+The third slice — **interval sets** under `--nft` — is also implemented on
+`python-port` (not yet released): a set element written as an address range
+(`10.0.0.0-10.0.0.255`, IPv6 ranges) or a CIDR prefix marks the set
+`flags interval`, alongside the numeric port ranges (`1024-2048`) already
+supported. Range and prefix elements share the one canonical order with host
+addresses, so a `ferm --plan --nft` over an interval set converges rather than
+showing a phantom diff. nft rejects overlapping intervals at apply time
+(`nft -c`), so overlap detection stays the kernel's job (fail-closed).
+
 #### Deferred debt
 
 The following items are explicitly **out of scope** of the anonymous-set
@@ -240,7 +249,7 @@ slice and recorded here so they are not lost.
   oracle, so changing it is a deliberate behaviour decision, not a bug fix:
   it makes the iptables port-range data path untestable on `nft`-backed
   distros. Track as an oracle-divergence decision.
-- *Maps / intervals / concatenations / native `reject-with`* — the rest of the
+- *Maps / concatenations / native `reject-with`* — the rest of the
   Phase 5 payoff, building on the set primitives above. Nested `{ ... }`
   operands (concatenations, verdict maps) are deliberately not parsed yet
   (`no nesting in v1`).
