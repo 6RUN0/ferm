@@ -254,6 +254,11 @@ the key's canonical rank (nft stores a vmap key-ordered, like a set), so
 `ferm --plan --nft` over an unchanged ruleset converges. Multi-match rules and
 mixing a folded set with singles are deliberately deferred.
 
+With anonymous, named, and interval sets, verdict maps, and native
+`reject-with` shipped, Phase 5's native-expressiveness payoff is substantively
+complete. The two map/concatenation items from the phase header are the
+deliberate, documented exceptions recorded below.
+
 #### Deferred debt
 
 The following items are explicitly **out of scope** of the anonymous-set
@@ -265,11 +270,18 @@ slice and recorded here so they are not lost.
   oracle, so changing it is a deliberate behaviour decision, not a bug fix:
   it makes the iptables port-range data path untestable on `nft`-backed
   distros. Track as an oracle-divergence decision.
-- *Concatenations / named maps* — the rest of the Phase 5 payoff, building
-  on the set and vmap primitives above. Composite-key operands
-  (`ip saddr . tcp dport { ... }`) and named maps are deliberately not folded
-  or parsed yet; vmap folding is limited to single-key runs, and nested
-  `{ ... }` plan-side parsing stays `no nesting in v1`.
+- *Concatenation folding* — a composite-key set (`ip saddr . tcp dport
+  { 1.2.3.4 . 22, ... }`) would fold adjacent rules that co-vary across two
+  selectors at once (the "diagonal" case the cartesian set collapse leaves
+  linear). It is semantically safe and nft-expressible (verified on a live
+  `nft`), but deferred as a low-value optimization: ferm configs are written as
+  per-service rule lists, so the diagonal pattern rarely arises, and the fold
+  adds a parse/canon surface for little real-world gain. Revisit if a concrete
+  config motivates it.
+- *Named maps* — not applicable: ferm's language has no map construct, so the
+  backend has nothing to emit as a named map, and ferm owns (flush-replaces)
+  its own table, so a kernel readback never contains one. Recorded so the
+  "maps" item from the Phase 5 header is explicitly accounted for, not lost.
 
 ### Phase 6 — Standard rule library (ready-made patterns)
 
