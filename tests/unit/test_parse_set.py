@@ -38,7 +38,7 @@ def _run_nft(src: str) -> subprocess.CompletedProcess[str]:
         ],
         input=src,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -121,7 +121,7 @@ def test_bareword_set_in_mod_set_still_compiles() -> None:
         [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
         input=_IPSET_SRC,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     assert proc.returncode == 0, (

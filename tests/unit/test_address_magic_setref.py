@@ -10,7 +10,7 @@ def _run_ferm(src: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
         input=src,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
 
