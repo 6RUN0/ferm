@@ -541,12 +541,13 @@ class Parser:
         """
         Replace SetRef option values with their element lists.
 
-        Runs only under the default iptables backend, before ``mkrules2``, so
-        the standard ``unfold_rule`` produces the cartesian product with the
-        same code that expands ``dport (22 80)``.  A SetRef mixed with other
-        values in one selector is an error: expanding it would leak a bare
-        SetRef through the unfold path into ``shell_escape``.  Idempotent
-        across the per-(table, chain) calls of ``mkrules``.
+        Runs only under the default iptables backend.  Called once per
+        completed rule, before the inner table/chain loop hands the rule to
+        ``mkrules2``, so the standard ``unfold_rule`` produces the cartesian
+        product with the same code that expands ``dport (22 80)``.  A SetRef
+        mixed with other values in one selector is an error: expanding it
+        would leak a bare SetRef through the unfold path into
+        ``shell_escape``.
         """
         if sum(isinstance(o.value, SetRef) for o in rule.options) > 1:
             error("at most one named set per rule in this version")

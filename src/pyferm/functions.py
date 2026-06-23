@@ -456,15 +456,22 @@ class Evaluator:
                         "only a space"
                     )
                 wordlist.append(token)
+                if any(isinstance(item, SetRef) for item in wordlist[:-1]):
+                    error(
+                        "a named set cannot be mixed with other values "
+                        "in one selector"
+                    )
             elif isinstance(token, list):
                 wordlist.extend(token)
             elif isinstance(token, Deferred):
                 wordlist.append(token)
             elif isinstance(token, SetRef):
-                error(
-                    "a named set cannot be mixed with other values "
-                    "in one selector"
-                )
+                if wordlist:
+                    error(
+                        "a named set cannot be mixed with other values "
+                        "in one selector"
+                    )
+                wordlist.append(token)
             else:
                 error("unknown token type")
         if not wordlist and non_empty:
