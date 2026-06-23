@@ -341,6 +341,63 @@ def test_translate_match_uncovered_is_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# translate_match structured split (_translate_match_parts)
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import (  # noqa: E402
+    _SET_ELIGIBLE_SELECTORS,
+    _translate_match_parts,
+)
+
+
+def test_match_parts_port_is_eligible() -> None:
+    expr, key, element = _translate_match_parts(
+        "ip", _opt("dport", "22"), "tcp"
+    )
+    assert (expr, key, element) == ("tcp dport 22", "tcp dport", "22")
+
+
+def test_match_parts_address_is_eligible() -> None:
+    expr, key, element = _translate_match_parts(
+        "ip", _opt("source", "10.0.0.1"), None
+    )
+    assert (expr, key, element) == (
+        "ip saddr 10.0.0.1",
+        "ip saddr",
+        "10.0.0.1",
+    )
+
+
+def test_match_parts_negated_is_not_eligible() -> None:
+    expr, key, element = _translate_match_parts(
+        "ip", _opt("dport", Negated("23")), "tcp"
+    )
+    assert (key, element) == (None, None)
+    assert expr == "tcp dport != 23"
+
+
+def test_match_parts_state_is_not_eligible() -> None:
+    _expr, key, element = _translate_match_parts(
+        "ip", _opt("state", "NEW", module="state"), None
+    )
+    assert (key, element) == (None, None)
+
+
+def test_match_parts_expr_matches_translate_match_wrapper() -> None:
+    # The wrapper must never drift from the parts' expr.
+    opt = _opt("dport", "1024-2048")
+    assert _translate_match_parts("ip", opt, "tcp")[0] == translate_match(
+        "ip", opt, "tcp"
+    )
+
+
+def test_set_eligible_selectors_are_documented() -> None:
+    assert "tcp dport" in _SET_ELIGIBLE_SELECTORS
+    assert "ip saddr" in _SET_ELIGIBLE_SELECTORS
+    assert "meta l4proto" in _SET_ELIGIBLE_SELECTORS
+    assert "ip protocol" not in _SET_ELIGIBLE_SELECTORS  # never emitted
+
+
+# ---------------------------------------------------------------------------
 # Task 9: build_verdict
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import build_verdict  # noqa: E402

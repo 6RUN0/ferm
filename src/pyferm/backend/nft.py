@@ -496,6 +496,30 @@ _IFACE_KEYWORD: dict[str, str] = {
 _PORT_KEYWORD: dict[str, str] = {"sport": "sport", "dport": "dport"}
 #: protocols that admit a port match (mirrors PORT_PROTOCOLS, modules.py).
 _PORT_PROTOCOLS: tuple[str, ...] = ("tcp", "udp", "udplite", "dccp", "sctp")
+#: Selectors that may carry an anonymous set (the collapse allow-list).
+#: ``ip protocol`` is intentionally absent: the backend emits protocol as
+#: ``meta l4proto``, so a separate ``ip protocol`` selector is never produced.
+_SET_ELIGIBLE_SELECTORS: frozenset[str] = frozenset(
+    {
+        "tcp dport",
+        "tcp sport",
+        "udp dport",
+        "udp sport",
+        "udplite dport",
+        "udplite sport",
+        "dccp dport",
+        "dccp sport",
+        "sctp dport",
+        "sctp sport",
+        "ip saddr",
+        "ip daddr",
+        "ip6 saddr",
+        "ip6 daddr",
+        "meta l4proto",
+        "iifname",
+        "oifname",
+    }
+)
 
 
 def _op(neg: bool) -> str:
@@ -503,45 +527,59 @@ def _op(neg: bool) -> str:
     return "!= " if neg else ""
 
 
-def translate_match(
+def _translate_match_parts(
     domain: str, option: RenderedOption, protocol: str | None
-) -> str:
+) -> tuple[str, str | None, str | None]:
     """
-    Translate one match option to an nft expression (decision 8).
+    Translate one match option to (expr, set_key, element).
 
-    Keyed on the CANONICAL ``RenderedOption.name`` (``source``/
-    ``in-interface``/...), not the ferm alias.  ``protocol`` is the rule's
-    realized l4 protocol (from the preceding ``protocol`` option), needed
-    because a port match carries ``module=None``.  An uncovered match -> a
-    plain ferm error (design §3).
+    ``set_key``/``element`` are non-None only for an eligible, non-negated
+    match; the element string is the SAME operand baked into ``expr`` (single
+    source of truth -- no reverse-parsing).
     """
     name = option.name
     scalar, neg = unwrap_value(option.value)
     if name in _ADDR_KEYWORD:
         addr = _validate_address(scalar)
-        return f"{domain} {_ADDR_KEYWORD[name]} {_op(neg)}{addr}"
+        key = f"{domain} {_ADDR_KEYWORD[name]}"
+        expr = f"{key} {_op(neg)}{addr}"
+        return (expr, None, None) if neg else (expr, key, addr)
     if name in _IFACE_KEYWORD:
         # An interface is an nft quoted string (it may carry a `*` wildcard,
         # preserved inside the quotes), so escape rather than validate.
-        return f"{_IFACE_KEYWORD[name]} {_op(neg)}{_nft_quote_string(scalar)}"
+        quoted = _nft_quote_string(scalar)
+        key = _IFACE_KEYWORD[name]
+        expr = f"{key} {_op(neg)}{quoted}"
+        # The element is the quoted form ('"eth0"'): a folded set renders
+        # iifname { "eth0", "eth1" } which is valid nft syntax.
+        return (expr, None, None) if neg else (expr, key, quoted)
     if name in _PORT_KEYWORD:
         if protocol not in _PORT_PROTOCOLS:
             raise FermError(
                 f"option '{name}' needs a tcp/udp protocol for the nft backend"
             )
         port = _validate_port(scalar)
-        return f"{protocol} {_PORT_KEYWORD[name]} {_op(neg)}{port}"
+        key = f"{protocol} {_PORT_KEYWORD[name]}"
+        expr = f"{key} {_op(neg)}{port}"
+        return (expr, None, None) if neg else (expr, key, port)
     if name == "state":
         members = scalar.lower().split(",")
         for member in members:
             if member not in _CT_STATES:
                 raise FermError(f"unknown ct state '{member}' for nft backend")
-        return f"ct state {_op(neg)}{','.join(members)}"
+        return (f"ct state {_op(neg)}{','.join(members)}", None, None)
     if name == "limit":
         if not _NFT_RATE_RE.match(scalar):
             raise FermError(f"invalid rate '{scalar}' for nft backend")
-        return f"limit rate {scalar}"
+        return (f"limit rate {scalar}", None, None)
     raise FermError(f"option '{name}' not yet supported by nft backend")
+
+
+def translate_match(
+    domain: str, option: RenderedOption, protocol: str | None
+) -> str:
+    """Translate one match option to an nft expression."""
+    return _translate_match_parts(domain, option, protocol)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -779,7 +817,13 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
             scalar = _validate_protocol(scalar)
             if not has_port:  # a port match already implies l4proto
                 l4 = _nft_l4proto(domain, scalar)
-                matches.append(NftMatch(f"meta l4proto {_op(neg)}{l4}"))
+                expr = f"meta l4proto {_op(neg)}{l4}"
+                if neg:
+                    matches.append(NftMatch(expr))
+                else:
+                    matches.append(
+                        NftMatch(expr, set_key="meta l4proto", element=l4)
+                    )
             continue
         if kind == "target":
             target_value, _ = unwrap_value(option.value)
@@ -788,7 +832,10 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
         if name in _TARGET_COMPANIONS:
             companions[name] = option
             continue
-        matches.append(NftMatch(translate_match(domain, option, protocol)))
+        expr, set_key, element = _translate_match_parts(
+            domain, option, protocol
+        )
+        matches.append(NftMatch(expr, set_key=set_key, element=element))
 
     statements: list[NftStatement] = list(matches)
     if target_value is not None:
