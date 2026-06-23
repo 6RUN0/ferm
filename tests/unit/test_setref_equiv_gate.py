@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -131,7 +132,15 @@ def test_named_set_expands_to_reference_ruleset(stem: str, mode: str) -> None:
     assert rewritten.count(f"${_SET_NAME}") == 2  # the @set decl + the ref
     assert f"@set ${_SET_NAME} = ({' '.join(elements)});" in rewritten
 
-    tmp = _REFERENCE_ROOT / "test" / "_equiv_gate_tmp.ferm"
+    # A unique temp name per run: the file must sit under reference/test/
+    # (pyferm runs with cwd=reference and a relative path), so a fixed name
+    # would race across concurrent xdist workers (FileNotFoundError on the
+    # shared unlink).  mkstemp guarantees a distinct path per process.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix="_equiv_gate_", suffix=".ferm", dir=_REFERENCE_ROOT / "test"
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     tmp.write_text(rewritten, encoding="utf-8")
     try:
         proc = subprocess.run(  # fixed argv, no shell
@@ -151,7 +160,7 @@ def test_named_set_expands_to_reference_ruleset(stem: str, mode: str) -> None:
             cwd=_REFERENCE_ROOT,
         )
     finally:
-        tmp.unlink()
+        tmp.unlink(missing_ok=True)
 
     assert proc.returncode == 0, proc.stderr
     generated = result_sed(sort_output(proc.stdout))
