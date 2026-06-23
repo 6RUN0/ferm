@@ -843,6 +843,16 @@ class DesuetChain:
 
 
 @dataclass
+class SetChange:
+    """A named set added, removed, or with changed elements."""
+
+    table: str
+    name: str
+    kind: str  # "add" | "remove" | "modify"
+    elements: list[str]
+
+
+@dataclass
 class PlanDiff:
     """The diff for one family: what applying the config would change."""
 
@@ -855,6 +865,7 @@ class PlanDiff:
         default_factory=list[ForeignChain]
     )
     desuet_chains: list[DesuetChain] = field(default_factory=list[DesuetChain])
+    set_changes: list[SetChange] = field(default_factory=list[SetChange])
     noflush: bool = False
     current_empty: bool = False
 
@@ -866,6 +877,7 @@ class PlanDiff:
             or self.rules_removed
             or self.foreign_chains
             or self.desuet_chains
+            or self.set_changes
         )
 
 
@@ -976,6 +988,28 @@ def diff_tables(
                     RuleChange(table_name, chain_name, r) for r in removed
                 )
 
+        # named set diff: sets added, modified, or removed
+        current_sets = current_table.sets if current_table else {}
+        for set_name, desired_set in desired_table.sets.items():
+            current_set = current_sets.get(set_name)
+            if current_set is None:
+                diff.set_changes.append(
+                    SetChange(
+                        table_name, set_name, "add", desired_set.elements
+                    )
+                )
+            elif current_set.elements != desired_set.elements:
+                diff.set_changes.append(
+                    SetChange(
+                        table_name, set_name, "modify", desired_set.elements
+                    )
+                )
+        for set_name in current_sets:
+            if set_name not in desired_table.sets:
+                diff.set_changes.append(
+                    SetChange(table_name, set_name, "remove", [])
+                )
+
         # foreign chains: user chains in the managed table absent from config
         for chain_name, current_chain in current_chains.items():
             if chain_name in desired_table.chains:
@@ -1010,6 +1044,10 @@ def _summary_line(diff: PlanDiff) -> str:
     if chains_removed:
         chain_word = "chain" if chains_removed == 1 else "chains"
         summary += f", {chains_removed} {chain_word} removed"
+    sets_changed = len(diff.set_changes)
+    if sets_changed:
+        set_word = "set" if sets_changed == 1 else "sets"
+        summary += f", {sets_changed} {set_word} changed"
     return summary
 
 
@@ -1067,6 +1105,15 @@ def render_structured(plan: Plan) -> str:
                 key=lambda dchain: (dchain.table, dchain.chain),
             )
         )
+        for sc in sorted(diff.set_changes, key=lambda s: (s.table, s.name)):
+            if sc.kind == "add":
+                elems = ", ".join(sc.elements)
+                lines.append(f"  + set {sc.table}/{sc.name} {{ {elems} }}")
+            elif sc.kind == "remove":
+                lines.append(f"  - set {sc.table}/{sc.name}")
+            else:
+                elems = ", ".join(sc.elements)
+                lines.append(f"  ~ set {sc.table}/{sc.name} {{ {elems} }}")
         lines.append(f"  {_summary_line(diff)}")
 
     return "\n".join(lines) + "\n"
@@ -1090,6 +1137,7 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
         | {r.table for r in diff.rules_added}
         | {f.table for f in diff.foreign_chains}
         | {d.table for d in diff.desuet_chains}
+        | {s.table for s in diff.set_changes}
     )
     current: list[str] = []
     desired: list[str] = []
@@ -1130,6 +1178,15 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
                 key=lambda r: r.chain,
             )
         )
+        for sc in sorted(
+            (s for s in diff.set_changes if s.table == table),
+            key=lambda s: s.name,
+        ):
+            if sc.kind in ("add", "modify"):
+                elems = ", ".join(sc.elements)
+                desired.append(f"add set {table} {sc.name} {{ {elems} }}")
+            if sc.kind in ("remove", "modify"):
+                current.append(f"add set {table} {sc.name}")
     return current, desired
 
 
