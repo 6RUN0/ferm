@@ -399,7 +399,7 @@ def serialize_table(
 
     Emits ``add table`` (idempotent), then ``flush table`` unless
     ``noflush`` (the ``--noflush`` decision lives HERE, not in the
-    applier -- design §7), then every named-set declaration, then every
+    applier), then every named-set declaration, then every
     chain, then every rule.  ``chains`` is pre-sorted by the caller for
     deterministic golden output; ``decls`` is emitted by sorted name.
     """
