@@ -1,3 +1,3 @@
 family arp
-  + tcp dport 22 accept
+  + accept
   Plan: 1 to add, 0 to remove, 0 policy changes

@@ -423,6 +423,52 @@ def _select_backend(options: Options) -> Backend:
     return NftBackend() if options.nft else IptablesBackend()
 
 
+def _nft_check_save(path: str, save: str) -> None:
+    """
+    Validate a rendered nft script with ``nft -c -f -`` (installs nothing).
+
+    The ``-c`` pre-check is a netlink validation (``--check``); its stderr is
+    captured so a rejected ruleset surfaces nft's own diagnostic instead of a
+    generic failure.  Raises :class:`FermError` if the tool cannot be run or
+    the ruleset is rejected.  Shared by the apply path (before a real
+    ``nft -f -``) and ``--plan`` (so an un-appliable plan is reported as an
+    error instead of advertised as actionable).
+    """
+    # the path comes from find_tool; no shell is used.  latin-1:
+    # one byte per char, reproducing the config bytes exactly.
+    payload = save.encode(BYTE_ENCODING)
+    try:
+        check = subprocess.run(
+            [path, "-c", "-f", "-"],
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise FermError(f"Failed to run {path}: {exc}") from exc
+    if check.returncode != 0:
+        # backslashreplace: nft's stderr is a human-facing diagnostic.
+        detail = check.stderr.decode(
+            BYTE_ENCODING, HUMAN_STREAM_ERRORS
+        ).strip()
+        raise FermError(detail or f"Failed to run {path} -c")
+
+
+def _validate_desired_nft(options: Options, path: str, save: str) -> None:
+    """
+    Pre-validate the desired nft script under ``--plan`` unless in test mode.
+
+    ``--test`` substitutes a fake nft path and must never spawn the real tool,
+    so the gate is a no-op there (the golden plan suite stays hermetic).  In a
+    real run the desired ruleset is checked with ``nft -c`` so an un-appliable
+    plan (e.g. an ``arp`` chain carrying a ``tcp`` match) aborts with nft's
+    diagnostic rather than being presented as an actionable change.
+    """
+    if options.test:
+        return
+    _nft_check_save(path, save)
+
+
 def _make_nft_restore(options: Options) -> RestoreDomain:
     """
     Build the ``nft -f -`` applier injected when ``--nft`` is set (decision 1).
@@ -432,37 +478,18 @@ def _make_nft_restore(options: Options) -> RestoreDomain:
     trigger) if the tool cannot be run or either step exits non-zero -- the
     nft analogue of :func:`pyferm.backend.iptables.restore_domain`.
 
-    The ``-c`` pre-check is a netlink validation that installs nothing
-    (``--check``).  The design kept it out of the ``--noexec`` path because it
-    needs ``CAP_NET_ADMIN`` even on a valid ruleset; here we are about to apply
-    for real, so that privilege is already in hand and the check is free.  Its
-    stderr is captured so a rejected ruleset surfaces nft's own diagnostic
-    *before* any kernel change, instead of the generic apply failure.
+    The design kept the ``-c`` pre-check out of the ``--noexec`` path because
+    it needs ``CAP_NET_ADMIN`` even on a valid ruleset; here we are about to
+    apply for real, so that privilege is already in hand and the check is free.
     """
     del options  # parity with the iptables wrapper; nft adds no flags
 
     def restore(domain_info: DomainInfo, save: str) -> None:
         path = domain_info.tools[TOOL_NFT]
+        _nft_check_save(path, save)
         # the path comes from find_tool; no shell is used.  latin-1:
         # one byte per char, reproducing the config bytes exactly.
         payload = save.encode(BYTE_ENCODING)
-
-        try:
-            check = subprocess.run(
-                [path, "-c", "-f", "-"],
-                input=payload,
-                capture_output=True,
-                check=False,
-            )
-        except OSError as exc:
-            raise FermError(f"Failed to run {path}: {exc}") from exc
-        if check.returncode != 0:
-            # backslashreplace: nft's stderr is a human-facing diagnostic.
-            detail = check.stderr.decode(
-                BYTE_ENCODING, HUMAN_STREAM_ERRORS
-            ).strip()
-            raise FermError(detail or f"Failed to run {path} -c")
-
         try:
             completed = subprocess.run(
                 [path, "-f", "-"],
@@ -647,6 +674,9 @@ def _run_plan(
                 desired_save = rendered.save
                 if desired_save is None:
                     raise internal_error("nft render returned no save text")
+                _validate_desired_nft(
+                    options, domain_info.tools[TOOL_NFT], desired_save
+                )
                 desired = parse_nft_script(desired_save)
                 plan.families[domain] = diff_tables(
                     current, desired, noflush=False

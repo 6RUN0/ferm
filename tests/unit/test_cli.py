@@ -842,6 +842,50 @@ def test_make_nft_restore_apply_failure_after_check_raises(
     ]
 
 
+def test_validate_desired_nft_skips_under_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --test substitutes a fake nft path and must never spawn the real tool;
+    # the --plan pre-validation is therefore a no-op in test mode.
+    from pyferm.cli import _validate_desired_nft
+
+    recorder = _RunRecorder(returncode=0)
+    monkeypatch.setattr(subprocess, "run", recorder)
+    _validate_desired_nft(Options(nft=True, test=True), "nft", "add table\n")
+    assert recorder.calls == []
+
+
+def test_validate_desired_nft_runs_check_when_not_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # In a real run the desired script is validated with `nft -c -f -` before
+    # the plan is trusted -- an un-appliable ruleset must not be advertised.
+    from pyferm.cli import _validate_desired_nft
+
+    recorder = _RunRecorder(returncode=0)
+    monkeypatch.setattr(subprocess, "run", recorder)
+    _validate_desired_nft(Options(nft=True), "nft", "add table ip ferm\n")
+    assert [call[0][0] for call in recorder.calls] == [
+        ["nft", "-c", "-f", "-"]
+    ]
+
+
+def test_validate_desired_nft_rejected_surfaces_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A desired ruleset nft rejects (e.g. arp+tcp) aborts the plan with nft's
+    # own diagnostic, so an un-appliable plan exits 1 instead of exit 2.
+    from pyferm.cli import _validate_desired_nft
+
+    recorder = _RunRecorder(
+        returncode=1,
+        stderr=b"Error: conflicting protocols specified: arp vs. tcp\n",
+    )
+    monkeypatch.setattr(subprocess, "run", recorder)
+    with pytest.raises(FermError, match="conflicting protocols"):
+        _validate_desired_nft(Options(nft=True), "nft", "bad\n")
+
+
 def test_restore_dispatch_routes_to_nft_applier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

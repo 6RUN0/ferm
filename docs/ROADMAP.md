@@ -247,12 +247,20 @@ on `python-port` (not yet released): a run of adjacent single-key leaf rules
 that differ in both the key and the verdict folds into one verdict map
 (`tcp dport vmap { 22 : accept, 80 : drop }`), the verdict-carrying counterpart
 of the anonymous-set collapse. Only pure verdicts (`accept`/`drop`/`return`/
-`continue`/`jump`/`goto`) are eligible — `reject`, `log`, and NAT statements
+`jump`/`goto`) are eligible — `reject`, `log`, and NAT statements
 nft forbids inside a vmap break the run and stay linear — and a duplicate key
 ends the run (nft rejects a vmap with duplicate keys). Members are ordered by
-the key's canonical rank (nft stores a vmap key-ordered, like a set), so
-`ferm --plan --nft` over an unchanged ruleset converges. Multi-match rules and
-mixing a folded set with singles are deliberately deferred.
+the key's canonical rank (nft stores a vmap key-ordered, like a set), and an
+IPv6 address key (which carries its own colons) is split on the ` : ` member
+separator and canonicalized, so `ferm --plan --nft` over an unchanged ruleset
+converges. Multi-match rules and mixing a folded set with singles are
+deliberately deferred.
+
+To keep `ferm --plan --nft` honest, the desired ruleset is pre-validated with
+`nft -c` before the diff in a real run (skipped under `--test`, which uses a
+fake nft): an un-appliable plan — for example an `arp` chain carrying a `tcp`
+match nft rejects with "conflicting protocols" — aborts with nft's own
+diagnostic and exit 1, instead of being presented as an actionable change.
 
 With anonymous, named, and interval sets, verdict maps, and native
 `reject-with` shipped, Phase 5's native-expressiveness payoff is substantively
