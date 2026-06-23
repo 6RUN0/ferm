@@ -216,10 +216,11 @@ def test_canonicalize_is_idempotent() -> None:
 
 def test_canonicalize_set_elements_canonicalizes_then_sorts() -> None:
     result = canonicalize_set_elements(
-        ["192.168.0.0/16", "10.0.0.0-10.0.0.255", "10.0.0.5/32"]
+        ["192.168.0.0/16", "10.0.0.0-10.0.0.255", "10.2.0.5/32"]
     )
     # Range -> CIDR (rank address now), host /32 -> bare host, then ordered.
-    assert result == ["10.0.0.0/24", "10.0.0.5", "192.168.0.0/16"]
+    # 10.2.0.5 is disjoint from both blocks, so all three survive.
+    assert result == ["10.0.0.0/24", "10.2.0.5", "192.168.0.0/16"]
 
 
 def test_canonicalize_set_elements_dedups_colliding_forms() -> None:
@@ -228,6 +229,41 @@ def test_canonicalize_set_elements_dedups_colliding_forms() -> None:
     # a phantom "modify".
     result = canonicalize_set_elements(["10.0.0.0-10.0.0.255", "10.0.0.0/24"])
     assert result == ["10.0.0.0/24"]
+
+
+def test_canonicalize_set_elements_absorbs_host_in_prefix() -> None:
+    # nft accepts an anonymous set with a host contained in a prefix, then
+    # reads back only the containing prefix (verified on real nft).  The
+    # desired side must mirror that absorption or an unchanged set reads as a
+    # perpetual modify; nft -c does NOT reject this for anonymous sets, so
+    # the canon is the only safeguard.
+    result = canonicalize_set_elements(["10.0.0.0/24", "10.0.0.5"])
+    assert result == ["10.0.0.0/24"]
+
+
+def test_canonicalize_set_elements_absorbs_prefix_in_prefix() -> None:
+    # The wider prefix is what the kernel stores; the contained /24 is dropped.
+    result = canonicalize_set_elements(["10.0.0.0/24", "10.0.0.0/16"])
+    assert result == ["10.0.0.0/16"]
+
+
+def test_canonicalize_set_elements_absorbs_ipv6_containment() -> None:
+    result = canonicalize_set_elements(["2001:db8::/32", "2001:db8::5"])
+    assert result == ["2001:db8::/32"]
+
+
+def test_canonicalize_set_elements_keeps_disjoint_prefixes() -> None:
+    # Disjoint blocks are a genuine union the kernel preserves; the
+    # optimization must not punish the common case.
+    result = canonicalize_set_elements(["10.0.0.0/24", "10.1.0.0/24"])
+    assert result == ["10.0.0.0/24", "10.1.0.0/24"]
+
+
+def test_canonicalize_set_elements_ignores_non_address_overlap() -> None:
+    # Port ranges and protocol names are not networks; the containment sweep
+    # must leave them untouched (no false collapse, no crash).
+    result = canonicalize_set_elements(["22-80", "443", "1024-2048"])
+    assert result == ["443", "22-80", "1024-2048"]
 
 
 def test_canonicalize_ipv4_mapped_ipv6_matches_ipaddress() -> None:

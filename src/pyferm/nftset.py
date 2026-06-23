@@ -224,6 +224,49 @@ def canonicalize_element(element: str) -> str:
     return element
 
 
+def _drop_contained_networks(canonical: list[str]) -> list[str]:
+    """
+    Drop any address element wholly contained in another (nft absorbs it).
+
+    nft accepts an anonymous set with a host inside a prefix (or a prefix
+    inside a wider prefix), then reads back only the containing block
+    (``{ 10.0.0.0/24, 10.0.0.5 }`` -> ``{ 10.0.0.0/24 }``); ``nft -c`` does not
+    reject this for anonymous sets, so without mirroring the absorption the
+    desired side keeps an element the kernel side can never have -- a perpetual
+    phantom diff.  Only ``ip_network``-parsable elements participate; a port
+    range or protocol name is not a network and is left untouched.  Equal
+    canonical forms are already deduped upstream, so a kept network is never a
+    duplicate of the one that covers it.
+    """
+    v4: dict[str, ipaddress.IPv4Network] = {}
+    v6: dict[str, ipaddress.IPv6Network] = {}
+    for elem in canonical:
+        try:
+            net = ipaddress.ip_network(elem, strict=False)
+        except ValueError:
+            continue  # port range / protocol name / unparsable: not a network
+        if isinstance(net, ipaddress.IPv4Network):
+            v4[elem] = net
+        else:
+            v6[elem] = net
+    kept: list[str] = []
+    for elem in canonical:
+        v4net = v4.get(elem)
+        if v4net is not None and any(
+            other is not v4net and v4net.subnet_of(other)
+            for other in v4.values()
+        ):
+            continue  # a wider v4 element already covers this one
+        v6net = v6.get(elem)
+        if v6net is not None and any(
+            other is not v6net and v6net.subnet_of(other)
+            for other in v6.values()
+        ):
+            continue  # a wider v6 element already covers this one
+        kept.append(elem)
+    return kept
+
+
 def canonicalize_set_elements(elements: list[str]) -> list[str]:
     """
     Rewrite each element to nft's stored form, dedup, then order canonically.
@@ -231,7 +274,9 @@ def canonicalize_set_elements(elements: list[str]) -> list[str]:
     Two distinct source spellings can collapse to one kernel form
     (``10.0.0.0-10.0.0.255`` and ``10.0.0.0/24``); a set is a union, so the
     kernel readback holds one.  Deduping keeps the desired side from carrying
-    a phantom duplicate the current side can never have.
+    a phantom duplicate the current side can never have.  A contained address
+    (a host inside a prefix, a prefix inside a wider one) is likewise absorbed
+    by the kernel, so :func:`_drop_contained_networks` removes it too.
     """
-    canonical = [canonicalize_element(e) for e in elements]
-    return sort_set_elements(list(dict.fromkeys(canonical)))
+    canonical = list(dict.fromkeys(canonicalize_element(e) for e in elements))
+    return sort_set_elements(_drop_contained_networks(canonical))
