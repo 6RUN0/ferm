@@ -641,13 +641,50 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
     return tables
 
 
+# Depth levels for parse_nft_list's brace-state machine.
+_NL_DEPTH_OUTSIDE = 0  # outside everything
+_NL_DEPTH_TABLE = 1  # inside the table block
+_NL_DEPTH_CHAIN = 2  # inside a chain block
+_NL_DEPTH_SET = 3  # inside a set block
+
 # Regex anchors for the brace-delimited nft-list grammar.
 # These match only the structural openers; rule bodies at chain depth are
 # never tested against them (so a '{' inside a rule body is invisible).
 _NFT_LIST_TABLE_RE = re.compile(r"^table\s+(\S+)\s+ferm\s*\{$")
 _NFT_LIST_CHAIN_RE = re.compile(r"^chain\s+(\S+)\s*\{$")
+_NFT_LIST_SET_RE = re.compile(r"^set\s+(\S+)\s*\{$")
 # A base-chain header starts with 'type' followed by the hook/priority tokens.
 _NFT_LIST_HEADER_RE = re.compile(r"^type\s+\S+\s+hook\s+\S+\s+priority\b")
+
+
+def _join_multiline_elements(text: str) -> str:
+    """
+    Collapse a multi-line 'elements = { ... }' onto one line.
+
+    When ``nft list`` emits a set whose elements span multiple lines, this
+    preprocessor joins them before the main loop so the depth-3 branch always
+    sees the ``elements`` assignment on a single line.  Text that contains no
+    multi-line elements block is returned unchanged.
+    """
+    out: list[str] = []
+    buf: str | None = None
+    for line in text.splitlines():
+        if buf is not None:
+            buf += " " + line.strip()
+            if "}" in line:
+                out.append(buf)
+                buf = None
+            continue
+        if line.lstrip().startswith("elements") and "}" not in line:
+            buf = line.rstrip()
+            continue
+        out.append(line)
+    if buf is not None:
+        out.append(buf)
+    result = "\n".join(out)
+    if text.endswith("\n"):
+        result += "\n"
+    return result
 
 
 def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
@@ -668,15 +705,13 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
     """
     tables: dict[str, ParsedTable] = {}
 
-    # depth 0 = outside everything
-    # depth 1 = inside the table block
-    # depth 2 = inside a chain block
-    depth = 0
+    depth = _NL_DEPTH_OUTSIDE
     current_chain: ParsedChain | None = None
+    current_set: ParsedSet | None = None
     # whether this chain's first non-blank body line has been seen
     chain_header_seen = False
 
-    lines = text.splitlines()
+    lines = _join_multiline_elements(text).splitlines()
     total = len(lines)
 
     for lineno, raw in enumerate(lines, start=1):
@@ -684,7 +719,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
         if not line or line.startswith("#"):
             continue
 
-        if depth == 0:
+        if depth == _NL_DEPTH_OUTSIDE:
             # Only valid production: 'table <fam> ferm {'
             m = _NFT_LIST_TABLE_RE.match(line)
             if not m:
@@ -693,13 +728,19 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
             if inline_fam != family:
                 raise _parse_error(lineno, raw)
             _ensure_ferm_table(tables)
-            depth = 1
+            depth = _NL_DEPTH_TABLE
             continue
 
-        if depth == 1:
-            # Inside the table: expect 'chain <name> {' or '}'
+        if depth == _NL_DEPTH_TABLE:
+            # Inside the table: expect 'set <name> {', 'chain <name> {', or '}'
             if line == "}":
-                depth = 0
+                depth = _NL_DEPTH_OUTSIDE
+                continue
+            m_set = _NFT_LIST_SET_RE.match(line)
+            if m_set:
+                current_set = ParsedSet(m_set.group(1))
+                tables["ferm"].sets[current_set.name] = current_set
+                depth = _NL_DEPTH_SET
                 continue
             m = _NFT_LIST_CHAIN_RE.match(line)
             if not m:
@@ -709,33 +750,53 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
             current_chain = ParsedChain(policy="-")
             tables["ferm"].chains[chain_name] = current_chain
             chain_header_seen = False
-            depth = 2
+            depth = _NL_DEPTH_CHAIN
             continue
 
-        # depth == 2: inside a chain body
-        if line == "}":
-            current_chain = None
-            depth = 1
-            continue
-
-        # Any other line at this depth is a rule body (or the base-chain
-        # header).  Never count braces here -- an anonymous set on one line
-        # (e.g. 'tcp dport { 22, 80 } accept') must not be mistaken for a
-        # block opener.
-        assert current_chain is not None
-        if not chain_header_seen:
-            chain_header_seen = True
-            if _NFT_LIST_HEADER_RE.match(line):
-                # Base chain: this line is the header, not a rule body.
-                current_chain.policy = canonicalize_nft_header(
-                    line, family=family
-                )
+        if depth == _NL_DEPTH_CHAIN:
+            # Inside a chain body.
+            if line == "}":
+                current_chain = None
+                depth = _NL_DEPTH_TABLE
                 continue
-            # User chain: first line is a rule; fall through to append it.
 
-        current_chain.rules.append(canonicalize_nft_rule(line, family=family))
+            # Any other line at this depth is a rule body (or the base-chain
+            # header).  Never count braces here -- an anonymous set on one
+            # line (e.g. 'tcp dport { 22, 80 } accept') must not be mistaken
+            # for a block opener.
+            assert current_chain is not None
+            if not chain_header_seen:
+                chain_header_seen = True
+                if _NFT_LIST_HEADER_RE.match(line):
+                    # Base chain: this line is the header, not a rule body.
+                    current_chain.policy = canonicalize_nft_header(
+                        line, family=family
+                    )
+                    continue
+                # User chain: first line is a rule; fall through to append it.
 
-    if depth != 0:
+            current_chain.rules.append(
+                canonicalize_nft_rule(line, family=family)
+            )
+            continue
+
+        if depth == _NL_DEPTH_SET:
+            # Inside a set body.
+            assert current_set is not None
+            if line == "}":
+                current_set = None
+                depth = _NL_DEPTH_TABLE
+                continue
+            if line.startswith("elements"):
+                inner = line[line.find("{") + 1 : line.rfind("}")]
+                members = [e.strip() for e in inner.split(",") if e.strip()]
+                current_set.elements = sort_set_elements(
+                    current_set.elements + members
+                )
+            # 'type ...'/'flags ...' lines carry no diff-relevant data; skip.
+            continue
+
+    if depth != _NL_DEPTH_OUTSIDE:
         raise _parse_error(total or 1, "<EOF: unterminated block>")
 
     return tables
