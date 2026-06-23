@@ -517,16 +517,18 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
     Parse a render().save nft script into {table: ParsedTable} (fail-loud).
 
     The input is a line-oriented nft -f script produced by the nft backend.
-    Every non-blank, non-comment line must match exactly one of five
+    Every non-blank, non-comment line must match exactly one of seven
     recognized productions; anything else raises :class:`FermError`.
 
     Productions recognized:
 
-    - ``add table <fam> ferm``                         -- ignored
-    - ``flush table <fam> ferm``                       -- ignored
-    - ``add chain <fam> ferm <chain> { <header> }``   -- base chain
-    - ``add chain <fam> ferm <chain>``                 -- user chain
-    - ``add rule  <fam> ferm <chain> <body>``          -- rule
+    - ``add table <fam> ferm``                           -- ignored
+    - ``flush table <fam> ferm``                         -- ignored
+    - ``add chain <fam> ferm <chain> { <header> }``     -- base chain
+    - ``add chain <fam> ferm <chain>``                   -- user chain
+    - ``add rule  <fam> ferm <chain> <body>``            -- rule
+    - ``add set <fam> ferm <set> { ... }``             -- named set
+    - ``add element <fam> ferm <set> { <e>, ... }``   -- set elements
 
     The family token is derived from the first line that carries one;
     all subsequent lines must use the same family or the parse fails.
@@ -604,7 +606,11 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             if table_name != "ferm":
                 raise _parse_error(lineno, raw)
             family = _check_family(family, fam_tok, lineno, raw)
-            rest = line[line.find("{") + 1 : line.rfind("}")]
+            brace_open = line.find("{")
+            brace_close = line.rfind("}")
+            if brace_open == -1 or brace_close <= brace_open:
+                raise _parse_error(lineno, raw)
+            rest = line[brace_open + 1 : brace_close]
             elements = [e.strip() for e in rest.split(",") if e.strip()]
             _ensure_ferm_table(tables)
             ps = tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))

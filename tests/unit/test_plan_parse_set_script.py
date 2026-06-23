@@ -42,3 +42,13 @@ def test_add_element_non_ferm_table_raises() -> None:
     text = "add table ip ferm\nadd element ip other ssh { 22 }\n"
     with pytest.raises(FermError):
         parse_nft_script(text)
+
+
+def test_add_element_no_braces_raises() -> None:
+    text = (
+        "add table ip ferm\n"
+        "add set ip ferm ssh { type inet_service; }\n"
+        "add element ip ferm ssh 22\n"
+    )
+    with pytest.raises(FermError):
+        parse_nft_script(text)
