@@ -85,6 +85,22 @@ class Deferred:
     params: list[Value]
 
 
+@dataclass
+class SetRef:
+    """
+    A named nft set: stable identity ``name`` plus its ``elements``.
+
+    Identity is ``(family, name)`` -- the element list is family-specific
+    after per-family filtering; the family dimension lives in the declaration
+    registry, not here.  Under ``--nft`` a SetRef travels scalar to the
+    backend (rendered ``@name`` plus declaration); under iptables a
+    parse-phase pre-pass expands it back to its elements.
+    """
+
+    name: str
+    elements: list[Value]
+
+
 #: Any parsed value.  Recursive: arrays nest, deferred params hold values.
 Value: TypeAlias = (
     str
@@ -95,9 +111,10 @@ Value: TypeAlias = (
     | Params
     | Multi
     | Deferred
+    | SetRef
 )
 
-_REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred)
+_REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred, SetRef)
 
 
 def _is_ref(value: object) -> bool:
@@ -154,6 +171,8 @@ def cat(*values: Value) -> str:
     for item in flatten(*values):
         if item is None:
             continue
+        if isinstance(item, SetRef):
+            error("a named set cannot appear in a string context")
         if not isinstance(item, str):
             error("String expected")
         result += item
@@ -178,6 +197,8 @@ def join_value(expr: str, value: Value) -> Value:
         return expr.join(str(item) for item in value)
     if isinstance(value, Negated):
         return Negated(join_value(expr, value.value))
+    if isinstance(value, SetRef):
+        error("a named set cannot be joined as an array")
     raise internal_error()
 
 
@@ -195,6 +216,8 @@ def negate_value(
             error("double negation is not allowed")
         if isinstance(value, list) and not allow_array:
             error("it is not possible to negate an array")
+        if isinstance(value, SetRef):
+            error("cannot negate a named set")
     if (klass or "negated") == "pre_negated":
         return PreNegated(value)
     return Negated(value)
@@ -216,6 +239,8 @@ def to_array(value: Value) -> list[Value]:
         return [value]
     if isinstance(value, list):
         return list(value)
+    if isinstance(value, SetRef):
+        return [value]
     raise internal_error()
 
 
@@ -229,6 +254,8 @@ def eval_bool(value: Value) -> bool:
         return perl_true(value)
     if isinstance(value, list):
         return len(value) > 0
+    if isinstance(value, SetRef):
+        return len(value.elements) > 0
     raise internal_error()
 
 

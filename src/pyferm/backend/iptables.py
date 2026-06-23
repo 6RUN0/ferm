@@ -57,7 +57,15 @@ from pyferm.domains import (
 from pyferm.errors import FermError, internal_error
 from pyferm.rules import RenderedRule, is_netfilter_builtin_chain
 from pyferm.streams import BYTE_ENCODING
-from pyferm.values import Deferred, Multi, Negated, Params, PreNegated, Value
+from pyferm.values import (
+    Deferred,
+    Multi,
+    Negated,
+    Params,
+    PreNegated,
+    SetRef,
+    Value,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -168,6 +176,10 @@ def shell_format_option(keyword: str, value: Value, *, fast: bool) -> str:
             cmd += f" --{keyword} " + shell_escape(_scalar(item), fast=fast)
     elif isinstance(value, (list, Negated, PreNegated, Deferred)):
         raise internal_error()
+    elif isinstance(value, SetRef):
+        raise FermError(
+            "internal: a named set reached the iptables backend unexpanded"
+        )
     else:
         cmd += f" --{keyword} " + shell_escape(value, fast=fast)
 
