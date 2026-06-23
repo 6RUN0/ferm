@@ -205,6 +205,46 @@ Depends on Phase 2 — the payoff for going native: sets, maps, intervals,
 concatenations, native `reject-with`, and the performance wins on
 router/NAT boxes.
 
+The first slice — **anonymous-set collapse** under `--nft` — is implemented
+on the `python-port` branch (not yet released): adjacent leaf rules that
+differ in exactly one set-eligible value fold into a single rule carrying an
+anonymous set (`tcp dport { 22, 80, 443 }`), and `ferm --plan --nft` is honest
+about the folded form. Negated matches and per-rule-distinct statements stay
+linear (safe-bias); the `iptables` backend and the ferm core are untouched.
+
+The second slice — **named sets** (`@set` / `SetRef`) — is also implemented on
+`python-port` (not yet released): a ferm `@set` definition emits a native
+`add set` / `add element` declaration, references translate to an `@name`
+operand, and `ferm --plan --nft` parses kernel-side `add set` / `add element`
+blocks so set additions, element-set changes, and removals each surface as a
+`SetChange`. Names and elements are validated at the emit border (fail-closed);
+the `iptables` backend keeps expanding the values inline at parse time, so a
+named set is a no-op there.
+
+#### Deferred debt
+
+The following items are explicitly **out of scope** of the anonymous-set
+slice and recorded here so they are not lost.
+
+- *Protocol-name set ordering* — a folded `meta l4proto { tcp, udp }` carries
+  protocol *names*, which the shared element sorter treats as unparsable and
+  leaves in input order. If the kernel readback returns them in a different
+  order than the emitter, `ferm --plan --nft` shows a persistent false
+  "change". It errs toward *showing* a diff (never hiding one), so it is a
+  cosmetic plan-noise issue, not a safety hole; reachable only when two
+  adjacent protocol-only (no-port) rules fold. Fix: give protocol names a
+  known canonical order in the sorter.
+- *iptables port-range form (`lo-hi` vs `lo:hi`)* — ferm emits an iptables
+  `--dport lo-hi` (dash) form that modern `nft`-backed `iptables-restore`
+  rejects (it wants `lo:hi`). This is inherited faithfully from the Perl
+  oracle, so changing it is a deliberate behaviour decision, not a bug fix:
+  it makes the iptables port-range data path untestable on `nft`-backed
+  distros. Track as an oracle-divergence decision.
+- *Maps / intervals / concatenations / native `reject-with`* — the rest of the
+  Phase 5 payoff, building on the set primitives above. Nested `{ ... }`
+  operands (concatenations, verdict maps) are deliberately not parsed yet
+  (`no nesting in v1`).
+
 ### Phase 6 — Standard rule library (ready-made patterns)
 
 An includable `.ferm` macro library with a search path (e.g.
