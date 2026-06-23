@@ -1,6 +1,7 @@
 from pyferm.nftset import (
     RANK_ADDRESS,
     RANK_INTERVAL,
+    RANK_PROTONAME,
     RANK_UNPARSABLE,
     canonicalize_element,
     canonicalize_set_elements,
@@ -36,9 +37,9 @@ def test_addresses_sort_by_value() -> None:
 
 
 def test_unparsable_sort_last_preserving_order() -> None:
-    # Protocol names are unparsable -> appended last in original order,
-    # after the numeric "6".
-    assert sort_set_elements(["udp", "6", "tcp"]) == ["6", "udp", "tcp"]
+    # Genuinely unparsable tokens (unknown labels, not known protocol names)
+    # are appended last in their original order, after the numeric "6".
+    assert sort_set_elements(["wat", "6", "huh"]) == ["6", "wat", "huh"]
 
 
 def test_is_pure_does_not_mutate_input() -> None:
@@ -240,3 +241,60 @@ def test_canonicalize_ipv4_mapped_ipv6_matches_ipaddress() -> None:
 def test_canonicalize_full_address_space_is_zero_prefix() -> None:
     assert canonicalize_element("0.0.0.0-255.255.255.255") == "0.0.0.0/0"
     assert canonicalize_element("0.0.0.0/0") == "0.0.0.0/0"
+
+
+# -- protocol-name set ordering: match nft's by-number readout --------------
+# nft stores a `meta l4proto`/`inet_proto` set member as its name but orders
+# the set by protocol number on readback.  Forms/numbers below were verified
+# against real nft (`unshare -rn nft -f`): `{ udp, tcp }` -> `{ tcp, udp }`,
+# `{ udp, esp, ah, gre }` -> `{ udp, gre, esp, ah }` (17, 47, 50, 51).
+
+
+def test_known_protocol_name_classifies_as_protoname() -> None:
+    for name in ("tcp", "udp", "icmp", "sctp", "ipv6-icmp", "mobility-header"):
+        rank, _ = classify(name)
+        assert rank == RANK_PROTONAME, name
+
+
+def test_unknown_protocol_name_stays_unparsable() -> None:
+    # A name nft does not know cannot survive a readback, so leave it in the
+    # unparsable bucket (input order) rather than invent an order for it.
+    assert classify("nosuchproto")[0] == RANK_UNPARSABLE
+
+
+def test_protocol_names_sort_by_number_not_lexically() -> None:
+    # "tcp" > "sctp" lexically but 6 < 132 by protocol number.
+    assert sort_set_elements(["udp", "tcp"]) == ["tcp", "udp"]
+    assert sort_set_elements(["sctp", "icmp", "udp", "tcp"]) == [
+        "icmp",
+        "tcp",
+        "udp",
+        "sctp",
+    ]
+    assert sort_set_elements(["udp", "esp", "ah", "gre"]) == [
+        "udp",
+        "gre",
+        "esp",
+        "ah",
+    ]
+
+
+def test_unknown_protocol_names_keep_input_order_after_known() -> None:
+    # Known names sort by number ahead of unknown ones, which stay in their
+    # original relative order (stable, like any unparsable token).
+    assert sort_set_elements(["ztp", "udp", "atp", "tcp"]) == [
+        "tcp",
+        "udp",
+        "ztp",
+        "atp",
+    ]
+
+
+def test_protocol_name_is_left_verbatim_by_canonicalize() -> None:
+    # Only the order changes; a protocol name is not rewritten.
+    assert canonicalize_element("tcp") == "tcp"
+    assert canonicalize_element("ipv6-icmp") == "ipv6-icmp"
+
+
+def test_canonicalize_set_elements_orders_protocol_names_by_number() -> None:
+    assert canonicalize_set_elements(["udp", "tcp"]) == ["tcp", "udp"]

@@ -21,7 +21,41 @@ import ipaddress
 RANK_NUMBER = 0
 RANK_INTERVAL = 1
 RANK_ADDRESS = 2
-RANK_UNPARSABLE = 3
+RANK_PROTONAME = 3
+RANK_UNPARSABLE = 4
+
+#: nft canonical L4-protocol keyword -> IP protocol number.  nft stores a
+#: ``meta l4proto`` / ``inet_proto`` set member as its *name* but orders the
+#: set by protocol *number* on readback (``{ udp, tcp }`` -> ``{ tcp, udp }``),
+#: so the sorter must key these names by number to match the kernel form.
+#: Spellings and numbers are nft's own (verified against nft v1.1.6); a name
+#: nft does not know cannot survive a readback, so it stays unparsable.
+_NFT_L4PROTO_NUMBER: dict[str, int] = {
+    "icmp": 1,
+    "igmp": 2,
+    "ipencap": 4,
+    "tcp": 6,
+    "egp": 8,
+    "udp": 17,
+    "dccp": 33,
+    "ipv6": 41,
+    "rsvp": 46,
+    "gre": 47,
+    "esp": 50,
+    "ah": 51,
+    "ipv6-icmp": 58,
+    "ospf": 89,
+    "mtp": 92,
+    "ipip": 94,
+    "pim": 103,
+    "ipcomp": 108,
+    "carp": 112,
+    "l2tp": 115,
+    "sctp": 132,
+    "mobility-header": 135,
+    "udplite": 136,
+    "mpls-in-ip": 137,
+}
 
 
 def _classify_address_range(
@@ -58,6 +92,11 @@ def classify(element: str) -> tuple[int, object]:
     address range (``10.0.0.0-10.0.0.255``).  Both need ``flags interval`` on
     the nft set and a stable order against a kernel readback, so neither may
     fall to the unparsable bucket.
+
+    A known L4-protocol *name* (``tcp``, ``udp``) gets its own rank keyed by
+    protocol number: nft orders a ``meta l4proto`` set by number while storing
+    names, so without this a folded ``{ udp, tcp }`` would read back reordered
+    and show a phantom plan change.
     """
     if element.isascii() and element.isdigit():
         return RANK_NUMBER, int(element)
@@ -76,6 +115,9 @@ def classify(element: str) -> tuple[int, object]:
     try:
         net = ipaddress.ip_network(element, strict=False)
     except ValueError:
+        proto_number = _NFT_L4PROTO_NUMBER.get(element)
+        if proto_number is not None:
+            return RANK_PROTONAME, proto_number
         return RANK_UNPARSABLE, ()
     return RANK_ADDRESS, (
         net.version,

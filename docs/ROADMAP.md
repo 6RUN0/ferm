@@ -237,14 +237,6 @@ showing a phantom diff. nft rejects overlapping intervals at apply time
 The following items are explicitly **out of scope** of the anonymous-set
 slice and recorded here so they are not lost.
 
-- *Protocol-name set ordering* — a folded `meta l4proto { tcp, udp }` carries
-  protocol *names*, which the shared element sorter treats as unparsable and
-  leaves in input order. If the kernel readback returns them in a different
-  order than the emitter, `ferm --plan --nft` shows a persistent false
-  "change". It errs toward *showing* a diff (never hiding one), so it is a
-  cosmetic plan-noise issue, not a safety hole; reachable only when two
-  adjacent protocol-only (no-port) rules fold. Fix: give protocol names a
-  known canonical order in the sorter.
 - *iptables port-range form (`lo-hi` vs `lo:hi`)* — ferm emits an iptables
   `--dport lo-hi` (dash) form that modern `nft`-backed `iptables-restore`
   rejects (it wants `lo:hi`). This is inherited faithfully from the Perl

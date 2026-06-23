@@ -144,3 +144,18 @@ def test_inline_anonymous_range_set_normalizes_to_cidr() -> None:
     )
     assert desired == current
     assert "{ 10.0.0.0/24 }" in desired
+
+
+def test_inline_l4proto_set_orders_by_protocol_number() -> None:
+    # A folded `meta l4proto { ... }` carries protocol names; nft reads the
+    # set back ordered by protocol number while keeping the names.  Both diff
+    # sides must canonicalize to that order or two adjacent protocol-only
+    # rules folding into a set show a perpetual phantom "change".
+    desired = canonicalize_nft_rule(
+        "meta l4proto { udp, tcp } accept", family="ip"
+    )
+    current = canonicalize_nft_rule(
+        "meta l4proto { tcp, udp } accept", family="ip"
+    )
+    assert desired == current
+    assert "{ tcp, udp }" in desired

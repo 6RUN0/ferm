@@ -1,0 +1,8 @@
+# A folded `meta l4proto { ... }` set is ordered by protocol number on the
+# nft readback (icmp=1, tcp=6, udp=17), so the emit must produce that order
+# or `ferm --plan --nft` shows a phantom change for an unchanged ruleset.
+domain ip table filter chain INPUT {
+    proto udp ACCEPT;
+    proto tcp ACCEPT;
+    proto icmp ACCEPT;
+}
