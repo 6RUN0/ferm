@@ -117,6 +117,26 @@ def test_mixed_set_before_literal_rejected_under_nft() -> None:
     )
 
 
+def test_mixed_literal_before_set_rejected_under_nft() -> None:
+    """Literal before a named set in one selector is rejected at parse time.
+
+    This covers the (22 $set) ordering under --nft (regression for the
+    _REF_TYPES omission that let this slip past the parse-time guard).
+    """
+    proc = _run(
+        "@set $p = (80);\n"
+        "domain ip table filter chain INPUT "
+        "{ proto tcp dport (22 $p) ACCEPT; }\n",
+        extra_flags=["--nft"],
+    )
+    assert proc.returncode != 0, (
+        "expected rejection of literal+set mix under --nft"
+    )
+    assert "mixed with other values" in proc.stderr, (
+        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
+    )
+
+
 def test_nft_does_not_silently_expand_set() -> None:
     """Under --nft the iptables pre-pass does NOT run.
 

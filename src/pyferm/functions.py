@@ -56,7 +56,14 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred)
+_REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred, SetRef)
+
+
+def _is_ref(value: object) -> bool:
+    """Whether ``value`` is a Perl reference (an array or a blessed value)."""
+    return isinstance(value, _REF_TYPES)
+
+
 _NAME_RE = re.compile(r"\w+")
 _DVAR_RE = re.compile(r"\$(\w+)")
 _QUOTED_RE = {
@@ -83,11 +90,6 @@ MAX_CLASSID: Final[int] = 0xFFFFFFFF
 #: ``multiport`` match capacity: the kernel accepts at most 15 ports, and a
 #: ``a:b`` range counts as two of them.
 MAX_MULTIPORT_PORTS: Final[int] = 15
-
-
-def _is_ref(value: object) -> bool:
-    """Whether ``value`` is a Perl reference (an array or a blessed value)."""
-    return isinstance(value, _REF_TYPES)
 
 
 def _perl_eq(a: Value, b: Value) -> bool:
