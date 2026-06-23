@@ -6,7 +6,10 @@ from pyferm.plan import (
     Plan,
     PlanDiff,
     SetChange,
+    canonicalize_nft_rule,
     diff_tables,
+    parse_nft_list,
+    parse_nft_script,
     render_structured,
 )
 
@@ -101,3 +104,43 @@ def test_render_structured_set_only_change_is_visible() -> None:
     assert "+" in out or "-" in out
     # Must not fall through to "No changes"
     assert "No changes" not in out
+
+
+def test_prefix_aligned_range_set_converges_round_trip() -> None:
+    # An interval set written as a prefix-aligned address range converges:
+    # ferm emits the range, the kernel reads it back as the equivalent CIDR,
+    # and canonicalization on both diff sides must make them compare equal --
+    # otherwise an unchanged set shows a perpetual phantom "modify".
+    desired = parse_nft_script(
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add set ip ferm r { type ipv4_addr; flags interval; }\n"
+        "add element ip ferm r { 10.0.0.0-10.0.0.255, 172.16.0.5 }\n"
+    )
+    current = parse_nft_list(
+        "table ip ferm {\n"
+        "\tset r {\n"
+        "\t\ttype ipv4_addr\n"
+        "\t\tflags interval\n"
+        "\t\telements = { 10.0.0.0/24, 172.16.0.5 }\n"
+        "\t}\n"
+        "}\n",
+        family="ip",
+    )
+    assert desired["ferm"].sets["r"].elements == ["10.0.0.0/24", "172.16.0.5"]
+    diff = diff_tables(current=current, desired=desired, noflush=False)
+    assert diff.set_changes == []
+
+
+def test_inline_anonymous_range_set_normalizes_to_cidr() -> None:
+    # The inline `{ ... }` rule-text path (plan.py _normalize_sets) must
+    # canonicalize an aligned range to the CIDR the kernel reads back, so a
+    # rule carrying an anonymous interval set converges on both diff sides.
+    desired = canonicalize_nft_rule(
+        "ip saddr { 10.0.0.0-10.0.0.255 } accept", family="ip"
+    )
+    current = canonicalize_nft_rule(
+        "ip saddr { 10.0.0.0/24 } accept", family="ip"
+    )
+    assert desired == current
+    assert "{ 10.0.0.0/24 }" in desired

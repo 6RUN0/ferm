@@ -225,8 +225,10 @@ The third slice — **interval sets** under `--nft` — is also implemented on
 `python-port` (not yet released): a set element written as an address range
 (`10.0.0.0-10.0.0.255`, IPv6 ranges) or a CIDR prefix marks the set
 `flags interval`, alongside the numeric port ranges (`1024-2048`) already
-supported. Range and prefix elements share the one canonical order with host
-addresses, so a `ferm --plan --nft` over an interval set converges rather than
+supported. Because the kernel rewrites elements on readback (a prefix-aligned
+range collapses to a CIDR, host bits are masked, a `/32`-`/128` host drops its
+prefix), the plan diff canonicalizes both sides to that stored form, so a
+`ferm --plan --nft` over an unchanged interval set converges rather than
 showing a phantom diff. nft rejects overlapping intervals at apply time
 (`nft -c`), so overlap detection stays the kernel's job (fail-closed).
 

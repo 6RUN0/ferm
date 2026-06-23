@@ -24,7 +24,7 @@ import shlex
 from dataclasses import dataclass, field
 
 from pyferm.errors import FermError
-from pyferm.nftset import sort_set_elements
+from pyferm.nftset import canonicalize_set_elements
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
 _CHAIN_PARTS_MIN = 2
@@ -284,7 +284,7 @@ def _normalize_set_run(match: re.Match[str]) -> str:
     raw = match.group(1).replace(",", " ").split()
     if not raw:
         return "{ }"
-    return "{ " + ", ".join(sort_set_elements(raw)) + " }"
+    return "{ " + ", ".join(canonicalize_set_elements(raw)) + " }"
 
 
 def _normalize_sets(body: str) -> str:
@@ -614,7 +614,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             elements = [e.strip() for e in rest.split(",") if e.strip()]
             _ensure_ferm_table(tables)
             ps = tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))
-            ps.elements = sort_set_elements(ps.elements + elements)
+            ps.elements = canonicalize_set_elements(ps.elements + elements)
             continue
 
         # -- add rule --------------------------------------------------------
@@ -795,7 +795,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                     members = [
                         e.strip() for e in inner.split(",") if e.strip()
                     ]
-                    current_set.elements = sort_set_elements(
+                    current_set.elements = canonicalize_set_elements(
                         current_set.elements + members
                     )
             # 'type ...'/'flags ...' lines carry no diff-relevant data; skip.
