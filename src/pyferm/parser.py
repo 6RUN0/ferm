@@ -522,6 +522,9 @@ class Parser:
         domain_info = self.domains[domain]
         domain_info.enabled = True
 
+        if not self.options.nft:
+            self._expand_setrefs_for_iptables(rule)
+
         for table in to_array(rule.table):
             table_info = domain_info.tables.setdefault(
                 stringify(table), TableInfo()
@@ -532,6 +535,35 @@ class Parser:
                 )
                 if rule.has_rule and not self.options.flush:
                     mkrules2(domain, chain_info.rules, rule)
+
+    @staticmethod
+    def _expand_setrefs_for_iptables(rule: Rule) -> None:
+        """
+        Replace SetRef option values with their element lists.
+
+        Runs only under the default iptables backend, before ``mkrules2``, so
+        the standard ``unfold_rule`` produces the cartesian product with the
+        same code that expands ``dport (22 80)``.  A SetRef mixed with other
+        values in one selector is an error: expanding it would leak a bare
+        SetRef through the unfold path into ``shell_escape``.  Idempotent
+        across the per-(table, chain) calls of ``mkrules``.
+        """
+        if sum(isinstance(o.value, SetRef) for o in rule.options) > 1:
+            error("at most one named set per rule in this version")
+        for option in rule.options:
+            value = option.value
+            if isinstance(value, SetRef):
+                option.value = list(value.elements)
+            elif isinstance(value, list) and any(
+                isinstance(item, SetRef) for item in value
+            ):
+                # Defense-in-depth: unreachable under the current parser
+                # because _read_array rejects a mixed literal+set before this
+                # point; kept in case a future call path bypasses _read_array.
+                error(
+                    "a named set cannot be mixed with other values "
+                    "in one selector"
+                )
 
     # -- token-stream block replay (domain/table/chain arrays) -----------
 

@@ -38,6 +38,7 @@ from pyferm.values import (
     Negated,
     Params,
     PreNegated,
+    SetRef,
     Value,
     cat,
     contains_deferred,
@@ -459,6 +460,11 @@ class Evaluator:
                 wordlist.extend(token)
             elif isinstance(token, Deferred):
                 wordlist.append(token)
+            elif isinstance(token, SetRef):
+                error(
+                    "a named set cannot be mixed with other values "
+                    "in one selector"
+                )
             else:
                 error("unknown token type")
         if not wordlist and non_empty:
