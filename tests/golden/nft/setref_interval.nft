@@ -1,0 +1,6 @@
+add table ip ferm
+flush table ip ferm
+add set ip ferm r { type inet_service; flags interval; }
+add element ip ferm r { 8080, 1024-2048 }
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport @r accept

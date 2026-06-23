@@ -11,6 +11,22 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
 
 ## [Unreleased]
 
+### Added
+
+- **Named nft sets via `@set`.** A `@set $name = (...)` declaration binds a
+  reusable set of ports, addresses, or interface names. Under `--nft` the set
+  is emitted as a first-class nft object (`add set` + `add element`) and the
+  rule references it by name (`tcp dport @name`); a port set with a range
+  carries `flags interval`. Under the default `iptables` backend the same
+  `@set` reference is expanded back to its element list, so the rule unfolds to
+  the identical cartesian product a literal list would produce — a config using
+  `@set` works on both backends. `ferm --plan --nft` reports set additions,
+  removals, and element changes alongside chain and rule diffs.
+- **First `ferm --plan --nft` after upgrading may show a one-time large diff**
+  when a config adopts `@set`: the live kernel still holds the previous linear
+  rules, so each rule that now references a set appears as a change until the
+  next apply. This is expected and resolves on the first apply.
+
 ### Changed
 
 - The `--nft` backend now folds adjacent rules that differ in a single value

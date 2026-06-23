@@ -1,0 +1,2 @@
+@set $r = (1024-2048 8080);
+domain ip table filter chain INPUT { proto tcp dport $r ACCEPT; }

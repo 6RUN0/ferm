@@ -1,0 +1,12 @@
+add table ip ferm
+flush table ip ferm
+add set ip ferm p { type inet_service; }
+add element ip ferm p { 22 }
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport @p accept
+add table ip6 ferm
+flush table ip6 ferm
+add set ip6 ferm p { type inet_service; }
+add element ip6 ferm p { 22 }
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add rule ip6 ferm INPUT tcp dport @p accept

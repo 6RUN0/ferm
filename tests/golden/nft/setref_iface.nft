@@ -1,0 +1,6 @@
+add table ip ferm
+flush table ip ferm
+add set ip ferm ifs { type ifname; }
+add element ip ferm ifs { "eth0", "eth1" }
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT iifname @ifs accept

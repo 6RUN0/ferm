@@ -11,6 +11,17 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
+from pyferm.backend.nft import (
+    NftMatch,
+    NftRule,
+    _collect_set_declarations,
+    _set_type_and_elements,
+)
+from pyferm.errors import FermError
+from pyferm.values import SetRef
+
 
 def _run_nft(src: str) -> subprocess.CompletedProcess[str]:
     """Run the nft backend on *src* via the hermetic ``--test`` path."""
@@ -118,3 +129,93 @@ def test_dedup_same_name_across_chains() -> None:
     out = proc.stdout
     assert out.count("add set ip ferm ssh { type inet_service; }") == 1
     assert out.count("add element ip ferm ssh { 22, 2222 }") == 1
+
+
+# ---------------------------------------------------------------------------
+# In-process unit mirrors.  The subprocess cases above import the unmutated
+# venv install in the child, so a mutation sweep cannot kill a mutant in the
+# type-inference and aggregation helpers through them; these call the helpers
+# directly so those code paths are in the kill set.
+# ---------------------------------------------------------------------------
+
+
+def _match(name: str, selector: str, elements: list[str]) -> NftMatch:
+    """Build a set-bearing NftMatch the aggregator reads structurally."""
+    return NftMatch(
+        expr="",
+        setref=SetRef(name, list(elements)),
+        set_selector=selector,
+    )
+
+
+def test_set_type_and_elements_port() -> None:
+    """A dport selector yields ``inet_service`` and validated ports."""
+    type_, flags_interval, elements = _set_type_and_elements(
+        "ip", "tcp dport", SetRef("p", ["2222", "22"])
+    )
+    assert type_ == "inet_service"
+    assert flags_interval is False
+    assert elements == ["22", "2222"]
+
+
+def test_set_type_and_elements_address_family() -> None:
+    """The address type follows the family (ip -> v4, ip6 -> v6)."""
+    type_v4, _, _ = _set_type_and_elements(
+        "ip", "ip saddr", SetRef("h", ["10.0.0.1"])
+    )
+    type_v6, _, _ = _set_type_and_elements(
+        "ip6", "ip6 saddr", SetRef("h", ["2001:db8::1"])
+    )
+    assert type_v4 == "ipv4_addr"
+    assert type_v6 == "ipv6_addr"
+
+
+def test_set_type_and_elements_interval_flag() -> None:
+    """A range element forces the interval flag on."""
+    _, flags_interval, _ = _set_type_and_elements(
+        "ip", "tcp dport", SetRef("r", ["1024-2048"])
+    )
+    assert flags_interval is True
+
+
+def test_set_type_and_elements_rejects_service_name() -> None:
+    """A service name in a port set is rejected (fail-closed)."""
+    with pytest.raises(FermError, match="numeric port or range"):
+        _set_type_and_elements("ip", "tcp dport", SetRef("s", ["ssh"]))
+
+
+def test_set_type_and_elements_rejects_iface_selector() -> None:
+    """An unsupported selector raises rather than emitting a bad type."""
+    with pytest.raises(FermError, match="not supported"):
+        _set_type_and_elements("ip", "meta mark", SetRef("m", ["1"]))
+
+
+def test_collect_declarations_dedups_same_name() -> None:
+    """The same name across chains collapses to one declaration."""
+    rules = {
+        "INPUT": [NftRule([_match("ssh", "tcp dport", ["22", "2222"])])],
+        "OUTPUT": [NftRule([_match("ssh", "tcp dport", ["2222", "22"])])],
+    }
+    decls = _collect_set_declarations("ip", rules)
+    assert set(decls) == {"ssh"}
+    assert decls["ssh"].elements == ["22", "2222"]
+
+
+def test_collect_declarations_conflicting_elements_raise() -> None:
+    """A name reused with differing elements is a conflict (error)."""
+    rules = {
+        "INPUT": [NftRule([_match("x", "tcp dport", ["22"])])],
+        "OUTPUT": [NftRule([_match("x", "tcp dport", ["80"])])],
+    }
+    with pytest.raises(FermError, match="conflicting element sets"):
+        _collect_set_declarations("ip", rules)
+
+
+def test_collect_declarations_conflicting_selectors_raise() -> None:
+    """A name reused with differing selectors is a conflict (error)."""
+    rules = {
+        "INPUT": [NftRule([_match("x", "tcp dport", ["22"])])],
+        "OUTPUT": [NftRule([_match("x", "ip saddr", ["22"])])],
+    }
+    with pytest.raises(FermError, match="conflicting selectors"):
+        _collect_set_declarations("ip", rules)

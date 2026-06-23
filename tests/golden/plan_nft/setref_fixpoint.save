@@ -1,0 +1,10 @@
+table ip ferm {
+	set ssh {
+		type inet_service
+		elements = { 22, 2222 }
+	}
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		tcp dport @ssh accept
+	}
+}

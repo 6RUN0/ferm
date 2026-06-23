@@ -1,0 +1,3 @@
+@set $p = (22);
+domain ip table filter chain INPUT { proto tcp dport $p ACCEPT; }
+domain ip6 table filter chain INPUT { proto tcp dport $p ACCEPT; }

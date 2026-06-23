@@ -1,0 +1,2 @@
+@set $ifs = (eth0 eth1);
+domain ip table filter chain INPUT { interface $ifs ACCEPT; }

@@ -209,6 +209,14 @@ exclude = ['^tests/e2e/datapath/', '^packaging/dns_gate/']
 module = ["netns", "oracle", "scenarios", "driver"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# The golden-harness canonicalizers (tests/golden/) are reached by a runtime
+# sys.path insert from the equivalence-gate unit test, not as an installed
+# package, so mypy cannot resolve them off that path; pyright resolves them
+# via its ``tests`` execution-environment extra path.
+module = ["golden.normalize", "golden.sortpl"]
+ignore_missing_imports = true
+
 [tool.pyright]
 # Pin the analysis scope: without it pyright walks the whole worktree
 # (including throwaway scratch files) and the gate stops being stable.

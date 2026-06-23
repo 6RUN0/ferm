@@ -5,6 +5,13 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
+from pyferm.errors import FermError
+from pyferm.parser import Parser
+from pyferm.scope import Option, Rule
+from pyferm.values import SetRef
+
 
 def _run(
     src: str, extra_flags: list[str] | None = None
@@ -183,3 +190,37 @@ def test_nft_does_not_silently_expand_set() -> None:
     assert "dport 80" not in proc.stdout, (
         "iptables-style expansion must not appear in nft output"
     )
+
+
+# ---------------------------------------------------------------------------
+# In-process unit mirrors for the parse-phase pre-pass.  The subprocess
+# cases above import the unmutated venv install in the child, so a mutation
+# sweep cannot kill a mutant in ``_expand_setrefs_for_iptables`` through
+# them; these call the static method directly.
+# ---------------------------------------------------------------------------
+
+
+def test_expand_setrefs_replaces_value_with_elements() -> None:
+    """A SetRef option value becomes its plain element list in place."""
+    rule = Rule()
+    rule.options.append(Option(name="dport", value=SetRef("p", ["22", "80"])))
+    Parser._expand_setrefs_for_iptables(rule)
+    assert rule.options[0].value == ["22", "80"]
+    assert not isinstance(rule.options[0].value, SetRef)
+
+
+def test_expand_setrefs_leaves_plain_options_untouched() -> None:
+    """A non-SetRef option value is passed through unchanged."""
+    rule = Rule()
+    rule.options.append(Option(name="dport", value="22"))
+    Parser._expand_setrefs_for_iptables(rule)
+    assert rule.options[0].value == "22"
+
+
+def test_expand_setrefs_rejects_two_sets_in_one_rule() -> None:
+    """Two SetRef options in one rule is rejected before expansion."""
+    rule = Rule()
+    rule.options.append(Option(name="saddr", value=SetRef("a", ["10.0.0.1"])))
+    rule.options.append(Option(name="daddr", value=SetRef("b", ["10.0.0.2"])))
+    with pytest.raises(FermError, match="at most one named set"):
+        Parser._expand_setrefs_for_iptables(rule)

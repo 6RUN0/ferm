@@ -1,0 +1,2 @@
+@set $m = (10.0.0.1 2001:db8::1);
+domain (ip ip6) table filter chain INPUT { saddr $m ACCEPT; }

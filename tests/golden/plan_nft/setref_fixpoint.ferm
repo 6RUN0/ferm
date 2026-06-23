@@ -1,0 +1,5 @@
+@set $ssh = (22 2222);
+domain ip table filter chain INPUT {
+    policy ACCEPT;
+    proto tcp dport $ssh ACCEPT;
+}
