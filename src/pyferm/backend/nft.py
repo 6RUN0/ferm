@@ -217,7 +217,10 @@ class NftMatch(NftStatement):
             # copies it from the anchor); fail loud rather than emit
             # a literal "None {...}".
             assert self.set_key is not None
-            joined = ", ".join(sort_set_elements(self.elements))
+            # A non-adjacent repeated operand can merge into one run twice;
+            # dedup so the set has no duplicate member.
+            unique = list(dict.fromkeys(self.elements))
+            joined = ", ".join(sort_set_elements(unique))
             return f"{self.set_key} {{ {joined} }}"
         return self.expr
 
@@ -1176,12 +1179,11 @@ def _collapse_one_pass(rules: list[NftRule]) -> tuple[list[NftRule], bool]:
     return out, changed
 
 
-#: Verdicts nft accepts as a vmap value (a pure verdict, not a statement).
-#: 'reject'/'log'/NAT/'counter' are statements nft rejects inside a vmap, so a
-#: rule carrying one breaks the run and stays linear (verified on nft v1.1.6).
-_VMAP_VERDICTS: frozenset[str] = frozenset(
-    {"accept", "drop", "return", "continue"}
-)
+#: Pure-verdict values our emitter produces that nft also accepts as a vmap
+#: value.  'reject'/'log'/NAT/'counter' are statements nft rejects inside a
+#: vmap, so a rule carrying one breaks the run and stays linear (verified on
+#: nft v1.1.6).  'queue' is a verdict we emit but deliberately do not fold.
+_VMAP_VERDICTS: frozenset[str] = frozenset({"accept", "drop", "return"})
 
 #: A vmap leaf rule is exactly one set-eligible match plus its verdict.
 _VMAP_LEAF_STATEMENTS = 2

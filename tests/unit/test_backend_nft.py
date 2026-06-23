@@ -65,6 +65,17 @@ def test_nftmatch_renders_collapsed_set_sorted() -> None:
     assert m.to_text() == "tcp dport { 22, 80, 443 }"
 
 
+def test_nftmatch_collapsed_set_dedups_repeated_element() -> None:
+    # A non-adjacent repeated operand can merge into the same run twice; the
+    # rendered anonymous set must not carry a duplicate member.
+    m = NftMatch(
+        "tcp dport 22",
+        set_key="tcp dport",
+        elements=["22", "80", "22"],
+    )
+    assert m.to_text() == "tcp dport { 22, 80 }"
+
+
 def test_nftmatch_non_eligible_renders_expr() -> None:
     m = NftMatch("ct state new")
     assert m.to_text() == "ct state new"
@@ -1832,9 +1843,12 @@ def test_nftvmap_to_text_orders_l4proto_by_protocol_number() -> None:
         ("accept", True),
         ("drop", True),
         ("return", True),
-        ("continue", True),
         ("jump mychain", True),
         ("goto mychain", True),
+        # 'continue'/'queue' are verdicts nft would accept in a vmap, but our
+        # emitter never folds them, so they stay out of the allow-list.
+        ("continue", False),
+        ("queue", False),
         ("reject", False),
         ("reject with icmp type port-unreachable", False),
         ('log prefix "x"', False),
