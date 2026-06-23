@@ -11,7 +11,15 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
 
 ## [Unreleased]
 
-No changes yet since 0.1.0a3.
+### Changed
+
+- The `--nft` backend now folds adjacent rules that differ in a single value
+  into anonymous nft sets (`tcp dport { 22, 80, 443 }`), producing more compact
+  output. Negated matches and per-rule-distinct statements stay linear.
+- **First `ferm --plan --nft` after upgrading shows a large diff**: the live
+  kernel still holds the previous linear rules, so each folded rule appears as
+  `remove (N linear) + add (1 set)`. This is expected and resolves on the next
+  apply.
 
 ## [0.1.0a3] - 2026-06-16
 
