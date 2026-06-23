@@ -43,12 +43,21 @@ class ParsedChain:
 
 
 @dataclass
+class ParsedSet:
+    """One parsed named set: its canonicalized, ordered elements."""
+
+    name: str
+    elements: list[str] = field(default_factory=list[str])
+
+
+@dataclass
 class ParsedTable:
-    """One parsed table: its chains keyed by name, insertion-ordered."""
+    """One parsed table: its chains and named sets, insertion-ordered."""
 
     chains: dict[str, ParsedChain] = field(
         default_factory=dict[str, ParsedChain]
     )
+    sets: dict[str, ParsedSet] = field(default_factory=dict[str, ParsedSet])
 
 
 def _parse_error(lineno: int, line: str) -> FermError:
@@ -577,6 +586,29 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             else:
                 # extra token before the brace (or instead of it) is invalid
                 raise _parse_error(lineno, raw)
+            continue
+
+        # -- add set ---------------------------------------------------------
+        if sub == "set" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
+            fam_tok, table_name, set_name = parts[2], parts[3], parts[4]
+            if table_name != "ferm":
+                raise _parse_error(lineno, raw)
+            family = _check_family(family, fam_tok, lineno, raw)
+            _ensure_ferm_table(tables)
+            tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))
+            continue
+
+        # -- add element -----------------------------------------------------
+        if sub == "element" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
+            fam_tok, table_name, set_name = parts[2], parts[3], parts[4]
+            if table_name != "ferm":
+                raise _parse_error(lineno, raw)
+            family = _check_family(family, fam_tok, lineno, raw)
+            rest = line[line.find("{") + 1 : line.rfind("}")]
+            elements = [e.strip() for e in rest.split(",") if e.strip()]
+            _ensure_ferm_table(tables)
+            ps = tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))
+            ps.elements = sort_set_elements(ps.elements + elements)
             continue
 
         # -- add rule --------------------------------------------------------
