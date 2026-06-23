@@ -242,6 +242,18 @@ as `prot-unreachable`; the spellings are checked against a live `nft -c`. An
 unknown value stays a translate-time error (fail-closed) rather than being
 silently applied.
 
+The fifth slice — **verdict maps (vmap)** under `--nft` — is also implemented
+on `python-port` (not yet released): a run of adjacent single-key leaf rules
+that differ in both the key and the verdict folds into one verdict map
+(`tcp dport vmap { 22 : accept, 80 : drop }`), the verdict-carrying counterpart
+of the anonymous-set collapse. Only pure verdicts (`accept`/`drop`/`return`/
+`continue`/`jump`/`goto`) are eligible — `reject`, `log`, and NAT statements
+nft forbids inside a vmap break the run and stay linear — and a duplicate key
+ends the run (nft rejects a vmap with duplicate keys). Members are ordered by
+the key's canonical rank (nft stores a vmap key-ordered, like a set), so
+`ferm --plan --nft` over an unchanged ruleset converges. Multi-match rules and
+mixing a folded set with singles are deliberately deferred.
+
 #### Deferred debt
 
 The following items are explicitly **out of scope** of the anonymous-set
@@ -253,9 +265,11 @@ slice and recorded here so they are not lost.
   oracle, so changing it is a deliberate behaviour decision, not a bug fix:
   it makes the iptables port-range data path untestable on `nft`-backed
   distros. Track as an oracle-divergence decision.
-- *Maps / concatenations* — the rest of the Phase 5 payoff, building on
-  the set primitives above. Nested `{ ... }` operands (concatenations,
-  verdict maps) are deliberately not parsed yet (`no nesting in v1`).
+- *Concatenations / named maps* — the rest of the Phase 5 payoff, building
+  on the set and vmap primitives above. Composite-key operands
+  (`ip saddr . tcp dport { ... }`) and named maps are deliberately not folded
+  or parsed yet; vmap folding is limited to single-key runs, and nested
+  `{ ... }` plan-side parsing stays `no nesting in v1`.
 
 ### Phase 6 — Standard rule library (ready-made patterns)
 

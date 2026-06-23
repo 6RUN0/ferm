@@ -1687,11 +1687,17 @@ def test_collapse_merges_adjacent_ports() -> None:
     assert out[0].statements[1].to_text() == "accept"
 
 
-def test_collapse_stops_at_differing_verdict() -> None:
+def test_collapse_differing_verdict_folds_to_vmap() -> None:
+    # Same selector, differing key AND verdict: a set cannot express it, so the
+    # vmap pass folds the run into one verdict map ordered by key.
     out = _collapse_chain_rules(
         [_port_rule("22", "accept"), _port_rule("80", "drop")]
     )
-    assert len(out) == 2  # different verdict -> not collapse-equivalent
+    assert len(out) == 1
+    assert (
+        out[0].statements[0].to_text()
+        == "tcp dport vmap { 22 : accept, 80 : drop }"
+    )
 
 
 def test_collapse_stops_at_differing_comment() -> None:
@@ -1786,3 +1792,150 @@ def test_collapse_second_axis_order_insensitive() -> None:
     assert len(out) == 1
     assert out[0].statements[0].to_text() == "ip saddr { 10.0.0.1, 10.0.0.2 }"
     assert out[0].statements[1].to_text() == "ip daddr { 10.0.0.3, 10.0.0.4 }"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: verdict-map (vmap) fold
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import (  # noqa: E402
+    NftVmap,
+    _is_vmap_verdict,
+    _vmap_candidate,
+)
+
+
+def test_nftvmap_to_text_orders_by_numeric_key() -> None:
+    vmap = NftVmap(
+        "tcp dport", [("443", "drop"), ("22", "accept"), ("80", "drop")]
+    )
+    assert (
+        vmap.to_text()
+        == "tcp dport vmap { 22 : accept, 80 : drop, 443 : drop }"
+    )
+
+
+def test_nftvmap_to_text_orders_l4proto_by_protocol_number() -> None:
+    # The vmap key reuses the set sorter: protocol names order by number
+    # (icmp=1, tcp=6, udp=17), matching nft's stored readback order.
+    vmap = NftVmap(
+        "meta l4proto",
+        [("udp", "drop"), ("tcp", "accept"), ("icmp", "return")],
+    )
+    assert vmap.to_text() == (
+        "meta l4proto vmap { icmp : return, tcp : accept, udp : drop }"
+    )
+
+
+@pytest.mark.parametrize(
+    ("expr", "eligible"),
+    [
+        ("accept", True),
+        ("drop", True),
+        ("return", True),
+        ("continue", True),
+        ("jump mychain", True),
+        ("goto mychain", True),
+        ("reject", False),
+        ("reject with icmp type port-unreachable", False),
+        ('log prefix "x"', False),
+        ("snat to 1.2.3.4", False),
+    ],
+)
+def test_is_vmap_verdict_allow_list(expr: str, eligible: bool) -> None:
+    assert _is_vmap_verdict(NftVerdict(expr)) is eligible
+
+
+def test_is_vmap_verdict_rejects_non_verdict_statement() -> None:
+    assert _is_vmap_verdict(NftMatch("tcp dport 22")) is False
+
+
+def test_vmap_candidate_rejects_folded_set_rule() -> None:
+    # A rule already folded into a set (elements != None) is not a single-key
+    # vmap leaf, so the vmap pass leaves it alone.
+    folded = NftRule(
+        statements=[
+            NftMatch("tcp dport", set_key="tcp dport", elements=["22", "80"]),
+            NftVerdict("accept"),
+        ]
+    )
+    assert _vmap_candidate(folded) is None
+
+
+def test_collapse_vmap_run_of_one_stays_linear() -> None:
+    out = _collapse_chain_rules([_port_rule("22", "accept")])
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "tcp dport 22"
+    assert out[0].statements[1].to_text() == "accept"
+
+
+def test_collapse_vmap_reject_breaks_run() -> None:
+    # reject is not a vmap-eligible verdict (nft rejects it inside a vmap),
+    # so the pair stays as two linear rules.
+    reject = NftRule(
+        statements=[
+            NftMatch("tcp dport 80", set_key="tcp dport", element="80"),
+            NftVerdict("reject"),
+        ]
+    )
+    out = _collapse_chain_rules([_port_rule("22", "accept"), reject])
+    assert len(out) == 2
+
+
+def test_collapse_vmap_duplicate_key_ends_run() -> None:
+    # nft rejects a vmap with duplicate keys; a repeated key ends the run,
+    # so the duplicate stays a separate linear rule.
+    out = _collapse_chain_rules(
+        [
+            _port_rule("22", "accept"),
+            _port_rule("80", "drop"),
+            _port_rule("22", "return"),
+        ]
+    )
+    assert len(out) == 2
+    assert (
+        out[0].statements[0].to_text()
+        == "tcp dport vmap { 22 : accept, 80 : drop }"
+    )
+    assert out[1].statements[0].to_text() == "tcp dport 22"
+    assert out[1].statements[1].to_text() == "return"
+
+
+def test_collapse_vmap_does_not_cross_selectors() -> None:
+    saddr = NftRule(
+        statements=[
+            NftMatch(
+                "ip saddr 10.0.0.1", set_key="ip saddr", element="10.0.0.1"
+            ),
+            NftVerdict("drop"),
+        ]
+    )
+    out = _collapse_chain_rules([_port_rule("22", "accept"), saddr])
+    assert len(out) == 2  # different set_key -> not one vmap
+
+
+def test_collapse_vmap_folds_jump_and_goto() -> None:
+    a = NftRule(
+        statements=[
+            NftMatch("tcp dport 22", set_key="tcp dport", element="22"),
+            NftVerdict("jump sub"),
+        ]
+    )
+    b = NftRule(
+        statements=[
+            NftMatch("tcp dport 80", set_key="tcp dport", element="80"),
+            NftVerdict("goto sub"),
+        ]
+    )
+    out = _collapse_chain_rules([a, b])
+    assert len(out) == 1
+    assert (
+        out[0].statements[0].to_text()
+        == "tcp dport vmap { 22 : jump sub, 80 : goto sub }"
+    )
+
+
+def test_collapse_vmap_idempotent() -> None:
+    once = _collapse_chain_rules(
+        [_port_rule("22", "accept"), _port_rule("80", "drop")]
+    )
+    assert _collapse_chain_rules(once) == once

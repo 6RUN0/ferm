@@ -140,6 +140,26 @@ def sort_set_elements(elements: list[str]) -> list[str]:
     return [element for _, element in sorted(enumerate(elements), key=key)]
 
 
+def sort_vmap_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """
+    Return verdict-map ``(key, verdict)`` pairs in canonical key order.
+
+    nft stores a ``vmap`` ordered by its key exactly as it orders a set
+    (verified on the kernel readback), so the key reuses :func:`classify`
+    while the verdict travels with it.  A pair whose key is unparsable stays
+    last in input order (stable), matching :func:`sort_set_elements`.
+    """
+
+    def key(item: tuple[int, tuple[str, str]]) -> tuple[object, ...]:
+        index, (element, _verdict) = item
+        rank, natural = classify(element)
+        if rank == RANK_UNPARSABLE:
+            return (rank, index)
+        return (rank, natural, element)
+
+    return [pair for _, pair in sorted(enumerate(pairs), key=key)]
+
+
 def _nft_network_text(
     network: ipaddress.IPv4Network | ipaddress.IPv6Network,
 ) -> str:

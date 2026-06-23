@@ -276,3 +276,55 @@ def test_canon_unicode_in_comment_braces_does_not_crash() -> None:
         'tcp dport 22 accept comment "x { ² }"', family="ip"
     )
     assert isinstance(result, str)
+
+
+def test_vmap_canon_orders_members_by_key() -> None:
+    out = canonicalize_nft_rule(
+        "tcp dport vmap { 80 : drop, 22 : accept }", family="ip"
+    )
+    assert out == "tcp dport vmap { 22 : accept, 80 : drop }"
+
+
+def test_vmap_canon_converges_both_orders() -> None:
+    desired = canonicalize_nft_rule(
+        "tcp dport vmap { 22 : accept, 80 : drop, 443 : drop }", family="ip"
+    )
+    kernel = canonicalize_nft_rule(
+        "tcp dport vmap { 443 : drop, 80 : drop, 22 : accept }", family="ip"
+    )
+    assert desired == kernel
+
+
+def test_vmap_canon_idempotent() -> None:
+    once = canonicalize_nft_rule(
+        "tcp dport vmap { 80 : drop, 22 : accept }", family="ip"
+    )
+    assert canonicalize_nft_rule(once, family="ip") == once
+
+
+def test_vmap_canon_injective_on_verdicts() -> None:
+    # Distinct key->verdict mappings must NOT canonicalize equal: the verdict
+    # rides with its key, so swapping verdicts is a real change.
+    a = canonicalize_nft_rule(
+        "tcp dport vmap { 22 : accept, 80 : drop }", family="ip"
+    )
+    b = canonicalize_nft_rule(
+        "tcp dport vmap { 22 : drop, 80 : accept }", family="ip"
+    )
+    assert a != b
+
+
+def test_vmap_canon_keeps_multitoken_verdict() -> None:
+    out = canonicalize_nft_rule(
+        "tcp dport vmap { 80 : jump foo, 22 : accept }", family="ip"
+    )
+    assert out == "tcp dport vmap { 22 : accept, 80 : jump foo }"
+
+
+def test_ipv6_set_not_misread_as_vmap() -> None:
+    # An IPv6 set element carries ':' but no 'vmap' marker, so it must be
+    # ordered as a set, never split into key:verdict pairs.
+    out = canonicalize_nft_rule(
+        "ip6 saddr { 2001:db8::2, 2001:db8::1 } accept", family="ip6"
+    )
+    assert out == "ip6 saddr { 2001:db8::1, 2001:db8::2 } accept"

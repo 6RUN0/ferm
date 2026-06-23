@@ -32,6 +32,7 @@ from pyferm.nftset import (
     RANK_INTERVAL,
     classify,
     sort_set_elements,
+    sort_vmap_pairs,
 )
 from pyferm.rules import (
     RenderedOption,
@@ -234,6 +235,30 @@ class NftVerdict(NftStatement):
     def to_text(self) -> str:
         """Return the pre-rendered verdict expression verbatim."""
         return self.expr
+
+
+@dataclass
+class NftVmap(NftStatement):
+    """
+    A verdict map folded from a run of adjacent single-key leaf rules.
+
+    ``set_key`` is the selector left of the map (e.g. ``tcp dport``); each
+    ``(key, verdict)`` pair carries one rule's distinguishing operand and its
+    terminal verdict.  :meth:`to_text` orders the pairs by the key's canonical
+    rank, since nft stores a vmap key-ordered like a set, so a ``--plan`` over
+    an unchanged ruleset converges instead of showing a phantom change.
+    """
+
+    set_key: str
+    pairs: list[tuple[str, str]]
+
+    def to_text(self) -> str:
+        """Render ``<set_key> vmap { k1 : v1, ... }`` in canonical order."""
+        rendered = ", ".join(
+            f"{key} : {verdict}"
+            for key, verdict in sort_vmap_pairs(self.pairs)
+        )
+        return f"{self.set_key} vmap {{ {rendered} }}"
 
 
 @dataclass
@@ -1151,18 +1176,107 @@ def _collapse_one_pass(rules: list[NftRule]) -> tuple[list[NftRule], bool]:
     return out, changed
 
 
+#: Verdicts nft accepts as a vmap value (a pure verdict, not a statement).
+#: 'reject'/'log'/NAT/'counter' are statements nft rejects inside a vmap, so a
+#: rule carrying one breaks the run and stays linear (verified on nft v1.1.6).
+_VMAP_VERDICTS: frozenset[str] = frozenset(
+    {"accept", "drop", "return", "continue"}
+)
+
+#: A vmap leaf rule is exactly one set-eligible match plus its verdict.
+_VMAP_LEAF_STATEMENTS = 2
+
+
+def _is_vmap_verdict(statement: NftStatement) -> bool:
+    """Return whether *statement* is a verdict nft allows as a vmap value."""
+    if not isinstance(statement, NftVerdict):
+        return False
+    return statement.expr in _VMAP_VERDICTS or statement.expr.startswith(
+        ("jump ", "goto ")
+    )
+
+
+def _vmap_candidate(rule: NftRule) -> tuple[str, str, str] | None:
+    """
+    Return ``(set_key, key, verdict)`` if *rule* is a single-key vmap leaf.
+
+    A candidate is exactly ``[<set-eligible match>, <vmap verdict>]`` carrying
+    a single (not already folded) operand and no comment; anything else returns
+    ``None`` so the run breaks and the rule stays linear (safe-bias).
+    """
+    if (
+        rule.comment is not None
+        or len(rule.statements) != _VMAP_LEAF_STATEMENTS
+    ):
+        return None
+    match, verdict = rule.statements
+    if (
+        not isinstance(match, NftMatch)
+        or match.set_key is None
+        or match.element is None
+        or match.elements is not None
+    ):
+        return None
+    if not _is_vmap_verdict(verdict):
+        return None
+    assert isinstance(verdict, NftVerdict)
+    return match.set_key, match.element, verdict.expr
+
+
+def _collapse_vmap(rules: list[NftRule]) -> list[NftRule]:
+    """
+    Fold a run of adjacent single-key rules into one verdict map.
+
+    Runs after the set-collapse fixpoint, so any adjacent same-selector singles
+    left here necessarily differ in verdict (equal-verdict singles already
+    merged into a set).  A duplicate key ends the run (nft rejects a vmap with
+    duplicate keys), and a run of length 1 is left linear.
+    """
+    out: list[NftRule] = []
+    count = len(rules)
+    index = 0
+    while index < count:
+        candidate = _vmap_candidate(rules[index])
+        if candidate is None:
+            out.append(rules[index])
+            index += 1
+            continue
+        set_key, first_key, first_verdict = candidate
+        pairs: list[tuple[str, str]] = [(first_key, first_verdict)]
+        keys_seen = {first_key}
+        end = index
+        while end + 1 < count:
+            following = _vmap_candidate(rules[end + 1])
+            if (
+                following is None
+                or following[0] != set_key
+                or following[1] in keys_seen
+            ):
+                break
+            pairs.append((following[1], following[2]))
+            keys_seen.add(following[1])
+            end += 1
+        if end > index:
+            out.append(NftRule(statements=[NftVmap(set_key, pairs)]))
+        else:
+            out.append(rules[index])
+        index = end + 1
+    return out
+
+
 def _collapse_chain_rules(rules: list[NftRule]) -> list[NftRule]:
     """
-    Fold adjacent rules differing in one eligible value into anonymous sets.
+    Fold adjacent leaf rules into anonymous sets, then into verdict maps.
 
-    Iterates to a fixpoint: each pass strictly reduces the rule count, so the
-    loop terminates.  Only adjacent rules merge (nft is order-sensitive); the
-    predicate is the safety boundary, not array provenance.
+    The set pass iterates to a fixpoint: each pass strictly reduces the rule
+    count, so the loop terminates.  Only adjacent rules merge (nft is
+    order-sensitive); the predicate is the safety boundary, not array
+    provenance.  The vmap pass runs once over the settled result.
     """
     changed = True
     while changed:
         rules, changed = _collapse_one_pass(rules)
-    return rules
+    return _collapse_vmap(rules)
 
 
 class NftBackend(Backend):

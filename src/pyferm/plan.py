@@ -24,7 +24,7 @@ import shlex
 from dataclasses import dataclass, field
 
 from pyferm.errors import FermError
-from pyferm.nftset import canonicalize_set_elements
+from pyferm.nftset import canonicalize_set_elements, sort_vmap_pairs
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
 _CHAIN_PARTS_MIN = 2
@@ -275,16 +275,41 @@ _NFT_REJECT_DEFAULTS: dict[str, str] = {
 _NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
 
 
-#: One ``{ ... }`` anonymous-set run (no nesting in v1).
-_NFT_SET_RE = re.compile(r"\{([^{}]*)\}")
+#: One ``{ ... }`` operand run, with an optional ``vmap`` marker so a verdict
+#: map is told apart from a plain anonymous set (no nesting in v1).  The marker
+#: is required because an IPv6 set element carries ``:`` too, so the colon
+#: alone cannot discriminate a vmap.
+_NFT_SET_RE = re.compile(r"(vmap\s*)?\{([^{}]*)\}")
 
 
 def _normalize_set_run(match: re.Match[str]) -> str:
-    """Rewrite one ``{ ... }`` operand run to canonical ``{ a, b, c }``."""
-    raw = match.group(1).replace(",", " ").split()
+    """Rewrite one ``{ ... }`` operand run (set or vmap) to canonical form."""
+    if match.group(1) is not None:
+        return _normalize_vmap_run(match.group(2))
+    raw = match.group(2).replace(",", " ").split()
     if not raw:
         return "{ }"
     return "{ " + ", ".join(canonicalize_set_elements(raw)) + " }"
+
+
+def _normalize_vmap_run(inner: str) -> str:
+    """
+    Rewrite a ``vmap { k : v, ... }`` run to canonical key order.
+
+    Each member splits on its first ``:`` into a key and a (possibly
+    multi-token, e.g. ``jump foo``) verdict; the pairs are reordered by the
+    key's canonical rank so a folded vmap converges on both diff sides.  A
+    member that is not a well-formed pair leaves the whole run verbatim
+    (safe-bias: a noisy diff beats a false 'no changes').
+    """
+    pairs: list[tuple[str, str]] = []
+    for member in inner.split(","):
+        key, sep, verdict = member.partition(":")
+        if not sep:
+            return "vmap {" + inner + "}"
+        pairs.append((key.strip(), verdict.strip()))
+    rendered = ", ".join(f"{k} : {v}" for k, v in sort_vmap_pairs(pairs))
+    return "vmap { " + rendered + " }"
 
 
 def _normalize_sets(body: str) -> str:

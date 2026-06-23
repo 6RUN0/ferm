@@ -1,0 +1,9 @@
+# Adjacent proto-only rules that differ in BOTH the protocol and the verdict
+# fold into a verdict map.  The vmap key reuses the set sorter, so the members
+# come out ordered by protocol number (icmp=1, tcp=6, udp=17), matching nft's
+# stored readback order.
+domain ip table filter chain INPUT {
+    proto tcp ACCEPT;
+    proto udp DROP;
+    proto icmp RETURN;
+}

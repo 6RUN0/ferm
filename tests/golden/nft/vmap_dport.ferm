@@ -1,0 +1,8 @@
+# Adjacent dport rules with distinct verdicts fold into a port verdict map,
+# numerically ordered by key.  A run with two equal verdicts would instead fold
+# into a set (handled by the set-collapse pass), so each verdict here differs.
+domain ip table filter chain INPUT {
+    proto tcp dport 22 ACCEPT;
+    proto tcp dport 80 DROP;
+    proto tcp dport 443 RETURN;
+}
