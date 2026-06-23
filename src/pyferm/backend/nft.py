@@ -27,7 +27,12 @@ from pyferm.backend.base import (
 )
 from pyferm.domains import ShellSnapshot
 from pyferm.errors import FermError, internal_error
-from pyferm.nftset import sort_set_elements
+from pyferm.nftset import (
+    RANK_ADDRESS,
+    RANK_INTERVAL,
+    classify,
+    sort_set_elements,
+)
 from pyferm.rules import (
     RenderedOption,
     RenderedRule,
@@ -283,10 +288,109 @@ def render_comment(comment: str) -> str:
     return f"comment {_nft_quote_string(comment)}"
 
 
+#: A numeric port or a closed numeric range; service/protocol NAMES are
+#: rejected because their nft type and sort order cannot be inferred here.
+_SET_PORT_NUMERIC_RE: re.Pattern[str] = re.compile(r"\A\d+([-:]\d+)?\Z")
+
+
+@dataclass
+class _SetDecl:
+    """A named-set declaration: type plus ordered, validated elements."""
+
+    type_: str
+    flags_interval: bool
+    elements: list[str]
+
+
+def _set_type_and_elements(
+    domain: str, selector: str, setref: SetRef
+) -> tuple[str, bool, list[str]]:
+    """
+    Infer (nft type, flags-interval, validated sorted elements) for a set.
+
+    The type comes from the use-site *selector* (a port match needs
+    ``inet_service``, an address match ``ipv4_addr``/``ipv6_addr``, an
+    interface match ``ifname``); the elements are validated with the very
+    same validators the corresponding single-operand match uses, so a set
+    cannot smuggle an operand a literal match would reject.
+
+    Port elements must be numeric ports or numeric ranges.  A service or
+    protocol NAME would land in the unparsable sort bucket whose order is
+    not stable against a kernel readback, producing a never-converging
+    phantom diff, so it is rejected outright (fail-closed).
+    """
+    raw = [str(element) for element in setref.elements]
+    if selector.endswith(("dport", "sport")):
+        for element in raw:
+            if not _SET_PORT_NUMERIC_RE.match(element):
+                raise FermError(
+                    f"named set element '{element}' must be a numeric port "
+                    "or range; service/protocol names are not supported"
+                )
+        elements = [_validate_port(element) for element in raw]
+        type_ = "inet_service"
+    elif "saddr" in selector or "daddr" in selector:
+        elements = [_validate_address(element) for element in raw]
+        type_ = "ipv4_addr" if domain == "ip" else "ipv6_addr"
+    elif selector.endswith(("iifname", "oifname")):
+        elements = [_nft_quote_string(element) for element in raw]
+        type_ = "ifname"
+    else:
+        raise FermError(f"named set selector '{selector}' not supported")
+    flags_interval = any(
+        classify(element)[0] == RANK_INTERVAL
+        or (classify(element)[0] == RANK_ADDRESS and "/" in element)
+        for element in elements
+    )
+    return type_, flags_interval, sort_set_elements(elements)
+
+
+def _collect_set_declarations(
+    domain: str, rules: dict[str, list[NftRule]]
+) -> dict[str, _SetDecl]:
+    """
+    Aggregate named-set declarations over one family's rules.
+
+    Keyed by name within this ``render()``: every ferm table merges into one
+    ``table <family> ferm``, so a name is family-scoped.  The selector is
+    read structurally from :attr:`NftMatch.set_selector` (never reverse-parsed
+    out of the rendered text).  A name reused with a differing selector or a
+    differing element set is a conflict (error); the same name across several
+    chains or tables of one family is one object (dedup).
+    """
+    decls: dict[str, _SetDecl] = {}
+    selectors: dict[str, str] = {}
+    for chain_rules in rules.values():
+        for rule in chain_rules:
+            for stmt in rule.statements:
+                if not isinstance(stmt, NftMatch) or stmt.setref is None:
+                    continue
+                setref = stmt.setref
+                name = _validate_set_name(setref.name)
+                assert stmt.set_selector is not None
+                selector = stmt.set_selector
+                type_, flags_interval, elements = _set_type_and_elements(
+                    domain, selector, setref
+                )
+                if name in selectors and selectors[name] != selector:
+                    raise FermError(
+                        f"named set '{name}' used with conflicting selectors "
+                        f"'{selectors[name]}' and '{selector}'"
+                    )
+                if name in decls and decls[name].elements != elements:
+                    raise FermError(
+                        f"named set '{name}' has conflicting element sets"
+                    )
+                selectors[name] = selector
+                decls[name] = _SetDecl(type_, flags_interval, elements)
+    return decls
+
+
 def serialize_table(
     table: NftTable,
     chains: list[NftBaseChain | NftRegularChain],
     rules: dict[str, list[NftRule]],
+    decls: dict[str, _SetDecl],
     *,
     noflush: bool,
 ) -> str:
@@ -295,13 +399,23 @@ def serialize_table(
 
     Emits ``add table`` (idempotent), then ``flush table`` unless
     ``noflush`` (the ``--noflush`` decision lives HERE, not in the
-    applier -- design §7), then every chain, then every rule.  ``chains``
-    is pre-sorted by the caller for deterministic golden output.
+    applier -- design §7), then every named-set declaration, then every
+    chain, then every rule.  ``chains`` is pre-sorted by the caller for
+    deterministic golden output; ``decls`` is emitted by sorted name.
     """
     prefix = f"{table.family} {table.name}"
     lines = [f"add table {prefix}\n"]
     if not noflush:
         lines.append(f"flush table {prefix}\n")
+    for name in sorted(decls):
+        decl = decls[name]
+        flags = " flags interval;" if decl.flags_interval else ""
+        lines.append(
+            f"add set {prefix} {name} {{ type {decl.type_};{flags} }}\n"
+        )
+        if decl.elements:
+            joined = ", ".join(decl.elements)
+            lines.append(f"add element {prefix} {name} {{ {joined} }}\n")
     for chain in chains:
         header = _chain_header(chain)
         suffix = f" {header}" if header else ""
@@ -1060,7 +1174,10 @@ class NftBackend(Backend):
                         for rule in table_info.chains[original].rules
                     ]
                 )
-        save = serialize_table(table, chains, rules, noflush=options.noflush)
+        decls = _collect_set_declarations(domain, rules)
+        save = serialize_table(
+            table, chains, rules, decls, noflush=options.noflush
+        )
         return Rendered(save=save)
 
     def commit(

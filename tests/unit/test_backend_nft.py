@@ -88,7 +88,7 @@ def test_serialize_table_emits_atomic_transaction() -> None:
         ],
         "mychain": [NftRule([NftVerdict("drop")], comment="hi")],
     }
-    out = serialize_table(table, chains, rules, noflush=False)
+    out = serialize_table(table, chains, rules, {}, noflush=False)
     assert out == (
         "add table ip ferm\n"
         "flush table ip ferm\n"
@@ -104,7 +104,7 @@ def test_serialize_table_emits_atomic_transaction() -> None:
 def test_serialize_table_noflush_omits_flush() -> None:
     table = NftTable(family="ip", name="ferm")
     chains: list[NftBaseChain | NftRegularChain] = [NftRegularChain("c")]
-    out = serialize_table(table, chains, {"c": []}, noflush=True)
+    out = serialize_table(table, chains, {"c": []}, {}, noflush=True)
     assert "flush table" not in out
     assert out.startswith("add table ip ferm\nadd chain ip ferm c\n")
 

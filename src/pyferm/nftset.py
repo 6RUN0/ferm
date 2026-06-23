@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import ipaddress
 
-_RANK_NUMBER = 0
-_RANK_INTERVAL = 1
-_RANK_ADDRESS = 2
-_RANK_UNPARSABLE = 3
+RANK_NUMBER = 0
+RANK_INTERVAL = 1
+RANK_ADDRESS = 2
+RANK_UNPARSABLE = 3
 
 
-def _classify(element: str) -> tuple[int, object]:
+def classify(element: str) -> tuple[int, object]:
     """
     Return (rank, natural-key) for one element; rank groups like with like.
 
@@ -27,7 +27,7 @@ def _classify(element: str) -> tuple[int, object]:
     the whole sort (runs on unvalidated kernel-side text via the plan canon).
     """
     if element.isascii() and element.isdigit():
-        return _RANK_NUMBER, int(element)
+        return RANK_NUMBER, int(element)
     low, dash, high = element.partition("-")
     if (
         dash
@@ -36,12 +36,12 @@ def _classify(element: str) -> tuple[int, object]:
         and high.isascii()
         and high.isdigit()
     ):
-        return _RANK_INTERVAL, (int(low), int(high))
+        return RANK_INTERVAL, (int(low), int(high))
     try:
         net = ipaddress.ip_network(element, strict=False)
     except ValueError:
-        return _RANK_UNPARSABLE, ()
-    return _RANK_ADDRESS, (
+        return RANK_UNPARSABLE, ()
+    return RANK_ADDRESS, (
         net.version,
         int(net.network_address),
         net.prefixlen,
@@ -53,8 +53,8 @@ def sort_set_elements(elements: list[str]) -> list[str]:
 
     def key(item: tuple[int, str]) -> tuple[object, ...]:
         index, element = item
-        rank, natural = _classify(element)
-        if rank == _RANK_UNPARSABLE:
+        rank, natural = classify(element)
+        if rank == RANK_UNPARSABLE:
             # Keep unparsable elements last, in original order (stable).
             return (rank, index)
         return (rank, natural, element)
