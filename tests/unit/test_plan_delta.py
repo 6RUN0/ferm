@@ -294,7 +294,7 @@ def test_emit_chain_desuet_and_foreign_deleted() -> None:
 
 
 def test_emit_chain_delete_follows_every_flush() -> None:
-    # C2 ordering invariant: a 'delete chain' (desuet/foreign) must come AFTER
+    # Ordering invariant: a 'delete chain' (desuet/foreign) must come AFTER
     # every 'flush chain' in the same pass, so a jump/goto from a chain that
     # is being rebuilt has already been cleared before its target is removed.
     current = _tbl(

@@ -1050,7 +1050,7 @@ def _emit_set_changes(
     """
     Emit the set BUILD-UP phase of a delta: adds and element-modifies only.
 
-    A delta never emits ``delete set``: ``build_nft_delta`` (Task 9) diverts
+    A delta never emits ``delete set``: ``build_nft_delta`` diverts
     any set ``remove`` (pure removal OR retype remove+add) to a full reload,
     because ``delete set`` is refcount-unsafe inside a transaction when a live
     rule still references the set.  So this phase only adds new sets (verbatim
