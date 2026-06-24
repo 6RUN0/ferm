@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pyferm.plan import ParsedSet, parse_nft_script
+import pytest
+
+from pyferm.errors import FermError
+from pyferm.plan import ParsedSet, parse_nft_list, parse_nft_script
 
 
 def test_parsed_set_defaults() -> None:
@@ -34,3 +37,31 @@ def test_parse_nft_script_set_without_flags() -> None:
     s = parse_nft_script(script)["ferm"].sets["ports"]
     assert s.type_ == "inet_service"
     assert s.flags == ()
+
+
+def test_parse_nft_list_reads_set_type_and_flags() -> None:
+    text = (
+        "table ip ferm {\n"
+        "\tset hosts {\n"
+        "\t\ttype ipv4_addr\n"
+        "\t\tflags interval\n"
+        "\t\telements = { 10.0.0.0/24 }\n"
+        "\t}\n"
+        "}\n"
+    )
+    s = parse_nft_list(text, family="ip")["ferm"].sets["hosts"]
+    assert s.type_ == "ipv4_addr"
+    assert s.flags == ("interval",)
+    assert s.elements == ["10.0.0.0/24"]
+
+
+def test_parse_nft_list_rejects_bad_chain_name() -> None:
+    text = "table ip ferm {\n\tchain bad;name {\n\t}\n}\n"
+    with pytest.raises(FermError):
+        parse_nft_list(text, family="ip")
+
+
+def test_parse_nft_list_rejects_bad_set_name() -> None:
+    text = "table ip ferm {\n\tset bad-name {\n\t}\n}\n"
+    with pytest.raises(FermError):
+        parse_nft_list(text, family="ip")

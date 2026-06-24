@@ -769,6 +769,12 @@ _NFT_LIST_CHAIN_RE = re.compile(r"^chain\s+(\S+)\s*\{$")
 _NFT_LIST_SET_RE = re.compile(r"^set\s+(\S+)\s*\{$")
 # A base-chain header starts with 'type' followed by the hook/priority tokens.
 _NFT_LIST_HEADER_RE = re.compile(r"^type\s+\S+\s+hook\s+\S+\s+priority\b")
+# nft bare-word identifier grammar (mirrors the backend's _NFT_CHAIN_RE /
+# _NFT_SET_NAME_RE).  Names from a LIVE snapshot are synthesized back into
+# 'delete chain'/'delete set' lines, so reject anything nft could not have
+# legitimately created -- fail-closed defense-in-depth (no real injection
+# vector: the grammar already forbids whitespace/metacharacters).
+_NFT_LIST_IDENT_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
 
 
 def _join_multiline_elements(text: str) -> str:
@@ -852,7 +858,10 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                 continue
             m_set = _NFT_LIST_SET_RE.match(line)
             if m_set:
-                current_set = ParsedSet(m_set.group(1))
+                set_name = m_set.group(1)
+                if not _NFT_LIST_IDENT_RE.match(set_name):
+                    raise _parse_error(lineno, raw)
+                current_set = ParsedSet(set_name)
                 tables["ferm"].sets[current_set.name] = current_set
                 depth = _NL_DEPTH_SET
                 continue
@@ -860,6 +869,8 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
             if not m:
                 raise _parse_error(lineno, raw)
             chain_name = m.group(1)
+            if not _NFT_LIST_IDENT_RE.match(chain_name):
+                raise _parse_error(lineno, raw)
             # policy will be set when the first body line arrives
             current_chain = ParsedChain(policy="-")
             tables["ferm"].chains[chain_name] = current_chain
@@ -912,7 +923,13 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                     current_set.elements = canonicalize_set_elements(
                         current_set.elements + members, absorb_contained=False
                     )
-            # 'type ...'/'flags ...' lines carry no diff-relevant data; skip.
+                continue
+            # 'type ...'/'flags ...' carry the set's type and flags.
+            seen_type, seen_flags = _parse_set_header(line)
+            if seen_type is not None:
+                current_set.type_ = seen_type
+            if seen_flags:
+                current_set.flags = current_set.flags + seen_flags
             continue
 
     if depth != _NL_DEPTH_OUTSIDE:
