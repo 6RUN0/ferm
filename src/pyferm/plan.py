@@ -48,10 +48,20 @@ class ParsedChain:
 
 @dataclass
 class ParsedSet:
-    """One parsed named set: its canonicalized, ordered elements."""
+    """
+    One parsed named set: its elements plus its nft type and flags.
+
+    ``type_`` and ``flags`` are diff-relevant: a set whose elements are
+    unchanged but whose type or flags differ is NOT a no-op -- an element
+    delta applied to a wrongly-typed live set fails the transaction.  Both
+    parsers populate them; ``diff_tables`` models a type/flags divergence as
+    remove+add (the elements are lawfully lost when the type changes).
+    """
 
     name: str
     elements: list[str] = field(default_factory=list[str])
+    type_: str | None = None
+    flags: tuple[str, ...] = ()
 
 
 @dataclass
@@ -568,6 +578,29 @@ def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
         tables["ferm"] = ParsedTable()
 
 
+def _parse_set_header(inner: str) -> tuple[str | None, tuple[str, ...]]:
+    """
+    Extract ``(type, flags)`` from a set declaration's brace body.
+
+    Accepts both the render form (``type ipv4_addr; flags interval;``) and the
+    ``nft list`` form (``type ipv4_addr`` / ``flags interval`` on separate
+    lines, pre-joined by the caller).  Tokens after ``type`` up to the next
+    statement form the type; every token after a ``flags`` keyword is a flag.
+    Unknown statements are ignored (safe-bias).
+    """
+    type_: str | None = None
+    flags: list[str] = []
+    for stmt in inner.replace("\n", ";").split(";"):
+        tokens = stmt.split()
+        if not tokens:
+            continue
+        if tokens[0] == "type" and len(tokens) > 1:
+            type_ = tokens[1]
+        elif tokens[0] == "flags":
+            flags.extend(tokens[1:])
+    return type_, tuple(flags)
+
+
 def _check_family(
     current: str | None, seen: str, lineno: int, raw: str
 ) -> str:
@@ -667,7 +700,14 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
                 raise _parse_error(lineno, raw)
             family = _check_family(family, fam_tok, lineno, raw)
             _ensure_ferm_table(tables)
-            tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))
+            set_obj = tables["ferm"].sets.setdefault(
+                set_name, ParsedSet(set_name)
+            )
+            brace_open = line.find("{")
+            brace_close = line.rfind("}")
+            if brace_open != -1 and brace_close > brace_open:
+                inner = line[brace_open + 1 : brace_close]
+                set_obj.type_, set_obj.flags = _parse_set_header(inner)
             continue
 
         # -- add element -----------------------------------------------------
