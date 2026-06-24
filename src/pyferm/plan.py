@@ -1129,6 +1129,22 @@ def diff_tables(
                         table_name, set_name, "add", desired_set.elements
                     )
                 )
+            elif (current_set.type_, current_set.flags) != (
+                desired_set.type_,
+                desired_set.flags,
+            ):
+                # Type/flags cannot be altered in place: drop the set and
+                # recreate it (the elements are lawfully lost -- the type
+                # changed).  Remove precedes add so one transaction reuses
+                # the name.
+                diff.set_changes.append(
+                    SetChange(table_name, set_name, "remove", [])
+                )
+                diff.set_changes.append(
+                    SetChange(
+                        table_name, set_name, "add", desired_set.elements
+                    )
+                )
             elif current_set.elements != desired_set.elements:
                 diff.set_changes.append(
                     SetChange(
