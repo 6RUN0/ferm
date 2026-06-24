@@ -199,6 +199,40 @@ Depends on Phase 2 (native nft: handles + atomic transactions). A
 flush-replace, plus richer config history/backup. A cheap seed
 (`--backup-dir`) was pulled forward into Phase 1.
 
+The first slice — **incremental atomic delta apply** under `--nft` — is
+implemented on the `python-port` branch (not yet released): under `--nft`,
+`commit` defaults to an incremental nft transaction (a delta computed against
+the live `nft list table` snapshot) instead of `flush table` + full rebuild.
+Unchanged chains and unchanged named sets are left untouched, so their
+per-rule packet/byte counters and kernel state survive a reload. A
+`--full-reload` flag opts back into the legacy flush-replace behaviour. The
+first run (no prior snapshot), an empty snapshot, or a diff that contains a
+set type/flags retype or removal deterministically falls back to a full
+reload; the fallback predicate is a single named function. The delta stays one
+`nft -f` transaction (atomicity preserved). The delta is convergent: elements
+that exist in the kernel but not in the config are removed, matching the
+semantics of flush-replace.
+
+#### Deferred items
+
+The following are explicitly out of scope for this slice and recorded here so
+they are not lost.
+
+- *Rule-granular delta by nft handle* — per-rule packet/byte counters survive
+  only in unchanged chains; a changed chain is flushed and rebuilt in full.
+  Diffing individual rules by handle with counter preservation is a separate,
+  more complex undertaking (handle tracking, insertion order).
+- *Config version history / backup* — the second item from the phase header
+  (versioned snapshots, extended `--backup-dir`, rollback to a prior version);
+  a separate slice later.
+- *Preservation of external dynamic set population* — saving elements added
+  by an external `nft add element` that the config does not declare. This
+  conflicts with convergence (the live state would no longer equal the desired
+  state), so it is excluded from the base slice; an explicit opt-in flag is
+  the right vehicle if needed later.
+- *append-only `--noflush`* under `--nft` — remains deferred.
+- *JSON output mode* (`nft -j`) — not related to the delta path.
+
 ### Phase 5 — nft-native expressiveness
 
 Depends on Phase 2 — the payoff for going native: sets, maps, intervals,
