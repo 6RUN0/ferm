@@ -356,17 +356,28 @@ def nft_conformance(session: nox.Session) -> None:
     is never vendored -- GPLv2 source stays out of the tree.  Needs
     network for the clone; deliberately absent from ``preflight``.
     """
-    corpus = Path(session.create_tmp()) / "nftables"
-    session.run(
-        "git",
-        "clone",
-        "--depth=1",
-        "--branch",
-        _NFT_CORPUS_TAG,
-        _NFT_CORPUS_REPO,
-        str(corpus),
-        external=True,
-    )
+    # create_tmp returns a stable path that nox does not wipe between runs,
+    # so a prior clone survives.  Keying the checkout dir on the tag makes
+    # reuse correct without any re-fetch: an immutable tag never changes, and
+    # bumping _NFT_CORPUS_TAG lands in a fresh dir instead of silently running
+    # the suite against a stale corpus.  A single pinned tag is intentional --
+    # layer 2's baseline is coupled to one (corpus, system nft) pair, so there
+    # is no loop over versions.
+    corpus = Path(session.create_tmp()) / f"nftables-{_NFT_CORPUS_TAG}"
+    if not (corpus / "tests" / "py").is_dir():
+        if corpus.exists():
+            # Partial or stale leftover: git refuses a non-empty target.
+            shutil.rmtree(corpus)
+        session.run(
+            "git",
+            "clone",
+            "--depth=1",
+            "--branch",
+            _NFT_CORPUS_TAG,
+            _NFT_CORPUS_REPO,
+            str(corpus),
+            external=True,
+        )
     _uv(
         session,
         "pytest",
