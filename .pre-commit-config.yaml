@@ -50,7 +50,8 @@ repos:
             e2e/lockout/driver\.py$|
             e2e/nft/driver\.py$|
             e2e/datapath/(driver|netns|oracle|scenarios)\.py$|
-            property/oracle\.py$
+            property/oracle\.py$|
+            conformance/nft/tdotparser\.py$
           )
 
   # Quick regex-based gotchas the linters cannot catch: Mock method
