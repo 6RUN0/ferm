@@ -1092,6 +1092,55 @@ def _emit_set_changes(  # pyright: ignore[reportUnusedFunction]
     return out
 
 
+def _emit_chain_changes(  # pyright: ignore[reportUnusedFunction]
+    diff: PlanDiff,
+    current: dict[str, ParsedTable],
+    index: _DesiredIndex,
+    *,
+    family: str,
+) -> list[str]:
+    """
+    Emit the chain phase of a delta.
+
+    Per desired chain: a new chain is declared and filled; a chain with a rule
+    delta is redeclared (idempotent -- updates a base chain's policy),
+    flushed, and rebuilt from the verbatim desired rules (its counters are
+    lost, it changed); a base chain with ONLY a policy change is redeclared
+    without a flush (policy updates, counters survive); an unchanged chain is
+    left untouched (the whole point -- its counters survive).  Desuet base
+    chains and foreign user chains are deleted (convergence to desired).
+    """
+    prefix = f"{family} ferm"
+    current_chains = current["ferm"].chains if "ferm" in current else {}
+    rule_changed = {rc.chain for rc in diff.rules_added} | {
+        rc.chain for rc in diff.rules_removed
+    }
+    policy_changed = {pc.chain for pc in diff.policy_changes}
+    out: list[str] = []
+    for name in sorted(index.chain_decl):
+        decl = index.chain_decl[name]
+        rules = index.chain_rules.get(name, [])
+        if name not in current_chains:
+            out.append(decl)
+            out.extend(rules)
+        elif name in rule_changed:
+            out.append(decl)
+            out.append(f"flush chain {prefix} {name}")
+            out.extend(rules)
+        elif name in policy_changed:
+            out.append(decl)
+        # else: unchanged -- skip so its counters survive.
+    out.extend(
+        f"delete chain {prefix} {dchain.chain}"
+        for dchain in sorted(diff.desuet_chains, key=lambda d: d.chain)
+    )
+    out.extend(
+        f"delete chain {prefix} {fchain.chain}"
+        for fchain in sorted(diff.foreign_chains, key=lambda f: f.chain)
+    )
+    return out
+
+
 @dataclass
 class PlanDiff:
     """The diff for one family: what applying the config would change."""

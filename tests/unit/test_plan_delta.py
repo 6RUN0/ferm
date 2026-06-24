@@ -6,10 +6,12 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.plan import (
+    ParsedChain,
     ParsedSet,
     ParsedTable,
     _build_desired_index,
     _DesiredIndex,
+    _emit_chain_changes,
     _emit_set_changes,
     diff_tables,
     parse_nft_list,
@@ -200,3 +202,117 @@ def test_emit_set_remove_is_internal_error() -> None:
     diff = diff_tables(current, {"ferm": ParsedTable()}, noflush=False)
     with pytest.raises(FermError):
         _emit_set_changes(diff, current, _DesiredIndex(), family="ip")
+
+
+def _tbl(chains: dict[str, ParsedChain]) -> dict[str, ParsedTable]:
+    t = ParsedTable()
+    t.chains.update(chains)
+    return {"ferm": t}
+
+
+def test_emit_chain_new() -> None:
+    current = {"ferm": ParsedTable()}
+    desired = _tbl({"sub": ParsedChain("-", ["add"])})
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add chain ip ferm sub\nadd rule ip ferm sub tcp dport 22 accept\n"
+    )
+    lines = _emit_chain_changes(diff, current, index, family="ip")
+    assert lines == [
+        "add chain ip ferm sub",
+        "add rule ip ferm sub tcp dport 22 accept",
+    ]
+
+
+def test_emit_chain_changed_flushes_and_rebuilds() -> None:
+    current = _tbl({"INPUT": ParsedChain("policy accept", ["old rule"])})
+    desired = _tbl({"INPUT": ParsedChain("policy accept", ["new rule"])})
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\nadd rule ip ferm INPUT new rule\n"
+    )
+    lines = _emit_chain_changes(diff, current, index, family="ip")
+    assert "flush chain ip ferm INPUT" in lines
+    assert "add rule ip ferm INPUT new rule" in lines
+    assert lines.index("flush chain ip ferm INPUT") < lines.index(
+        "add rule ip ferm INPUT new rule"
+    )
+
+
+def test_emit_chain_policy_only_no_flush() -> None:
+    current = _tbl(
+        {
+            "INPUT": ParsedChain(
+                "type filter hook input priority 0 policy accept", ["r"]
+            )
+        }
+    )
+    desired = _tbl(
+        {
+            "INPUT": ParsedChain(
+                "type filter hook input priority 0 policy drop", ["r"]
+            )
+        }
+    )
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy drop; }\nadd rule ip ferm INPUT r\n"
+    )
+    lines = _emit_chain_changes(diff, current, index, family="ip")
+    assert any(line.startswith("add chain ip ferm INPUT") for line in lines)
+    assert not any(line.startswith("flush chain") for line in lines)
+
+
+def test_emit_chain_unchanged_skipped() -> None:
+    current = _tbl({"INPUT": ParsedChain("policy accept", ["r"])})
+    desired = _tbl({"INPUT": ParsedChain("policy accept", ["r"])})
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\nadd rule ip ferm INPUT r\n"
+    )
+    assert _emit_chain_changes(diff, current, index, family="ip") == []
+
+
+def test_emit_chain_desuet_and_foreign_deleted() -> None:
+    current = _tbl(
+        {
+            "OLDBASE": ParsedChain("policy accept"),
+            "olduser": ParsedChain("-"),
+        }
+    )
+    desired = {"ferm": ParsedTable()}
+    diff = diff_tables(current, desired, noflush=False)
+    lines = _emit_chain_changes(diff, current, _DesiredIndex(), family="ip")
+    assert "delete chain ip ferm OLDBASE" in lines
+    assert "delete chain ip ferm olduser" in lines
+
+
+def test_emit_chain_delete_follows_every_flush() -> None:
+    # C2 ordering invariant: a 'delete chain' (desuet/foreign) must come AFTER
+    # every 'flush chain' in the same pass, so a jump/goto from a chain that
+    # is being rebuilt has already been cleared before its target is removed.
+    current = _tbl(
+        {
+            "INPUT": ParsedChain("policy accept", ["jump gone"]),
+            "gone": ParsedChain("-", ["r"]),
+        }
+    )
+    desired = _tbl({"INPUT": ParsedChain("policy accept", ["new rule"])})
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\nadd rule ip ferm INPUT new rule\n"
+    )
+    lines = _emit_chain_changes(diff, current, index, family="ip")
+    flush_positions = [
+        i for i, ln in enumerate(lines) if ln.startswith("flush ")
+    ]
+    delete_positions = [
+        i for i, ln in enumerate(lines) if ln.startswith("delete chain ")
+    ]
+    assert flush_positions
+    assert delete_positions
+    assert max(flush_positions) < min(delete_positions)
