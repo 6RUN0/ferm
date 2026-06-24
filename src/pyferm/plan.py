@@ -288,21 +288,48 @@ _NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
 #: is not misread as a verdict map on the untrusted kernel-readback side.
 _NFT_SET_RE = re.compile(r"((?<![\w@])vmap\s*)?\{([^{}]*)\}")
 
+#: A brace run is a ct-state operand when ``ct state`` (optionally negated)
+#: immediately precedes it.  The brace run alone carries no context, so the
+#: text to its left supplies it; this lets the braced form reorder to nft's
+#: bitmask sequence like the unbraced ``ct state a,b`` form already does.
+_CT_STATE_PREFIX_RE = re.compile(r"ct state\s*(?:!=)?\s*$")
+
 
 def _normalize_set_run(match: re.Match[str]) -> str:
     """Rewrite one ``{ ... }`` operand run (set or vmap) to canonical form."""
     if match.group(1) is not None:
         return _normalize_vmap_run(match.group(2))
+    inner = match.group(2)
     # A ``map { k : v }`` statement (e.g. ``... map { 1.2.3.4 : 0x1 }``)
     # carries ``" : "`` members but no ``vmap`` marker; it is not a set, so
-    # splitting it on whitespace would mangle it.  An anonymous set never holds
-    # a ``" : "`` member, so leave any such run verbatim (safe on both sides).
-    if " : " in match.group(2):
+    # splitting it would mangle it.  An anonymous set never holds a ``" : "``
+    # member, so leave any such run verbatim (safe on both sides).
+    if " : " in inner:
         return match.group(0)
-    raw = match.group(2).replace(",", " ").split()
-    if not raw:
+    # Split on commas ONLY.  A member may be a multi-token operator
+    # expression -- a concatenation (``1.1.1.1 . 20``) or a bitwise-OR flag
+    # (``syn | ack``) -- which nft prints as one comma-separated member;
+    # splitting on whitespace too would shatter it into bogus standalone
+    # members (a stray ``.``/``|``).
+    members = [" ".join(m.split()) for m in inner.split(",")]
+    members = [m for m in members if m]
+    if not members:
         return "{ }"
-    return "{ " + ", ".join(canonicalize_set_elements(raw)) + " }"
+    # A ct-state set reorders to nft's fixed bitmask order -- the braced
+    # counterpart of the unbraced ct-state transform.  The reorder applies only
+    # when every member is a known state (an unknown member is safe-bias kept).
+    if _CT_STATE_PREFIX_RE.search(match.string[: match.start()]) and all(
+        m in _NFT_CT_STATE_ORDER for m in members
+    ):
+        ordered = sorted(members, key=_NFT_CT_STATE_ORDER.index)
+        return "{ " + ", ".join(ordered) + " }"
+    # An operator-bearing member (concat / OR, recognised by an interior space)
+    # is not a plain scalar: scalar dedup/sort and element canon do not model
+    # it, so leave the run verbatim with normalized spacing (safe-bias -- a
+    # noisy diff beats a false 'no changes').
+    if any(" " in m for m in members):
+        return "{ " + ", ".join(members) + " }"
+    return "{ " + ", ".join(canonicalize_set_elements(members)) + " }"
 
 
 def _normalize_vmap_run(inner: str) -> str:

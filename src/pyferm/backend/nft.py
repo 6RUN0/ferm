@@ -49,11 +49,11 @@ if TYPE_CHECKING:
     from pyferm.config import Options
     from pyferm.domains import DomainInfo, TableInfo
 
-#: nft comment byte limit (design §3); over -> a plain ferm error.
+#: nft comment byte limit; over -> a plain ferm error.
 NFT_COMMENT_MAX: int = 128
-#: ferm's own table name in every family (design §5).
+#: ferm's own table name in every family.
 NFT_TABLE_NAME: str = "ferm"
-#: ``DomainInfo.tools`` key for the single nft binary (decision 2).
+#: ``DomainInfo.tools`` key for the single nft binary.
 TOOL_NFT: str = "nft"
 
 # ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ def _validate_protocol(scalar: str) -> str:
 
 @dataclass
 class NftTable:
-    """One nft table: ``table <family> <name>`` (design §5)."""
+    """One nft table: ``table <family> <name>``."""
 
     family: str
     name: str
@@ -184,7 +184,7 @@ class NftStatement(ABC):
 
     Serialization dispatches on the subclass via :meth:`to_text` rather
     than a string tag, mirroring the dataclass dispatch ``base.py`` uses
-    for ``Rendered`` (design §4.1).
+    for ``Rendered``.
     """
 
     @abstractmethod
@@ -307,7 +307,7 @@ def _nft_quote_string(text: str) -> str:
 
 def render_comment(comment: str) -> str:
     """
-    Render a validated ``comment "<text>"`` suffix (design §3).
+    Render a validated ``comment "<text>"`` suffix.
 
     Over :data:`NFT_COMMENT_MAX` bytes -> a ferm error, never truncation.
     """
@@ -426,7 +426,7 @@ def serialize_table(
     noflush: bool,
 ) -> str:
     """
-    Serialize one family's table as an atomic ``nft -f`` script (design §7).
+    Serialize one family's table as an atomic ``nft -f`` script.
 
     Emits ``add table`` (idempotent), then ``flush table`` unless
     ``noflush`` (the ``--noflush`` decision lives HERE, not in the
@@ -463,10 +463,10 @@ def serialize_table(
 
 
 # ---------------------------------------------------------------------------
-# Task 5: ferm ontology -> nft family / base-chain mapping (design §5)
+# ferm ontology -> nft family / base-chain mapping
 # ---------------------------------------------------------------------------
 
-#: ferm family -> nft family, 1:1 (design §5).
+#: ferm family -> nft family, 1:1.
 _NFT_FAMILY: dict[str, str] = {
     "ip": "ip",
     "ip6": "ip6",
@@ -475,7 +475,7 @@ _NFT_FAMILY: dict[str, str] = {
 }
 
 #: (table, chain) -> (nft type, hook, priority).  Numeric priorities for
-#: cross-version portability (design §5).
+#: cross-version portability.
 _BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
     ("filter", "INPUT"): ("filter", "input", 0),
     ("filter", "FORWARD"): ("filter", "forward", 0),
@@ -493,7 +493,7 @@ _BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
     ("raw", "OUTPUT"): ("filter", "output", -300),
 }
 
-#: arp supports only filter/INPUT and filter/OUTPUT (design §5).
+#: arp supports only filter/INPUT and filter/OUTPUT.
 _ARP_BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
     ("filter", "INPUT"): ("filter", "input", 0),
     ("filter", "OUTPUT"): ("filter", "output", 0),
@@ -501,7 +501,7 @@ _ARP_BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
 
 
 def nft_family(domain: str) -> str:
-    """Map a ferm family to its nft family name (design §5)."""
+    """Map a ferm family to its nft family name."""
     family = _NFT_FAMILY.get(domain)
     if family is None:
         raise FermError(f"domain '{domain}' not yet supported by nft backend")
@@ -518,7 +518,7 @@ def map_base_chain(
 
     A miss (broute/BROUTING, arp nat/mangle, unknown pair) raises
     :class:`~pyferm.errors.FermError` -- "built-in" does not imply
-    "mappable" (design §5).
+    "mappable".
     """
     table_map = _ARP_BASE_CHAIN_MAP if domain == "arp" else _BASE_CHAIN_MAP
     spec = table_map.get((table, chain))
@@ -530,13 +530,13 @@ def map_base_chain(
 
 
 # ---------------------------------------------------------------------------
-# Task 6: chain-name disambiguation + chain-list builder (design §5)
+# chain-name disambiguation + chain-list builder
 # ---------------------------------------------------------------------------
 
 
 def nft_chain_name(table: str, chain: str) -> str:
     """
-    Disambiguate a chain name inside the merged ``ferm`` table (decision 9).
+    Disambiguate a chain name inside the merged ``ferm`` table.
 
     The ``filter`` table keeps bare names (the common case, clean golden);
     every other table is prefixed ``<table>_<chain>`` so ``filter/INPUT``
@@ -560,13 +560,13 @@ def build_chains(
     table_info: TableInfo,
 ) -> list[NftBaseChain | NftRegularChain]:
     """
-    Build the sorted chain list for one table (design §5).
+    Build the sorted chain list for one table.
 
     :func:`is_netfilter_builtin_chain` selects the base-vs-user branch;
     :func:`map_base_chain` resolves the concrete hook (and errors on
     unmappable built-ins).  Policy is lowercased to nft spelling
     (``DROP`` -> ``drop``).  Names are disambiguated via
-    :func:`nft_chain_name` (decision 9).  Output is sorted for
+    :func:`nft_chain_name`.  Output is sorted for
     deterministic golden output.
     """
     chains: list[NftBaseChain | NftRegularChain] = []
@@ -591,13 +591,13 @@ def build_chains(
 
 
 # ---------------------------------------------------------------------------
-# Task 7: value unwrapping helpers (decision 8)
+# value unwrapping helpers
 # ---------------------------------------------------------------------------
 
 
 def unwrap_value(value: Value) -> tuple[str, bool]:
     """
-    Return ``(scalar, negated)`` for a simple match value (decision 8).
+    Return ``(scalar, negated)`` for a simple match value.
 
     A ``Negated``/``PreNegated`` tag with a >1-element list payload has no
     infix nft equivalent (cf. the silent tail-drop in
@@ -624,7 +624,7 @@ def unwrap_value(value: Value) -> tuple[str, bool]:
 
 def first_scalar(value: Value) -> str:
     """
-    Extract the first scalar from a NAT-style value (decision 8).
+    Extract the first scalar from a NAT-style value.
 
     NAT arguments arrive ``Multi``-wrapped (``to-source`` ->
     ``Multi(['1.2.3.4'])``); a plain scalar passes through.  Used where a
@@ -640,10 +640,10 @@ def first_scalar(value: Value) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Task 8: translate_match (decision 8)
+# translate_match
 # ---------------------------------------------------------------------------
 
-#: canonical option name -> nft address keyword (decision 8).
+#: canonical option name -> nft address keyword.
 _ADDR_KEYWORD: dict[str, str] = {"source": "saddr", "destination": "daddr"}
 #: canonical option name -> nft interface keyword.
 _IFACE_KEYWORD: dict[str, str] = {
@@ -762,10 +762,10 @@ def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Task 9: build_verdict (decision 8)
+# build_verdict
 # ---------------------------------------------------------------------------
 
-#: target VALUE -> nft verdict (decision 8); QUEUE is core, REJECT is not.
+#: target VALUE -> nft verdict; QUEUE is core, REJECT is not.
 _VERDICT_TARGET: dict[str, str] = {
     "ACCEPT": "accept",
     "DROP": "drop",
@@ -834,7 +834,7 @@ _ICMP6_REJECT_ALIAS: dict[str, str] = {
 
 
 #: The error a port-bearing NAT verdict raises without a transport match
-#: (decision C1): nft would reject the applied script, so fail at translate.
+#: nft would reject the applied script, so fail at translate.
 _NAT_PORT_NEEDS_PROTO = (
     "NAT to a port needs a tcp/udp protocol match for the nft backend"
 )
@@ -842,7 +842,7 @@ _NAT_PORT_NEEDS_PROTO = (
 
 def _nat_has_port(domain: str, operand: str) -> bool:
     """
-    Return whether a NAT address operand carries a ``:port`` (decision C1).
+    Return whether a NAT address operand carries a ``:port``.
 
     nft accepts an ``addr:port`` mapping only after a transport match.  In an
     IPv4 family any ``:`` is the port separator.  An IPv6 host carries its own
@@ -884,7 +884,7 @@ def build_verdict(
     has_transport: bool = False,
 ) -> NftVerdict:
     """
-    Build the verdict statement from the ``jump`` marker value (decision 8).
+    Build the verdict statement from the ``jump`` marker value.
 
     Dispatches on ``target_value`` (the discriminator, since every target
     arrives as ``name='jump'``): core verdicts, NAT/LOG/REJECT (which take
@@ -893,7 +893,7 @@ def build_verdict(
 
     ``has_transport`` reports whether the rule established an L4 protocol
     (port match or ``meta l4proto tcp/udp``); a port-bearing NAT mapping
-    without one is rejected at translate time (decision C1), since nft would
+    without one is rejected at translate time, since nft would
     otherwise reject the applied script and force a rollback.
     """
     if target_value in _VERDICT_TARGET:
@@ -945,7 +945,7 @@ def build_verdict(
     # A jump/goto to a chain in the same iptables table.  nft forbids
     # jumping to a base chain (one with a hook), so a jump/goto whose
     # target is a built-in chain has NO nft equivalent -> a plain ferm
-    # error (design §3/§5 ontology gap), NOT a silently-broken script.
+    # error (ontology gap), NOT a silently-broken script.
     if is_netfilter_builtin_chain(table, target_value):
         raise FermError(
             f"jump/goto to built-in chain '{target_value}' not yet "
@@ -955,11 +955,11 @@ def build_verdict(
 
 
 # ---------------------------------------------------------------------------
-# Task 10: translate_rule — two-pass rule assembly (decision 8)
+# translate_rule — two-pass rule assembly
 # ---------------------------------------------------------------------------
 
 #: option names that are companion arguments of a target, consumed by
-#: :func:`build_verdict` rather than emitted as matches (decision 8).
+#: :func:`build_verdict` rather than emitted as matches.
 _TARGET_COMPANIONS: tuple[str, ...] = (
     "reject-with",
     "to-source",
@@ -1005,7 +1005,7 @@ def _references_empty_named_set(rule: RenderedRule) -> bool:
 
 def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     """
-    Translate one RenderedRule to an NftRule (decision 8, two-pass).
+    Translate one RenderedRule to an NftRule (two-pass).
 
     Pass intent: ``match_module`` markers are dropped (``-m`` is implicit
     in nft); ``comment`` becomes the rule comment; the ``protocol`` option
@@ -1026,7 +1026,7 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
             break
     # nft's `... to <addr>:<port>` NAT mapping is "only valid after transport
     # protocol match" -- a port match or a `meta l4proto tcp/udp` covers it,
-    # both implied by the rule carrying a port-bearing protocol (decision C1).
+    # both implied by the rule carrying a port-bearing protocol.
     has_transport = protocol in _PORT_PROTOCOLS
 
     # Guard: at most one SetRef option per rule (a second would need two
@@ -1307,7 +1307,7 @@ class NftBackend(Backend):
     """The native nftables backend (Phase 2, all families via ``nft -f``)."""
 
     def tool_names(self, domain: str) -> dict[str, str]:
-        """Return the single family-independent ``nft`` binary (decision 2)."""
+        """Return the single family-independent ``nft`` binary."""
         nft_family(domain)  # validates the family early
         return {"nft": "nft"}
 
@@ -1315,14 +1315,14 @@ class NftBackend(Backend):
         self, domain: str, domain_info: DomainInfo, options: Options
     ) -> Rendered:
         """
-        Build the atomic ``nft -f`` script for one family (design §7).
+        Build the atomic ``nft -f`` script for one family.
 
         nft is always save-shaped: no slow/eb command fallback, so
         ``Rendered.commands`` stays empty.  All ferm tables merge into ONE
-        ``table <family> ferm`` (design §5); chain names disambiguated via
-        :func:`nft_chain_name` (decision 9) applied identically here and to
+        ``table <family> ferm``; chain names disambiguated via
+        :func:`nft_chain_name` applied identically here and to
         jump/goto targets in :func:`build_verdict`.  ``@preserve`` is a
-        plain error (design §8); a residual nft-name collision is a ferm
+        plain error; a residual nft-name collision is a ferm
         error, NOT silent rule loss.
         """
         table = NftTable(family=nft_family(domain), name=NFT_TABLE_NAME)
@@ -1364,7 +1364,7 @@ class NftBackend(Backend):
         restore: RestoreDomain,
     ) -> int | None:
         """
-        Emit the save under --lines and pipe it to ``nft -f -`` (design §7).
+        Emit the save under --lines and pipe it to ``nft -f -``.
 
         nft is always save-shaped, so the slow ``execute`` seam is unused.
         Under ``--shell`` the save is wrapped in a ``<<EOT`` heredoc; under
@@ -1402,7 +1402,7 @@ class NftBackend(Backend):
         capture: ExecuteCapture,
     ) -> None:
         """
-        Snapshot ONLY ferm's own table for rollback (design §6/§7).
+        Snapshot ONLY ferm's own table for rollback.
 
         Unlike x_tables, nft snapshots a single table via ``capture``
         (``nft list table <family> ferm``), not the whole ``*-save`` dump;
@@ -1411,7 +1411,7 @@ class NftBackend(Backend):
 
         Under ``--test`` the mock path (``--test-mock-previous=fam=path``)
         is opened and read via :meth:`read_previous` -- the same contract
-        as the iptables backend (design §7).  This makes ``read_previous``
+        as the iptables backend.  This makes ``read_previous``
         an active code path in test mode.
         """
         del read_save, execute
@@ -1466,7 +1466,7 @@ class NftBackend(Backend):
         self, lines: Iterable[str], domain_info: DomainInfo
     ) -> str:
         """
-        Return the raw nft snapshot verbatim (design §7).
+        Return the raw nft snapshot verbatim.
 
         Invoked both by :meth:`capture_previous` under ``--test``
         (reading from the mock-previous file) and by the general
@@ -1480,7 +1480,7 @@ class NftBackend(Backend):
         self, domain: str, domain_info: DomainInfo
     ) -> ShellSnapshot | None:
         """
-        Build the ``--shell`` anti-lockout snapshot for a family (finding C2).
+        Build the ``--shell`` anti-lockout snapshot for a family.
 
         Mirrors the live :meth:`rollback`: dump ferm's own table to a tempfile,
         and on restore delete the freshly-applied table before re-loading the

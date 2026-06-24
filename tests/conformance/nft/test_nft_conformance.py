@@ -97,19 +97,19 @@ def test_header_canon_is_idempotent(case: HeaderCase) -> None:
 # actually implements: ct-state bitmask reorder, reject-with collapse,
 # limit-rate burst normalization.  A bare ``{`` trigger is deliberately NOT
 # used -- it admits hundreds of brace rules (service-name sets like
-# ``{telnet, http}``, bitwise ``|`` flag sets, ``.`` concatenations) the
-# canonicalizer makes no conformance promise about, which turns the
-# differential red on arrival.  Native set-normalization coverage is
-# DEFERRED until those gaps are closed in plan.py (debt
-# ferm-nft-set-canon-bugs) or this test is reframed as a gap census.
+# ``{telnet, http}``) the canonicalizer makes no conformance promise about,
+# which would turn the differential red on arrival.  The braced ct-state set,
+# bitwise ``|`` flag sets and ``.`` concatenations are now handled (operator
+# members are no longer shattered; a braced ct-state set reorders to the
+# bitmask sequence), so the remaining baseline below is the genuine residue.
 _ALLOW_LIST = re.compile(r"\bct state\b|\breject with\b|\blimit rate\b")
 
 # Baseline of corpus rules whose port canon is known to differ from the
 # canonicalized nft readback -- genuine narrowness/bugs in the ct-state,
-# reject-with and limit-rate transforms (debt: ferm-nft-set-canon-bugs and
-# the canon gaps it tracks: numeric ct-state/reject codes not resolved,
-# irregular ct-state spacing not reordered, ``bytes / second`` spacing, the
-# ``over N/unit`` rate form, concat/`{ }` ct-state).  The census test below
+# reject-with and limit-rate transforms (the canon gaps still tracked:
+# numeric ct-state/reject codes not resolved, irregular UNBRACED ct-state
+# spacing not reordered, ``bytes / second`` spacing, the ``over N/unit`` rate
+# form, ct-state concatenation ordering).  The census test below
 # asserts the live-measured divergence set EQUALS this baseline: a NEW
 # divergence is a regression (fail); a baselined rule that now matches means
 # the gap was fixed (fail -> prune it here).  This is the self-cleaning
@@ -118,12 +118,10 @@ _ALLOW_LIST = re.compile(r"\bct state\b|\breject with\b|\blimit rate\b")
 # pinned corpus + system nft; re-derive on a corpus/nft bump (see Step 2).
 _BASELINE_DIVERGENCES: frozenset[str] = frozenset(
     {
-        "ct state != {new,established, related, untracked}",
         "ct state . ct mark"
         " { new . 0x12345678, new . 0x34127856, established . 0x12785634}",
         "ct state 8",
         "ct state new,established, related, untracked",
-        "ct state {new,established, related, untracked}",
         "limit rate 1 bytes / second",
         "limit rate 1 kbytes / second",
         "limit rate 1 mbytes / second",

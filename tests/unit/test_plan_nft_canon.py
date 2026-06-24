@@ -118,6 +118,84 @@ def test_combined_ct_state_and_limit() -> None:
     )
 
 
+# --- anonymous-set canon: braced ct-state, concat and OR operators ---
+
+
+def test_ct_state_braced_reordered_to_bitmask() -> None:
+    # A braced ct-state set reorders to nft's bitmask order, like the
+    # unbraced form (regression: it used to keep input order).
+    body = "ct state { related, new, established } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "ct state { established, related, new } accept"
+
+
+def test_ct_state_braced_negated_reordered() -> None:
+    body = "ct state != { related, new, established } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "ct state != { established, related, new } accept"
+
+
+def test_ct_state_braced_irregular_spacing_reordered() -> None:
+    body = "ct state {new,established, related, untracked} accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "ct state { established, related, new, untracked } accept"
+
+
+def test_ct_state_braced_idempotent() -> None:
+    body = "ct state { related, new, established } accept"
+    once = canonicalize_nft_rule(body, family="ip")
+    twice = canonicalize_nft_rule(once, family="ip")
+    assert once == twice
+
+
+def test_ct_state_braced_unknown_member_left_verbatim() -> None:
+    # An unknown member disqualifies the bitmask reorder (safe-bias);
+    # the run is normalized but member order is preserved.
+    body = "ct state { established, zombie } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "ct state { established, zombie } accept"
+
+
+def test_concat_member_not_split_on_dot() -> None:
+    # A concatenation member ('a . b') is one member, not three: the
+    # '.' operator must not be emitted as a standalone set member.
+    body = "ip saddr . tcp dport { 1.1.1.1 . 20, 2.2.2.2 . 80 } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == (
+        "ip saddr . tcp dport { 1.1.1.1 . 20, 2.2.2.2 . 80 } accept"
+    )
+
+
+def test_tcp_flags_or_member_not_split_on_pipe() -> None:
+    # A bitwise-OR flag member ('syn | ack') is one member: the '|'
+    # operator must not be emitted as a standalone set member.
+    body = "tcp flags { syn, syn | ack } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "tcp flags { syn, syn | ack } accept"
+
+
+def test_mixed_plain_and_operator_members_kept_verbatim() -> None:
+    # A set mixing a scalar and an operator member is left verbatim
+    # (normalized spacing only): scalar sort/dedup is not safe here.
+    body = "tcp dport { 22, 1.1.1.1 . 20 } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "tcp dport { 22, 1.1.1.1 . 20 } accept"
+
+
+def test_concat_set_idempotent() -> None:
+    body = "ip saddr . tcp dport { 1.1.1.1 . 20, 2.2.2.2 . 80 } accept"
+    once = canonicalize_nft_rule(body, family="ip")
+    twice = canonicalize_nft_rule(once, family="ip")
+    assert once == twice
+
+
+def test_plain_port_set_still_sorted() -> None:
+    # Regression guard: a plain scalar set keeps dedup + canonical sort.
+    body = "tcp dport { 80, 22, 443 } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "tcp dport { 22, 80, 443 } accept"
+
+
 def test_header_priority_filter_ip() -> None:
     h = "type filter hook input priority filter; policy accept;"
     out = canonicalize_nft_header(h, family="ip")
