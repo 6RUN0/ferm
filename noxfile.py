@@ -458,6 +458,25 @@ def datapath_e2e_matrix(session: nox.Session, distro: str) -> None:
 
 
 @nox.session
+def delta_apply_e2e(session: nox.Session) -> None:
+    """
+    Opt-in live proof that delta-apply preserves counters/set state.
+
+    Runs the port inside its uv venv (so ``python -m pyferm`` imports); each
+    test wraps its nft work in its own rootless ``unshare -rn`` and skips
+    itself when nft or unprivileged user namespaces are absent.  Deliberately
+    absent from ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_delta_apply_e2e.py",
+        *session.posargs,
+        env={"FERM_E2E": "1", **_WARN_ENV},
+    )
+
+
+@nox.session
 def binary(session: nox.Session) -> None:
     """
     Build the standalone binary and run golden against it (opt-in, docker).
