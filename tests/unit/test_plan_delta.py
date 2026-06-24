@@ -14,6 +14,7 @@ from pyferm.plan import (
     _emit_chain_changes,
     _emit_set_changes,
     diff_tables,
+    emit_delta_script,
     parse_nft_list,
     parse_nft_script,
 )
@@ -316,3 +317,33 @@ def test_emit_chain_delete_follows_every_flush() -> None:
     assert flush_positions
     assert delete_positions
     assert max(flush_positions) < min(delete_positions)
+
+
+def test_emit_delta_empty_when_no_changes() -> None:
+    t = _tbl({"INPUT": ParsedChain("policy accept", ["r"])})
+    diff = diff_tables(t, t, noflush=False)
+    index = _build_desired_index(
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\nadd rule ip ferm INPUT r\n"
+    )
+    assert emit_delta_script(diff, t, index, family="ip") == ""
+
+
+def test_emit_delta_starts_with_add_table_and_orders_sets_before_chains() -> (
+    None
+):
+    current = {"ferm": ParsedTable()}
+    desired_save = (
+        "add table ip ferm\n"
+        "add set ip ferm h { type ipv4_addr; }\n"
+        "add element ip ferm h { 10.0.0.1 }\n"
+        "add chain ip ferm sub\n"
+        "add rule ip ferm sub ip saddr @h accept\n"
+    )
+    desired = parse_nft_script(desired_save)
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(desired_save)
+    out = emit_delta_script(diff, current, index, family="ip")
+    assert out.startswith("add table ip ferm\n")
+    assert out.index("add set ip ferm h") < out.index("add chain ip ferm sub")
+    assert out.endswith("\n")

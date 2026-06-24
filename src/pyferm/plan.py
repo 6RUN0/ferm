@@ -1040,7 +1040,7 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:  # pyright: ignore
     return index
 
 
-def _emit_set_changes(  # pyright: ignore[reportUnusedFunction]
+def _emit_set_changes(
     diff: PlanDiff,
     current: dict[str, ParsedTable],
     index: _DesiredIndex,
@@ -1092,7 +1092,7 @@ def _emit_set_changes(  # pyright: ignore[reportUnusedFunction]
     return out
 
 
-def _emit_chain_changes(  # pyright: ignore[reportUnusedFunction]
+def _emit_chain_changes(
     diff: PlanDiff,
     current: dict[str, ParsedTable],
     index: _DesiredIndex,
@@ -1139,6 +1139,31 @@ def _emit_chain_changes(  # pyright: ignore[reportUnusedFunction]
         for fchain in sorted(diff.foreign_chains, key=lambda f: f.chain)
     )
     return out
+
+
+def emit_delta_script(
+    diff: PlanDiff,
+    current: dict[str, ParsedTable],
+    index: _DesiredIndex,
+    *,
+    family: str,
+) -> str:
+    """
+    Build an applicable nft delta script from a diff (mirror of render_plan).
+
+    Returns ``""`` when nothing changed -- the caller skips ``nft -f``
+    entirely (idempotency).  Otherwise: an idempotent ``add table`` envelope,
+    the set phase, then the chain phase.  The whole script is one ``nft -f``
+    transaction, so it stays atomic; ``@set`` references resolve because a set
+    is declared before any rule that uses it.
+    """
+    if not diff.has_changes():
+        return ""
+    prefix = f"{family} ferm"
+    lines = [f"add table {prefix}"]
+    lines.extend(_emit_set_changes(diff, current, index, family=family))
+    lines.extend(_emit_chain_changes(diff, current, index, family=family))
+    return "\n".join(lines) + "\n"
 
 
 @dataclass
