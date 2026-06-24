@@ -1040,6 +1040,58 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:  # pyright: ignore
     return index
 
 
+def _emit_set_changes(  # pyright: ignore[reportUnusedFunction]
+    diff: PlanDiff,
+    current: dict[str, ParsedTable],
+    index: _DesiredIndex,
+    *,
+    family: str,
+) -> list[str]:
+    """
+    Emit the set BUILD-UP phase of a delta: adds and element-modifies only.
+
+    A delta never emits ``delete set``: ``build_nft_delta`` (Task 9) diverts
+    any set ``remove`` (pure removal OR retype remove+add) to a full reload,
+    because ``delete set`` is refcount-unsafe inside a transaction when a live
+    rule still references the set.  So this phase only adds new sets (verbatim
+    render declaration + elements) and applies element deltas to modified sets
+    (this is what spares unchanged elements from churn).  A ``remove`` reaching
+    here is a broken contract -> ``internal_error``.
+    """
+    prefix = f"{family} ferm"
+    current_sets = current["ferm"].sets if "ferm" in current else {}
+    out: list[str] = []
+    for sc in sorted(diff.set_changes, key=lambda s: s.name):
+        if sc.kind == "remove":
+            raise internal_error(
+                "set remove reached the emitter"
+                f" (should full-reload): {sc.name!r}"
+            )
+        if sc.kind == "add":
+            decl = index.set_decl.get(sc.name)
+            if decl is None:
+                raise internal_error(f"no desired decl for set {sc.name!r}")
+            out.append(decl)
+            elements = index.set_elements.get(sc.name)
+            if elements is not None:
+                out.append(elements)
+        elif sc.kind == "modify":
+            live = current_sets[sc.name].elements
+            desired_elements = sc.elements
+            removed = [e for e in live if e not in desired_elements]
+            added = [e for e in desired_elements if e not in live]
+            if removed:
+                out.append(
+                    f"delete element {prefix} {sc.name} "
+                    f"{{ {', '.join(removed)} }}"
+                )
+            if added:
+                out.append(
+                    f"add element {prefix} {sc.name} {{ {', '.join(added)} }}"
+                )
+    return out
+
+
 @dataclass
 class PlanDiff:
     """The diff for one family: what applying the config would change."""

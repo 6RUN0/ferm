@@ -9,6 +9,8 @@ from pyferm.plan import (
     ParsedSet,
     ParsedTable,
     _build_desired_index,
+    _DesiredIndex,
+    _emit_set_changes,
     diff_tables,
     parse_nft_list,
     parse_nft_script,
@@ -146,3 +148,55 @@ def test_build_desired_index_extracts_verbatim_lines() -> None:
         "add rule ip ferm INPUT ip saddr 10.0.0.1 accept",
     ]
     assert "sub" not in index.chain_rules
+
+
+def test_emit_set_add() -> None:
+    diff = diff_tables(
+        {"ferm": ParsedTable()},
+        _table_with_set(
+            "hosts", ParsedSet("hosts", ["10.0.0.1"], "ipv4_addr")
+        ),
+        noflush=False,
+    )
+    index = _build_desired_index(
+        "add set ip ferm hosts { type ipv4_addr; }\n"
+        "add element ip ferm hosts { 10.0.0.1 }\n"
+    )
+    lines = _emit_set_changes(
+        diff, {"ferm": ParsedTable()}, index, family="ip"
+    )
+    assert lines == [
+        "add set ip ferm hosts { type ipv4_addr; }",
+        "add element ip ferm hosts { 10.0.0.1 }",
+    ]
+
+
+def test_emit_set_modify_element_delta() -> None:
+    current = _table_with_set(
+        "h", ParsedSet("h", ["10.0.0.1", "10.0.0.2"], "ipv4_addr")
+    )
+    desired = _table_with_set(
+        "h", ParsedSet("h", ["10.0.0.2", "10.0.0.3"], "ipv4_addr")
+    )
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add set ip ferm h { type ipv4_addr; }\n"
+        "add element ip ferm h { 10.0.0.2, 10.0.0.3 }\n"
+    )
+    lines = _emit_set_changes(diff, current, index, family="ip")
+    assert "delete element ip ferm h { 10.0.0.1 }" in lines
+    assert "add element ip ferm h { 10.0.0.3 }" in lines
+
+
+def test_emit_set_remove_is_internal_error() -> None:
+    # A set 'remove' must be filtered out by build_nft_delta (-> full reload)
+    # BEFORE the emitter runs.  If one reaches the emitter the delta contract
+    # is broken: fail loud rather than emit a refcount-unsafe 'delete set'.
+    import pytest
+
+    from pyferm.errors import FermError
+
+    current = _table_with_set("h", ParsedSet("h", ["10.0.0.1"], "ipv4_addr"))
+    diff = diff_tables(current, {"ferm": ParsedTable()}, noflush=False)
+    with pytest.raises(FermError):
+        _emit_set_changes(diff, current, _DesiredIndex(), family="ip")
