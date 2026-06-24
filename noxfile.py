@@ -25,6 +25,7 @@ Examples::
     uv run nox -s crashfuzz          # atheris crash fuzzing of the parsers
     uv run nox -s lockout            # containerized anti-lockout e2e (docker)
     uv run nox -s nft_e2e            # containerized nft backend e2e (docker)
+    uv run nox -s nft_conformance   # nft canonicalizer conformance (network)
 """
 
 import os
@@ -332,6 +333,49 @@ def nft_e2e(session: nox.Session) -> None:
         "tests/e2e/test_nft_e2e.py",
         *session.posargs,
         env={"FERM_NFT_E2E": "1"},
+    )
+
+
+#: Pinned nftables tag whose ``tests/py`` corpus drives nft_conformance.
+#: Bump deliberately (verify via ``git ls-remote --tags`` -- currency rule),
+#: not from memory; the idempotency layer is version-independent, the
+#: differential layer compares against the *system* nft regardless.
+_NFT_CORPUS_TAG = "v1.1.6"
+_NFT_CORPUS_REPO = "https://git.netfilter.org/nftables"
+
+
+@nox.session
+def nft_conformance(session: nox.Session) -> None:
+    """
+    Opt-in nft-canonicalizer conformance vs the upstream ``.t`` corpus.
+
+    Shallow-clones nftables at a pinned tag into a temp dir and runs the
+    conformance suite: layer 1 (idempotency, host-only) always; layer 2
+    (differential vs live ``nft list ruleset`` in a rootless netns) when
+    ``nft`` and unprivileged user namespaces are available.  The corpus
+    is never vendored -- GPLv2 source stays out of the tree.  Needs
+    network for the clone; deliberately absent from ``preflight``.
+    """
+    corpus = Path(session.create_tmp()) / "nftables"
+    session.run(
+        "git",
+        "clone",
+        "--depth=1",
+        "--branch",
+        _NFT_CORPUS_TAG,
+        _NFT_CORPUS_REPO,
+        str(corpus),
+        external=True,
+    )
+    _uv(
+        session,
+        "pytest",
+        "tests/conformance/nft",
+        *session.posargs,
+        env={
+            "FERM_NFT_CORPUS": str(corpus / "tests" / "py"),
+            **_WARN_ENV,
+        },
     )
 
 
