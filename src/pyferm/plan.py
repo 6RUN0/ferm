@@ -1007,7 +1007,7 @@ class _DesiredIndex:
 _DESIRED_NAME_INDEX = 4
 
 
-def _build_desired_index(desired_save: str) -> _DesiredIndex:  # pyright: ignore[reportUnusedFunction]
+def _build_desired_index(desired_save: str) -> _DesiredIndex:
     """
     Index a ``render().save`` script into verbatim lines keyed by object name.
 
@@ -1164,6 +1164,49 @@ def emit_delta_script(
     lines.extend(_emit_set_changes(diff, current, index, family=family))
     lines.extend(_emit_chain_changes(diff, current, index, family=family))
     return "\n".join(lines) + "\n"
+
+
+def needs_full_reload(previous: str | None) -> bool:
+    """
+    Return True when a delta is impossible/pointless -> fall back to reload.
+
+    A delta diffs a captured snapshot against the desired ruleset; with no
+    prior table (first run / ENOENT -> ``None``) or an empty snapshot there is
+    nothing to preserve, so the deterministic, safe choice is the existing
+    ``flush table`` + full rebuild from ``render().save``.
+    """
+    if previous is None:
+        return True
+    return previous.strip() == ""
+
+
+def build_nft_delta(
+    previous: str, desired_save: str, *, family: str
+) -> str | None:
+    """
+    Orchestrate one family's delta: parse both sides, diff, emit.
+
+    ``previous`` is a ``nft list table`` snapshot (the captured live side);
+    ``desired_save`` is ``render().save`` (valid by construction).  Returns the
+    applicable delta script, ``""`` when nothing changed, or ``None`` when the
+    delta is refcount-unsafe and the caller must fall back to a full reload.
+
+    The unsafe case is any set ``remove`` (a pure removal or a retype modelled
+    as remove+add): ``delete set`` aborts the whole transaction if a live rule
+    still references the set, and a flags-only retype keeps the referencing
+    rule unchanged (so its chain is never flushed to clear the reference).
+    Diverting that family to ``render().save`` keeps it correct; counter
+    preservation is lost only for that rare reload.  The caller must have
+    ruled out the snapshot-based full-reload cases via
+    :func:`needs_full_reload` first.
+    """
+    current = parse_nft_list(previous, family=family)
+    desired = parse_nft_script(desired_save)
+    diff = diff_tables(current, desired, noflush=False)
+    if any(sc.kind == "remove" for sc in diff.set_changes):
+        return None
+    index = _build_desired_index(desired_save)
+    return emit_delta_script(diff, current, index, family=family)
 
 
 @dataclass

@@ -13,8 +13,10 @@ from pyferm.plan import (
     _DesiredIndex,
     _emit_chain_changes,
     _emit_set_changes,
+    build_nft_delta,
     diff_tables,
     emit_delta_script,
+    needs_full_reload,
     parse_nft_list,
     parse_nft_script,
 )
@@ -347,3 +349,81 @@ def test_emit_delta_starts_with_add_table_and_orders_sets_before_chains() -> (
     assert out.startswith("add table ip ferm\n")
     assert out.index("add set ip ferm h") < out.index("add chain ip ferm sub")
     assert out.endswith("\n")
+
+
+def test_needs_full_reload_predicate() -> None:
+    assert needs_full_reload(None) is True
+    assert needs_full_reload("") is True
+    assert needs_full_reload("   \n") is True
+    assert needs_full_reload("table ip ferm {\n}\n") is False
+
+
+def test_build_nft_delta_add_one_rule() -> None:
+    previous = (
+        "table ip ferm {\n"
+        "\tchain INPUT {\n"
+        "\t\ttype filter hook input priority 0; policy accept;\n"
+        "\t\ttcp dport 22 accept\n"
+        "\t}\n"
+        "}\n"
+    )
+    desired = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\n"
+        "add rule ip ferm INPUT tcp dport 22 accept\n"
+        "add rule ip ferm INPUT tcp dport 80 accept\n"
+    )
+    delta = build_nft_delta(previous, desired, family="ip")
+    assert delta is not None
+    assert "flush chain ip ferm INPUT" in delta
+    assert "add rule ip ferm INPUT tcp dport 80 accept" in delta
+    assert "flush table ip ferm" not in delta  # delta never flushes the table
+
+
+def test_build_nft_delta_identical_is_empty() -> None:
+    previous = (
+        "table ip ferm {\n"
+        "\tchain INPUT {\n"
+        "\t\ttype filter hook input priority 0; policy accept;\n"
+        "\t\ttcp dport 22 accept\n"
+        "\t}\n"
+        "}\n"
+    )
+    desired = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\n"
+        "add rule ip ferm INPUT tcp dport 22 accept\n"
+    )
+    assert build_nft_delta(previous, desired, family="ip") == ""
+
+
+def test_build_nft_delta_set_retype_falls_back_to_none() -> None:
+    # A flags-only retype keeps the referencing rule text identical, so the
+    # chain is NOT flushed -> a 'delete set' would orphan a live reference.
+    # build_nft_delta must signal full-reload (None), never emit the delta.
+    previous = (
+        "table ip ferm {\n"
+        "\tset s {\n"
+        "\t\ttype ipv4_addr\n"
+        "\t\telements = { 10.0.0.1 }\n"
+        "\t}\n"
+        "\tchain INPUT {\n"
+        "\t\ttype filter hook input priority 0; policy accept;\n"
+        "\t\tip saddr @s accept\n"
+        "\t}\n"
+        "}\n"
+    )
+    desired = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add set ip ferm s { type ipv4_addr; flags interval; }\n"
+        "add element ip ferm s { 10.0.0.0/24 }\n"
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\n"
+        "add rule ip ferm INPUT ip saddr @s accept\n"
+    )
+    assert build_nft_delta(previous, desired, family="ip") is None
