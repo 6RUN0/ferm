@@ -35,6 +35,7 @@ from pyferm.nftset import (
     sort_set_elements,
     sort_vmap_pairs,
 )
+from pyferm.plan import build_nft_delta, needs_full_reload
 from pyferm.rules import (
     RenderedOption,
     RenderedRule,
@@ -1364,28 +1365,48 @@ class NftBackend(Backend):
         restore: RestoreDomain,
     ) -> int | None:
         """
-        Emit the save under --lines and pipe it to ``nft -f -``.
+        Apply one family: delta by default, full flush-replace as opt-out.
 
-        nft is always save-shaped, so the slow ``execute`` seam is unused.
-        Under ``--shell`` the save is wrapped in a ``<<EOT`` heredoc; under
-        ``--noexec`` nothing is applied.  A :class:`FermError` from the
-        applier maps to a non-zero status, as the iptables backend does.
+        Under ``--nft`` the default is an incremental delta against the
+        captured ``domain_info.previous`` snapshot, so unchanged chains keep
+        their packet/byte counters and unchanged named sets keep their kernel
+        state.  ``--full-reload``, a first run / empty snapshot
+        (:func:`needs_full_reload`), or a refcount-unsafe diff (any set
+        ``remove``/retype -> ``build_nft_delta`` returns ``None``) fall back to
+        the legacy ``flush table`` + full rebuild from ``render().save``.
+        Inspection (``--lines``/``--shell``) shows exactly the text that will
+        be applied.  An empty delta emits nothing and skips ``nft -f`` entirely
+        (idempotency).
         """
-        del domain, execute  # nft is always save-shaped; no slow commands
+        del execute  # nft is always save-shaped; no slow commands
         save = rendered.save
         if save is None:
             raise internal_error()
-        if options.lines:
+        family = nft_family(domain)
+        use_delta = not options.full_reload and not needs_full_reload(
+            domain_info.previous
+        )
+        apply_text = save
+        if use_delta:
+            assert domain_info.previous is not None
+            delta = build_nft_delta(domain_info.previous, save, family=family)
+            if delta is not None:
+                # None -> refcount-unsafe; keep apply_text == save (full
+                # reload).  "" stays "" -> empty-delta no-op below.
+                apply_text = delta
+        if options.lines and apply_text:
             tool = domain_info.tools[TOOL_NFT]
             if options.shell:
                 emit_line(f"{tool} -f - <<EOT\n")
-            emit_line(save)
+            emit_line(apply_text)
             if options.shell:
                 emit_line("EOT\n")
         if options.noexec:
             return None
+        if not apply_text:
+            return None  # empty delta: nothing to apply
         try:
-            restore(domain_info, save)
+            restore(domain_info, apply_text)
         except FermError as exc:
             print(exc, file=sys.stderr)
             return 1

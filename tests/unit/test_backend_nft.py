@@ -1955,3 +1955,133 @@ def test_collapse_vmap_idempotent() -> None:
         [_port_rule("22", "accept"), _port_rule("80", "drop")]
     )
     assert _collapse_chain_rules(once) == once
+
+
+# commit() delta-apply tests
+
+import subprocess  # noqa: E402
+import sys as _sys  # noqa: E402
+
+
+def _run_apply(tmp_path: Path, ferm: str, mock: str | None) -> str:
+    ferm_file = tmp_path / "c.ferm"
+    ferm_file.write_text(ferm, encoding="utf-8")
+    cmd = [
+        _sys.executable,
+        "-m",
+        "pyferm",
+        "--nft",
+        "--test",
+        "--noexec",
+        "--lines",
+    ]
+    if mock is not None:
+        mock_file = tmp_path / "prev.save"
+        mock_file.write_text(mock, encoding="utf-8")
+        cmd.append(f"--test-mock-previous=ip={mock_file}")
+    cmd.append(str(ferm_file))
+    proc = subprocess.run(
+        cmd, capture_output=True, encoding="utf-8", check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+_FERM = (
+    "domain ip table filter chain INPUT {\n"
+    "    policy ACCEPT;\n"
+    "    proto tcp dport 22 ACCEPT;\n"
+    "    proto tcp dport 80 ACCEPT;\n"
+    "}\n"
+)
+_MOCK_ONE_RULE = (
+    "table ip ferm {\n"
+    "\tchain INPUT {\n"
+    "\t\ttype filter hook input priority filter; policy accept;\n"
+    "\t\ttcp dport 22 accept\n"
+    "\t}\n"
+    "}\n"
+)
+
+
+def test_commit_delta_is_default_under_nft(tmp_path: Path) -> None:
+    out = _run_apply(tmp_path, _FERM, _MOCK_ONE_RULE)
+    # delta path: flushes the CHAIN, never the table
+    assert "flush chain ip ferm INPUT" in out
+    assert "flush table ip ferm" not in out
+
+
+def test_commit_full_reload_opts_out(tmp_path: Path) -> None:
+    ferm_file = tmp_path / "c.ferm"
+    ferm_file.write_text(_FERM, encoding="utf-8")
+    mock_file = tmp_path / "prev.save"
+    mock_file.write_text(_MOCK_ONE_RULE, encoding="utf-8")
+    proc = subprocess.run(
+        [
+            _sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--full-reload",
+            "--test",
+            "--noexec",
+            "--lines",
+            f"--test-mock-previous=ip={mock_file}",
+            str(ferm_file),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "flush table ip ferm" in proc.stdout  # legacy full reload
+
+
+def test_commit_first_run_falls_back_to_full_reload(tmp_path: Path) -> None:
+    # no mock-previous -> previous is None -> needs_full_reload -> full reload
+    out = _run_apply(tmp_path, _FERM, None)
+    assert "flush table ip ferm" in out
+
+
+def test_commit_idempotent_delta_emits_nothing(tmp_path: Path) -> None:
+    # Mock must match exactly what pyferm renders (anonymous set collapsed:
+    # "tcp dport { 22, 80 } accept", not two separate rules).
+    mock = (
+        "table ip ferm {\n"
+        "\tchain INPUT {\n"
+        "\t\ttype filter hook input priority filter; policy accept;\n"
+        "\t\ttcp dport { 22, 80 } accept\n"
+        "\t}\n"
+        "}\n"
+    )
+    out = _run_apply(tmp_path, _FERM, mock)
+    assert out == ""  # empty delta -> nothing emitted, nft -f skipped
+
+
+_FERM_SET_INTERVAL = (
+    "domain ip table filter chain INPUT {\n"
+    "    policy ACCEPT;\n"
+    "    @set $s = (10.0.0.0/24);\n"
+    "    proto tcp saddr $s ACCEPT;\n"
+    "}\n"
+)
+_MOCK_SET_PLAIN = (
+    "table ip ferm {\n"
+    "\tset s {\n"
+    "\t\ttype ipv4_addr\n"
+    "\t\telements = { 10.0.0.1 }\n"
+    "\t}\n"
+    "\tchain INPUT {\n"
+    "\t\ttype filter hook input priority filter; policy accept;\n"
+    "\t\ttcp saddr @s accept\n"
+    "\t}\n"
+    "}\n"
+)
+
+
+def test_commit_set_retype_falls_back_to_full_reload(tmp_path: Path) -> None:
+    # The set flips ipv4_addr -> interval (a CIDR element), so the diff carries
+    # a set 'remove' -> build_nft_delta returns None -> commit full-reloads
+    # rather than emit a refcount-unsafe 'delete set'.
+    out = _run_apply(tmp_path, _FERM_SET_INTERVAL, _MOCK_SET_PLAIN)
+    assert "flush table ip ferm" in out  # full reload, not a delta
