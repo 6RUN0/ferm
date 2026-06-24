@@ -1,0 +1,4 @@
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; policy accept; }
+flush chain ip ferm INPUT
+add rule ip ferm INPUT tcp dport { 22, 80 } accept

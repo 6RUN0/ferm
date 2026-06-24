@@ -1,0 +1,3 @@
+add table ip ferm
+delete chain ip ferm PREROUTING
+delete chain ip ferm DOCKER

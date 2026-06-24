@@ -1,0 +1,10 @@
+domain (ip ip6) table filter {
+    chain INPUT {
+        policy ACCEPT;
+        proto tcp dport 22 ACCEPT;
+        proto tcp dport 443 ACCEPT;
+        saddr (192.0.2.0/24 2001:db8::/32) ACCEPT;
+    }
+    chain FORWARD policy DROP;
+    chain OUTPUT policy ACCEPT;
+}

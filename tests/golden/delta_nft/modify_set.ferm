@@ -1,0 +1,5 @@
+@set $allowed = (10.0.0.1 10.0.0.2 10.0.0.3);
+domain ip table filter chain INPUT {
+    policy ACCEPT;
+    saddr $allowed ACCEPT;
+}

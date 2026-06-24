@@ -1,0 +1,2 @@
+add table ip ferm
+add element ip ferm allowed { 10.0.0.3 }

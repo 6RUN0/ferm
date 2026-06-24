@@ -1,0 +1,2 @@
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; policy drop; }
