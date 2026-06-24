@@ -8,6 +8,7 @@ from pyferm.errors import FermError
 from pyferm.plan import (
     ParsedSet,
     ParsedTable,
+    _build_desired_index,
     diff_tables,
     parse_nft_list,
     parse_nft_script,
@@ -116,3 +117,32 @@ def test_diff_set_elements_only_is_modify() -> None:
     )
     diff = diff_tables(current, desired, noflush=False)
     assert [sc.kind for sc in diff.set_changes] == ["modify"]
+
+
+def test_build_desired_index_extracts_verbatim_lines() -> None:
+    save = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add set ip ferm hosts { type ipv4_addr; }\n"
+        "add element ip ferm hosts { 10.0.0.1, 10.0.0.2 }\n"
+        "add chain ip ferm INPUT { type filter hook input priority 0;"
+        " policy accept; }\n"
+        "add chain ip ferm sub\n"
+        "add rule ip ferm INPUT tcp dport 22 accept\n"
+        "add rule ip ferm INPUT ip saddr 10.0.0.1 accept\n"
+    )
+    index = _build_desired_index(save)
+    assert (
+        index.set_decl["hosts"] == "add set ip ferm hosts { type ipv4_addr; }"
+    )
+    assert (
+        index.set_elements["hosts"]
+        == "add element ip ferm hosts { 10.0.0.1, 10.0.0.2 }"
+    )
+    assert index.chain_decl["INPUT"].endswith("policy accept; }")
+    assert index.chain_decl["sub"] == "add chain ip ferm sub"
+    assert index.chain_rules["INPUT"] == [
+        "add rule ip ferm INPUT tcp dport 22 accept",
+        "add rule ip ferm INPUT ip saddr 10.0.0.1 accept",
+    ]
+    assert "sub" not in index.chain_rules

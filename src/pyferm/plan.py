@@ -23,7 +23,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
-from pyferm.errors import FermError
+from pyferm.errors import FermError, internal_error
 from pyferm.nftset import (
     canonicalize_element,
     canonicalize_set_elements,
@@ -981,6 +981,63 @@ class SetChange:
     name: str
     kind: str  # "add" | "remove" | "modify"
     elements: list[str]
+
+
+@dataclass
+class _DesiredIndex:
+    """
+    Verbatim render lines keyed by object name, for the delta emitter.
+
+    The delta DECIDES what to touch from the diff, but the content it ADDS is
+    copied byte-for-byte from ``render().save`` (already past every validate
+    border, valid as ``nft -f`` input by construction).  This index is that
+    lookup: each value is one render line with its trailing newline stripped.
+    """
+
+    chain_decl: dict[str, str] = field(default_factory=dict[str, str])
+    chain_rules: dict[str, list[str]] = field(
+        default_factory=dict[str, list[str]]
+    )
+    set_decl: dict[str, str] = field(default_factory=dict[str, str])
+    set_elements: dict[str, str] = field(default_factory=dict[str, str])
+
+
+# Index of a render line: 'add <sub> <fam> ferm <name> ...'
+# -> name at parts[4].
+_DESIRED_NAME_INDEX = 4
+
+
+def _build_desired_index(desired_save: str) -> _DesiredIndex:  # pyright: ignore[reportUnusedFunction]
+    """
+    Index a ``render().save`` script into verbatim lines keyed by object name.
+
+    Productions mirror :func:`parse_nft_script`; ``add table``/``flush table``
+    carry no per-object content and are skipped.  An unrecognized line is a
+    render-contract violation (render produced it), so it raises
+    :func:`internal_error` rather than being silently dropped.
+    """
+    index = _DesiredIndex()
+    for line in desired_save.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if parts[:2] in (["add", "table"], ["flush", "table"]):
+            continue
+        if len(parts) <= _DESIRED_NAME_INDEX or parts[0] != "add":
+            raise internal_error(f"unexpected render line: {stripped!r}")
+        sub, name = parts[1], parts[_DESIRED_NAME_INDEX]
+        if sub == "chain":
+            index.chain_decl[name] = stripped
+        elif sub == "rule":
+            index.chain_rules.setdefault(name, []).append(stripped)
+        elif sub == "set":
+            index.set_decl[name] = stripped
+        elif sub == "element":
+            index.set_elements[name] = stripped
+        else:
+            raise internal_error(f"unexpected render line: {stripped!r}")
+    return index
 
 
 @dataclass
