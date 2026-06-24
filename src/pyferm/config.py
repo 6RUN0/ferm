@@ -66,3 +66,6 @@ class Options:
     plan: bool = False
     #: ``--plan-format``: ``structured`` (default) or ``diff`` (unified).
     plan_format: str = "structured"
+    #: ``--full-reload`` (port-only): opt out of the default nft delta-apply
+    #: and force the legacy ``flush table`` + full rebuild.  nft-only.
+    full_reload: bool = False

@@ -1196,3 +1196,29 @@ def test_run_plan_nft_render_error_propagates() -> None:
 
     with pytest.raises(FermError, match="preserve"):
         _run_plan(domains, Options(nft=True), backend)
+
+
+def test_full_reload_flag_sets_option() -> None:
+    from pyferm.cli import _build_parser, _resolve_options
+
+    args = _build_parser().parse_args(["--nft", "--full-reload", "f.ferm"])
+    options = _resolve_options(args)
+    assert options.full_reload is True
+
+
+def test_full_reload_without_nft_is_rejected() -> None:
+    import pytest
+
+    from pyferm.cli import _build_parser, _resolve_options
+    from pyferm.errors import FermError
+
+    args = _build_parser().parse_args(["--full-reload", "f.ferm"])
+    with pytest.raises(FermError, match="full-reload"):
+        _resolve_options(args)
+
+
+def test_full_reload_defaults_false() -> None:
+    from pyferm.cli import _build_parser, _resolve_options
+
+    args = _build_parser().parse_args(["--nft", "f.ferm"])
+    assert _resolve_options(args).full_reload is False

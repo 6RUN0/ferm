@@ -162,6 +162,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nolegacy", action="store_true")
     # Port-only: opt into the native nftables backend.
     parser.add_argument("--nft", action="store_true")
+    # Port-only: opt out of delta-apply, force full flush+reload.
+    parser.add_argument("--full-reload", action="store_true")
     # Port-only: read-only diff preview.
     parser.add_argument("--plan", action="store_true")
     parser.add_argument(
@@ -210,6 +212,8 @@ def _resolve_options(args: argparse.Namespace) -> Options:
             raise FermError(f"Invalid --test-mock-previous: '{spec}'")
         mock_previous[match.group(1)] = match.group(2)
 
+    if args.full_reload and not args.nft:
+        raise FermError("ferm --full-reload has no sense without --nft")
     if args.plan_format != "structured" and not args.plan:
         raise FermError("ferm --plan-format has no sense without --plan")
     if args.plan and args.nft and args.noflush:
@@ -231,6 +235,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
         nft=args.nft,
         plan=args.plan,
         plan_format=args.plan_format,
+        full_reload=args.full_reload,
     )
 
 
