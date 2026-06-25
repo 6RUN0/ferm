@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pyferm.errors import internal_error
-from pyferm.values import Value, realize_deferred
+from pyferm.values import Deferred, Value, realize_deferred
 
 if TYPE_CHECKING:
     from pyferm.modules import ModuleDef, Registry
@@ -177,6 +177,12 @@ def append_rule(chain_rules: list[RenderedRule], rule: Rule) -> None:
     ``$option->[2]`` slots) into a :class:`RenderedRule`, preserving the
     original option order.  Formatting happens later in the backend.
     """
+    for option in rule.options:
+        if isinstance(option.chosen, (list, Deferred)):
+            raise internal_error(
+                f"option {option.name!r} reached append_rule with an "
+                f"unrealized {type(option.chosen).__name__} value"
+            )
     options = [
         RenderedOption(option.name, option.chosen, option.kind, option.module)
         for option in rule.options

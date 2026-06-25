@@ -15,6 +15,7 @@ from pyferm.errors import FermError
 from pyferm.modules import ModuleDef
 from pyferm.rules import (
     RenderedRule,
+    append_rule,
     is_netfilter_builtin_chain,
     is_netfilter_core_target,
     is_netfilter_module_target,
@@ -22,7 +23,7 @@ from pyferm.rules import (
     netfilter_canonical_protocol,
     netfilter_protocol_module,
 )
-from pyferm.scope import Rule, append_option
+from pyferm.scope import Option, Rule, append_option
 from pyferm.values import Deferred, Multi, Negated, Value
 
 # --- netfilter predicates --------------------------------------------------
@@ -209,3 +210,30 @@ def test_kind_and_module_carry_into_rendered_options() -> None:
     assert by_name["match"].module == "state"
     assert by_name["jump"].kind == "target"
     assert by_name["protocol"].module is None
+
+
+# --- append_rule postcondition: no list/Deferred may reach the commit ------
+
+
+def test_append_rule_rejects_list_chosen() -> None:
+    """A list leaked past unfold is a seam bug -> internal_error."""
+    rule = Rule()
+    opt = Option("dport", ["80", "443"])
+    opt.chosen = ["80", "443"]  # list leaked past unfold
+    rule.options.append(opt)
+    with pytest.raises(FermError, match="internal error"):
+        append_rule([], rule)
+
+
+def test_append_rule_rejects_deferred_chosen() -> None:
+    """An unrealized Deferred on chosen is a seam bug -> internal_error."""
+
+    def dummy(_domain: str) -> list[Value]:
+        return []  # pragma: no cover
+
+    rule = Rule()
+    opt = Option("saddr", [Deferred(function=dummy, params=[])])
+    opt.chosen = Deferred(function=dummy, params=[])  # unrealized deferred
+    rule.options.append(opt)
+    with pytest.raises(FermError, match="internal error"):
+        append_rule([], rule)
