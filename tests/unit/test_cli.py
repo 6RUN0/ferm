@@ -626,7 +626,7 @@ def test_cli_def_high_codepoint_is_byte_faithful(tmp_path: Path) -> None:
     assert b"\\u20ac" not in result.stdout
 
 
-# --- Task 1 (plan): --plan / --plan-format flag plumbing -------------------
+# --- --plan / --plan-format flag plumbing ---------------------------------
 
 
 def _resolve_plan(argv: list[str]) -> Options:
@@ -657,7 +657,7 @@ def test_plan_format_without_plan_is_error() -> None:
         _resolve_plan(["--plan-format", "diff", "a.ferm"])
 
 
-# --- Task 15: backend selection --------------------------------------------
+# --- backend selection ----------------------------------------------------
 
 
 def test_select_backend_defaults_to_iptables() -> None:
@@ -704,7 +704,7 @@ def test_nft_with_nolegacy_is_noop(tmp_path: Path) -> None:
     assert main(argv) == 0
 
 
-# --- Task 20: nft cli applier and capture seams ----------------------------
+# --- nft cli applier and capture seams ------------------------------------
 
 
 class _RunRecorder:
@@ -758,8 +758,7 @@ def test_make_nft_restore_checks_then_applies_as_latin1_bytes(
 ) -> None:
     # The applier first validates the ruleset with `nft -c -f -` (a netlink
     # check that touches nothing), then installs it with `nft -f -`.  Both
-    # runs are fed the rendered save as one-byte-per-char latin-1 on stdin
-    # (decision 1).
+    # runs are fed the rendered save as one-byte-per-char latin-1 on stdin.
     from pyferm.cli import _make_nft_restore
 
     recorder = _RunRecorder(returncode=0)
@@ -1137,7 +1136,7 @@ def test_plan_runs_no_hooks(
     assert "HOOK_RAN" not in out
 
 
-# --- Task 4 (nft --plan wiring) -------------------------------------------
+# --- nft --plan wiring -----------------------------------------------------
 
 
 def test_plan_nft_no_longer_raises() -> None:

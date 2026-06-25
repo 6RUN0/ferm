@@ -3,8 +3,7 @@ The native nftables backend (Phase 2).
 
 Translates each :class:`pyferm.rules.RenderedRule` to a small internal
 nft-expression model and serializes it (``to_text``) into one atomic
-``nft -f`` script over ``table <family> ferm`` only.  See design
-``docs/superpowers/specs/2026-06-13-ferm-phase2-nft-backend-design.md``.
+``nft -f`` script over ``table <family> ferm`` only.
 """
 
 from __future__ import annotations

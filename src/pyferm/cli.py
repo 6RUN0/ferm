@@ -158,7 +158,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shell", action="store_true")
     parser.add_argument("--domain")
     parser.add_argument("--def", dest="defs", action="append", default=[])
-    # Sanctioned deviation #4 (no oracle counterpart).
+    # A sanctioned deviation (no oracle counterpart).
     parser.add_argument("--nolegacy", action="store_true")
     # Port-only: opt into the native nftables backend.
     parser.add_argument("--nft", action="store_true")
@@ -313,7 +313,7 @@ def _make_io(
     ``print LINES`` sink (raw, caller supplies newlines) writing to
     ``lines_stream`` from :func:`_setup_streams`; ``read_save`` runs a
     ``*-save`` tool and ``capture`` runs a command capturing its stdout (the
-    nft backend's snapshot seam, decision 10) -- both consumed by ``_run``'s
+    nft backend's snapshot seam) -- both consumed by ``_run``'s
     ``capture_previous`` closure over
     :meth:`pyferm.backend.base.Backend.capture_previous`; ``restore`` adapts
     the backend's three-argument
@@ -391,7 +391,7 @@ def _make_io(
             restore_domain(domain_info, save, options)
 
     def capture(command: str) -> str | None:
-        # Like execute(), but returns stdout for snapshotting (decision 10).
+        # Like execute(), but returns stdout for snapshotting.
         #
         # A snapshot failure must NOT masquerade as "no previous table": the
         # nft rollback DELETES the table when `previous` is None, so a
@@ -424,7 +424,7 @@ def _make_io(
 
 
 def _select_backend(options: Options) -> Backend:
-    """Pick the backend (decision 3): nft is opt-in, iptables the default."""
+    """Pick the backend: nft is opt-in, iptables the default."""
     return NftBackend() if options.nft else IptablesBackend()
 
 
@@ -476,7 +476,7 @@ def _validate_desired_nft(options: Options, path: str, save: str) -> None:
 
 def _make_nft_restore(options: Options) -> RestoreDomain:
     """
-    Build the ``nft -f -`` applier injected when ``--nft`` is set (decision 1).
+    Build the ``nft -f -`` applier injected when ``--nft`` is set.
 
     Validates the rendered save with ``nft -c -f -`` first, then pipes it to
     the resolved ``nft`` binary, raising :class:`FermError` (the rollback
@@ -535,7 +535,7 @@ def _rollback_all(
     Roll every family back and exit 1 (Perl ``rollback``, ``:3147``).
 
     The cross-domain loop and the closing message/``exit 1`` were split out of
-    the backend (deviation #3): each family's restore lives in
+    the backend (a sanctioned deviation): each family's restore lives in
     :meth:`Backend.rollback`; the orchestration is here.  Never returns.
     """
     for domain in sorted(domains):
@@ -561,7 +561,7 @@ def _confirm_rules(options: Options) -> bool:
     """
     Ask the admin to confirm, with a timeout (Perl ``confirm_rules``).
 
-    Sanctioned deviation #5: the oracle's ``alarm`` is realised with
+    A sanctioned deviation: the oracle's ``alarm`` is realised with
     :mod:`signal`.  The ``SIGALRM`` handler must *raise* to abort the
     blocking read: Perl's ``sysread`` returns on ``EINTR``, but Python
     retries an interrupted ``os.read`` whenever the handler returns

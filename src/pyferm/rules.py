@@ -8,9 +8,9 @@ helpers ``netfilter_canonical_protocol``/``netfilter_protocol_module``
 (``:1766-1803``), plus ``append_rule``/``unfold_rule``/``mkrules2``
 (``:1885-1920``).
 
-**Render/commit split (sanctioned deviation #1, design §"Ключевое
-архитектурное решение").**  In the oracle the array unfold and
-``format_option`` are *fused* inside one recursion: ``unfold_rule`` writes the
+**Render/commit split (a sanctioned deviation).**  In the oracle the array
+unfold and ``format_option`` are *fused* inside one recursion: ``unfold_rule``
+writes the
 formatted string into the option's slot ``$option->[2]`` (``:1902``) and
 ``append_rule`` joins those slots into the final ``-A ...`` command
 (``:1888``).  This port keeps the unfold in the kernel but no longer formats:
@@ -26,11 +26,10 @@ kernel-agnostic; only per-value formatting is backend-specific.
 ``mkrules`` itself (``:1924``, the tables x chains walk that seeds
 ``chain_rules`` in ``%domains``) is deliberately *not* here: it mutates the
 per-domain state owned by ``domains.py``, so it is ported alongside that module
-(implementation plan §4, which scopes this step to ``mkrules2``,
-``unfold_rule`` and ``append_rule`` only).
+(this step covers ``mkrules2``, ``unfold_rule`` and ``append_rule`` only).
 
 ``realize_deferred`` is imported from :mod:`pyferm.values` (its home; see that
-module and plan §3) -- it is interleaved with the unfold here exactly as in the
+module) -- it is interleaved with the unfold here exactly as in the
 oracle, so the expansion order (outer loop over options x inner loop over
 realized values) is preserved and multi-valued deferred rules emit their lines
 in the same order as Perl.
@@ -140,8 +139,8 @@ class RenderedOption:
     """
     One option of an unfolded rule, ready for the backend to format.
 
-    The kernel->backend contract element ``(name, value, kind, module)``
-    (design §"Контракт правила").  ``value`` is the single value selected for
+    The kernel->backend contract element ``(name, value, kind, module)``.
+    ``value`` is the single value selected for
     this option in this leaf rule (no arrays, deferred already realized);
     negation survives as a ``Negated``/``PreNegated`` tag on ``value``, not as
     a field.  ``kind``/``module`` are the port-only fields carried over from

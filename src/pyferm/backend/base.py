@@ -9,15 +9,14 @@ exactly this) and an effectful :meth:`Backend.commit`, plus
 :meth:`Backend.rollback`, :meth:`Backend.capture_previous` (snapshot the
 family's previous state for rollback/``@preserve``) and
 :meth:`Backend.read_previous`.  Splitting the slow/eb-atomic build out of
-execution is sanctioned deviation #3 (design §"Backend-интерфейс"); the oracle
-has no such seam.
+execution is a sanctioned deviation; the oracle has no such seam.
 
 Effectful I/O (running a command, emitting a ``--lines`` line, piping a save to
 ``*-restore``) is injected as callables rather than reached for directly, so
 the backend stays pure and unit-testable -- the same seam ``domains`` uses.
 The cli owns the real implementations and wires them in; orchestration across
 domains (apply all -> ``confirm_rules`` -> roll back all) lives in the cli, not
-here (design §"Backend-интерфейс", ``:782-817``).
+here (``reference/src/ferm:782-817``).
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ SaveReader = Callable[[str], "str | None"]
 #: could not be run (or ``--noexec``).  Unlike :data:`ExecuteCommand`
 #: (which returns only an exit status), this captures output: the nft
 #: backend uses it to snapshot ``nft list table <family> ferm`` for
-#: rollback (decision 10); the x_tables backend ignores it.
+#: rollback; the x_tables backend ignores it.
 ExecuteCapture = Callable[[str], "str | None"]
 
 
@@ -131,7 +130,7 @@ class Backend(ABC):
         Lets the wiring (``initialize_domain``) resolve the right tools
         per backend without hardcoding x_tables names: iptables returns
         its ``*tables``/``*-save``/``*-restore`` set, nft returns a single
-        family-independent ``nft`` (design §9, plan decision 2).
+        family-independent ``nft``.
         """
 
     @abstractmethod

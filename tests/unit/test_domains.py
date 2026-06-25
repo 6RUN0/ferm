@@ -55,7 +55,7 @@ def test_find_tool_nolegacy_skips_legacy(
     monkeypatch.setattr(
         "pyferm.domains.os.access", lambda p, _m: p in executable
     )
-    # deviation #4: the legacy preference is bypassed, plain name resolves
+    # nolegacy: the legacy preference is bypassed, plain name resolves
     assert find_tool("iptables-save", Options(nolegacy=True)) == (
         "/usr/sbin/iptables-save"
     )

@@ -4,7 +4,7 @@ Error/warning reporting and the exit-code contract.
 Faithful port of ``error`` and ``warning`` from ``reference/src/ferm``
 (``:834-879``).  ``die`` maps to :class:`FermError`; the top-level CLI
 handler prints its message and exits non-zero.  The exit code is a flat
-``1``, a sanctioned simplification (design §"Обработка ошибок"): Perl's
+``1``, a sanctioned simplification: Perl's
 uncaught ``die`` exits with whatever ``$!``/``$?`` happen to hold (e.g. 2
 after ENOENT, 25 after ENOTTY) -- residual errno noise, not an interface.
 

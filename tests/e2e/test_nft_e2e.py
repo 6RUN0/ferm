@@ -7,11 +7,10 @@ backend.  It proves three things the text golden harness cannot:
 * the rendered ``--nft`` save file is accepted by a real netfilter --
   ``nft -c -f -`` checks it against netlink (needs ``CAP_NET_ADMIN``),
   and a real apply lands rules the kernel actually holds;
-* the own-table coexistence invariant (design section 6): ferm owns
-  only ``table ip ferm`` and never ``flush ruleset``, so a foreign
-  table planted before the apply (docker/fail2ban style) survives it
-  untouched;
-* the DROP-policy shift witness (design sections 6 / 10.3): both base
+* the own-table coexistence invariant: ferm owns only ``table ip ferm``
+  and never ``flush ruleset``, so a foreign table planted before the
+  apply (docker/fail2ban style) survives it untouched;
+* the DROP-policy shift witness: both base
   chains sit on the input hook, the foreign one at a numerically lower
   priority than ferm's, which is documented expected behavior, not a
   regression.

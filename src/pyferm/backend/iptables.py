@@ -252,7 +252,7 @@ def resolve_dynamic_preserve(
     of the table's ``preserve_regexes`` it is returned with the preserve flag
     set, so ``rules_to_save`` copies its rules verbatim.  The oracle writes
     the additions into the global ``%domains``; this port returns them so
-    :meth:`Backend.render` stays pure (deviation #3).
+    :meth:`Backend.render` stays pure (a sanctioned deviation).
     """
     added: dict[str, ChainInfo] = {}
     for match in re.finditer(r"^:([^ ]+) .*", table_save, re.MULTILINE):

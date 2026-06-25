@@ -24,7 +24,7 @@ the same injected ``capture_previous`` closure and ``emit_line`` sink the cli
 wires up, so the parser never imports the backend.  The ``@hook`` lists are
 parser state, consumed later by the cli's main flow (``:777-794``).
 
-``Option.module`` (the port-only contract field, sanctioned deviation #2) is
+``Option.module`` (the port-only contract field, a sanctioned deviation) is
 filled by :meth:`Parser.parse_option` from the keyword-to-module link that
 ``merge_keywords`` records (the oracle computes the same link at parse time
 and discards it); ``kind`` is synthesized from the option name in
@@ -113,7 +113,7 @@ DEPRECATED_KEYWORDS = {"realgoto": "goto"}
 #: (~150-300 frames at the default recursionlimit).  An explicit counter,
 #: NOT the ``level`` parameter: an array ``domain``/``table``/``chain``
 #: replays its block with ``enter(0, ...)`` (:meth:`Parser._replay_array`),
-#: resetting ``level``.  Sanctioned deviation #6: Perl recurses until
+#: resetting ``level``.  A sanctioned deviation: Perl recurses until
 #: memory runs out, the port fails with a located diagnostic.
 MAX_BLOCK_DEPTH = 100
 
@@ -498,7 +498,7 @@ class Parser:
         Read a module option and queue it on the rule (Perl ``:2026``).
 
         Fills :attr:`pyferm.scope.Option.module` from the keyword-to-module
-        link ``merge_keywords`` recorded (sanctioned deviation #2: the
+        link ``merge_keywords`` recorded (a sanctioned deviation: the
         contract field the Phase 2 nft translator reads).
         """
         append_option(

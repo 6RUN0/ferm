@@ -368,8 +368,8 @@ def teardown_rules() -> None:
     # Drop stale conntrack: an ESTABLISHED entry from a prior scenario
     # would let through traffic the next scenario expects cut as NEW.
     # Run inside fw's netns -- conntrack is per-network-namespace, so this
-    # flushes only fw's table, NOT the host-global one (closing the spec's
-    # "conntrack -F is global" residual worry).
+    # flushes only fw's table, NOT the host-global one (so the
+    # "conntrack -F is global" worry does not apply here).
     _sh("ip", "netns", "exec", "fw", "conntrack", "-F")
     _sh("ip", "netns", "exec", "fw", "nft", "flush", "ruleset")
 

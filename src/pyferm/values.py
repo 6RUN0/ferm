@@ -21,7 +21,7 @@ Perl ``ref``    Python form         meaning
 
 ``realize_deferred`` lives here (not in ``rules``) because parser,
 functions and values all call it; ``values`` has no upward dependency, so
-keeping it here avoids import cycles (see the implementation plan, §3).
+keeping it here avoids import cycles.
 The deferred *callable* is injected when the :class:`Deferred` is built
 (by ``functions``/``parser``), so this module never imports them back.
 """

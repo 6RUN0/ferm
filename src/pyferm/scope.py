@@ -61,8 +61,8 @@ class Option:
 
     :attr:`kind` and :attr:`module` are **synthesized by the port** -- they
     have no counterpart in the oracle, which distinguishes match/proto/target
-    by the option ``name`` alone (design §"Контракт правила", sanctioned
-    deviation #2, a seed for the Phase 2 nft backend).  ``kind`` is derived
+    by the option ``name`` alone (a sanctioned deviation, a seed for the
+    Phase 2 nft backend).  ``kind`` is derived
     from ``name`` in :func:`append_option`; ``module`` is the name of the
     module that introduced a sub-option's keyword, recorded by
     :func:`merge_keywords` on :attr:`Rule.keyword_module` and passed in by
@@ -73,7 +73,7 @@ class Option:
     ``$option->[2]`` (``:1888``): :func:`pyferm.rules.unfold_rule` records the
     *value* selected for this option in the current leaf rule (array expanded,
     deferred realized) rather than a rendered string, because formatting moved
-    to the backend (sanctioned deviation #1).
+    to the backend (a sanctioned deviation).
     """
 
     name: str
@@ -171,7 +171,7 @@ def merge_keywords(
     affected, then merges ``keywords`` in (later definitions win).
     ``module`` is the introducing module's name; it is recorded per keyword
     so ``parse_option`` can fill :attr:`Option.module` (the parse-time link
-    the oracle discards -- design, sanctioned deviation #2).
+    the oracle discards -- a sanctioned deviation).
     """
     copy_on_write(rule, "keywords")
     rule.keywords.update(keywords)
@@ -180,9 +180,9 @@ def merge_keywords(
             rule.keyword_module[name] = module
 
 
-#: Map an option ``name`` to its synthesized :attr:`Option.kind` (design
-#: §"Контракт правила": ``match``->``match_module``, ``protocol``->``proto``,
-#: ``jump``/``goto``->``target``, everything else->``option``).
+#: Map an option ``name`` to its synthesized :attr:`Option.kind`:
+#: ``match``->``match_module``, ``protocol``->``proto``,
+#: ``jump``/``goto``->``target``, everything else->``option``.
 _OPTION_KINDS = {
     "match": "match_module",
     "protocol": "proto",

@@ -1,10 +1,9 @@
 """Unit tests for :mod:`pyferm.rules`.
 
 Covers the netfilter predicates ported from ``reference/src/ferm``
-(``:1766-1803``) and -- the risk unit called out in the implementation plan
-(§4 step 8) -- the render/commit split: the cartesian unfold must produce the
-same *set and order* of rules as the oracle while recording values (not
-formatted strings), with deferred calls expanded inline and
+(``:1766-1803``) and the render/commit split: the cartesian unfold must
+produce the same *set and order* of rules as the oracle while recording
+values (not formatted strings), with deferred calls expanded inline and
 negation/kind/module carried through untouched.
 """
 

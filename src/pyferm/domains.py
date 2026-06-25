@@ -166,7 +166,7 @@ def find_tool(name: str, options: Options) -> str:
     nft-based tools are incompatible with ferm.  Raises :class:`FermError`
     (Perl ``die``) when nothing executable is found.
 
-    ``--nolegacy`` (sanctioned deviation #4) skips only the legacy preference;
+    ``--nolegacy`` (a sanctioned deviation) skips only the legacy preference;
     the default behaviour is unchanged, so golden runs stay green.
     """
     if options.test:

@@ -72,8 +72,8 @@ def _probe_reason(probe: Probe) -> tuple[str | None, str, str]:
 
     The raw XML + stderr are kept so a FAIL can attach them: without the
     XML a ``got None`` is ambiguous between "nmap reported a different
-    reason", "nmap timed out", and "nmap errored" -- the spec requires
-    the raw ``nmap -oX`` in diagnostics for exactly this reason.
+    reason", "nmap timed out", and "nmap errored" -- so the raw
+    ``nmap -oX`` is kept in diagnostics for exactly this reason.
     """
     nmap_xml, stderr = run_nmap_probe(probe)
     return parse_reason(nmap_xml, probe.port, probe.proto), nmap_xml, stderr

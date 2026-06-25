@@ -73,8 +73,8 @@ def test_basic_rule_records_options_and_kinds() -> None:
 
 def test_suboptions_record_their_introducing_module() -> None:
     # The contract field Option.module links a sub-option to the module
-    # whose merge_keywords introduced its keyword (design, sanctioned
-    # deviation #2); the match/jump elements themselves carry no module.
+    # whose merge_keywords introduced its keyword (a sanctioned
+    # deviation); the match/jump elements themselves carry no module.
     parser = _parse("chain INPUT mod state state NEW ACCEPT;")
     options = _rules(parser, "ip", "filter", "INPUT")[0].options
     assert [(o.name, o.kind, o.module) for o in options] == [
@@ -612,7 +612,7 @@ def test_include_pipe_nonzero_exit_aborts(tmp_path: Path) -> None:
         _parse_file(main)
 
 
-# -- enter depth limit (sanctioned deviation #6) ----------------------------
+# -- enter depth limit (a sanctioned deviation) ----------------------------
 
 
 def _nested(depth: int) -> str:

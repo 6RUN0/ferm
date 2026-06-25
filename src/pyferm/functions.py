@@ -78,7 +78,7 @@ _MULTIPORT_PROTO_RE = re.compile(r"tcp|udp|udplite")
 #: Cap on value-reader recursion depth (:meth:`Evaluator.getvalues`).
 #: Nested arrays ``((( ... )))``, chained negation ``!!! ...`` and nested
 #: ``@cat(@cat(...))`` calls all recurse back through ``getvalues``, so one
-#: guard there covers them.  Sanctioned deviation #7, the value-reader twin
+#: guard there covers them.  A sanctioned deviation, the value-reader twin
 #: of :data:`~pyferm.parser.MAX_BLOCK_DEPTH`: Perl recurses until memory runs
 #: out (OOM only at ~200k levels), the port fails earlier with a located
 #: diagnostic.

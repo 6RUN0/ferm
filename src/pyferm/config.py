@@ -15,7 +15,7 @@ of a global hash.
 :class:`Options` is threaded explicitly as a parameter (``domains``/``backend``
 take it as an argument), keeping the module dependency graph acyclic -- nothing
 imports a global option state.  ``nolegacy`` is the one field with no oracle
-counterpart: it is sanctioned deviation #4 (disable the ``*-legacy`` tool
+counterpart: it is a sanctioned deviation (disable the ``*-legacy`` tool
 preference), defaulting off so the oracle's behaviour is unchanged.
 """
 
@@ -56,7 +56,7 @@ class Options:
     domain: str | None = None
     #: ``--test-mock-previous=fam=path``: stand-in previous save per family.
     mock_previous: dict[str, str] = field(default_factory=dict[str, str])
-    #: ``--nolegacy`` (port-only, deviation #4): skip the ``*-legacy`` tool
+    #: ``--nolegacy`` (port-only): skip the ``*-legacy`` tool
     #: preference in :func:`pyferm.domains.find_tool`.
     nolegacy: bool = False
     #: ``--nft`` (port-only): use the native nftables backend (opt-in).

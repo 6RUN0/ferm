@@ -12,9 +12,9 @@ risk to the host.  The five logical steps:
 3. real apply via ``python3 -m pyferm --nft basic.ferm``;
 4. ``nft list table ip ferm`` proves the kernel really accepted it;
 5. the own-table coexistence invariant plus the DROP-policy shift
-   witness (design sections 6 / 10.3): a foreign table planted before
-   the apply survives it untouched, and both base chains sit on the
-   input hook with foreign's priority numerically lower than ferm's.
+   witness: a foreign table planted before the apply survives it
+   untouched, and both base chains sit on the input hook with foreign's
+   priority numerically lower than ferm's.
 
 Prints ``NFT-E2E-PASS`` only after every check has passed.  Stdlib
 only: it runs under the container's system ``python3`` with
@@ -163,7 +163,7 @@ def main() -> int:
         print(f"rule not in kernel:\n{ferm_listed.stdout}", file=sys.stderr)
         return 1
 
-    # Step 5a: own-table coexistence invariant (design section 6) --
+    # Step 5a: own-table coexistence invariant --
     # ferm owns only `table ip ferm` and never `flush ruleset`, so the
     # foreign table must survive the apply untouched.
     foreign_listed = _sh("nft", "list", "table", "ip", "foreign")
@@ -175,7 +175,7 @@ def main() -> int:
         )
         return 1
 
-    # Step 5b: DROP-policy shift witness (design sections 6 / 10.3).
+    # Step 5b: DROP-policy shift witness.
     # Both tables carry an input-hook base chain; the foreign chain at
     # priority -100 sees packets BEFORE ferm's INPUT at priority 0.
     # This is documented expected behavior, not a regression vs

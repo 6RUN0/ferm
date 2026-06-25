@@ -502,7 +502,7 @@ def test_multiport_range_not_split_across_chunk_boundary() -> None:
     ]
 
 
-# -- getvalues depth limit (sanctioned deviation #7) ------------------------
+# -- getvalues depth limit (a sanctioned deviation) ------------------------
 
 
 def _nested_value(depth: int) -> str:

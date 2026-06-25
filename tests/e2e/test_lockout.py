@@ -12,7 +12,7 @@ container with ``CAP_NET_ADMIN`` exercises exactly the code a bare
 host would -- and the throwaway network namespace is what makes the
 lockout safe to provoke.  The host kernel here has no legacy x_tables
 modules, so the container uses the nft-backed iptables binaries and
-ferm runs with ``--nolegacy`` (sanctioned deviation #4 gets real-world
+ferm runs with ``--nolegacy`` (a sanctioned deviation gets real-world
 exercise as a bonus).
 
 Opt-in: ``nox -s lockout`` (or ``FERM_LOCKOUT_E2E=1`` by hand); skipped

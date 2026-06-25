@@ -115,7 +115,7 @@ _ALLOW_LIST = re.compile(r"\bct state\b|\breject with\b|\blimit rate\b")
 # the gap was fixed (fail -> prune it here).  This is the self-cleaning
 # ``xfail(strict=True)`` intent, keyed on exact rule strings so it neither
 # over-matches nor silently skips.  Derived from a live run against the
-# pinned corpus + system nft; re-derive on a corpus/nft bump (see Step 2).
+# pinned corpus + system nft; re-derive on a corpus/nft bump.
 _BASELINE_DIVERGENCES: frozenset[str] = frozenset(
     {
         "ct state . ct mark"

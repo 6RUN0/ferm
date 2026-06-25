@@ -128,7 +128,7 @@ def test_render_comment_rejects_over_limit() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5: nft_family + map_base_chain
+# nft_family + map_base_chain
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import map_base_chain, nft_family  # noqa: E402
 
@@ -168,7 +168,7 @@ def test_map_base_chain_unmappable_is_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 6: build_chains + nft_chain_name
+# build_chains + nft_chain_name
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import build_chains  # noqa: E402
 from pyferm.domains import ChainInfo, TableInfo  # noqa: E402
@@ -216,7 +216,7 @@ def test_nft_chain_name_disambiguates_non_filter() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 7: unwrap_value + first_scalar
+# unwrap_value + first_scalar
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import first_scalar, unwrap_value  # noqa: E402
 from pyferm.values import Multi, Negated  # noqa: E402
@@ -277,7 +277,7 @@ def test_first_scalar_unsupported_shape_is_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 8: translate_match
+# translate_match
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_match  # noqa: E402
 from pyferm.rules import RenderedOption  # noqa: E402
@@ -409,7 +409,7 @@ def test_set_eligible_selectors_are_documented() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 9: build_verdict
+# build_verdict
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import build_verdict  # noqa: E402
 
@@ -789,7 +789,7 @@ def test_build_verdict_log_prefix_bare_keyword_is_quoted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 10: translate_rule
+# translate_rule
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_rule  # noqa: E402
 from pyferm.rules import RenderedRule  # noqa: E402
@@ -1066,7 +1066,7 @@ def test_build_verdict_tcp_reset_reject_ip6() -> None:
     )
 
 
-# --- Task 13: NftBackend.render --------------------------------------------
+# --- NftBackend.render -----------------------------------------------------
 
 import re  # noqa: E402
 
@@ -1117,7 +1117,7 @@ def test_render_preserve_is_error() -> None:
         NftBackend().render("ip", info, Options(test=True))
 
 
-# --- Task 14: commit / capture_previous / rollback -------------------------
+# --- commit / capture_previous / rollback ---------------------------------
 
 from pyferm.backend.base import Rendered  # noqa: E402
 
@@ -1677,7 +1677,7 @@ def test_translate_match_dport_negated_colon_range() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 4: collapse pass (_collapse_chain_rules)
+# collapse pass (_collapse_chain_rules)
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import _collapse_chain_rules  # noqa: E402
 
