@@ -43,6 +43,11 @@ def test_parse_family_idempotent() -> None:
     assert parse_family(parse_family("ip6")) == "ip6"
 
 
+def test_parse_family_error_message() -> None:
+    with pytest.raises(FermError, match=r"Invalid domain 'tcp'"):
+        parse_family("tcp")
+
+
 def test_is_ip_family_only_ip_and_ip6() -> None:
     assert is_ip_family("ip") is True
     assert is_ip_family("ip6") is True

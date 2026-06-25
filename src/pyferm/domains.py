@@ -63,6 +63,7 @@ Family = Literal["ip", "ip6", "arp", "eb"]
 _FAMILIES: frozenset[str] = frozenset(get_args(Family))
 #: Families that own ``*-save``/``*-restore`` tools (``:934-935``).
 _IP_FAMILIES: frozenset[Family] = frozenset({"ip", "ip6"})
+assert _IP_FAMILIES <= _FAMILIES
 
 
 def parse_family(name: str) -> Family:
@@ -285,13 +286,13 @@ def initialize_domain(
     if domain_info.initialized:
         return
 
-    parse_family(domain)
+    domain = parse_family(domain)
 
     if resolve_tools is not None:
         names = resolve_tools(domain)
     else:
         names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if is_ip_family(cast("Family", domain)):
+        if is_ip_family(domain):
             names[TOOL_SAVE] = domain + TOOL_SAVE
             names[TOOL_RESTORE] = domain + TOOL_RESTORE
     domain_info.tools = {

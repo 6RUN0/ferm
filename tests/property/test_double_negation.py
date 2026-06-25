@@ -14,7 +14,7 @@ from pyferm.values import Negated, PreNegated, negate_value
 def test_double_negation_always_rejected(scalar: str) -> None:
     once = negate_value(scalar)
     assert isinstance(once, (Negated, PreNegated))
-    with pytest.raises(FermError, match="double negation"):
+    with pytest.raises(FermError, match=r"double negation is not allowed"):
         negate_value(once)
-    with pytest.raises(FermError, match="double negation"):
+    with pytest.raises(FermError, match=r"double negation is not allowed"):
         negate_value(negate_value(scalar, klass="pre_negated"))

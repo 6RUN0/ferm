@@ -20,6 +20,7 @@ from pyferm.backend.nft import (
     serialize_table,
 )
 from pyferm.errors import FermError
+from pyferm.values import SetRef
 
 
 def test_model_constructors_hold_fields() -> None:
@@ -2090,7 +2091,6 @@ def test_commit_set_retype_falls_back_to_full_reload(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # translate_rule: empty named-set invariant
 # ---------------------------------------------------------------------------
-from pyferm.values import SetRef  # noqa: E402
 
 
 def test_translate_rule_rejects_empty_named_set() -> None:

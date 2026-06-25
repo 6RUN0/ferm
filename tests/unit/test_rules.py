@@ -218,7 +218,7 @@ def test_kind_and_module_carry_into_rendered_options() -> None:
 def test_append_rule_rejects_list_chosen() -> None:
     """A list leaked past unfold is a seam bug -> internal_error."""
     rule = Rule()
-    opt = Option("dport", ["80", "443"])
+    opt = Option("dport", [])
     opt.chosen = ["80", "443"]  # list leaked past unfold
     rule.options.append(opt)
     with pytest.raises(FermError, match="internal error"):

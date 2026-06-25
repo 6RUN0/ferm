@@ -325,6 +325,25 @@ slice and recorded here so they are not lost.
   its own table, so a kernel readback never contains one. Recorded so the
   "maps" item from the Phase 5 header is explicitly accounted for, not lost.
 
+### Contract hardening
+
+A cross-cutting hardening pass on the `python-port` branch (not yet
+released): the `Family` type alias and `parse_family` gate replaced ad-hoc
+string checks, the wrapped-value and rendered-rule objects
+(`Negated`/`Multi`/`SetRef`, `RenderedOption`/`RenderedRule`) were made
+frozen for value-based equality and binding immutability (the mutable
+`Option`/`Rule` scopes were deliberately left alone), the iptables backend
+gained name and policy validators, and
+module-level assertions document key subset invariants. A small Hypothesis
+property suite covers the `Family` boundary and frozen-value contracts.
+
+Delta-convergence testing was considered as a further Hypothesis target
+(generating `(snapshot, desired)` pairs and asserting the delta matches a
+structural reinterpreter). It was not added: `tests/unit/test_plan_delta_convergence.py`
+and the opt-in `delta_apply_e2e` session already exercise that path
+structurally and end-to-end; a generator would duplicate the reinterpreter
+without producing new signal.
+
 ### Phase 6 — Standard rule library (ready-made patterns)
 
 An includable `.ferm` macro library with a search path (e.g.
