@@ -96,6 +96,24 @@ _SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
 _IPT_NAME_BADCHAR_RE = re.compile(r"[\s:*\[\x00-\x1f]", re.ASCII)
 
 
+#: Policies the iptables save grammar accepts on a ``:{chain} {policy}`` line.
+#: A backend-side whitelist (not the parser's ``is_netfilter_core_target``):
+#: it additionally admits the synthesized ``-`` and passes ``None`` through.
+#: Defense-in-depth -- policy is already gated at the parser border.
+_IPT_POLICIES: frozenset[str] = frozenset(
+    {"ACCEPT", "DROP", "RETURN", "QUEUE", "-"}
+)
+
+
+def _validate_policy(policy: str | None) -> str | None:
+    """Return *policy* if it is a save-grammar-safe value, else error."""
+    if policy is not None and policy not in _IPT_POLICIES:
+        raise FermError(
+            f"invalid chain policy {policy!r} for iptables backend"
+        )
+    return policy
+
+
 def _validate_chain_name(name: str) -> str:
     """Return *name* if safe for the iptables save grammar, else error."""
     if name == "" or _IPT_NAME_BADCHAR_RE.search(name):
@@ -120,8 +138,9 @@ def validate_names(domain_info: DomainInfo) -> None:
     """
     for table, table_info in domain_info.tables.items():
         _validate_table_name(table)
-        for chain in table_info.chains:
+        for chain, chain_info in table_info.chains.items():
             _validate_chain_name(chain)
+            _validate_policy(chain_info.policy)
 
 
 #: ip6 ``reject-with`` value translation (``:1871-1878``); several IPv4 names

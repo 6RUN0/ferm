@@ -20,6 +20,7 @@ from pyferm.backend.base import Command, Rendered
 from pyferm.backend.iptables import (
     IptablesBackend,
     _validate_chain_name,
+    _validate_policy,
     _validate_table_name,
     extract_chain_from_table_save,
     extract_table_from_save,
@@ -1015,6 +1016,24 @@ def test_validate_table_name_accepts(good: str) -> None:
 def test_validate_table_name_rejects(bad: str) -> None:
     with pytest.raises(FermError):
         _validate_table_name(bad)
+
+
+# ---------------------------------------------------------------------------
+# _validate_policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "good", ["ACCEPT", "DROP", "RETURN", "QUEUE", "-", None]
+)
+def test_validate_policy_accepts_whitelist(good: str | None) -> None:
+    assert _validate_policy(good) == good
+
+
+@pytest.mark.parametrize("bad", ["accept", "DROP; drop", "EVIL", "DROP\n"])
+def test_validate_policy_rejects_others(bad: str) -> None:
+    with pytest.raises(FermError):
+        _validate_policy(bad)
 
 
 def test_table_name_injection_is_rejected_end_to_end() -> None:
