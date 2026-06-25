@@ -37,11 +37,12 @@ in the same order as Perl.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pyferm.errors import internal_error
-from pyferm.values import Deferred, Value, realize_deferred
+from pyferm.values import Deferred, Value, contains_deferred, realize_deferred
 
 if TYPE_CHECKING:
     from pyferm.modules import ModuleDef, Registry
@@ -229,6 +230,7 @@ def mkrules2(domain: str, chain_rules: list[RenderedRule], rule: Rule) -> None:
     value and recorded directly (the oracle formats these via ``format_option``
     here; this port defers that to the backend, recording the value instead).
     """
+    before = len(chain_rules)
     unfold: list[Option] = []
     for option in rule.options:
         if isinstance(option.value, list):
@@ -237,3 +239,17 @@ def mkrules2(domain: str, chain_rules: list[RenderedRule], rule: Rule) -> None:
             option.chosen = option.value
 
     unfold_rule(domain, chain_rules, rule, unfold)
+    # Postcondition measured here at the single unfold_rule call site (the
+    # recursive helper has no top-level return that knows the expected
+    # cardinality).  With no deferred values the unfold is a pure cartesian
+    # product, so the rule count is the product of the array lengths
+    # (deferred excluded -- their length is known only after realize).
+    if unfold and not any(
+        contains_deferred(*cast("list[Value]", o.value)) for o in unfold
+    ):
+        expected = math.prod(len(cast("list[Value]", o.value)) for o in unfold)
+        if len(chain_rules) - before != expected:
+            raise internal_error(
+                f"unfold produced {len(chain_rules) - before} rules, "
+                f"expected {expected}"
+            )

@@ -237,3 +237,22 @@ def test_append_rule_rejects_deferred_chosen() -> None:
     rule.options.append(opt)
     with pytest.raises(FermError, match="internal error"):
         append_rule([], rule)
+
+
+def test_mkrules2_cardinality_equals_array_product() -> None:
+    """Cartesian unfold of two array options yields the exact product count."""
+    rule = Rule()
+    rule.options.append(Option("sport", ["1", "2", "3"]))
+    rule.options.append(Option("dport", ["x", "y"]))
+    out: list[RenderedRule] = []
+    mkrules2("ip", out, rule)
+    assert len(out) == 6  # 3 * 2; the invariant must hold, not just the count
+
+
+def test_mkrules2_empty_array_yields_zero_rules() -> None:
+    """An empty array option produces no rules (zero-length product)."""
+    rule = Rule()
+    rule.options.append(Option("dport", []))
+    out: list[RenderedRule] = []
+    mkrules2("ip", out, rule)
+    assert len(out) == 0  # product over a zero-length array
