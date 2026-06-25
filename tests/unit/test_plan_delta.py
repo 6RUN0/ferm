@@ -427,3 +427,26 @@ def test_build_nft_delta_set_retype_falls_back_to_none() -> None:
         "add rule ip ferm INPUT ip saddr @s accept\n"
     )
     assert build_nft_delta(previous, desired, family="ip") is None
+
+
+def test_set_removal_forces_full_reload_via_delta_none() -> None:
+    # previous has a named set; desired drops it -> the delta is refcount-
+    # unsafe (`delete set` aborts if a live rule still references it), so
+    # build_nft_delta returns None and the caller falls back to full reload.
+    # NB: this invariant lives in build_nft_delta (set_changes kind=="remove"
+    # -> None), NOT in needs_full_reload (which only sees the snapshot side).
+    previous = "table ip ferm {\n\tset x {\n\t\ttype ipv4_addr\n\t}\n}\n"
+    desired = (  # render().save with a chain but no set x
+        "add table ip ferm\n"
+        "add chain ip ferm INPUT "
+        "{ type filter hook input priority 0; policy accept; }\n"
+    )
+    assert build_nft_delta(previous, desired, family="ip") is None
+
+
+def test_needs_full_reload_contract() -> None:
+    # needs_full_reload only branches on the snapshot: no prior table (None)
+    # or an empty snapshot -> nothing to preserve -> reload; otherwise delta.
+    assert needs_full_reload(None) is True
+    assert needs_full_reload("") is True
+    assert needs_full_reload("table ip ferm {\n}\n") is False
