@@ -103,6 +103,13 @@ def _validate_chain_name(name: str) -> str:
     return name
 
 
+def _validate_table_name(name: str) -> str:
+    """Return *name* if safe for the ``*{table}`` save header, else error."""
+    if name == "" or _IPT_NAME_BADCHAR_RE.search(name):
+        raise FermError(f"invalid table name {name!r} for iptables backend")
+    return name
+
+
 def validate_names(domain_info: DomainInfo) -> None:
     """
     Fail-closed gate over every config-supplied table/chain name.
@@ -111,7 +118,8 @@ def validate_names(domain_info: DomainInfo) -> None:
     (not only in the parser) mirrors the nft border's REJECT posture and
     covers the fast (save) and slow (per-command) paths uniformly.
     """
-    for table_info in domain_info.tables.values():
+    for table, table_info in domain_info.tables.items():
+        _validate_table_name(table)
         for chain in table_info.chains:
             _validate_chain_name(chain)
 

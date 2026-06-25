@@ -20,6 +20,7 @@ from pyferm.backend.base import Command, Rendered
 from pyferm.backend.iptables import (
     IptablesBackend,
     _validate_chain_name,
+    _validate_table_name,
     extract_chain_from_table_save,
     extract_table_from_save,
     format_option,
@@ -999,6 +1000,31 @@ def _run_ipt(src: str) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         check=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# _validate_table_name
+
+
+@pytest.mark.parametrize("good", ["filter", "nat", "mangle", "my-table"])
+def test_validate_table_name_accepts(good: str) -> None:
+    assert _validate_table_name(good) == good
+
+
+@pytest.mark.parametrize("bad", ["filter foo", "a*b", "a\nb", ""])
+def test_validate_table_name_rejects(bad: str) -> None:
+    with pytest.raises(FermError):
+        _validate_table_name(bad)
+
+
+def test_table_name_injection_is_rejected_end_to_end() -> None:
+    # Currently emits "*filter foo" with rc=0 (injection).
+    # Table names had no check before this fix.
+    proc = _run_ipt(
+        'domain ip table "filter foo" chain INPUT { policy DROP; }\n'
+    )
+    assert proc.returncode != 0
+    assert "filter foo" in proc.stderr
 
 
 def test_chain_name_injection_is_rejected_end_to_end() -> None:
