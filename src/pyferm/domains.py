@@ -35,7 +35,7 @@ import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import IO, TYPE_CHECKING, Final
+from typing import IO, TYPE_CHECKING, Final, Literal, cast, get_args
 
 from pyferm.errors import FermError
 
@@ -57,10 +57,26 @@ TOOL_TABLES: Final[str] = "tables"
 TOOL_SAVE: Final[str] = "tables-save"
 TOOL_RESTORE: Final[str] = "tables-restore"
 
-#: Valid domain (family) names (``initialize_domain``, ``:931``).
-_DOMAIN_RE = re.compile(r"^(?:ip6?|arp|eb)$")
+#: A netfilter family (the four ferm domains).  The single source of
+#: truth for what a valid family is; ``parse_family`` is the only gate.
+Family = Literal["ip", "ip6", "arp", "eb"]
+_FAMILIES: frozenset[str] = frozenset(get_args(Family))
 #: Families that own ``*-save``/``*-restore`` tools (``:934-935``).
-_IP_DOMAIN_RE = re.compile(r"^ip6?$")
+_IP_FAMILIES: frozenset[Family] = frozenset({"ip", "ip6"})
+
+
+def parse_family(name: str) -> Family:
+    """Return *name* as a :data:`Family`, or raise (the only family gate)."""
+    if name not in _FAMILIES:
+        raise FermError(f"Invalid domain '{name}'")
+    return cast("Family", name)
+
+
+def is_ip_family(family: Family) -> bool:
+    """Whether *family* owns a ``*-save``/``*-restore`` tool pair."""
+    return family in _IP_FAMILIES
+
+
 #: Split a tool name into ``(base ending in 'tables', suffix)`` (``:886``).
 _LEGACY_RE = re.compile(r"^(.*tables)(.*)$")
 
@@ -269,14 +285,13 @@ def initialize_domain(
     if domain_info.initialized:
         return
 
-    if _DOMAIN_RE.match(domain) is None:
-        raise FermError(f"Invalid domain '{domain}'")
+    parse_family(domain)
 
     if resolve_tools is not None:
         names = resolve_tools(domain)
     else:
         names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if _IP_DOMAIN_RE.match(domain) is not None:
+        if is_ip_family(cast("Family", domain)):
             names[TOOL_SAVE] = domain + TOOL_SAVE
             names[TOOL_RESTORE] = domain + TOOL_RESTORE
     domain_info.tools = {

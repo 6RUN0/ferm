@@ -21,9 +21,34 @@ from pyferm.domains import (
     DomainInfo,
     find_tool,
     initialize_domain,
+    is_ip_family,
+    parse_family,
     read_previous,
 )
 from pyferm.errors import FermError
+
+
+@pytest.mark.parametrize("name", ["ip", "ip6", "arp", "eb"])
+def test_parse_family_accepts_known(name: str) -> None:
+    assert parse_family(name) == name
+
+
+@pytest.mark.parametrize("bad", ["", "ipv4", "IP", "ip ", "tcp", "ip6 "])
+def test_parse_family_rejects_unknown(bad: str) -> None:
+    with pytest.raises(FermError):
+        parse_family(bad)
+
+
+def test_parse_family_idempotent() -> None:
+    assert parse_family(parse_family("ip6")) == "ip6"
+
+
+def test_is_ip_family_only_ip_and_ip6() -> None:
+    assert is_ip_family("ip") is True
+    assert is_ip_family("ip6") is True
+    assert is_ip_family("arp") is False
+    assert is_ip_family("eb") is False
+
 
 # --- find_tool -------------------------------------------------------------
 
