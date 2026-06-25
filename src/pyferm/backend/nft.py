@@ -1014,6 +1014,11 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     and companion options feed it.  Match statements keep their source order
     (nft is order-sensitive); the verdict is appended last.
     """
+    if _references_empty_named_set(rule):
+        raise internal_error(
+            "a rule over a family-filtered empty named set reached "
+            "translate_rule; the caller must drop it first"
+        )
     # First pass: resolve rule-wide context (the l4 protocol and whether a
     # port match exists) so a port option that textually precedes the
     # `protocol` option still translates correctly (order-independent).

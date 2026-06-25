@@ -2085,3 +2085,20 @@ def test_commit_set_retype_falls_back_to_full_reload(tmp_path: Path) -> None:
     # rather than emit a refcount-unsafe 'delete set'.
     out = _run_apply(tmp_path, _FERM_SET_INTERVAL, _MOCK_SET_PLAIN)
     assert "flush table ip ferm" in out  # full reload, not a delta
+
+
+# ---------------------------------------------------------------------------
+# translate_rule: empty named-set invariant
+# ---------------------------------------------------------------------------
+from pyferm.values import SetRef  # noqa: E402
+
+
+def test_translate_rule_rejects_empty_named_set() -> None:
+    # The caller drops empty-set rules (a v4-only set on the ip6 pass);
+    # if one slips through, that is a broken contract, not a silent emit.
+    rule = RenderedRule(
+        options=[RenderedOption("daddr", SetRef("x", []), "option", None)],
+        script=None,
+    )
+    with pytest.raises(FermError, match="internal error"):
+        translate_rule("ip6", "filter", rule)
