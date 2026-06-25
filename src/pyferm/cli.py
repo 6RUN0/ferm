@@ -41,6 +41,7 @@ from pyferm.backend.iptables import (
     IptablesBackend,
     restore_domain,
     rules_to_save,
+    validate_names,
 )
 from pyferm.backend.nft import TOOL_NFT, NftBackend, nft_family
 from pyferm.config import Options
@@ -693,6 +694,7 @@ def _run_plan(
                 plan.unsupported.append(domain)
                 continue
             host_mask = "/32" if domain == "ip" else "/128"
+            validate_names(domain_info)
             desired_text = rules_to_save(domain, domain_info, options)
             current_text = domain_info.previous or ""
             current = parse_save(current_text, host_mask=host_mask)

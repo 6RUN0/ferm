@@ -87,6 +87,35 @@ _FAST_SPECIAL_RE = re.compile(r"[\s'\\;&]", re.ASCII)
 #: ``re.ASCII`` for the same reason as above.
 _SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
 
+#: Bytes that break the space-delimited save grammar (``:{chain}``/``*{table}``
+#: lines, ``-A``/``-N`` commands).  iptables itself accepts ``-``/``.``/``+``
+#: and a leading digit, so this is a separator BLACKLIST, not an alphabet
+#: whitelist: it rejects only what would corrupt the save text -- the same
+#: input the oracle turns into a broken save line.  ``re.ASCII`` so ``\s`` is
+#: byte-mode like the quoting regexes above.
+_IPT_NAME_BADCHAR_RE = re.compile(r"[\s:*\[\x00-\x1f]", re.ASCII)
+
+
+def _validate_chain_name(name: str) -> str:
+    """Return *name* if safe for the iptables save grammar, else error."""
+    if name == "" or _IPT_NAME_BADCHAR_RE.search(name):
+        raise FermError(f"invalid chain name {name!r} for iptables backend")
+    return name
+
+
+def validate_names(domain_info: DomainInfo) -> None:
+    """
+    Fail-closed gate over every config-supplied table/chain name.
+
+    The backend is the last barrier before kernel text; validating here
+    (not only in the parser) mirrors the nft border's REJECT posture and
+    covers the fast (save) and slow (per-command) paths uniformly.
+    """
+    for table_info in domain_info.tables.values():
+        for chain in table_info.chains:
+            _validate_chain_name(chain)
+
+
 #: ip6 ``reject-with`` value translation (``:1871-1878``); several IPv4 names
 #: collapse onto ``icmp6-adm-prohibited``.
 _ICMP6_REJECT_MAP = {
@@ -428,6 +457,7 @@ class IptablesBackend(Backend):
         parse time with the global ``$option{fast}``, so an arp/eb fallback
         under the default fast mode still double-quotes.
         """
+        validate_names(domain_info)
         use_fast = options.fast and TOOL_RESTORE in domain_info.tools
         if use_fast:
             return Rendered(save=rules_to_save(domain, domain_info, options))

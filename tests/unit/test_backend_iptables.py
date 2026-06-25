@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from pyferm.backend.base import Command, Rendered
 from pyferm.backend.iptables import (
     IptablesBackend,
+    _validate_chain_name,
     extract_chain_from_table_save,
     extract_table_from_save,
     format_option,
@@ -966,3 +968,64 @@ def test_capture_previous_plan_leaves_ip_supported() -> None:
     )
     assert info.plan_unsupported is False
     assert info.previous is not None
+
+
+# ---------------------------------------------------------------------------
+# _validate_chain_name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "good", ["INPUT", "fail2ban-ssh", "9foo", "_foo", "chain.x", "a+b"]
+)
+def test_validate_chain_name_accepts_iptables_legal(good: str) -> None:
+    assert _validate_chain_name(good) == good
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["evil chain", "Y DROP [0:0]", "a:b", "a*b", "a\tb", "a\nb", "", "x\x01y"],
+)
+def test_validate_chain_name_rejects_separators(bad: str) -> None:
+    with pytest.raises(FermError):
+        _validate_chain_name(bad)
+
+
+def _run_ipt(src: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # fixed argv, no shell
+        [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
+        input=src,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def test_chain_name_injection_is_rejected_end_to_end() -> None:
+    # Currently emits ":evil chain DROP [0:0]" with rc=0 (injection).
+    proc = _run_ipt(
+        'domain ip table filter chain "evil chain" { policy DROP; }\n'
+    )
+    assert proc.returncode != 0
+    assert "evil chain" in proc.stderr
+
+
+def test_chain_name_injection_rejected_on_plan_path(
+    tmp_path: Path,
+) -> None:
+    # The --plan path calls rules_to_save directly; validate_names must
+    # guard it too so a spaced chain name is rejected before save-text is
+    # built (defense-in-depth on the read-only preview path).
+    cfg = tmp_path / "inject.ferm"
+    cfg.write_text(
+        'domain ip table filter chain "evil chain" { policy DROP; }\n',
+        encoding="utf-8",
+    )
+    proc = subprocess.run(  # fixed argv, no shell
+        [sys.executable, "-m", "pyferm", "--plan", "--test", str(cfg)],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "evil chain" in proc.stderr
