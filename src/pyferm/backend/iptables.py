@@ -87,11 +87,15 @@ _FAST_SPECIAL_RE = re.compile(r"[\s'\\;&]", re.ASCII)
 #: ``re.ASCII`` for the same reason as above.
 _SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
 
-#: Bytes that break the space-delimited save grammar (``:{chain}``/``*{table}``
-#: lines, ``-A``/``-N`` commands).  iptables itself accepts ``-``/``.``/``+``
-#: and a leading digit, so this is a separator BLACKLIST, not an alphabet
-#: whitelist: it rejects only what would corrupt the save text -- the same
-#: input the oracle turns into a broken save line.  ``re.ASCII`` so ``\s`` is
+#: Bytes refused in a config-supplied table/chain name: ASCII whitespace,
+#: control bytes (``\x00``-``\x1f``), and the save-grammar separators
+#: ``:``/``*``/``[``.  A fail-closed BLACKLIST, deliberately stricter than the
+#: oracle (which length-checks only, then emits the name verbatim): whitespace
+#: and control bytes make ``iptables-restore`` silently truncate the name or
+#: split the line, so the oracle's output is already broken there.  The
+#: separators ``:``/``*``/``[`` are line leaders / counter syntax that the
+#: kernel in fact accepts mid-name -- refused anyway as a conservative border
+#: rather than reasoning about token position.  ``re.ASCII`` so ``\s`` is
 #: byte-mode like the quoting regexes above.
 _IPT_NAME_BADCHAR_RE = re.compile(r"[\s:*\[\x00-\x1f]", re.ASCII)
 
@@ -382,6 +386,13 @@ def rules_to_save(
             table_save = extract_table_from_save(
                 domain_info.previous or "", table
             )
+            # These chains come from the previous ruleset (kernel
+            # ``iptables-save`` output), not from config, and are re-emitted
+            # verbatim for parity with the oracle.  They bypass
+            # ``validate_names`` by design: the kernel never holds a chain
+            # whose name carries a save-grammar separator, so there is nothing
+            # for the border to catch, and gating them would diverge from the
+            # oracle on a hand-crafted previous dump.
             added = resolve_dynamic_preserve(table_info, table_save)
             if added:
                 chains = {**chains, **added}

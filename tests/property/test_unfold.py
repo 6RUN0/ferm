@@ -10,13 +10,16 @@ from hypothesis import strategies as st
 from pyferm.rules import RenderedRule, mkrules2
 from pyferm.scope import Rule, append_option
 
+# Inner ``min_size=0`` so an empty array option is generated: it drives the
+# zero-length product (no rules) boundary, the most error-prone case for the
+# cardinality postcondition.
 _ARRAYS = st.lists(
     st.lists(
         st.text(
             alphabet=st.characters(min_codepoint=97, max_codepoint=122),
             max_size=3,
         ),
-        min_size=1,
+        min_size=0,
         max_size=3,
     ),
     min_size=1,

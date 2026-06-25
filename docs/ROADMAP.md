@@ -337,6 +337,18 @@ gained name and policy validators, and
 module-level assertions document key subset invariants. A small Hypothesis
 property suite covers the `Family` boundary and frozen-value contracts.
 
+The iptables name validator is a deliberate, fail-closed deviation from
+byte-parity: it rejects table/chain names containing whitespace, control
+bytes, or the save-grammar separators `:`/`*`/`[`, whereas the oracle
+length-checks only and emits them verbatim. For whitespace and control bytes
+the port is strictly safer — the oracle's output makes `iptables-restore`
+silently truncate the name or abort. The separators `:`/`*`/`[` do install
+cleanly mid-name in the kernel (verified against `iptables-nft-restore`), so
+refusing them is a narrow, intentional over-rejection of names that never
+appear in real configs; it is pinned by
+`test_ipt_name_rejects_grammar_separators_by_design` so it is not later
+mistaken for a parity bug.
+
 Delta-convergence testing was considered as a further Hypothesis target
 (generating `(snapshot, desired)` pairs and asserting the delta matches a
 structural reinterpreter). It was not added: `tests/unit/test_plan_delta_convergence.py`

@@ -30,6 +30,19 @@ def test_ipt_table_name_rejects_any_separator(
         _validate_table_name(prefix + bad + suffix)
 
 
+# Decision record: `:` `*` `[` install into the kernel cleanly mid-name
+# (verified against iptables-nft-restore in a netns), and the Perl oracle
+# emits them verbatim.  The border refuses them anyway as a conservative
+# fail-closed choice.  Pinned so the deliberate over-rejection is not later
+# "fixed" back into a parity bug.
+@pytest.mark.parametrize("sep", [":", "*", "["])
+def test_ipt_name_rejects_grammar_separators_by_design(sep: str) -> None:
+    with pytest.raises(FermError):
+        _validate_chain_name(f"my{sep}chain")
+    with pytest.raises(FermError):
+        _validate_table_name(f"my{sep}table")
+
+
 @given(text=st.text(min_size=1, max_size=12))
 def test_nft_quote_never_returns_unquotable(text: str) -> None:
     try:
