@@ -7,17 +7,20 @@ case), and the negation rules.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import cast
 
 import pytest
 
 from pyferm.errors import FermError
+from pyferm.rules import RenderedOption, RenderedRule
 from pyferm.values import (
     Deferred,
     Multi,
     Negated,
     Params,
     PreNegated,
+    SetRef,
     Value,
     cat,
     contains_deferred,
@@ -179,3 +182,52 @@ def test_value_wrappers_are_value_typed() -> None:
     # Smoke check the dataclasses construct and compare by value.
     assert Params(["a", "b"]) == Params(["a", "b"])
     assert Multi(["a"]) == Multi(["a"])
+
+
+def test_negated_is_frozen() -> None:
+    n = Negated("tcp")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        n.value = "udp"  # type: ignore[misc]
+
+
+def test_multi_binding_frozen_but_eq_by_value() -> None:
+    m = Multi(["80", "443"])
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        m.values = ["22"]  # type: ignore[misc]
+    assert Multi(["80", "443"]) == m  # eq is value-based
+
+
+def test_setref_is_frozen() -> None:
+    s = SetRef("x", ["10.0.0.1"])
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        s.elements = []  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        Negated("tcp"),
+        PreNegated("tcp"),
+        Params(["a", "b"]),
+        Multi(["a"]),
+        SetRef("x", ["1"]),
+        Deferred(lambda _d, *_a: [], []),
+    ],
+)
+def test_replace_round_trip_is_stable(
+    obj: Negated | PreNegated | Params | Multi | SetRef | Deferred,
+) -> None:
+    # dataclasses.replace reconstructs an equal instance (eq-by-value).
+    assert dataclasses.replace(obj) == obj
+
+
+def test_rendered_option_is_frozen() -> None:
+    opt = RenderedOption(name="dport", value="80", kind="s", module=None)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        opt.value = "443"  # type: ignore[misc]
+
+
+def test_rendered_rule_is_frozen() -> None:
+    rule = RenderedRule(options=[], script=None)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rule.options = []  # type: ignore[misc]

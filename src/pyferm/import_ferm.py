@@ -704,7 +704,7 @@ class Importer:
                 and isinstance(last.value, Multi)
             ):
                 # Merge consecutive ``--u32`` options into one ferm array.
-                last.value.values.extend(value.values)
+                last.value = Multi(last.value.values + value.values)
                 return
             pre_negated = False
             cur.append(MatchEntry(keyword.ferm_name or keyword.name, value))

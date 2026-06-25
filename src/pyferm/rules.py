@@ -134,7 +134,7 @@ def netfilter_protocol_module(proto: str | None) -> str | None:
     return proto
 
 
-@dataclass
+@dataclass(frozen=True)
 class RenderedOption:
     """
     One option of an unfolded rule, ready for the backend to format.
@@ -153,7 +153,7 @@ class RenderedOption:
     module: str | None
 
 
-@dataclass
+@dataclass(frozen=True)
 class RenderedRule:
     """
     One fully unfolded rule (Perl's ``chain_rules`` entry, ``:1889``).

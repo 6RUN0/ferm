@@ -423,3 +423,17 @@ def test_gather_input_reads_high_bytes(tmp_path: Path) -> None:
     lines = _gather_input([str(save)])
     # _gather_input uses splitlines(), so there are no trailing newlines
     assert lines[0] == "# \xff"
+
+
+def test_run_consecutive_u32_options_merge_into_array() -> None:
+    # Two consecutive ``--u32`` options on the same rule must fold into a
+    # ferm array rather than being emitted as two separate u32 rules.
+    # This exercises the Multi-merge path (import_ferm.py parse_option).
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m u32 --u32 "0x0&0xF=0x5" --u32 "0x4&0xFFFF=0x3C" --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "u32 ('0x0&0xF=0x5' '0x4&0xFFFF=0x3C') ACCEPT;" in output

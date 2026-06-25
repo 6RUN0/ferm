@@ -37,14 +37,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-@dataclass
+@dataclass(frozen=True)
 class Negated:
     """A negated value: rendered ``! --keyword value`` (Perl ``negated``)."""
 
     value: Value
 
 
-@dataclass
+@dataclass(frozen=True)
 class PreNegated:
     """
     Negation consumed before the parameters (Perl ``pre_negated``).
@@ -57,21 +57,21 @@ class PreNegated:
     value: Value
 
 
-@dataclass
+@dataclass(frozen=True)
 class Params:
     """Several arguments to one option: ``--k a b c`` (Perl ``params``)."""
 
     values: list[Value]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Multi:
     """One option repeated per value: ``--k a --k b`` (Perl ``multi``)."""
 
     values: list[Value]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Deferred:
     """
     A late-evaluated call (Perl ``deferred``: ``[fn, *params]``).
@@ -85,7 +85,7 @@ class Deferred:
     params: list[Value]
 
 
-@dataclass
+@dataclass(frozen=True)
 class SetRef:
     """
     A named nft set: stable identity ``name`` plus its ``elements``.
