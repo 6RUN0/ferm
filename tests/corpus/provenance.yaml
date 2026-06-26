@@ -1,0 +1,433 @@
+# Provenance manifest for the wild-config corpus.
+#
+# One entry per tests/corpus/configs/*.ferm file. This is the single
+# source of truth for where each harvested config came from; it replaces
+# the old source table that used to live in the corpus README.
+#
+# Consumed only by test_provenance.py via yaml.safe_load. The commit
+# field is a best-effort revision pin: the last commit that touched the
+# source path at harvest time (2026-06-26). It records provenance, not a
+# build dependency -- the .ferm files are vendored verbatim (modulo the
+# sanitization edits recorded under `sanitized:`).
+#
+# Field order per entry: file, repo, path, commit, license, features,
+# and an optional sanitized block when the vendored copy was edited.
+
+- file: americancouncils.ferm
+  repo: AmericanCouncils/ac-common-ansible
+  path: files/ferm.conf
+  commit: f8bda9e4bfbf7efb4d92fd31f68d34d93e94fb7c
+  license: NOASSERTION
+  features:
+    - "@include"
+    - mod state
+    - REJECT
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: anxs-the-ansibles.ferm
+  repo: ANXS/the-ansibles
+  path: roles/firewall/files/etc_ferm_ferm.conf
+  commit: 67f1f9015e5bef5ea85ebe8f2d83b63d617d743c
+  license: NOASSERTION
+  features:
+    - mod state
+    - ip6/dual-stack
+    - interface
+
+# commit pins default-branch HEAD: path-scoped commits API 500s on this large mirror repo
+- file: aur3-mirror.ferm
+  repo: felixonmars/aur3-mirror
+  path: ferm/ferm.conf
+  commit: 7ccd4e91fc0c4dcc0ad0faa7f411fbba36d19be4
+  license: NOASSERTION
+  features:
+    - mod state
+    - ip6/dual-stack
+    - interface
+
+- file: blinken-paradar.ferm
+  repo: blinken/paradar
+  path: deploy/system/etc.ferm.conf
+  commit: d27332868d7de75d8ff439e9ca585b7880ceb890
+  license: GPL-3.0
+  features:
+    - mod state
+    - ip6/dual-stack
+    - interface
+
+- file: brutesque-out.ferm
+  repo: brutesque/docker-swarm-over-vpn-mesh
+  path: roles/setup_ubuntu/files/01-out.oracle_provided.ferm
+  commit: b23a4f978ae7faf8c594625a8f2db5468a209ee6
+  license: Unlicense
+  features:
+    - mod comment
+    - mod owner
+    - REJECT
+
+- file: brutesque-swarm.ferm
+  repo: brutesque/docker-swarm-over-vpn-mesh
+  path: roles/setup_ubuntu/files/ferm.conf
+  commit: c6cd68f16bf90740d62d3d7e64fcb38c7804631f
+  license: Unlicense
+  features:
+    - "@include"
+    - mod conntrack
+    - ip6/dual-stack
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: dcent-stonecutter.ferm
+  repo: d-cent/stonecutter
+  path: ops/roles/ferm/files/ferm.conf
+  commit: 93558b1bbaf8ad278560865c2a980645e947c541
+  license: MIT
+  features:
+    - mod state
+    - interface
+
+- file: epitron-scripts.ferm
+  repo: epitron/scripts
+  path: etc/ferm.conf
+  commit: 74a98d3542579f149466e8b953f1697eeb092b14
+  license: NOASSERTION
+  features:
+    - mod state
+    - ip6/dual-stack
+    - interface
+
+- file: ferm-tools-example.ferm
+  repo: ruslanfialkovskii/ferm-tools.nvim
+  path: test/example.ferm
+  commit: 8cee3d26cc761218a91dfe66e644fb9c453785da
+  license: MIT
+  features:
+    - "@if/@else"
+    - "@def"
+    - "@include"
+    - mod hashlimit
+    - mod limit
+    - mod conntrack
+    - mod mark
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - REJECT
+    - table nat
+    - table raw
+    - ip6/dual-stack
+    - interface
+  sanitized:
+    - "@include lines commented out"
+    - backtick substitution replaced with literal
+    - "missing `=` in @def fixed"
+
+- file: ffda-gateway.ferm
+  repo: freifunk-darmstadt/ffda-gateway-config
+  path: ferm/ferm.conf
+  commit: d32e3f867e14b3ea520c5e624331022026d95b96
+  license: NOASSERTION
+  features:
+    - mod state
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - table nat
+    - interface
+
+- file: grnet-synnefo.ferm
+  repo: grnet/synnefo
+  path: snf-deploy/files/etc/ferm/ferm.conf
+  commit: da63a4213fe6632bdcf054b413028d9643652ec0
+  license: GPL-3.0
+  features:
+    - "@include"
+    - mod state
+    - ip6/dual-stack
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: himdel-dotfiles.ferm
+  repo: himdel/dotfiles
+  path: etc/ferm/ferm.conf
+  commit: 09391406f682765c0f75c7251ebbfeb95174a3b3
+  license: NOASSERTION
+  features:
+    - "@if/@else"
+    - "@include"
+    - mod state
+    - ip6/dual-stack
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: meetings-devops.ferm
+  repo: meetings/devops
+  path: roles/ferm/files/ferm.conf
+  commit: 35b83b03ec13c8cce922c1e48928384cf516c455
+  license: MIT
+  features:
+    - "@include"
+    - mod state
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: netheads-server.ferm
+  repo: netheads/server
+  path: ferm.conf
+  commit: 53ef934575865358658236aa2e0c52e15f51c16f
+  license: GPL-2.0
+  features:
+    - "@def"
+    - mod state
+    - ip6/dual-stack
+    - interface
+
+- file: ngxirc-ngxbot-host.ferm
+  repo: ngxirc/ngxbot-host
+  path: states/ferm/ferm.conf
+  commit: b1fd903495e3baf2cce66786e7e803ff32d2c78b
+  license: BSD-3-Clause
+  features:
+    - mod state
+    - ip6/dual-stack
+    - interface
+
+- file: objective8.ferm
+  repo: ThoughtWorksInc/objective8
+  path: ops/roles/ferm/files/ferm.conf
+  commit: f5cbc5bf82c697d5a20ed7d1a1495b83e14f9619
+  license: MIT
+  features:
+    - mod state
+    - interface
+
+- file: pgapt-jenkins.ferm
+  repo: d/pgapt
+  path: jenkins/ansible/ferm.conf
+  commit: b94b83bc1f361dc03c8a62cdbb6e26a41d1ff623
+  license: NOASSERTION
+  features:
+    - mod multiport
+    - mod state
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+    - ip6/dual-stack
+    - interface
+
+- file: revolucaodosbytes.ferm
+  repo: revolucaodosbytes/ansible
+  path: roles/ferm/files/ferm.conf
+  commit: 213bc8422af514efb43df3ef92483d17730d4ed0
+  license: MIT
+  features:
+    - mod state
+    - interface
+
+- file: rootnode-lxc.ferm
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.conf
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - "@def"
+    - "@include"
+    - mod state
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - table nat
+    - interface
+  sanitized:
+    - "@include lines commented out"
+    - variables from removed @include stubbed (documentation-range)
+
+- file: rwthctf2012-vpn.ferm
+  repo: oldeurope/rwthctf2012
+  path: vpn/ferm.conf
+  commit: eca78c1b043327c7b627ab840f068061cd6dd12f
+  license: NOASSERTION
+  features:
+    - "@def"
+    - mod limit
+    - mod state
+    - REDIRECT
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - REJECT
+    - table nat
+    - table mangle
+    - interface
+
+- file: stuart-ha-bedroom.ferm
+  repo: stuart12/stuart-system
+  path: home-automation/home-assistant/bedroom/firewall.ferm
+  commit: 2f1311c21f51436da846b6e70822d664459d5c81
+  license: NOASSERTION
+  features:
+    - mod limit
+    - mod state
+    - LOG
+    - REJECT
+    - ip6/dual-stack
+    - interface
+
+- file: stuart-ha-server.ferm
+  repo: stuart12/stuart-system
+  path: home-automation/home-assistant/server/firewall.ferm
+  commit: 805e787f3bc89c0100b8145a370203b1e8beb36d
+  license: NOASSERTION
+  features:
+    - "@subchain"
+    - "@def"
+    - mod recent
+    - mod limit
+    - mod state
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - REJECT
+    - table nat
+    - table mangle
+    - ip6/dual-stack
+    - interface
+
+- file: tapirgo-common.ferm
+  repo: TapirGo/ansible
+  path: roles/common/templates/etc/ferm/ferm.conf
+  commit: acfab977fdb37006fe934a598fa97d548b3b963c
+  license: NOASSERTION
+  features:
+    - "@include"
+    - mod state
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: thewirl-personal-distro.ferm
+  repo: thewirl/personal-distro
+  path: ferm.conf
+  commit: b9387ba7a4490113d493f61b830ec303a66510a1
+  license: GPL-3.0
+  features:
+    - mod limit
+    - mod state
+    - LOG
+    - REJECT
+    - ip6/dual-stack
+    - interface
+
+- file: thexhr-config.ferm
+  repo: thexhr/config
+  path: etc/ferm.conf
+  commit: 549dfc801a4cc43a2bd8bb3656331f6294295629
+  license: NOASSERTION
+  features:
+    - "@def"
+    - "@hook"
+    - mod state
+    - REJECT
+    - ip6/dual-stack
+    - interface
+
+- file: unexicon.ferm
+  repo: bbidulock/unexicon-system
+  path: unexicon.ferm
+  commit: 5133aa2d176f87eab36027433679313ba943cbf7
+  license: GPL-3.0
+  features:
+    - "@def"
+    - "@hook"
+    - "@include"
+    - mod multiport
+    - mod conntrack
+    - TCPMSS
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - REJECT
+    - table nat
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+- file: vpngw-gw.ferm
+  repo: ThomasWaldmann/vpngw
+  path: gw/etc/ferm/ferm.conf
+  commit: dbf5c6f723a06e9917e6dc87b8177dd7018cee68
+  license: NOASSERTION
+  features:
+    - "@def"
+    - mod limit
+    - mod state
+    - mod mark
+    - MARK
+    - SNAT/DNAT/MASQUERADE
+    - LOG
+    - REJECT
+    - table nat
+    - table mangle
+    - interface
+
+- file: wuvt-router.ferm
+  repo: wuvt/wuvt-ansible
+  path: roles/router/files/ferm/ferm.conf
+  commit: 4f228782e5e7bfa7a6533d458ee414eb36d81de1
+  license: MIT
+  features:
+    - "@include"
+    - mod state
+    - ip6/dual-stack
+    - interface
+  sanitized:
+    - "@include lines commented out"
+
+# Phase B addition: CONNMARK was a zero-coverage feature; mkosi overlay
+# config from an anti-censorship VPN container (private RFC1918 ranges kept).
+- file: antizapret-vpn.ferm
+  repo: alexalok/antizapret-vpn-container
+  path: mkosi/mkosi.extra/etc/ferm/ferm.conf
+  commit: b0fbef920cdd6f17b38262fa977e2ea0cb8d3c74
+  license: NOASSERTION
+  features:
+    - CONNMARK
+    - mod connmark
+    - mod conntrack
+    - mod u32
+    - REDIRECT
+    - SNAT/DNAT/MASQUERADE
+    - "@def"
+    - table nat
+    - interface
+  sanitized:
+    - "@include lines commented out"
+    - variables from removed @include stubbed (documentation-range)
+
+# Phase B addition: TCPMSS plus mod set (a zero-coverage feature). A ferm
+# fragment from an ansible role (ferm-native @if/@def, no Jinja2) made
+# standalone by stubbing the variables defined in sibling role files.
+- file: ivansible-natmss.ferm
+  repo: ivansible/linux
+  path: roles/ferm/templates/rules/natmss.ferm
+  commit: 76fdfa1991f6809f7ad9510faf088f45f0c43c05
+  license: NOASSERTION
+  features:
+    - TCPMSS
+    - mod set/ipset
+    - "@if/@else"
+    - "@eq"
+    - "@def"
+    - table mangle
+    - ip6/dual-stack
+  sanitized:
+    - cross-file ansible-role variables stubbed (standalone fragment)
+
+# upstream ferm example, copied with sibling zonefile (see README)
+- file: upstream-resolve.ferm
+  repo: MaxKellermann/ferm
+  path: examples/resolve.ferm
+  commit: 1b77ea85220dd9a93d1048e50ed8360d87e0b06a
+  license: GPL-2.0
+  features:
+    - "@resolve"
+    - ip6/dual-stack

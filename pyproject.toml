@@ -420,6 +420,9 @@ lint = [
   "pip-audit>=2.10.0",
   "pyright>=1.1.410",
   "ruff>=0.15.16",
+  # Type stubs for the provenance-manifest reader; PyYAML ships no py.typed,
+  # so mypy --strict needs the stub package (the runtime dep lives in `test`).
+  "types-pyyaml>=6.0.12",
   "vulture>=2.14",
   "zizmor>=1.25.2",
 ]
@@ -443,5 +446,9 @@ test = [
   "pytest-randomly>=4.1.0",
   "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.6.0",
+  # Provenance manifest (tests/corpus/provenance.yaml) is parsed by
+  # test_provenance.py via yaml.safe_load; floor matches the bookworm-era
+  # 6.0.x line already resolved in .venv.
+  "pyyaml>=6.0.1",
 ]
 build = ["check-wheel-contents>=0.6.3"]

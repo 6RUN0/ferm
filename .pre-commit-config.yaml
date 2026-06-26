@@ -204,10 +204,12 @@ repos:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
         # pre-commit autoupdate --freeze writes 40-char SHAs that the
-        # entropy detector flags; uv.lock is hash soup by design.
+        # entropy detector flags; uv.lock is hash soup by design, and the
+        # corpus provenance manifest pins one 40-hex commit per config.
         exclude: |
           (?x)(
             ^uv\.lock$|
             ^\.secrets\.baseline$|
-            ^\.pre-commit-config\.yaml$
+            ^\.pre-commit-config\.yaml$|
+            ^tests/corpus/provenance\.yaml$
           )
