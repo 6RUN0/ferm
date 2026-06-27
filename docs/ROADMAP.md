@@ -338,16 +338,33 @@ module-level assertions document key subset invariants. A small Hypothesis
 property suite covers the `Family` boundary and frozen-value contracts.
 
 The iptables name validator is a deliberate, fail-closed deviation from
-byte-parity: it rejects table/chain names containing whitespace, control
-bytes, or the save-grammar separators `:`/`*`/`[`, whereas the oracle
-length-checks only and emits them verbatim. For whitespace and control bytes
-the port is strictly safer — the oracle's output makes `iptables-restore`
-silently truncate the name or abort. The separators `:`/`*`/`[` do install
-cleanly mid-name in the kernel (verified against `iptables-nft-restore`), so
-refusing them is a narrow, intentional over-rejection of names that never
-appear in real configs; it is pinned by
+byte-parity: a table/chain name must match the safe alphabet
+`[A-Za-z0-9_.+-]`, whereas the oracle length-checks only and emits names
+verbatim. It is a whitelist, not a blacklist, because the same name reaches
+two sinks with different danger sets — the fast path's `iptables-restore`
+save grammar (whitespace and control bytes split lines) and the slow path's
+raw interpolation into a per-rule command line that runs through `/bin/sh`.
+A blacklist tuned for the save grammar leaks every shell metacharacter
+(`;`, `$`, backtick, `|`, ...) into that shell sink, and `eb`/`arp` rules
+take the slow path by default, so a name like `x;reboot` would have been
+root command injection. `+` stays in the alphabet because the oracle accepts
+it (e.g. `a+b`), preserving parity. The narrow over-rejection of names that
+never appear in real configs (e.g. the save-grammar separators `:`/`*`/`[`,
+which do install cleanly mid-name in the kernel) is pinned by
 `test_ipt_name_rejects_grammar_separators_by_design` so it is not later
 mistaken for a parity bug.
+
+Deferred (open threat-model decision): config *values* — `saddr`, `comment`,
+log prefixes, match/target parameters — flow through `shell_escape`, whose
+slow mode (`_SLOW_SPECIAL_RE`) intentionally does **not** quote `$`,
+backtick, or `()`, byte-faithfully to the Perl oracle (`system($str)` also
+uses `/bin/sh`). A whitespace-free value like `$(id)` therefore still
+reaches the shell on the slow path. Closing this would mean quoting those
+metacharacters in `shell_escape` — a sanctioned divergence from the oracle
+that breaks golden parity and requires regenerating the affected `.result`
+files. It is left open pending a decision on whether ferm's threat model
+treats config values (as opposed to names) as untrusted input; upstream
+ferm does not.
 
 Delta-convergence testing was considered as a further Hypothesis target
 (generating `(snapshot, desired)` pairs and asserting the delta matches a
