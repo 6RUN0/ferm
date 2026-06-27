@@ -51,6 +51,92 @@ if TYPE_CHECKING:
 #: canonicalized by ``sort.pl`` (design revision 3, the ``@eb_tables`` fix).
 EB_TABLES = ("filter", "nat", "broute")
 
+#: nft's named base-chain priority landmarks, per family.  ip/ip6 share nft's
+#: inet-style landmarks; the bridge family (ferm ``eb``) has its own; the arp
+#: family supports only ``filter`` (nft rejects the other names there with
+#: "invalid priority expression value in this context").  Both vocabularies
+#: are keyed here: ferm domains (``ip``/``ip6``/``arp``/``eb``) for the parser
+#: and the nft family name ``bridge`` for the plan's canonicalizer, so a
+#: single table is the source of truth for both sides.
+_NFT_PRIORITY_LANDMARKS_INET: dict[str, int] = {
+    "raw": -300,
+    "mangle": -150,
+    "dstnat": -100,
+    "filter": 0,
+    "security": 50,
+    "srcnat": 100,
+}
+_NFT_PRIORITY_LANDMARKS_BRIDGE: dict[str, int] = {
+    "dstnat": -300,
+    "filter": -200,
+    "out": 100,
+    "srcnat": 300,
+}
+#: arp registers only the filter hook; ``filter`` is its sole valid landmark.
+_NFT_PRIORITY_LANDMARKS_ARP: dict[str, int] = {"filter": 0}
+NFT_PRIORITY_LANDMARKS: dict[str, dict[str, int]] = {
+    "ip": _NFT_PRIORITY_LANDMARKS_INET,
+    "ip6": _NFT_PRIORITY_LANDMARKS_INET,
+    "arp": _NFT_PRIORITY_LANDMARKS_ARP,
+    "bridge": _NFT_PRIORITY_LANDMARKS_BRIDGE,
+    "eb": _NFT_PRIORITY_LANDMARKS_BRIDGE,
+}
+
+#: nft stores a chain priority as a signed 32-bit integer; a value outside
+#: this range is rejected by nft at apply, so reject it at the border too.
+_NFT_PRIORITY_MIN = -(2**31)
+_NFT_PRIORITY_MAX = 2**31 - 1
+
+#: A plain priority integer: an optional sign and ASCII digits only -- no
+#: underscores, no non-ASCII digits (Python's ``int()`` would accept both).
+_PRIORITY_INT_RE = re.compile(r"[+-]?[0-9]+")
+
+#: A chain-priority token: a landmark name with an optional ``+``/``-`` offset
+#: (``filter``, ``dstnat - 10``, ``filter+5``).  A plain signed integer is
+#: handled separately by ``_PRIORITY_INT_RE``.
+_PRIORITY_LANDMARK_RE = re.compile(
+    r"\A(?P<name>[A-Za-z]+)\s*(?:(?P<sign>[+-])\s*(?P<magnitude>[0-9]+))?\Z"
+)
+
+
+def apply_priority_offset(base: int, sign: str, magnitude: int) -> int:
+    """Apply an nft priority offset (``base + n`` / ``base - n``)."""
+    return base + magnitude if sign == "+" else base - magnitude
+
+
+def _ensure_priority_in_range(value: int) -> int:
+    """Return ``value`` if it fits nft's signed-32-bit range, else raise."""
+    if not _NFT_PRIORITY_MIN <= value <= _NFT_PRIORITY_MAX:
+        raise ValueError(f"chain priority out of range: {value}")
+    return value
+
+
+def resolve_chain_priority(family: str, text: str) -> int:
+    """
+    Resolve an nft chain-priority token to the integer netfilter stores.
+
+    Accepts a plain signed integer (``-1``), an nft landmark name
+    (``filter``), or a landmark with an offset (``dstnat - 10``,
+    ``filter+5``).  The result must fit nft's signed-32-bit range.  Raises
+    ``ValueError`` when the token is neither, or is out of range -- the
+    caller turns that into a user-facing error.
+    """
+    text = text.strip()
+    if _PRIORITY_INT_RE.fullmatch(text):
+        return _ensure_priority_in_range(int(text))
+    match = _PRIORITY_LANDMARK_RE.fullmatch(text)
+    landmarks = NFT_PRIORITY_LANDMARKS.get(family, {})
+    if match is None or match.group("name") not in landmarks:
+        raise ValueError(text)
+    base = landmarks[match.group("name")]
+    if match.group("sign") is None:
+        return base
+    magnitude = int(match.group("magnitude"))
+    return _ensure_priority_in_range(
+        apply_priority_offset(base, match.group("sign"), magnitude)
+    )
+
+
 #: ``DomainInfo.tools`` keys: the resolved netfilter command and, for the
 #: x_tables families (ip/ip6), its save/restore pair (``:931-935``).
 TOOL_TABLES: Final[str] = "tables"
@@ -113,6 +199,10 @@ class ChainInfo:
     policy: str | None = None
     rules: list[RenderedRule] = field(default_factory=list[RenderedRule])
     preserve: bool | None = None
+    #: Overridden nft base-chain priority (``chain X priority -1``); ``None``
+    #: keeps the hardcoded ``_BASE_CHAIN_MAP`` default.  nft-only -- the
+    #: iptables backend rejects a set value (chains have no priority there).
+    priority: int | None = None
 
 
 @dataclass

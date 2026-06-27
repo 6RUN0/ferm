@@ -458,6 +458,32 @@ def datapath_e2e_matrix(session: nox.Session, distro: str) -> None:
 
 
 @nox.session
+def docker_coexistence_e2e(session: nox.Session) -> None:
+    """
+    Containerized ferm/docker coexistence e2e against a real engine (docker).
+
+    Runs a genuine docker 29 engine inside a privileged docker-in-docker
+    container (native nftables backend), lets it create its
+    ``docker-bridges`` tables, then applies a ferm ``--nft`` config twice
+    (the second apply models ``ferm reload``) and asserts the docker
+    tables survive byte-for-byte -- the operational promise that a rule
+    edit no longer forces a full ``docker restart``.  Also witnesses that
+    docker's forward chain shares ferm's default priority (0), the basis
+    for the base-chain priority knob.  The inner engine's netfilter state
+    lives in the throwaway container netns, so the host firewall is never
+    touched.  Opt-in (needs the docker daemon; the test skips itself when
+    docker is absent) and deliberately absent from ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_docker_coexist_e2e.py",
+        *session.posargs,
+        env={"FERM_DOCKER_COEXIST_E2E": "1"},
+    )
+
+
+@nox.session
 def delta_apply_e2e(session: nox.Session) -> None:
     """
     Opt-in live proof that delta-apply preserves counters/set state.

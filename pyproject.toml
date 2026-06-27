@@ -262,6 +262,7 @@ markers = [
   "lockout: containerized --interactive anti-lockout e2e (opt-in, needs docker)",
   "nft_e2e: real-nft backend e2e -- round-trip/coexistence (docker) + --plan nft -c validation (rootless unshare) (opt-in)",
   "datapath_e2e: containerized real-traffic datapath + backend-parity e2e (opt-in, needs docker)",
+  "docker_coexist_e2e: docker-in-docker coexistence e2e -- ferm reload leaves real docker-bridges tables untouched (opt-in, needs docker)",
   "conformance: nft canonicalizer conformance vs upstream .t corpus + live nft (opt-in, needs FERM_NFT_CORPUS)",
 ]
 xfail_strict = true

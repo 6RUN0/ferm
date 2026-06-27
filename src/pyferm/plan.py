@@ -23,6 +23,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
+from pyferm.domains import NFT_PRIORITY_LANDMARKS, apply_priority_offset
 from pyferm.errors import FermError, internal_error
 from pyferm.nftset import (
     canonicalize_element,
@@ -255,30 +256,11 @@ _NFT_CT_STATE_ORDER: tuple[str, ...] = (
 )
 
 #: Standard nft priority landmark names -> numeric, keyed by nft family.
-#: ip/ip6/arp share nft's inet-style landmarks; bridge has its own numbers.
-#: The full table is kept per family so a hand-written foreign chain that hits
-#: any landmark name canonicalizes too; for ferm-managed chains only a subset
-#: is exercised (bridge: only dstnat).
-_NFT_PRIORITY_NAMES_INET: dict[str, int] = {
-    "raw": -300,
-    "mangle": -150,
-    "dstnat": -100,
-    "filter": 0,
-    "security": 50,
-    "srcnat": 100,
-}
-_NFT_PRIORITY_NAMES_BRIDGE: dict[str, int] = {
-    "dstnat": -300,
-    "filter": -200,
-    "out": 100,
-    "srcnat": 300,
-}
-_NFT_PRIORITY_NAMES: dict[str, dict[str, int]] = {
-    "ip": _NFT_PRIORITY_NAMES_INET,
-    "ip6": _NFT_PRIORITY_NAMES_INET,
-    "arp": _NFT_PRIORITY_NAMES_INET,
-    "bridge": _NFT_PRIORITY_NAMES_BRIDGE,
-}
+#: Shared with the parser (which resolves config-side landmark priorities)
+#: via ``domains`` so a single table is the source of truth; the
+#: canonicalizer here keys it by nft family (``bridge``), the parser by ferm
+#: domain (``eb``), both of which the table carries.
+_NFT_PRIORITY_NAMES = NFT_PRIORITY_LANDMARKS
 
 #: ip-family reject default: nft collapses to bare 'reject'.
 _NFT_REJECT_DEFAULTS: dict[str, str] = {
@@ -540,16 +522,34 @@ def canonicalize_nft_header(header: str, *, family: str) -> str:
         if token == "priority" and index + 1 < len(tokens):
             out.append(token)
             next_tok = tokens[index + 1]
-            # Offset form: 'priority <name> +|- <n>' — leave all three verbatim
-            # so we never partially map a compound priority expression.
-            is_offset = index + 2 < len(tokens) and tokens[index + 2] in (
+            # nft pretty-prints a numeric priority near a landmark as an
+            # offset, e.g. -1 -> 'filter - 1', 49 -> 'security - 1', 5 ->
+            # 'filter + 5'.  Resolve both the exact-landmark and the offset
+            # form to the integer so a config's numeric priority canonicalizes
+            # identically to the kernel's display -- otherwise a reload that
+            # changed nothing would diff and rebuild the chain every time.
+            is_offset = index + 3 < len(tokens) and tokens[index + 2] in (
                 "+",
                 "-",
             )
-            if next_tok in priority_map and not is_offset:
+            if next_tok in priority_map and is_offset:
+                try:
+                    magnitude = int(tokens[index + 3])
+                except ValueError:
+                    # malformed offset -> leave the name verbatim (safe-bias)
+                    out.append(next_tok)
+                    index += 2
+                    continue
+                value = apply_priority_offset(
+                    priority_map[next_tok], tokens[index + 2], magnitude
+                )
+                out.append(str(value))
+                index += 4
+                continue
+            if next_tok in priority_map:
                 out.append(str(priority_map[next_tok]))
             else:
-                # numeric, unrecognized name, or offset form: leave verbatim
+                # numeric or unrecognized name: leave verbatim
                 out.append(next_tok)
             index += 2
             continue
@@ -561,6 +561,22 @@ def canonicalize_nft_header(header: str, *, family: str) -> str:
         out.append("accept")
 
     return " ".join(out)
+
+
+def _header_priority(header: str) -> str | None:
+    """
+    Extract the priority token from a canonical base-chain header.
+
+    Both diff sides are canonicalized (named priorities resolved to integers
+    by :func:`canonicalize_nft_header`), so a textual compare of the returned
+    token is a correct numeric compare.  Returns ``None`` for a user chain's
+    ``-`` placeholder or a header without a priority.
+    """
+    tokens = header.split()
+    for index, token in enumerate(tokens):
+        if token == "priority" and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return None
 
 
 # Exact token counts for the recognized table/flush productions.
@@ -974,6 +990,25 @@ class DesuetChain:
 
 
 @dataclass
+class ChainRebuild:
+    """
+    A built-in chain whose nft priority changed (``old`` -> ``new``).
+
+    A base chain's priority is part of its declaration, and nft refuses to
+    redeclare an existing chain with a different priority ("already exists
+    with different declaration").  The delta must therefore delete and
+    recreate the chain, re-emitting its rules in the same transaction; its
+    counters reset (it changed).  The delete is safe precisely because the
+    knob is base-chain-only: nothing ``jump``s to a hook chain.
+    """
+
+    table: str
+    chain: str
+    old: str
+    new: str
+
+
+@dataclass
 class SetChange:
     """A named set added, removed, or with changed elements."""
 
@@ -1116,11 +1151,19 @@ def _emit_chain_changes(
         rc.chain for rc in diff.rules_removed
     }
     policy_changed = {pc.chain for pc in diff.policy_changes}
+    rebuilt = {cr.chain for cr in diff.chain_rebuilds}
     out: list[str] = []
     for name in sorted(index.chain_decl):
         decl = index.chain_decl[name]
         rules = index.chain_rules.get(name, [])
         if name not in current_chains:
+            out.append(decl)
+            out.extend(rules)
+        elif name in rebuilt:
+            # Priority changed: nft cannot redeclare in place.  Delete first,
+            # then recreate and re-emit rules in the same transaction.  This
+            # subsumes any coincident policy/rule change.
+            out.append(f"delete chain {prefix} {name}")
             out.append(decl)
             out.extend(rules)
         elif name in rule_changed:
@@ -1222,6 +1265,9 @@ class PlanDiff:
         default_factory=list[ForeignChain]
     )
     desuet_chains: list[DesuetChain] = field(default_factory=list[DesuetChain])
+    chain_rebuilds: list[ChainRebuild] = field(
+        default_factory=list[ChainRebuild]
+    )
     set_changes: list[SetChange] = field(default_factory=list[SetChange])
     noflush: bool = False
     current_empty: bool = False
@@ -1234,6 +1280,7 @@ class PlanDiff:
             or self.rules_removed
             or self.foreign_chains
             or self.desuet_chains
+            or self.chain_rebuilds
             or self.set_changes
         )
 
@@ -1313,20 +1360,45 @@ def diff_tables(
         for chain_name, desired_chain in desired_table.chains.items():
             current_chain = current_chains.get(chain_name)
             current_rules = current_chain.rules if current_chain else []
+            chain_rebuilt = False
 
             if (
                 current_chain is not None
                 and _is_builtin(current_chain)
                 and desired_chain.policy != current_chain.policy
             ):
-                diff.policy_changes.append(
-                    PolicyChange(
-                        table_name,
-                        chain_name,
-                        current_chain.policy,
-                        desired_chain.policy,
+                old_priority = _header_priority(current_chain.policy)
+                new_priority = _header_priority(desired_chain.policy)
+                if old_priority != new_priority:
+                    # Priority is baked into the chain declaration; nft
+                    # rejects an in-place redeclare with a different priority,
+                    # so rebuild (delete + recreate + re-emit rules).  A
+                    # coincident policy change rides along in the new decl.
+                    chain_rebuilt = True
+                    diff.chain_rebuilds.append(
+                        ChainRebuild(
+                            table_name,
+                            chain_name,
+                            old_priority or "",
+                            new_priority or "",
+                        )
                     )
-                )
+                else:
+                    diff.policy_changes.append(
+                        PolicyChange(
+                            table_name,
+                            chain_name,
+                            current_chain.policy,
+                            desired_chain.policy,
+                        )
+                    )
+
+            if chain_rebuilt:
+                # The rebuild re-emits all desired rules verbatim (it deletes
+                # and recreates the chain), so a coincident rule delta is
+                # subsumed.  Skip the per-rule diff to avoid double-counting
+                # the same chain as both "rebuilt" and "N rules added/removed".
+                continue
 
             added, removed = _diff_rules(current_rules, desired_chain.rules)
             diff.rules_added.extend(
@@ -1417,6 +1489,10 @@ def _summary_line(diff: PlanDiff) -> str:
     if chains_removed:
         chain_word = "chain" if chains_removed == 1 else "chains"
         summary += f", {chains_removed} {chain_word} removed"
+    rebuilt = len(diff.chain_rebuilds)
+    if rebuilt:
+        rebuilt_word = "chain" if rebuilt == 1 else "chains"
+        summary += f", {rebuilt} {rebuilt_word} rebuilt"
     sets_changed = len(diff.set_changes)
     if sets_changed:
         set_word = "set" if sets_changed == 1 else "sets"
@@ -1478,6 +1554,14 @@ def render_structured(plan: Plan) -> str:
                 key=lambda dchain: (dchain.table, dchain.chain),
             )
         )
+        lines.extend(
+            f"  ~ chain {cr.table}/{cr.chain} priority {cr.old} -> {cr.new}"
+            " (rebuilt; counters reset)"
+            for cr in sorted(
+                diff.chain_rebuilds,
+                key=lambda cr: (cr.table, cr.chain),
+            )
+        )
         for sc in sorted(diff.set_changes, key=lambda s: (s.table, s.name)):
             if sc.kind == "add":
                 elems = ", ".join(sc.elements)
@@ -1510,6 +1594,7 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
         | {r.table for r in diff.rules_added}
         | {f.table for f in diff.foreign_chains}
         | {d.table for d in diff.desuet_chains}
+        | {cr.table for cr in diff.chain_rebuilds}
         | {s.table for s in diff.set_changes}
     )
     current: list[str] = []
@@ -1523,6 +1608,12 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
         ):
             current.append(f":{change.chain} {change.old}")
             desired.append(f":{change.chain} {change.new}")
+        for rebuild in sorted(
+            (cr for cr in diff.chain_rebuilds if cr.table == table),
+            key=lambda cr: cr.chain,
+        ):
+            current.append(f":{rebuild.chain} priority {rebuild.old}")
+            desired.append(f":{rebuild.chain} priority {rebuild.new}")
         current.extend(
             f"# foreign chain {fchain.chain} will be flushed"
             for fchain in sorted(

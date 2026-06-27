@@ -48,6 +48,7 @@ from pyferm.domains import (
     ShellSnapshotBuilder,
     TableInfo,
     initialize_domain,
+    resolve_chain_priority,
 )
 from pyferm.errors import FermError, error, internal_error, warning
 from pyferm.functions import (
@@ -140,6 +141,9 @@ _LOWER_RE = re.compile(r"[a-z]")
 _QUOTED_SUB_RE = re.compile(r"([\"'])(.*)\1", re.DOTALL)
 #: Built-in chain names that must be upper case (Perl ``:2588``).
 _LOWER_BUILTIN_RE = re.compile(r"input|forward|output|prerouting|postrouting")
+#: A sign glued to a number (``-1``/``+5``) following a chain-priority
+#: landmark, e.g. ``priority filter -1`` -- folded into the offset form.
+_GLUED_SIGN_RE = re.compile(r"[+-][0-9]+")
 #: A relative ``@include`` path / pipe spec (Perl ``:1112``).
 _ABS_OR_PIPE_RE = re.compile(r"^/|\|$")
 #: dpkg backup files skipped by a directory ``@include`` (Perl ``:1129``).
@@ -886,6 +890,63 @@ class Parser:
                             stringify(chain), ChainInfo()
                         ).policy = policy
                 rule = new_level(prev)
+                return "next"
+
+            # nft base-chain priority override (form A: `priority -N`
+            # written after the chain name, before the block -- so unlike
+            # `policy` it does NOT consume a trailing `;`).  Stored
+            # unconditionally; the backend validates (nft rejects it on a
+            # user chain, iptables rejects it outright).
+            if keyword == "priority":
+                if rule.has_rule:
+                    error("Cannot specify matches for priority")
+                token = stringify(self.evaluator.getvar())
+                # nft landmark offset form (`dstnat - 10`) arrives as three
+                # tokens; fold the `+`/`-` and magnitude back in so the
+                # resolver sees one string.  A joined `dstnat-10` or a plain
+                # `-1` is already a single token and skips this.
+                sign = self.tokenizer.peek_token()
+                if sign in ("+", "-"):
+                    self.tokenizer.next_token()
+                    magnitude = stringify(self.evaluator.getvar())
+                    token = f"{token} {sign} {magnitude}"
+                elif (
+                    isinstance(sign, str)
+                    and token.isalpha()
+                    and _GLUED_SIGN_RE.fullmatch(sign)
+                ):
+                    # `filter -1` / `filter +5`: the sign is glued to the
+                    # number (a single token) right after a landmark name.
+                    # Fold it into the offset form so the resolver sees
+                    # `filter - 1` rather than leaving a stray `-1` token that
+                    # would mis-report as "Unrecognized keyword".
+                    self.tokenizer.next_token()
+                    token = f"{token} {sign[0]} {sign[1:]}"
+                domain = _domain_key(rule.domain)
+                try:
+                    priority = resolve_chain_priority(domain, token)
+                except ValueError:
+                    error(f"Invalid chain priority: {token}")
+                domain_info = self.domains[domain]
+                domain_info.enabled = True
+                already_set = False
+                for table in to_array(rule.table):
+                    table_info = domain_info.tables.setdefault(
+                        stringify(table), TableInfo()
+                    )
+                    for chain in to_array(rule.chain):
+                        chain_info = table_info.chains.setdefault(
+                            stringify(chain), ChainInfo()
+                        )
+                        if chain_info.priority is not None:
+                            already_set = True
+                        chain_info.priority = priority
+                if already_set:
+                    warning("Priority is already specified")
+                # Unlike `policy` (which sits inside the block and resets to
+                # a fresh level), `priority` precedes the block at the chain
+                # level: leave `rule.chain` intact so the following `{`
+                # inherits it.
                 return "next"
 
             if keyword in ("@subchain", "subchain", "@gotosubchain"):

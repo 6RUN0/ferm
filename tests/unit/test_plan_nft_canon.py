@@ -269,11 +269,15 @@ def test_header_full_string_equality() -> None:
     )
 
 
-def test_header_priority_offset_form_verbatim() -> None:
-    # Offset form 'priority <name> + <n>' must not be partially mapped.
+def test_header_priority_offset_form_resolves_to_int() -> None:
+    # nft pretty-prints a near-landmark priority as an offset (e.g. 7 ->
+    # 'filter + 7').  Canon resolves the WHOLE expression to the integer --
+    # never a partial map like 'priority 0 + 7' -- so the kernel's display
+    # matches a config's numeric priority (delta idempotency).
     h = "type filter hook input priority filter + 7;"
     out = canonicalize_nft_header(h, family="ip")
-    assert "priority filter + 7" in out
+    assert "priority 7" in out
+    assert "priority filter" not in out
 
 
 def test_header_priority_unknown_family_verbatim() -> None:

@@ -1,0 +1,4 @@
+add table ip ferm
+flush table ip ferm
+add chain ip ferm FORWARD { type filter hook forward priority -1; policy accept; }
+add rule ip ferm FORWARD ip saddr 10.0.0.0/8 drop

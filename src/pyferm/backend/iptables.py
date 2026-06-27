@@ -145,6 +145,12 @@ def validate_names(domain_info: DomainInfo) -> None:
         for chain, chain_info in table_info.chains.items():
             _validate_chain_name(chain)
             _validate_policy(chain_info.policy)
+            if chain_info.priority is not None:
+                raise FermError(
+                    f"chain priority ('{chain}' priority "
+                    f"{chain_info.priority}) is an nft-only feature; the "
+                    "iptables backend has no chain priority"
+                )
 
 
 #: ip6 ``reject-with`` value translation (``:1871-1878``); several IPv4 names

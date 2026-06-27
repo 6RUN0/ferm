@@ -1,0 +1,7 @@
+# Base-chain priority knob: place ferm's FORWARD chain ahead of a
+# coexisting table (e.g. docker's forward chain at priority 0) by giving
+# it a lower nft priority.  Only valid on a built-in chain under --nft.
+domain ip table filter chain FORWARD priority -1 {
+    policy ACCEPT;
+    saddr 10.0.0.0/8 DROP;
+}

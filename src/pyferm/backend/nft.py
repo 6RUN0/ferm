@@ -574,7 +574,16 @@ def build_chains(
         chain_info = table_info.chains[name]
         nft_name = nft_chain_name(table, name)
         if is_netfilter_builtin_chain(table, name):
-            chain_type, hook, priority = map_base_chain(domain, table, name)
+            chain_type, hook, default_priority = map_base_chain(
+                domain, table, name
+            )
+            # A config override (`chain X priority -1`) replaces the
+            # hardcoded default; otherwise keep the _BASE_CHAIN_MAP value.
+            priority = (
+                chain_info.priority
+                if chain_info.priority is not None
+                else default_priority
+            )
             policy = (
                 chain_info.policy.lower()
                 if chain_info.policy is not None
@@ -586,6 +595,11 @@ def build_chains(
                 )
             )
         else:
+            if chain_info.priority is not None:
+                raise FermError(
+                    f"priority is only valid on a base chain, not "
+                    f"user chain '{name}'"
+                )
             chains.append(NftRegularChain(nft_name))
     return chains
 

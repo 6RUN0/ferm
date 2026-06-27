@@ -26,6 +26,20 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
   when a config adopts `@set`: the live kernel still holds the previous linear
   rules, so each rule that now references a set appears as a change until the
   next apply. This is expected and resolves on the first apply.
+- **Base-chain priority knob (`--nft`).** A built-in chain may carry an
+  explicit nft priority, written after the chain name: `chain FORWARD
+  priority -1 { ... }`. The priority may be a plain integer or an nft
+  landmark name with an optional offset, mirroring nft's own spelling:
+  `priority filter`, `priority dstnat - 10`, `priority security + 1`
+  (landmarks resolve per family). It overrides the hardcoded default (e.g. a
+  filter forward chain's `0`) so ferm's table can be ordered deterministically
+  against a coexisting one — for instance ahead of docker's forward chain,
+  which also sits at priority `0`. nft-only: the integer is rejected under the
+  `iptables` backend (chains have no priority there) and on a non-base chain.
+  A delta-apply that changes an existing chain's priority deletes and recreates
+  that chain (its counters reset; siblings are untouched), since nft cannot
+  redeclare a chain with a different priority in place; `ferm --plan` reports
+  it as a chain rebuild.
 
 ### Changed
 
