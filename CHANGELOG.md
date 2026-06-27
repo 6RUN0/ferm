@@ -40,6 +40,13 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
   that chain (its counters reset; siblings are untouched), since nft cannot
   redeclare a chain with a different priority in place; `ferm --plan` reports
   it as a chain rebuild.
+- **Chain and table names are validated against a safe alphabet.** A
+  config-supplied chain or table name must match `[A-Za-z0-9_.+-]`; anything
+  outside it is rejected at the backend border before any save text or
+  command line is built. This is defense-in-depth for the slow path (one
+  `iptables`/`ebtables` call per rule), where `eb`/`arp` rules run by default:
+  a name carrying a shell metacharacter is refused rather than interpolated
+  into the command. Valid configs are unaffected.
 
 ### Changed
 

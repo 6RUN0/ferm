@@ -993,6 +993,27 @@ def test_validate_chain_name_rejects_separators(bad: str) -> None:
         _validate_chain_name(bad)
 
 
+#: Whitespace-free shell metacharacters: these slip past a save-grammar
+#: blacklist but reach ``/bin/sh`` on the slow path (eb/arp are slow by
+#: default), so a name like ``x;reboot`` is command injection as root.
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "x;reboot",
+        "x$(reboot)",
+        "x`reboot`",
+        "x|y",
+        "x&y",
+        "x#y",
+        "x>y",
+        "x(y)",
+    ],
+)
+def test_validate_chain_name_rejects_shell_metachars(bad: str) -> None:
+    with pytest.raises(FermError):
+        _validate_chain_name(bad)
+
+
 def _run_ipt(src: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # fixed argv, no shell
         [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
@@ -1012,7 +1033,9 @@ def test_validate_table_name_accepts(good: str) -> None:
     assert _validate_table_name(good) == good
 
 
-@pytest.mark.parametrize("bad", ["filter foo", "a*b", "a\nb", ""])
+@pytest.mark.parametrize(
+    "bad", ["filter foo", "a*b", "a\nb", "", "filter;reboot", "f$(reboot)"]
+)
 def test_validate_table_name_rejects(bad: str) -> None:
     with pytest.raises(FermError):
         _validate_table_name(bad)
@@ -1053,6 +1076,17 @@ def test_chain_name_injection_is_rejected_end_to_end() -> None:
     )
     assert proc.returncode != 0
     assert "evil chain" in proc.stderr
+
+
+def test_chain_name_shell_injection_rejected_end_to_end() -> None:
+    # eb/arp own no -restore tool -> slow path by default -> the raw name
+    # reaches /bin/sh.  A whitespace-free metacharacter name must be refused
+    # before any command string is built.
+    proc = _run_ipt(
+        "domain eb table filter chain 'x;reboot' { policy ACCEPT; }\n"
+    )
+    assert proc.returncode != 0
+    assert "x;reboot" in proc.stderr
 
 
 def test_chain_name_injection_rejected_on_plan_path(

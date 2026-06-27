@@ -87,17 +87,21 @@ _FAST_SPECIAL_RE = re.compile(r"[\s'\\;&]", re.ASCII)
 #: ``re.ASCII`` for the same reason as above.
 _SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
 
-#: Bytes refused in a config-supplied table/chain name: ASCII whitespace,
-#: control bytes (``\x00``-``\x1f``), and the save-grammar separators
-#: ``:``/``*``/``[``.  A fail-closed BLACKLIST, deliberately stricter than the
-#: oracle (which length-checks only, then emits the name verbatim): whitespace
-#: and control bytes make ``iptables-restore`` silently truncate the name or
-#: split the line, so the oracle's output is already broken there.  The
-#: separators ``:``/``*``/``[`` are line leaders / counter syntax that the
-#: kernel in fact accepts mid-name -- refused anyway as a conservative border
-#: rather than reasoning about token position.  ``re.ASCII`` so ``\s`` is
-#: byte-mode like the quoting regexes above.
-_IPT_NAME_BADCHAR_RE = re.compile(r"[\s:*\[\x00-\x1f]", re.ASCII)
+#: Bytes ALLOWED in a config-supplied table/chain name.  A fail-closed
+#: WHITELIST, deliberately stricter than the oracle (which length-checks
+#: only, then emits the name verbatim).  A whitelist, not a blacklist,
+#: because the same name reaches two sinks with different danger sets: the
+#: fast path pipes it to ``iptables-restore`` (save grammar: whitespace and
+#: control bytes split lines), but the slow path interpolates it raw into a
+#: command string that :func:`pyferm.cli.execute` routes through ``/bin/sh``
+#: whenever it carries a shell metacharacter -- and eb/arp own no
+#: ``-restore`` tool, so they take the slow path by default.  A blacklist
+#: tuned for the save grammar leaks every shell metacharacter (``;``, ``$``,
+#: backtick, ``|``, ``&``, ...) into that shell sink (root command
+#: injection).  The alphabet below is what real ferm chain/table names use;
+#: ``+`` is included because the oracle accepts it (e.g. ``a+b``).
+#: ``re.ASCII`` so the class never widens to Unicode digits.
+_IPT_NAME_RE = re.compile(r"\A[A-Za-z0-9_.+-]+\Z", re.ASCII)
 
 
 #: Policies the iptables save grammar accepts on a ``:{chain} {policy}`` line.
@@ -119,15 +123,15 @@ def _validate_policy(policy: str | None) -> str | None:
 
 
 def _validate_chain_name(name: str) -> str:
-    """Return *name* if safe for the iptables save grammar, else error."""
-    if name == "" or _IPT_NAME_BADCHAR_RE.search(name):
+    """Return *name* if it matches the safe alphabet, else error."""
+    if not _IPT_NAME_RE.match(name):
         raise FermError(f"invalid chain name {name!r} for iptables backend")
     return name
 
 
 def _validate_table_name(name: str) -> str:
-    """Return *name* if safe for the ``*{table}`` save header, else error."""
-    if name == "" or _IPT_NAME_BADCHAR_RE.search(name):
+    """Return *name* if it matches the safe alphabet, else error."""
+    if not _IPT_NAME_RE.match(name):
         raise FermError(f"invalid table name {name!r} for iptables backend")
     return name
 
@@ -137,8 +141,10 @@ def validate_names(domain_info: DomainInfo) -> None:
     Fail-closed gate over every config-supplied table/chain name.
 
     The backend is the last barrier before kernel text; validating here
-    (not only in the parser) mirrors the nft border's REJECT posture and
-    covers the fast (save) and slow (per-command) paths uniformly.
+    (not only in the parser) mirrors the nft border's REJECT posture.  The
+    whitelist (:data:`_IPT_NAME_RE`) closes both sinks the name reaches: the
+    fast path's ``iptables-restore`` save grammar and the slow path's raw
+    interpolation into a ``/bin/sh`` command line.
     """
     for table, table_info in domain_info.tables.items():
         _validate_table_name(table)
