@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from pyferm import etckeeper
+from pyferm.backend.iptables import IptablesBackend
 from pyferm.cli import (
     _build_parser,
     _make_io,
@@ -657,6 +659,19 @@ def test_plan_format_without_plan_is_error() -> None:
         _resolve_plan(["--plan-format", "diff", "a.ferm"])
 
 
+# --- --no-etckeeper flag plumbing -----------------------------------------
+
+
+def test_etckeeper_defaults_on() -> None:
+    opts = _resolve_plan(["a.ferm"])
+    assert opts.etckeeper is True
+
+
+def test_no_etckeeper_flag_disables() -> None:
+    opts = _resolve_plan(["--no-etckeeper", "a.ferm"])
+    assert opts.etckeeper is False
+
+
 # --- backend selection ----------------------------------------------------
 
 
@@ -1197,6 +1212,39 @@ def test_run_plan_nft_render_error_propagates() -> None:
         _run_plan(domains, Options(nft=True), backend)
 
 
+def test_build_plan_validate_false_skips_nft_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The commit-message path builds the plan after the rules are applied, so
+    # it passes validate=False to skip the nft -c pre-check (a second check is
+    # pointless and could raise post-apply).  --plan keeps validate=True.
+    from unittest.mock import MagicMock
+
+    import pyferm.cli as cli_mod
+    from pyferm.backend.nft import TOOL_NFT
+    from pyferm.cli import build_plan
+    from pyferm.domains import DomainInfo
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_validate_desired_nft",
+        lambda *args, **_kwargs: calls.append(args),
+    )
+
+    domain_info = DomainInfo(enabled=True, tools={TOOL_NFT: "nft"})
+    rendered = MagicMock()
+    rendered.save = ""
+    backend = MagicMock()
+    backend.render.return_value = rendered
+
+    build_plan({"ip": domain_info}, Options(nft=True), backend, validate=False)
+    assert calls == []
+
+    build_plan({"ip": domain_info}, Options(nft=True), backend, validate=True)
+    assert len(calls) == 1
+
+
 def test_full_reload_flag_sets_option() -> None:
     from pyferm.cli import _build_parser, _resolve_options
 
@@ -1221,3 +1269,402 @@ def test_full_reload_defaults_false() -> None:
 
     args = _build_parser().parse_args(["--nft", "f.ferm"])
     assert _resolve_options(args).full_reload is False
+
+
+# --- etckeeper commit hook -------------------------------------------------
+
+
+class _CommitSpy:
+    """Capture the message passed to ``etckeeper.commit``."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def __call__(self, message: str) -> None:
+        self.messages.append(message)
+
+
+def _install_etckeeper(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    found: bool = True,
+    dirty: bool = True,
+) -> _CommitSpy:
+    """Mock the etckeeper seam used by the commit hook and return the spy."""
+    spy = _CommitSpy()
+    monkeypatch.setattr(
+        etckeeper,
+        "find_etckeeper",
+        lambda: "/usr/bin/etckeeper" if found else None,
+    )
+    monkeypatch.setattr(etckeeper, "working_tree_dirty", lambda *_a: dirty)
+    monkeypatch.setattr(etckeeper, "commit", spy)
+    return spy
+
+
+def test_commit_hook_runs_on_normal_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _commit_history
+
+    spy = _install_etckeeper(monkeypatch)
+    _commit_history("a/f.conf", {}, Options(), IptablesBackend(), None)
+    assert len(spy.messages) == 1
+    assert spy.messages[0].startswith("ferm: applied f.conf")
+
+
+def test_commit_hook_runs_under_shell_without_noexec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --shell without --noexec really applies, so it must commit.
+    from pyferm.cli import _commit_history
+
+    spy = _install_etckeeper(monkeypatch)
+    _commit_history("f.conf", {}, Options(shell=True), IptablesBackend(), None)
+    assert len(spy.messages) == 1
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        Options(noexec=True),
+        Options(plan=True),
+        Options(test=True),
+        Options(etckeeper=False),
+    ],
+)
+def test_commit_hook_gated_off(
+    monkeypatch: pytest.MonkeyPatch, options: Options
+) -> None:
+    from pyferm.cli import _commit_history
+
+    spy = _install_etckeeper(monkeypatch)
+    _commit_history("f.conf", {}, options, IptablesBackend(), None)
+    assert spy.messages == []
+
+
+def test_commit_hook_skipped_when_etckeeper_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _commit_history
+
+    spy = _install_etckeeper(monkeypatch, found=False)
+    _commit_history("f.conf", {}, Options(), IptablesBackend(), None)
+    assert spy.messages == []
+
+
+def test_commit_hook_skipped_when_nothing_to_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from pyferm.cli import _commit_history
+
+    spy = _install_etckeeper(monkeypatch, dirty=False)
+    _commit_history("f.conf", {}, Options(), IptablesBackend(), None)
+    assert spy.messages == []
+    # Silent: a clean tree is the common reload/reboot path, not a warning.
+    assert capsys.readouterr().err == ""
+
+
+def test_commit_subject_variants() -> None:
+    from pyferm.cli import _commit_subject
+
+    assert _commit_subject("a/f.conf", {}, Options()) == (
+        "applied f.conf (iptables)"
+    )
+    assert _commit_subject("a/f.conf", {}, Options(flush=True)) == (
+        "flushed f.conf (iptables)"
+    )
+    assert (
+        _commit_subject("a/f.conf", {}, Options(nft=True, fast=False))
+        == "applied f.conf (nft, slow)"
+    )
+
+
+def test_commit_subject_override_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The rollback path passes an explicit subject; the hook must use it.
+    spy = _install_etckeeper(monkeypatch)
+    from pyferm.cli import _commit_history
+
+    _commit_history(
+        "f.conf", {}, Options(), IptablesBackend(), "rolled back to deadbeef"
+    )
+    assert spy.messages[0] == "ferm: rolled back to deadbeef"
+
+
+def test_build_commit_message_degrades_on_plan_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # If build_plan raises, the commit still happens with a subject-only body.
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _build_commit_message
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise FermError("render exploded")
+
+    monkeypatch.setattr(cli_mod, "build_plan", _boom)
+    message = _build_commit_message(
+        "f.conf", {}, Options(), IptablesBackend(), None
+    )
+    assert message == "ferm: applied f.conf (iptables)"
+    assert "\n" not in message
+
+
+class _FakeParser:
+    """A parser stand-in: skips parsing, exposes a fixed domain set."""
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        from pyferm.domains import DomainInfo
+
+        self.domains = {"ip": DomainInfo(enabled=True, tools={})}
+        self.pre_hooks: list[str] = []
+        self.post_hooks: list[str] = []
+        self.flush_hooks: list[str] = []
+
+    def enter(self, _depth: int, _node: object) -> None:
+        """No-op: the apply block under test runs over ``domains``."""
+
+
+class _ApplyBackend:
+    """Minimal backend whose ``commit`` result is configurable."""
+
+    def __init__(self, *, commit_result: int | None) -> None:
+        self._commit_result = commit_result
+
+    def tool_names(self, _domain: str) -> dict[str, str]:
+        return {}
+
+    def capture_previous(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def shell_snapshot(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def render(self, *_args: object, **_kwargs: object) -> object:
+        from pyferm.backend.base import Rendered
+
+        return Rendered(save="")
+
+    def commit(self, *_args: object, **_kwargs: object) -> int | None:
+        return self._commit_result
+
+    def rollback(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+
+def _patch_apply_seam(
+    monkeypatch: pytest.MonkeyPatch, *, commit_result: int | None
+) -> list[object]:
+    """Drive _apply_config over a fake parser/backend; spy the commit hook."""
+    import pyferm.cli as cli_mod
+
+    commit_calls: list[object] = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_select_backend",
+        lambda _o: _ApplyBackend(commit_result=commit_result),
+    )
+    monkeypatch.setattr(cli_mod, "Parser", _FakeParser)
+    monkeypatch.setattr(
+        cli_mod, "_commit_history", lambda *a, **_k: commit_calls.append(a)
+    )
+    return commit_calls
+
+
+def test_apply_rollback_path_never_reaches_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When an apply rolls back (backend.commit returns non-None -> status set
+    # -> _rollback_all raises SystemExit), the commit hook's call site is
+    # never reached.  This is the feature's core safety invariant.
+    from pyferm.cli import _apply_config
+
+    commit_calls = _patch_apply_seam(monkeypatch, commit_result=1)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _apply_config(str(conf), Options(), sys.stdout, defs=[])
+    assert commit_calls == []
+
+
+def test_apply_success_path_reaches_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The counterpart: a clean apply (commit returns None) reaches the hook,
+    # so the rollback test's emptiness is a real signal, not a dead call site.
+    from pyferm.cli import _apply_config
+
+    commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert _apply_config(str(conf), Options(), sys.stdout, defs=[]) == 0
+    assert len(commit_calls) == 1
+
+
+# --- ferm rollback subcommand ----------------------------------------------
+
+
+class _RollbackSpy:
+    """Record ``etckeeper.rollback`` calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, sha: str, subpath: str) -> None:
+        self.calls.append((sha, subpath))
+
+
+class _ApplySpy:
+    """Stand in for ``_apply_config`` capturing the re-apply arguments."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Options, str | None]] = []
+
+    def __call__(
+        self,
+        config: str,
+        options: Options,
+        _lines_stream: object,
+        *,
+        defs: list[str],  # noqa: ARG002 -- mirrors the real _apply_config kwarg
+        subject: str | None = None,
+    ) -> int:
+        self.calls.append((config, options, subject))
+        return 0
+
+
+def _mock_rollback_seam(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    available: bool = True,
+    dirty: bool = False,
+    previous: str = "prev1234",
+    history: str = "abc one\n",
+    diff: str = "DIFFTEXT\n",
+) -> tuple[_RollbackSpy, _ApplySpy]:
+    import pyferm.cli as cli_mod
+
+    rollback_spy = _RollbackSpy()
+    apply_spy = _ApplySpy()
+    monkeypatch.setattr(etckeeper, "rollback_available", lambda: available)
+    monkeypatch.setattr(etckeeper, "repo_relative_subpath", lambda _c: "ferm")
+    monkeypatch.setattr(etckeeper, "working_tree_dirty", lambda *_a: dirty)
+    monkeypatch.setattr(etckeeper, "previous_revision", lambda _s: previous)
+    monkeypatch.setattr(etckeeper, "list_history", lambda _s: history)
+    monkeypatch.setattr(etckeeper, "diff_revision", lambda _sha, _s: diff)
+    monkeypatch.setattr(etckeeper, "rollback", rollback_spy)
+    monkeypatch.setattr(cli_mod, "_apply_config", apply_spy)
+    return rollback_spy, apply_spy
+
+
+def test_rollback_dispatch_via_production_main(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The production entry calls main()/_main(None); argv normalisation must
+    # surface the rollback subcommand from sys.argv.
+    _mock_rollback_seam(monkeypatch, history="abc only commit\n")
+    monkeypatch.setattr(sys, "argv", ["ferm", "rollback", "--list"])
+    assert main() == 0
+    assert "abc only commit" in capsys.readouterr().out
+
+
+def test_rollback_list_requires_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    _mock_rollback_seam(monkeypatch, available=False)
+    with pytest.raises(FermError, match="requires an etckeeper repository"):
+        _rollback_main(["--list"])
+
+
+def test_rollback_to_reapplies_inheriting_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    assert _rollback_main(["--to", "deadbeef", "--nft", "/etc/x.conf"]) == 0
+    assert rollback_spy.calls == [("deadbeef", "ferm")]
+    config, options, subject = apply_spy.calls[0]
+    assert config == "/etc/x.conf"
+    assert options.nft is True  # nft install stays nft, not iptables
+    assert subject == "rolled back to deadbeef"
+
+
+def test_rollback_bare_no_previous_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    _mock_rollback_seam(monkeypatch)
+
+    def _none(_s: str) -> str:
+        raise FermError("no previous version to roll back to")
+
+    monkeypatch.setattr(etckeeper, "previous_revision", _none)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    with pytest.raises(FermError, match="no previous version"):
+        _rollback_main([])
+
+
+def test_rollback_bare_declined_does_not_roll_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "n\n", raising=False)
+    assert _rollback_main([]) == 0
+    assert rollback_spy.calls == []
+    assert apply_spy.calls == []
+
+
+def test_rollback_bare_confirmed_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "yes\n", raising=False)
+    assert _rollback_main([]) == 0
+    assert rollback_spy.calls == [("prev1234", "ferm")]
+    assert apply_spy.calls[0][2] == "rolled back to prev1234"
+
+
+def test_rollback_bare_non_tty_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    with pytest.raises(FermError, match="non-tty"):
+        _rollback_main([])
+    assert rollback_spy.calls == []
+
+
+def test_rollback_dirty_tree_aborts_before_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch, dirty=True)
+    with pytest.raises(FermError, match="uncommitted changes"):
+        _rollback_main(["--to", "deadbeef"])
+    assert rollback_spy.calls == []
+
+
+def test_rollback_full_reload_requires_nft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    _mock_rollback_seam(monkeypatch)
+    with pytest.raises(FermError, match="full-reload"):
+        _rollback_main(["--to", "deadbeef", "--full-reload"])

@@ -69,3 +69,6 @@ class Options:
     #: ``--full-reload`` (port-only): opt out of the default nft delta-apply
     #: and force the legacy ``flush table`` + full rebuild.  nft-only.
     full_reload: bool = False
+    #: ``not --no-etckeeper`` (port-only): commit the applied ruleset delta to
+    #: ``/etc`` history via etckeeper after a successful apply, when available.
+    etckeeper: bool = True

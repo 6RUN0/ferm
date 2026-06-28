@@ -258,6 +258,50 @@ Be careful not to lock yourself out of a remote machine — use the
 interactive mode (`--interactive`, `-i`) often. It installs the new
 ruleset, then rolls back to the previous one unless you confirm in time.
 
+### Config history and rollback (etckeeper)
+
+When [etckeeper](https://etckeeper.branchable.com/) manages `/etc`, every
+successful apply records a commit in the `/etc` history with a **semantic**
+message describing what changed in the kernel ruleset (for example
+`filter/INPUT: +3 -1`), not just the textual diff of the `.ferm` files. This
+is on by default whenever `etckeeper` is installed; pass `--no-etckeeper` to
+turn it off for a single run.
+
+```sh
+# Show the ferm config's revision history (git-only):
+ferm rollback --list
+
+# Undo the last change: revert /etc/ferm to the previous revision and
+# re-apply (shows the diff and asks for confirmation):
+ferm rollback
+
+# Roll back to an exact revision:
+ferm rollback --to <sha>
+```
+
+Notes and boundaries:
+
+- **Rollback is git-only.** The commit side works with any VCS etckeeper
+  supports; rollback needs git (other VCS report it as unavailable with a
+  clear message).
+- **Rollback restores the source, then regenerates.** It reverts the
+  `/etc/ferm` config and re-applies it — it does not restore the exact bytes
+  that were live before (those may differ after a ferm/nftables upgrade or a
+  `@resolve()` drift). For a firewall this is usually what you want; a
+  byte-exact restore is not promised.
+- **The commit captures all of `/etc`** (etckeeper's nature), so unrelated
+  uncommitted `/etc` changes are swept into the ferm-attributed commit.
+- **Content and message are separate axes.** The commit records the `/etc`
+  *source*; the message describes the *kernel delta*. Editing a `.ferm` file
+  with no effect on the kernel yields an empty message body, and a clean tree
+  (a reboot, `systemctl reload`, or an idempotent re-run) is committed
+  silently as nothing-to-commit.
+- Rollback refuses to run if `/etc/ferm` has uncommitted changes (the
+  checkout would overwrite them) — commit or stash them first.
+- If you roll back under `--interactive` and then do **not** confirm, the
+  kernel reverts to its pre-rollback state while the worktree stays rolled
+  back; re-run `ferm` to resync.
+
 The `ferm(1)` man page (authored in `reference/doc/ferm.pod`) is the
 extensive reference for the configuration syntax.
 

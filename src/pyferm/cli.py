@@ -36,7 +36,7 @@ import subprocess  # live-only: run rules / hooks / *-save / *-restore
 import sys
 from typing import TYPE_CHECKING, Final, TextIO
 
-from pyferm import __version__
+from pyferm import __version__, etckeeper
 from pyferm.backend.iptables import (
     IptablesBackend,
     restore_domain,
@@ -55,6 +55,7 @@ from pyferm.plan import (
     parse_nft_script,
     parse_save,
     render_plan,
+    summary_line,
 )
 from pyferm.resolver import pick_resolver, set_resolver_provider
 from pyferm.scope import Frame, Scope
@@ -82,6 +83,10 @@ if TYPE_CHECKING:
 #: A clean run leaves exactly two scope frames on the stack: the global
 #: frame plus the top-level script frame.  Anything else is an internal bug.
 BALANCED_STACK_DEPTH: Final[int] = 2
+
+#: The config ``ferm rollback`` defaults to when none is named on the command
+#: line -- the standard system path.
+_DEFAULT_CONFIG: Final[str] = "/etc/ferm/ferm.conf"
 
 # The pod2usage(-verbose => 1) rendering of the POD SYNOPSIS/OPTIONS
 # (reference/src/ferm __END__ section), captured verbatim from
@@ -165,6 +170,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nft", action="store_true")
     # Port-only: opt out of delta-apply, force full flush+reload.
     parser.add_argument("--full-reload", action="store_true")
+    # Port-only: skip the etckeeper history commit after a successful apply.
+    parser.add_argument("--no-etckeeper", action="store_true")
     # Port-only: read-only diff preview.
     parser.add_argument("--plan", action="store_true")
     parser.add_argument(
@@ -237,6 +244,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
         plan=args.plan,
         plan_format=args.plan_format,
         full_reload=args.full_reload,
+        etckeeper=not args.no_etckeeper,
     )
 
 
@@ -623,6 +631,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str] | None = None) -> int:
     """Run the flow proper; :func:`main` renders any :class:`FermError`."""
+    # Normalise argv before anything else: production entry (``main()`` /
+    # console-script / frozen binary) calls ``_main(None)``, so the rollback
+    # subcommand would be dead without reading ``sys.argv`` here.
+    argv = sys.argv[1:] if argv is None else argv
+
+    # ``rollback`` is a git-style subcommand: match the first token before the
+    # main parser, whose ``files nargs="*"`` would otherwise swallow it.  A
+    # config literally named ``rollback`` is passed as ``./rollback``.
+    if argv and argv[0] == "rollback":
+        return _rollback_main(argv[1:])
+
     args = _build_parser().parse_args(argv)
 
     if args.help:
@@ -645,21 +664,29 @@ def _main(argv: list[str] | None = None) -> int:
         restore_streams()
 
 
-def _run_plan(
-    domains: dict[str, DomainInfo], options: Options, backend: Backend
-) -> int:
+def build_plan(
+    domains: dict[str, DomainInfo],
+    options: Options,
+    backend: Backend,
+    *,
+    validate: bool = True,
+) -> Plan:
     """
-    Build and print the read-only plan; return the detailed exit code.
+    Construct the desired-vs-kernel :class:`Plan` -- pure, no I/O.
 
-    Runs no hooks and never commits.  Returns 0 (no changes) or 2 (changes);
-    a ``FermError`` raised on the way (e.g. a strict save-read failure or an
-    unsupported construct under nft) still exits 1 via :func:`main`.
+    Shared by ``--plan`` (:func:`_run_plan`) and the etckeeper commit-message
+    builder, so both describe the applied delta identically.  Runs no hooks
+    and never prints or commits.
 
     Under iptables the desired side comes from ``rules_to_save`` and both
     sides are parsed with ``parse_save``.  Under nft the desired side is
     rendered by the backend and both sides are parsed with the nft parsers;
     ``noflush`` is always ``False`` under nft because the append-only model
     differs fundamentally from the iptables ``--noflush`` semantics.
+
+    ``validate`` runs the ``nft -c`` pre-check on the rendered desired script;
+    the commit-message path passes ``False`` because the rules are already
+    applied, so a second check is pointless and could raise post-apply.
     """
     plan = Plan()
     for domain in sorted(domains):
@@ -671,7 +698,7 @@ def _run_plan(
             # already rejects --plan --noflush --nft before this is called.
             if options.noflush:
                 raise internal_error(
-                    "_run_plan: noflush set under --plan --nft"
+                    "build_plan: noflush set under --plan --nft"
                 )
             family = nft_family(domain)
             current = parse_nft_list(domain_info.previous or "", family=family)
@@ -680,9 +707,10 @@ def _run_plan(
                 desired_save = rendered.save
                 if desired_save is None:
                     raise internal_error("nft render returned no save text")
-                _validate_desired_nft(
-                    options, domain_info.tools[TOOL_NFT], desired_save
-                )
+                if validate:
+                    _validate_desired_nft(
+                        options, domain_info.tools[TOOL_NFT], desired_save
+                    )
                 desired = parse_nft_script(desired_save)
                 plan.families[domain] = diff_tables(
                     current, desired, noflush=False
@@ -702,16 +730,131 @@ def _run_plan(
             plan.families[domain] = diff_tables(
                 current, desired, noflush=options.noflush
             )
+    return plan
 
+
+def _run_plan(
+    domains: dict[str, DomainInfo], options: Options, backend: Backend
+) -> int:
+    """
+    Build and print the read-only plan; return the detailed exit code.
+
+    Returns 0 (no changes) or 2 (changes); a ``FermError`` raised on the way
+    (e.g. a strict save-read failure or an unsupported construct under nft)
+    still exits 1 via :func:`main`.
+    """
+    plan = build_plan(domains, options, backend)
     sys.stdout.write(render_plan(plan, fmt=options.plan_format))
     return 2 if plan.has_changes() else 0
 
 
-def _run(
-    args: argparse.Namespace, options: Options, lines_stream: TextIO
+def _commit_subject(
+    filename: str, domains: dict[str, DomainInfo], options: Options
+) -> str:
+    """Build the default commit subject from the applied options."""
+    verb = "flushed" if options.flush else "applied"
+    families = " ".join(
+        domain for domain in sorted(domains) if domains[domain].enabled
+    )
+    descriptors = [families] if families else []
+    descriptors.append("nft" if options.nft else "iptables")
+    if not options.fast:
+        descriptors.append("slow")
+    return f"{verb} {splitpath_file(filename)} ({', '.join(descriptors)})"
+
+
+def _commit_body(plan: Plan) -> str:
+    """Render the per-family semantic delta for the commit-message body."""
+    lines = [
+        f"  {family}: {summary_line(plan.families[family])}"
+        for family in sorted(plan.families)
+        if plan.families[family].has_changes()
+    ]
+    return "\n".join(lines)
+
+
+def _build_commit_message(
+    filename: str,
+    domains: dict[str, DomainInfo],
+    options: Options,
+    backend: Backend,
+    subject: str | None,
+) -> str:
+    """
+    Compose the etckeeper commit message (subject + semantic body).
+
+    The body comes from :func:`build_plan` with ``validate=False`` -- the
+    rules are already applied, so re-running ``nft -c`` is pointless and could
+    raise post-apply.  If building the plan fails, degrade to a subject-only
+    message rather than skipping the commit.
+    """
+    head = (
+        subject
+        if subject is not None
+        else _commit_subject(filename, domains, options)
+    )
+    try:
+        plan = build_plan(domains, options, backend, validate=False)
+    except FermError:
+        return f"ferm: {head}"
+    body = _commit_body(plan)
+    return f"ferm: {head}\n\n{body}" if body else f"ferm: {head}"
+
+
+def _commit_history(
+    filename: str,
+    domains: dict[str, DomainInfo],
+    options: Options,
+    backend: Backend,
+    subject: str | None,
+) -> None:
+    """
+    Commit the applied ruleset to ``/etc`` history via etckeeper (best-effort).
+
+    Gated to a real apply that touched the kernel (not ``--noexec``/``--plan``/
+    ``--test``) with etckeeper present and not disabled.  Skips silently when
+    ``/etc`` has nothing to commit (a reboot/reload/idempotent re-run).  A
+    failure here never disturbs the installed firewall.
+    """
+    if (
+        options.noexec
+        or options.plan
+        or options.test
+        or not options.etckeeper
+        or etckeeper.find_etckeeper() is None
+    ):
+        return
+    # Best-effort: the firewall is already applied, so no failure recording
+    # history may propagate and flip the apply exit code.  A blanket guard
+    # (Exception, not BaseException, so SystemExit/KeyboardInterrupt still
+    # pass through) covers the status check, the plan rebuild and the commit.
+    try:
+        if not etckeeper.working_tree_dirty():
+            return
+        etckeeper.commit(
+            _build_commit_message(filename, domains, options, backend, subject)
+        )
+    except Exception as exc:  # noqa: BLE001 -- never fail an applied firewall
+        sys.stderr.write(f"ferm: etckeeper commit skipped: {exc}\n")
+
+
+def _apply_config(
+    config: str,
+    options: Options,
+    lines_stream: TextIO,
+    *,
+    defs: list[str],
+    subject: str | None = None,
 ) -> int:
-    """Parse and apply the configuration with the streams already set up."""
-    filename = args.files[0]
+    """
+    Parse and apply ``config`` with the streams already set up.
+
+    Shared by the normal apply path (:func:`_run`) and the rollback re-apply
+    (:func:`_rollback_main`).  ``subject`` overrides the etckeeper commit
+    subject -- the rollback path passes ``rolled back to <sha>`` so the history
+    records the revert rather than a plain ``applied``.
+    """
+    filename = config
     execute, emit_line, read_save, restore, capture = _make_io(
         options, lines_stream
     )
@@ -725,7 +868,7 @@ def _run(
     # GetOptions, ``:662``): plain values bind on the global frame, while
     # script-context built-ins abort, exactly as the oracle does.
     def_evaluator = Evaluator(Tokenizer(None), scope)
-    for spec in args.defs:
+    for spec in defs:
         # argv is decoded by the interpreter before ferm runs; re-read it as
         # raw bytes so --def follows the same latin-1 model as every other
         # input boundary (and never overflows save.encode("latin-1")).
@@ -856,8 +999,139 @@ def _run(
                 _rollback_all(
                     domains, options, backend, execute=execute, restore=restore
                 )
+
+        # Record the applied ruleset in /etc history (best-effort, port-only).
+        # Reached only on success: both rollback paths raise SystemExit above,
+        # so no "did it roll back" flag is needed (or available).
+        _commit_history(filename, domains, options, backend, subject)
     finally:
         for info in domains.values():
             info.close()
 
     return 0
+
+
+def _run(
+    args: argparse.Namespace, options: Options, lines_stream: TextIO
+) -> int:
+    """Apply the parsed CLI invocation via :func:`_apply_config`."""
+    return _apply_config(args.files[0], options, lines_stream, defs=args.defs)
+
+
+def _build_rollback_parser() -> argparse.ArgumentParser:
+    """
+    Build the parser for the ``ferm rollback`` subcommand.
+
+    It carries the backend/mode switches the re-apply must inherit (an nft
+    install must roll back under nft, not silently fall to iptables), but
+    never ``--shell``/``--noexec``/``--test``: a rollback must really apply
+    the reverted config, or the worktree and the kernel would disagree.
+    """
+    parser = argparse.ArgumentParser(
+        prog="ferm rollback", add_help=False, allow_abbrev=False
+    )
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--list", action="store_true")
+    target.add_argument("--to", metavar="SHA")
+    parser.add_argument("--nft", action="store_true")
+    parser.add_argument("--slow", action="store_true")
+    parser.add_argument("--full-reload", action="store_true")
+    parser.add_argument("-i", "--interactive", action="store_true")
+    parser.add_argument("--domain")
+    parser.add_argument("--no-etckeeper", action="store_true")
+    parser.add_argument("config", nargs="?")
+    return parser
+
+
+def _rollback_options(args: argparse.Namespace) -> Options:
+    """Derive the inherited apply options for a rollback re-apply."""
+    if args.full_reload and not args.nft:
+        raise FermError("ferm --full-reload has no sense without --nft")
+    return Options(
+        fast=not args.slow,
+        interactive=args.interactive,
+        domain=args.domain,
+        nft=args.nft,
+        full_reload=args.full_reload,
+        etckeeper=not args.no_etckeeper,
+    )
+
+
+def _rollback_main(argv: list[str]) -> int:
+    """
+    Run the ``ferm rollback`` subcommand (git-only).
+
+    ``--list`` prints the config's history; ``--to <sha>`` reverts to an exact
+    revision; the bare form reverts one ferm revision back after showing the
+    delta and asking for confirmation.  Every form re-applies the reverted
+    config so the kernel matches and the revert is recorded as a new commit.
+    """
+    args = _build_rollback_parser().parse_args(argv)
+    options = _rollback_options(args)
+    config = args.config if args.config is not None else _DEFAULT_CONFIG
+
+    if not etckeeper.rollback_available():
+        raise FermError(
+            "ferm rollback requires an etckeeper repository managed by git"
+        )
+    subpath = etckeeper.repo_relative_subpath(config)
+
+    if args.list:
+        sys.stdout.write(etckeeper.list_history(subpath))
+        return 0
+
+    if args.to is not None:
+        return _rollback_to(args.to, config, subpath, options, confirm=False)
+
+    sha = etckeeper.previous_revision(subpath)
+    return _rollback_to(sha, config, subpath, options, confirm=True)
+
+
+def _rollback_to(
+    sha: str,
+    config: str,
+    subpath: str,
+    options: Options,
+    *,
+    confirm: bool,
+) -> int:
+    """
+    Revert ``config`` to ``sha`` and re-apply it (the shared safe path).
+
+    The bare form (``confirm=True``) shows the delta and requires a ``y``
+    answer on a tty first.  Both forms refuse if the worktree has uncommitted
+    changes (``checkout`` would clobber them), then re-apply with the inherited
+    options and a ``rolled back to <sha>`` commit subject.
+    """
+    if confirm:
+        if not sys.stdin.isatty():
+            raise FermError(
+                "refusing to roll back without confirmation on a non-tty; "
+                "re-run with --to <sha>"
+            )
+        sys.stderr.write(etckeeper.diff_revision(sha, subpath))
+        sys.stderr.write(f"\nRoll back {config} to {sha}? [y/N] ")
+        sys.stderr.flush()
+        answer = sys.stdin.readline().strip().lower()
+        if answer not in ("y", "yes"):
+            sys.stderr.write("Rollback cancelled.\n")
+            return 0
+
+    if etckeeper.working_tree_dirty(subpath):
+        raise FermError(
+            f"{config} has uncommitted changes; commit or stash them before "
+            "rolling back (checkout would overwrite them)"
+        )
+
+    etckeeper.rollback(sha, subpath)
+    lines_stream, restore_streams = _setup_streams(options)
+    try:
+        return _apply_config(
+            config,
+            options,
+            lines_stream,
+            defs=[],
+            subject=f"rolled back to {sha}",
+        )
+    finally:
+        restore_streams()

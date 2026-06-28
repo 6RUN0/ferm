@@ -1469,7 +1469,7 @@ def diff_tables(
     return diff
 
 
-def _summary_line(diff: PlanDiff) -> str:
+def summary_line(diff: PlanDiff) -> str:
     """
     Build the ``Plan: N to add, M to remove, K policy changes`` tail.
 
@@ -1571,7 +1571,7 @@ def render_structured(plan: Plan) -> str:
             else:
                 elems = ", ".join(sc.elements)
                 lines.append(f"  ~ set {sc.table}/{sc.name} {{ {elems} }}")
-        lines.append(f"  {_summary_line(diff)}")
+        lines.append(f"  {summary_line(diff)}")
 
     return "\n".join(lines) + "\n"
 

@@ -247,6 +247,18 @@ reload; the fallback predicate is a single named function. The delta stays one
 that exist in the kernel but not in the config are removed, matching the
 semantics of flush-replace.
 
+The second slice — **config history and rollback via etckeeper** — is also
+implemented on the `python-port` branch (not yet released). Rather than ferm
+growing its own VCS over `--backup-dir`, the source config is versioned by
+etckeeper (the standard for `/etc`): every successful apply commits to the
+`/etc` history with a semantic message describing the kernel delta (reusing
+the `--plan` `diff_tables` engine), and `ferm rollback` reverts `/etc/ferm` to
+a prior revision (git-only, path-scoped) and re-applies it. The commit is
+VCS-agnostic and best-effort (a failure never disturbs the firewall);
+`--no-etckeeper` opts out. Semantics are source-based, not byte-exact: rollback
+regenerates the ruleset from the reverted source. See the README for the
+operator-facing details.
+
 #### Deferred items
 
 The following are explicitly out of scope for this slice and recorded here so
@@ -256,9 +268,13 @@ they are not lost.
   only in unchanged chains; a changed chain is flushed and rebuilt in full.
   Diffing individual rules by handle with counter preservation is a separate,
   more complex undertaking (handle tracking, insertion order).
-- *Config version history / backup* — the second item from the phase header
-  (versioned snapshots, extended `--backup-dir`, rollback to a prior version);
-  a separate slice later.
+- *Config version history / backup* — delivered via the etckeeper slice above.
+  Still deferred within it: a numeric `ferm rollback -N` (N revisions back; the
+  bare form is exactly one step, deeper needs `--to <sha>`); multi-vendor
+  rollback (hg/bzr/darcs adapters); a narrow per-path commit of only
+  `/etc/ferm` (etckeeper commits all of `/etc` by construction); and the
+  extended `--backup-dir` ring of applied-ruleset snapshots (dropped — rollback
+  through config history regenerates the ruleset, which is sufficient).
 - *Preservation of external dynamic set population* — saving elements added
   by an external `nft add element` that the config does not declare. This
   conflicts with convergence (the live state would no longer equal the desired
