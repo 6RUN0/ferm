@@ -7,7 +7,7 @@
 # Digest pinned from:
 #   docker buildx imagetools inspect quay.io/pypa/manylinux_2_28_x86_64:latest
 # (source of truth for the GCC/devtoolset/patchelf toolchain).
-FROM quay.io/pypa/manylinux_2_28_x86_64@sha256:893d0c9d73a8262503fa32f40160aae0299c10cecfc04396c9802a712cab1831
+FROM quay.io/pypa/manylinux_2_28_x86_64@sha256:e6cdd8b231c97f3c7b8fbc16f8009e2c19b9c5966bda945dfd1deff9ae78544c
 
 # Exact pins: Nuitka codegen changes between minors; dnspython is frozen
 # with its transitive deps via constraints, not a floating >=. hatchling is

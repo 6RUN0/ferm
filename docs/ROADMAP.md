@@ -173,15 +173,23 @@ is derived from the image at scan time via `rpm -qf`, kept in lockstep with
 `build.py`'s `.so` allow-list by a drift-guard test), and `--ignore-unfixed`
 keeps it to *fixable* HIGH/CRITICAL CVEs — so a red run is an actionable
 rebuild signal, not noise. A reviewed `.trivyignore` baseline records any
-acknowledged finding (currently `CVE-2026-45447` in `openssl-libs`, pending
-the base-image bump).
+acknowledged finding; it is **empty** after the 2026-06-28 recovery below, so
+every fixable finding reds the gate.
 
-What remains the owner's ongoing debt is the **recovery action** the trigger
-points to: on a hit, bump the image `@sha256:` pin to a base carrying the
-patched library, re-seed `build.py`'s `_ALLOWED_SO_NAMES`, and re-release
-(yank and re-release the affected artifact). Pinning the scan to the *dist
-tarball* rather than the build image (more precise, but loose `.so` lack the
-rpm metadata Trivy maps CVEs through) is a possible future refinement.
+The trigger has already driven one recovery: the two HIGH `openssl-libs` CVEs
+it surfaced (`CVE-2026-45447`, then `CVE-2024-4741`) were closed on 2026-06-28
+by bumping the `manylinux_2_28` digest (`893d0c9d` → `e6cdd8b2`), which carries
+`openssl-libs 1:1.1.1k-16.el8_6` (the fixed release). The `.so` allow-list in
+`build.py` did **not** need re-seeding: the new image keeps the same sonames
+(`libssl.so.1.1`/`libcrypto.so.1.1`, `libffi.so.6`, …) and the same `cp313`
+Python flavor, so the bundled `.so` set is unchanged. What remains the owner's
+ongoing debt is the **outward recovery action** the trigger points to when a
+release is affected: re-release (yank and re-release the affected artifact)
+after the digest bump. Note the bundled OpenSSL is still the EOL `1.1.1k`
+series, so future backport CVEs will recur and the scanner stays load-bearing.
+Pinning the scan to the *dist tarball* rather than the build image (more
+precise, but loose `.so` lack the rpm metadata Trivy maps CVEs through) is a
+possible future refinement.
 
 One known image-vs-dist divergence is `libmpdec`: the scan maps it to the
 system `mpdecimal` rpm (`/lib64/libmpdec.so.3`), but Nuitka freezes a

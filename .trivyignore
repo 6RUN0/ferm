@@ -13,5 +13,7 @@
 # Trivy honours `exp:`; after that date the finding re-reds the gate and forces
 # a re-review, so an acknowledgement can never silently outlive its fix.
 
-CVE-2026-45447 exp:2026-09-30  # accepted 2026-06-28: HIGH in openssl-libs 1:1.1.1k-15.el8_6, fixed in 1:1.1.1k-16.el8_6; the durable fix is bumping packaging/Dockerfile's manylinux digest to an image carrying the patched openssl-libs (then re-seed build.py _ALLOWED_SO_NAMES + re-release). Drop this line once the base image is bumped; the exp: date re-surfaces it if that slips.
-CVE-2024-4741 exp:2026-09-30  # accepted 2026-06-28: HIGH in openssl-libs 1:1.1.1k-15.el8_6, fixed in 1:1.1.1k-16.el8_6 (same openssl-libs->-16 debt as CVE-2026-45447, surfaced later in Trivy's DB). Same recovery: bump packaging/Dockerfile's manylinux digest. Drop alongside CVE-2026-45447 once the base image is bumped.
+# Currently EMPTY: the 2026-06-28 manylinux digest bump (893d0c9d -> e6cdd8b2)
+# pulled in openssl-libs 1:1.1.1k-16.el8_6, which fixes the two HIGH CVEs that
+# were acknowledged here (CVE-2026-45447, CVE-2024-4741). No finding is
+# accepted right now -- every fixable HIGH/CRITICAL reds the gate.
