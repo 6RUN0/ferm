@@ -900,8 +900,7 @@ def _apply_config(
 
     def capture_previous(domain: str, domain_info: DomainInfo) -> None:
         # Folds backend + options + execute + read_save into the
-        # two-parameter shape initialize_domain expects (debt design
-        # section 1).
+        # two-parameter shape initialize_domain expects.
         backend.capture_previous(
             domain,
             domain_info,

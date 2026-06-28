@@ -889,7 +889,7 @@ def test_nft_l4proto_ip4_and_other_protos_pass_through() -> None:
 
 
 def test_translate_rule_protocol_injection_is_error() -> None:
-    # finding S1 (CRITICAL): a protocol operand carrying whitespace/`;`/`#`
+    # A protocol operand carrying whitespace/`;`/`#`
     # would break out of `meta l4proto <value>` and flip a DROP into accept;
     # `nft -c` does not catch the `;#` form, so the ferm side must reject it.
     with pytest.raises(FermError, match="invalid protocol"):
@@ -917,8 +917,9 @@ def test_translate_rule_protocol_injection_is_error() -> None:
 
 def test_translate_rule_legit_protocols_render() -> None:
     # A numeric proto and a hyphenated service name are legitimate and must
-    # still render (the S1 guard rejects metacharacters, not these).  A known
-    # protocol number folds to the name the kernel stores it as (47 -> gre) so
+    # still render (the protocol guard rejects metacharacters, not these).  A
+    # known protocol number folds to the name the kernel stores it as (47 ->
+    # gre) so
     # --plan does not show a phantom diff against the readback.
     numeric = translate_rule(
         "ip",

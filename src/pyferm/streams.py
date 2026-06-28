@@ -1,8 +1,8 @@
 """
 Stream encoding helpers for the latin-1 byte model.
 
-Every byte boundary of ferm is latin-1 (the Perl byte model, debt design
-2026-06-11 section 3): a bijective byte<->char mapping keeps config bytes
+Every byte boundary of ferm is latin-1 (the Perl byte model): a bijective
+byte<->char mapping keeps config bytes
 intact down to the kernel and keeps ``@substr``/``length``/``re.ASCII``
 counting bytes exactly as the oracle does.  Human-facing streams
 additionally get ``errors="backslashreplace"``: the only source of chars

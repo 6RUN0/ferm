@@ -40,7 +40,7 @@ class OracleProcess:
         """Send one record and return the oracle's reply.
 
         Latin-1 is a bijective byte-to-char mapping, so the oracle lexes
-        the very same bytes the port sees (the byte model, section 3).
+        the very same bytes the port sees (the byte model).
         """
         stdin = self._proc.stdin
         stdout = self._proc.stdout
