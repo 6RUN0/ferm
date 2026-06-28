@@ -198,18 +198,25 @@ copy rather than the exact shipped one. The direction is conservative
 (mpdecimal has a negligible CVE surface) and it is the same root cause the
 dist-tarball refinement above would resolve.
 
-**Runtime guard of dist directory permissions (optional, deferred):**
+**Runtime guard of dist directory permissions (implemented on
+`python-port`, not yet released):**
 
 The installation README instructs users to unpack the binary into a
 root-owned, non-world-writable directory. That instruction is necessary but
-user-dependent. A lightweight guard in `packaging/entry.py` — checking that
-the `*.dist/` directory is root-owned and not world- or group-writable
-before loading sibling shared objects — is possible and does not conflict
-with the Phase 3 invariant (`entry.py` lives in `packaging/`, not in
-`src/pyferm/`). It is deliberately deferred because it catches a
-world-writable dist directory but not a shared object that has already been
-planted there (a time-of-check / time-of-use gap). Recorded as "possible
-and deferred", not "impossible".
+user-dependent, so `packaging/entry.py` now backs it with a load-time guard
+(`_guard_dist_dir_permissions`): when the frozen binary runs as root, it
+stats the dist directory (the resolved parent of `sys.executable`, where the
+sibling shared objects live) and refuses to dispatch — with an actionable
+diagnostic — if that directory is not root-owned or is group/world writable.
+The guard runs only from the frozen build (Nuitka's `__compiled__` marker)
+and only as root, so a developer running the dist tree unprivileged is
+unaffected; `FERM_SKIP_DIST_PERM_CHECK=1` opts out for deliberate layouts.
+It lives in `packaging/` (not `src/pyferm/`), preserving the Phase 3
+invariant. It remains a best-effort net by construction: it catches a
+non-root-writable dist directory but not a shared object already planted
+there before the check (a time-of-check / time-of-use gap), and it checks
+the dist directory itself, not its parents — so it complements, never
+replaces, a correct root-owned install.
 
 **Exact-vs-normalized `.so` allow-list (minor residual):**
 

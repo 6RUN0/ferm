@@ -207,6 +207,13 @@ sudo tar xzf ferm-<version>-linux-x86_64.tar.gz -C /opt/ferm
 ls -ld /opt/ferm /opt/ferm/ferm.dist
 ```
 
+As a backstop, the standalone binary checks this itself: when run as root it
+refuses to start if its own dist directory is not owned by root or is group-
+or world-writable, printing how to fix the permissions. This is a safety net,
+not a substitute for a correct install — it cannot detect a malicious shared
+object already planted before the check. Set `FERM_SKIP_DIST_PERM_CHECK=1` to
+override it for a deliberately non-standard layout.
+
 ### Verifying the download
 
 The release ships a `SHA256SUMS` file. It guards against accidental

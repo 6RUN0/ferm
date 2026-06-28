@@ -30,6 +30,21 @@ module that is invisible to Nuitka's static analysis (function-local /
 find_spec-gated) and exits non-zero if any failed to freeze in. This lives
 in ``packaging/`` (NOT ``src/pyferm``), so the phase invariant holds: the
 shipped CLIs never see this code path.
+
+``_guard_dist_dir_permissions`` is a best-effort load-time safety net: ferm
+runs as root and ``dlopen()``s sibling shared objects from its standalone
+``*.dist/`` directory, so a dist directory writable by a non-root user lets
+an attacker plant a malicious ``.so`` and gain root. The guard refuses to
+dispatch when the dist directory is not root-owned or is group/world
+writable. It is best-effort by construction -- it catches a writable
+directory, not a payload already planted before the check (a
+time-of-check/time-of-use gap) -- so it complements, never replaces, a
+correct root-owned install. It runs ONLY from the frozen binary
+(``__compiled__`` present) AND when running as root; a developer running
+the dist tree unprivileged, or any non-frozen ``python`` run, is unaffected.
+``FERM_SKIP_DIST_PERM_CHECK=1`` opts out for unusual but deliberate layouts.
+This too lives in ``packaging/`` (NOT ``src/pyferm``), so the shipped CLIs
+never carry it.
 """
 
 from __future__ import annotations
@@ -48,6 +63,14 @@ if TYPE_CHECKING:
 #: gate + function-local import. A typo in ``--include-*`` silently no-ops;
 #: this probe is what turns that into a red build.
 _REQUIRED_FROZEN = ("signal", "termios", "dns.resolver", "dns.rdtypes")
+
+#: Opt-out for the dist-directory permission guard, for deliberate non-standard
+#: layouts (e.g. a container that runs from a bind mount it trusts).
+_SKIP_DIST_PERM_CHECK_ENV = "FERM_SKIP_DIST_PERM_CHECK"
+
+#: Group/other write bits. A dist directory carrying either is writable by a
+#: principal other than its owner, which is the .so-planting LPE vector.
+_NON_OWNER_WRITE_BITS = 0o022
 
 
 def selfcheck_frozen() -> int:
@@ -90,10 +113,62 @@ def _invoked_name() -> str:
     return os.fsdecode(argv0) if argv0 else sys.argv[0]
 
 
+def _assert_dist_dir_secure(dist_dir: Path) -> None:
+    """
+    Refuse to run from a dist directory writable by a non-root principal.
+
+    Raises ``SystemExit`` with an actionable diagnostic when ``dist_dir`` is
+    not owned by root (uid 0) or carries the group/other write bits
+    (:data:`_NON_OWNER_WRITE_BITS`). Returns ``None`` when the directory is
+    safe. A missing or unstatable directory is treated as safe (returns):
+    locating the dist dir is best-effort and the guard must never convert a
+    stat hiccup into a denial of service for a correct install.
+    """
+    try:
+        info = dist_dir.stat()
+    except OSError:
+        return
+    problems: list[str] = []
+    if info.st_uid != 0:
+        problems.append(f"is owned by uid {info.st_uid}, not root (uid 0)")
+    if info.st_mode & _NON_OWNER_WRITE_BITS:
+        problems.append("is writable by group or other")
+    if not problems:
+        return
+    detail = " and ".join(problems)
+    raise SystemExit(
+        f"ferm: refusing to run: the standalone directory {dist_dir}\n"
+        f"{detail}. ferm runs as root and loads shared objects from this\n"
+        f"directory, so a non-root-writable location is a privilege-\n"
+        f"escalation risk. Reinstall into a root-owned directory (chown -R\n"
+        f"root:root and chmod -R go-w it), or set "
+        f"{_SKIP_DIST_PERM_CHECK_ENV}=1 to override deliberately.",
+    )
+
+
+def _guard_dist_dir_permissions() -> None:
+    """
+    Run the dist-directory permission guard when, and only when, it applies.
+
+    No-op unless this is the frozen standalone binary (Nuitka injects the
+    module global ``__compiled__``) running as root, with the opt-out unset.
+    The dist directory is the resolved parent of the running binary
+    (``sys.executable``), whose siblings are the shared objects ferm loads.
+    """
+    if "__compiled__" not in globals():
+        return
+    if os.environ.get(_SKIP_DIST_PERM_CHECK_ENV) == "1":
+        return
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    _assert_dist_dir_secure(Path(sys.executable).resolve().parent)
+
+
 def main() -> int:
     """Dispatch to the CLI named by the invocation and return its exit code."""
     if os.environ.get("FERM_SELFCHECK") == "1":
         return selfcheck_frozen()
+    _guard_dist_dir_permissions()
     return select_main(_invoked_name())()
 
 
