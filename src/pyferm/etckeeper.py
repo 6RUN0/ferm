@@ -57,6 +57,11 @@ def _validate_revision(sha: str) -> None:
         raise FermError(f"invalid revision {sha!r}")
 
 
+def _describe_failure(completed: subprocess.CompletedProcess[str]) -> str:
+    """Return a one-line reason for a nonzero exit: stderr, else the code."""
+    return (completed.stderr or "").strip() or f"exit {completed.returncode}"
+
+
 def find_etckeeper() -> str | None:
     """Return the path to ``etckeeper``, or ``None`` (feature disabled)."""
     return shutil.which("etckeeper")
@@ -81,10 +86,9 @@ def commit(message: str) -> None:
         sys.stderr.write(f"ferm: etckeeper commit failed: {exc}\n")
         return
     if completed.returncode != 0:
-        detail = (completed.stderr or "").strip() or (
-            f"exit {completed.returncode}"
+        sys.stderr.write(
+            f"ferm: etckeeper commit failed: {_describe_failure(completed)}\n"
         )
-        sys.stderr.write(f"ferm: etckeeper commit failed: {detail}\n")
 
 
 def _vcs(args: list[str], *, action: str) -> subprocess.CompletedProcess[str]:
@@ -150,6 +154,17 @@ def repo_relative_subpath(config_path: str) -> str:
         raise FermError(
             f"ferm config {config_path!r} is outside the etckeeper "
             "repository; rollback is unsupported there"
+        )
+    # A config sitting directly at the repo root makes ``relpath`` return
+    # ``"."``: a path-scoped rollback would then pass ``.`` to ``checkout``
+    # and ``clean -f -d``, reverting and deleting across the WHOLE versioned
+    # tree (all of ``/etc``), not just the ferm config.  Refuse it -- rollback
+    # must be scoped to a subdirectory.
+    if relative in (os.curdir, ""):
+        raise FermError(
+            f"ferm config {config_path!r} sits at the etckeeper repository "
+            "root; a path-scoped rollback would revert and clean the entire "
+            "tree. Place the config in a subdirectory (e.g. /etc/ferm/)."
         )
     return relative
 
@@ -240,7 +255,6 @@ def rollback(sha: str, config_subpath: str) -> None:
     for args, action in steps:
         completed = _vcs(args, action=action)
         if completed.returncode != 0:
-            detail = (completed.stderr or "").strip() or (
-                f"exit {completed.returncode}"
+            raise FermError(
+                f"rollback {action} failed: {_describe_failure(completed)}"
             )
-            raise FermError(f"rollback {action} failed: {detail}")

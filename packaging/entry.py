@@ -113,35 +113,63 @@ def _invoked_name() -> str:
     return os.fsdecode(argv0) if argv0 else sys.argv[0]
 
 
+def _path_write_problems(path: Path, *, label: str) -> list[str]:
+    """
+    Return permission problems for a path that must be root-only-writable.
+
+    A path owned by a non-root uid or carrying the group/other write bits
+    (:data:`_NON_OWNER_WRITE_BITS`) is reportable: either lets a non-root
+    principal replace the code root loads. An unstatable path yields no
+    problem -- a stat hiccup must never become a denial of service for a
+    correct install.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return []
+    problems: list[str] = []
+    if info.st_uid != 0:
+        problems.append(f"{label} is owned by uid {info.st_uid}, not root")
+    if info.st_mode & _NON_OWNER_WRITE_BITS:
+        problems.append(f"{label} is writable by group or other")
+    return problems
+
+
 def _assert_dist_dir_secure(dist_dir: Path) -> None:
     """
     Refuse to run from a dist directory writable by a non-root principal.
 
-    Raises ``SystemExit`` with an actionable diagnostic when ``dist_dir`` is
-    not owned by root (uid 0) or carries the group/other write bits
-    (:data:`_NON_OWNER_WRITE_BITS`). Returns ``None`` when the directory is
-    safe. A missing or unstatable directory is treated as safe (returns):
-    locating the dist dir is best-effort and the guard must never convert a
-    stat hiccup into a denial of service for a correct install.
+    Raises ``SystemExit`` with an actionable diagnostic when the dist
+    directory OR any bundled ``*.so`` inside it is not root-owned or is
+    group/other writable. The per-file sweep matters because overwriting an
+    existing ``.so`` needs write permission on the *file*, not the directory,
+    so a root-owned ``0755`` dist with a stray group-writable ``libcrypto.so``
+    is still an LPE vector the directory check alone would miss. Returns
+    ``None`` when everything is safe.
+
+    Out of scope (still best-effort): a writable *parent* directory above the
+    dist dir, and any payload planted before this runs (the documented
+    time-of-check/time-of-use gap). Reinstall root-owned to close those.
     """
+    problems = _path_write_problems(
+        dist_dir, label=f"the standalone directory {dist_dir}"
+    )
     try:
-        info = dist_dir.stat()
+        shared_objects = sorted(dist_dir.glob("*.so*"))
     except OSError:
-        return
-    problems: list[str] = []
-    if info.st_uid != 0:
-        problems.append(f"is owned by uid {info.st_uid}, not root (uid 0)")
-    if info.st_mode & _NON_OWNER_WRITE_BITS:
-        problems.append("is writable by group or other")
+        shared_objects = []
+    for shared_object in shared_objects:
+        problems += _path_write_problems(
+            shared_object, label=f"the shared object {shared_object.name}"
+        )
     if not problems:
         return
-    detail = " and ".join(problems)
+    detail = "; ".join(problems)
     raise SystemExit(
-        f"ferm: refusing to run: the standalone directory {dist_dir}\n"
-        f"{detail}. ferm runs as root and loads shared objects from this\n"
-        f"directory, so a non-root-writable location is a privilege-\n"
-        f"escalation risk. Reinstall into a root-owned directory (chown -R\n"
-        f"root:root and chmod -R go-w it), or set "
+        f"ferm: refusing to run: {detail}. ferm runs as root and loads\n"
+        f"shared objects from {dist_dir}, so a non-root-writable location is\n"
+        f"a privilege-escalation risk. Reinstall into a root-owned directory\n"
+        f"(chown -R root:root and chmod -R go-w it), or set "
         f"{_SKIP_DIST_PERM_CHECK_ENV}=1 to override deliberately.",
     )
 

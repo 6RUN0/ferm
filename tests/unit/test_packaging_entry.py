@@ -133,6 +133,66 @@ def test_dist_dir_secure_rejects_group_or_other_writable(
     assert "writable by group or other" in str(excinfo.value)
 
 
+def test_dist_dir_secure_rejects_writable_shared_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A root-owned, non-writable dist dir holding a group/world-writable .so is
+    # still an LPE vector: overwriting an existing file needs write permission
+    # on the FILE, not the directory. The per-file sweep must catch it.
+    entry = _load_entry()
+    dist = Path("/opt/ferm/ferm.dist")
+    shared_object = dist / "libcrypto.so.1"
+
+    def _stat(self: Path, *_a: object, **_k: object) -> os.stat_result:
+        if self == shared_object:
+            return _fake_stat(0, 0o100666)  # root-owned but world-writable
+        return _fake_stat(0, 0o040755)  # the dir itself is correct
+
+    monkeypatch.setattr(Path, "stat", _stat)
+    monkeypatch.setattr(Path, "glob", lambda _self, _pat: [shared_object])
+    with pytest.raises(SystemExit) as excinfo:
+        entry._assert_dist_dir_secure(dist)
+    message = str(excinfo.value)
+    assert "libcrypto.so.1" in message
+    assert "writable by group or other" in message
+
+
+def test_dist_dir_secure_rejects_non_root_shared_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A .so owned by a non-root uid inside a correct dir is also barred.
+    entry = _load_entry()
+    dist = Path("/opt/ferm/ferm.dist")
+    shared_object = dist / "libssl.so.1"
+
+    def _stat(self: Path, *_a: object, **_k: object) -> os.stat_result:
+        if self == shared_object:
+            return _fake_stat(1000, 0o100644)
+        return _fake_stat(0, 0o040755)
+
+    monkeypatch.setattr(Path, "stat", _stat)
+    monkeypatch.setattr(Path, "glob", lambda _self, _pat: [shared_object])
+    with pytest.raises(SystemExit) as excinfo:
+        entry._assert_dist_dir_secure(dist)
+    assert "libssl.so.1" in str(excinfo.value)
+    assert "uid 1000" in str(excinfo.value)
+
+
+def test_dist_dir_secure_accepts_root_owned_shared_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The per-file sweep must not red a correctly installed dist: dir and every
+    # .so root-owned, non-writable.
+    entry = _load_entry()
+    dist = Path("/opt/ferm/ferm.dist")
+    shared_objects = [dist / "libcrypto.so.1", dist / "libssl.so.1"]
+    monkeypatch.setattr(
+        Path, "stat", lambda _self, *_a, **_k: _fake_stat(0, 0o100644)
+    )
+    monkeypatch.setattr(Path, "glob", lambda _self, _pat: shared_objects)
+    assert entry._assert_dist_dir_secure(dist) is None
+
+
 def test_dist_dir_secure_treats_unstatable_dir_as_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

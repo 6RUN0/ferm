@@ -146,6 +146,17 @@ def test_repo_relative_subpath_outside_rejected(
         etckeeper.repo_relative_subpath("/home/user/ferm.conf")
 
 
+def test_repo_relative_subpath_at_repo_root_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A config directly at the repo root yields relpath ".", which would scope
+    # a rollback to the WHOLE tree (git checkout/clean over all of /etc). Must
+    # be refused, not silently widened.
+    _patch(monkeypatch, _Recorder([_ok(stdout="/etc\n")]))
+    with pytest.raises(FermError, match="repository root"):
+        etckeeper.repo_relative_subpath("/etc/ferm.conf")
+
+
 # --- list_history / diff_revision (read-only) -----------------------------
 
 

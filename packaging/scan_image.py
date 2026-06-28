@@ -314,7 +314,45 @@ def run_trivy(target_image: str, ignorefile: Path | None) -> object:
             "trivy JSON has no 'Results' list -- output schema changed "
             f"(re-validate the parser on the Trivy bump); got: {keys}",
         )
+    _assert_vuln_schema(parsed)
     return parsed
+
+
+def _assert_vuln_schema(report: object) -> None:
+    """
+    Fail CLOSED if Trivy reports vulnerabilities in an unrecognized shape.
+
+    The outer ``Results`` canary above does not guarantee the INNER fields
+    ``filter_findings`` keys on (``Vulnerabilities``, ``PkgName``).  If a Trivy
+    bump renamed those, ``filter_findings`` would walk the report, match
+    nothing, and silently return zero findings -- greening the gate on real
+    CVEs.  So: if the report carries any vulnerability entry at all, at least
+    one must expose a ``PkgName`` string; otherwise the inner schema drifted
+    and the scan reds rather than passing on a filter that can no longer see.
+    A genuinely clean scan carries no vulnerability entries and passes.
+    """
+    results = _get(report, "Results")
+    if not isinstance(results, list):
+        return
+    saw_vulnerability = False
+    for result in cast("list[object]", results):
+        vulns = _get(result, "Vulnerabilities")
+        if not isinstance(vulns, list):
+            continue
+        for vuln in cast("list[object]", vulns):
+            if not isinstance(vuln, dict):
+                continue
+            saw_vulnerability = True
+            pkg = cast("dict[str, object]", vuln).get("PkgName")
+            if isinstance(pkg, str):
+                return  # recognized shape -- canary satisfied
+    if saw_vulnerability:
+        raise SystemExit(
+            "trivy reported vulnerabilities but none carried a 'PkgName' "
+            "string -- the inner JSON schema changed (re-validate "
+            "filter_findings on the Trivy bump); refusing to scan with a "
+            "filter that would silently drop every finding",
+        )
 
 
 def _as_str(value: object, default: str = "?") -> str:

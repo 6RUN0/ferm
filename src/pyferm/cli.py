@@ -815,6 +815,12 @@ def _commit_history(
     ``--test``) with etckeeper present and not disabled.  Skips silently when
     ``/etc`` has nothing to commit (a reboot/reload/idempotent re-run).  A
     failure here never disturbs the installed firewall.
+
+    Scope caveat: etckeeper commits the WHOLE ``/etc`` tree, so an unrelated
+    ``/etc`` edit left uncommitted at apply time is swept into this ferm-
+    subjected commit.  The subject/body describe only the ferm delta; the
+    recorded tree change may be broader.  This is inherent to etckeeper's
+    "snapshot all of /etc" model, not a per-file commit.
     """
     if (
         options.noexec
@@ -1022,13 +1028,21 @@ def _build_rollback_parser() -> argparse.ArgumentParser:
     """
     Build the parser for the ``ferm rollback`` subcommand.
 
-    It carries the backend/mode switches the re-apply must inherit (an nft
-    install must roll back under nft, not silently fall to iptables), but
-    never ``--shell``/``--noexec``/``--test``: a rollback must really apply
-    the reverted config, or the worktree and the kernel would disagree.
+    It carries the backend/mode/tool switches the re-apply must inherit (an
+    nft install must roll back under nft, not silently fall to iptables; a
+    ``--nolegacy`` install must keep avoiding the ``*-legacy`` tools, or the
+    re-apply picks a different tool family and can fail), but never
+    ``--shell``/``--noexec``/``--test``: a rollback must really apply the
+    reverted config, or the worktree and the kernel would disagree.
+
+    ``--def`` is inherited too: a config referencing a command-line variable
+    would otherwise raise ``undefined variable`` on re-apply (the worktree is
+    already reverted by then), leaving config and kernel out of step.
+    ``add_help=True`` so ``ferm rollback --help`` prints usage rather than an
+    "unrecognized arguments" error.
     """
     parser = argparse.ArgumentParser(
-        prog="ferm rollback", add_help=False, allow_abbrev=False
+        prog="ferm rollback", add_help=True, allow_abbrev=False
     )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--list", action="store_true")
@@ -1036,8 +1050,11 @@ def _build_rollback_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nft", action="store_true")
     parser.add_argument("--slow", action="store_true")
     parser.add_argument("--full-reload", action="store_true")
+    parser.add_argument("--nolegacy", action="store_true")
     parser.add_argument("-i", "--interactive", action="store_true")
+    parser.add_argument("-t", "--timeout", type=int, default=30)
     parser.add_argument("--domain")
+    parser.add_argument("--def", dest="defs", action="append", default=[])
     parser.add_argument("--no-etckeeper", action="store_true")
     parser.add_argument("config", nargs="?")
     return parser
@@ -1050,9 +1067,11 @@ def _rollback_options(args: argparse.Namespace) -> Options:
     return Options(
         fast=not args.slow,
         interactive=args.interactive,
+        timeout=args.timeout,
         domain=args.domain,
         nft=args.nft,
         full_reload=args.full_reload,
+        nolegacy=args.nolegacy,
         etckeeper=not args.no_etckeeper,
     )
 
@@ -1081,10 +1100,14 @@ def _rollback_main(argv: list[str]) -> int:
         return 0
 
     if args.to is not None:
-        return _rollback_to(args.to, config, subpath, options, confirm=False)
+        return _rollback_to(
+            args.to, config, subpath, options, defs=args.defs, confirm=False
+        )
 
     sha = etckeeper.previous_revision(subpath)
-    return _rollback_to(sha, config, subpath, options, confirm=True)
+    return _rollback_to(
+        sha, config, subpath, options, defs=args.defs, confirm=True
+    )
 
 
 def _rollback_to(
@@ -1093,16 +1116,26 @@ def _rollback_to(
     subpath: str,
     options: Options,
     *,
+    defs: list[str],
     confirm: bool,
 ) -> int:
     """
     Revert ``config`` to ``sha`` and re-apply it (the shared safe path).
 
-    The bare form (``confirm=True``) shows the delta and requires a ``y``
-    answer on a tty first.  Both forms refuse if the worktree has uncommitted
-    changes (``checkout`` would clobber them), then re-apply with the inherited
-    options and a ``rolled back to <sha>`` commit subject.
+    Refuses first if the worktree has uncommitted changes (``checkout`` would
+    clobber them) -- this guard runs BEFORE the confirmation prompt so the
+    operator is not asked to confirm a rollback that will then be rejected.
+    The bare form (``confirm=True``) then shows the delta and requires a ``y``
+    answer on a tty.  Both forms re-apply with the inherited options, the
+    inherited ``--def`` overrides and a ``rolled back to <sha>`` commit
+    subject.
     """
+    if etckeeper.working_tree_dirty(subpath):
+        raise FermError(
+            f"{config} has uncommitted changes; commit or stash them before "
+            "rolling back (checkout would overwrite them)"
+        )
+
     if confirm:
         if not sys.stdin.isatty():
             raise FermError(
@@ -1117,12 +1150,6 @@ def _rollback_to(
             sys.stderr.write("Rollback cancelled.\n")
             return 0
 
-    if etckeeper.working_tree_dirty(subpath):
-        raise FermError(
-            f"{config} has uncommitted changes; commit or stash them before "
-            "rolling back (checkout would overwrite them)"
-        )
-
     etckeeper.rollback(sha, subpath)
     lines_stream, restore_streams = _setup_streams(options)
     try:
@@ -1130,7 +1157,7 @@ def _rollback_to(
             config,
             options,
             lines_stream,
-            defs=[],
+            defs=defs,
             subject=f"rolled back to {sha}",
         )
     finally:

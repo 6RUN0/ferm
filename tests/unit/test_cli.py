@@ -1521,6 +1521,7 @@ class _ApplySpy:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, Options, str | None]] = []
+        self.defs: list[list[str]] = []
 
     def __call__(
         self,
@@ -1528,10 +1529,11 @@ class _ApplySpy:
         options: Options,
         _lines_stream: object,
         *,
-        defs: list[str],  # noqa: ARG002 -- mirrors the real _apply_config kwarg
+        defs: list[str],
         subject: str | None = None,
     ) -> int:
         self.calls.append((config, options, subject))
+        self.defs.append(defs)
         return 0
 
 
@@ -1668,3 +1670,94 @@ def test_rollback_full_reload_requires_nft(
     _mock_rollback_seam(monkeypatch)
     with pytest.raises(FermError, match="full-reload"):
         _rollback_main(["--to", "deadbeef", "--full-reload"])
+
+
+def test_rollback_inherits_nolegacy_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A --nolegacy install must roll back --nolegacy too, or find_tool would
+    # prefer the *-legacy binary and the re-apply could pick the wrong tool
+    # family (and fail) after /etc was already reverted.
+    from pyferm.cli import _rollback_main
+
+    _rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    assert (
+        _rollback_main(
+            ["--to", "deadbeef", "--nolegacy", "-t", "5", "/etc/x.conf"]
+        )
+        == 0
+    )
+    _config, options, _subject = apply_spy.calls[0]
+    assert options.nolegacy is True
+    assert options.timeout == 5
+
+
+def test_rollback_inherits_def_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A config referencing a command-line --def variable would raise
+    # "undefined variable" on re-apply (after /etc is reverted) unless the
+    # rollback re-apply inherits the same --def overrides.
+    from pyferm.cli import _rollback_main
+
+    _rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    assert (
+        _rollback_main(
+            ["--to", "deadbeef", "--def", "X=1", "--def", "Y=2", "/etc/x.conf"]
+        )
+        == 0
+    )
+    assert apply_spy.defs[0] == ["X=1", "Y=2"]
+
+
+def test_rollback_dirty_tree_aborts_before_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The dirty-worktree guard must run BEFORE the confirmation prompt so the
+    # operator is never asked to confirm a rollback that is then refused; the
+    # diff/prompt seam must not be reached at all.
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch, dirty=True)
+
+    def _unreachable(*_a: object, **_k: object) -> str:
+        raise AssertionError("prompt seam reached despite a dirty worktree")
+
+    monkeypatch.setattr(etckeeper, "diff_revision", _unreachable)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", _unreachable, raising=False)
+    with pytest.raises(FermError, match="uncommitted changes"):
+        _rollback_main([])
+    assert rollback_spy.calls == []
+
+
+def test_rollback_help_prints_usage(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # add_help=True: `ferm rollback --help` prints usage and exits 0, not an
+    # "unrecognized arguments" error.
+    from pyferm.cli import _rollback_main
+
+    with pytest.raises(SystemExit) as excinfo:
+        _rollback_main(["--help"])
+    assert excinfo.value.code == 0
+    assert "rollback" in capsys.readouterr().out
+
+
+def test_commit_hook_swallows_failure_and_warns(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A failure recording history must never propagate (the firewall is
+    # already applied); it degrades to a single stderr warning.
+    from pyferm.cli import _commit_history
+
+    _install_etckeeper(monkeypatch)
+
+    def _boom(*_a: object, **_k: object) -> bool:
+        raise RuntimeError("git exploded")
+
+    monkeypatch.setattr(etckeeper, "working_tree_dirty", _boom)
+    # Must not raise.
+    _commit_history("f.conf", {}, Options(), IptablesBackend(), None)
+    assert "etckeeper commit skipped: git exploded" in capsys.readouterr().err

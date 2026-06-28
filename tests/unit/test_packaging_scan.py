@@ -155,6 +155,37 @@ def test_filter_findings_tolerates_missing_keys() -> None:
     assert scan.filter_findings(report, frozenset({"openssl-libs"})) == []
 
 
+def test_vuln_schema_canary_reds_on_renamed_pkgname() -> None:
+    # A Trivy bump renaming the inner PkgName field would make filter_findings
+    # match nothing and silently green the gate on real CVEs. The canary fails
+    # closed: vulnerabilities present, but none expose a PkgName string.
+    scan = _load_scan()
+    report = {
+        "Results": [
+            {
+                "Vulnerabilities": [
+                    {"VulnerabilityID": "CVE-9", "Package": "openssl-libs"},
+                ],
+            },
+        ],
+    }
+    with pytest.raises(SystemExit, match="inner JSON schema changed"):
+        scan._assert_vuln_schema(report)
+
+
+def test_vuln_schema_canary_passes_clean_report() -> None:
+    # A genuinely clean scan carries no Vulnerabilities entries -- no red.
+    scan = _load_scan()
+    assert scan._assert_vuln_schema({"Results": [{"Target": "x"}]}) is None
+
+
+def test_vuln_schema_canary_passes_recognized_shape() -> None:
+    # One entry with a PkgName string is enough to prove the shape is intact.
+    scan = _load_scan()
+    report = {"Results": [{"Vulnerabilities": [{"PkgName": "openssl-libs"}]}]}
+    assert scan._assert_vuln_schema(report) is None
+
+
 def test_format_findings_empty_is_reassuring() -> None:
     scan = _load_scan()
     assert "no fixable" in scan.format_findings([])

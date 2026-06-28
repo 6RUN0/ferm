@@ -81,6 +81,22 @@ def test_repo_relative_subpath_inside_and_outside(
         etckeeper.repo_relative_subpath(outside)
 
 
+def test_repo_relative_subpath_at_repo_root_barred(
+    etckeeper_sandbox: EtckeeperSandbox,
+) -> None:
+    """
+    A config sitting directly at the repo root is refused.
+
+    ``os.path.relpath`` would return ``"."`` there, scoping a rollback to the
+    whole ``/etc`` tree (``git checkout``/``clean`` over everything). The guard
+    must bar it against real git, not just the mocked relpath.
+    """
+    sandbox = etckeeper_sandbox
+    at_root = str(sandbox.etc / "ferm.conf")
+    with pytest.raises(FermError, match="repository root"):
+        etckeeper.repo_relative_subpath(at_root)
+
+
 # --- previous_revision (path-scoped history semantics) --------------------
 
 
