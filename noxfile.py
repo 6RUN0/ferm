@@ -337,6 +337,33 @@ def nft_e2e(session: nox.Session) -> None:
     )
 
 
+@nox.session
+def etckeeper_e2e(session: nox.Session) -> None:
+    """
+    Containerized etckeeper integration e2e (needs docker).
+
+    Inside a throwaway container, turns ``/etc`` into a git-backed
+    etckeeper repository and drives the full operator loop against the
+    real ``etckeeper`` binary (with its global ``commit.d`` metadata
+    hooks, which need a real ``/etc`` and root) and a real nftables
+    kernel: apply a config and prove the apply auto-committed a semantic
+    message and the kernel holds the rule, apply a changed config, then
+    ``ferm rollback --to`` the first revision and prove the config and the
+    live ruleset both return to the earlier state.  The host integration
+    suite (``tests/integration/``) covers the git-only paths without
+    docker; this is the layer that exercises the real commit verb.  Opt-in
+    (needs the docker daemon; the test skips itself when docker is absent)
+    and deliberately absent from ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_etckeeper_e2e.py",
+        *session.posargs,
+        env={"FERM_ETCKEEPER_E2E": "1"},
+    )
+
+
 #: Pinned nftables tag whose ``tests/py`` corpus drives nft_conformance.
 #: Bump deliberately (verify via ``git ls-remote --tags`` -- currency rule),
 #: not from memory; the idempotency layer is version-independent, the
