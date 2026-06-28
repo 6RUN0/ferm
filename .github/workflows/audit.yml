@@ -26,6 +26,9 @@ concurrency:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    # A scheduled image_scan pulls a ~1GB image plus the Trivy DB; cap the job
+    # so a hung pull/fetch fails the run instead of stalling to the 6h default.
+    timeout-minutes: 30
     permissions:
       contents: read
       # The escalation step files an issue when a scheduled run fails.
@@ -49,6 +52,19 @@ jobs:
 
       - name: Lint the CI workflows (actionlint + zizmor)
         run: uv run nox -s workflows
+
+      # pip-audit (above) covers only Python deps; this scans the native
+      # shared objects (OpenSSL/libffi/xz/...) frozen into the standalone
+      # dist from the pinned manylinux image -- the EOL OpenSSL 1.1.x there
+      # is exactly why a scheduled trigger matters. Reports only fixable
+      # HIGH/CRITICAL CVEs in shipped libraries, so a red run is an
+      # actionable rebuild signal that flows into the issue escalation below.
+      # Skipped on push: it pulls a ~1GB image plus the Trivy vuln DB, so it
+      # belongs on the schedule/dispatch, not on every push to the port branch
+      # (the lighter pip-audit/workflow checks above still run per push).
+      - name: Scan the build image for native-library CVEs (trivy)
+        if: github.event_name != 'push'
+        run: uv run nox -s image_scan
 
       # A red scheduled run otherwise only emails the workflow author;
       # an issue is the durable, visible escalation path.  Push-

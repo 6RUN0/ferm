@@ -1,0 +1,17 @@
+# Trivy ignore baseline for the standalone-binary build-image CVE scan
+# (packaging/scan_image.py, run via `uv run nox -s image_scan`).
+#
+# The scan already reports ONLY fixable (--ignore-unfixed) HIGH/CRITICAL CVEs
+# in the rpm packages that ship a bundled native .so, so this file is normally
+# EMPTY. Add an entry here only to acknowledge a specific finding that is
+# fixable in Trivy's data but not actionable for us yet -- one CVE id per line,
+# each with a dated comment explaining WHY it is accepted and a removal
+# condition. An empty baseline means "every fixable finding reds the gate".
+#
+# Format: a CVE id, an `exp:YYYY-MM-DD` auto-expiry token, then a comment, e.g.
+#   CVE-YYYY-NNNNN exp:YYYY-MM-DD  # accepted YYYY-MM-DD: <reason>; drop when <condition>
+# Trivy honours `exp:`; after that date the finding re-reds the gate and forces
+# a re-review, so an acknowledgement can never silently outlive its fix.
+
+CVE-2026-45447 exp:2026-09-30  # accepted 2026-06-28: HIGH in openssl-libs 1:1.1.1k-15.el8_6, fixed in 1:1.1.1k-16.el8_6; the durable fix is bumping packaging/Dockerfile's manylinux digest to an image carrying the patched openssl-libs (then re-seed build.py _ALLOWED_SO_NAMES + re-release). Drop this line once the base image is bumped; the exp: date re-surfaces it if that slips.
+CVE-2024-4741 exp:2026-09-30  # accepted 2026-06-28: HIGH in openssl-libs 1:1.1.1k-15.el8_6, fixed in 1:1.1.1k-16.el8_6 (same openssl-libs->-16 debt as CVE-2026-45447, surfaced later in Trivy's DB). Same recovery: bump packaging/Dockerfile's manylinux digest. Drop alongside CVE-2026-45447 once the base image is bumped.

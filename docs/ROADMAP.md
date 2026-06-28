@@ -152,24 +152,43 @@ here so they are not lost.
 - *Own apt repository* (reprepro/aptly) — the `.deb` ships as a GitHub
   Release asset; a signed apt repo is a separate distribution-lifecycle step.
 
-**CVE-rebuild of bundled native libraries (debt with an automatable
-trigger):**
+**CVE-rebuild of bundled native libraries (automatable trigger SHIPPED;
+recovery remains the owner's ongoing debt):**
 
 `pip-audit` covers only Python-layer dependencies. It does *not* scan the
-native shared objects frozen into the distribution — the OpenSSL, zlib,
-libffi, and libexpat copies pulled in by the stdlib `ssl` module and
-parsers. The OpenSSL bundled by the `manylinux_2_28` build base image is
-the **1.1.x series, which is end-of-life upstream**, making an automatable
-CVE-rebuild trigger especially important.
+native shared objects frozen into the distribution — the OpenSSL, libffi,
+xz, bzip2, and mpdecimal copies pulled in from the build base image. The
+OpenSSL bundled by the `manylinux_2_28` build base image is the **1.1.x
+series, which is end-of-life upstream**, making an automatable CVE-rebuild
+trigger especially important.
 
-To give the recall mechanism an automatable trigger rather than relying on
-manual advisory-feed monitoring: add a weekly image scan (e.g. `trivy
-image` or `grype`) of the pinned `@sha256:` build/dist image to `audit.yml`
-or a dedicated cron workflow. Such a scan alerts on CVEs in the native
-libraries specifically; the `.so` versions recorded in the build manifest
-give precise inputs for cross-referencing. On a hit: bump the image
-`@sha256:` pin and re-release (yank and re-release the affected artifact).
-This is the "full distribution lifecycle" owner's ongoing debt.
+The automatable trigger is now in place (`packaging/scan_image.py`, run via
+`uv run nox -s image_scan`, wired into the weekly `audit.yml` so a red scan
+escalates to a tracking issue). It scans the **same digest-pinned build
+image** `build.py` compiles in — the digest is read from
+`packaging/Dockerfile`, the single source of truth, so a base-image bump
+retargets the scan automatically. Trivy's findings are filtered down to the
+rpm packages that actually provide a bundled `.so` (the soname→package map
+is derived from the image at scan time via `rpm -qf`, kept in lockstep with
+`build.py`'s `.so` allow-list by a drift-guard test), and `--ignore-unfixed`
+keeps it to *fixable* HIGH/CRITICAL CVEs — so a red run is an actionable
+rebuild signal, not noise. A reviewed `.trivyignore` baseline records any
+acknowledged finding (currently `CVE-2026-45447` in `openssl-libs`, pending
+the base-image bump).
+
+What remains the owner's ongoing debt is the **recovery action** the trigger
+points to: on a hit, bump the image `@sha256:` pin to a base carrying the
+patched library, re-seed `build.py`'s `_ALLOWED_SO_NAMES`, and re-release
+(yank and re-release the affected artifact). Pinning the scan to the *dist
+tarball* rather than the build image (more precise, but loose `.so` lack the
+rpm metadata Trivy maps CVEs through) is a possible future refinement.
+
+One known image-vs-dist divergence is `libmpdec`: the scan maps it to the
+system `mpdecimal` rpm (`/lib64/libmpdec.so.3`), but Nuitka freezes a
+*source-built* `libmpdec.so.4` that no rpm owns, so the scan tracks the system
+copy rather than the exact shipped one. The direction is conservative
+(mpdecimal has a negligible CVE surface) and it is the same root cause the
+dist-tarball refinement above would resolve.
 
 **Runtime guard of dist directory permissions (optional, deferred):**
 

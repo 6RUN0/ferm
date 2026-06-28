@@ -18,6 +18,7 @@ Examples::
     uv run nox -s coverage           # tests under coverage
     uv run nox -s audit              # bandit + pip-audit
     uv run nox -s workflows          # actionlint + zizmor on CI configs
+    uv run nox -s image_scan         # trivy CVE scan of bundled native libs
     uv run nox -s deps_lowest        # test suite on lowest dep bounds
     uv run nox -s build              # wheel/sdist build + install smoke
     uv run nox -s fuzz               # thorough differential fuzzing
@@ -745,6 +746,30 @@ def workflows(session: nox.Session) -> None:
     # the path spelled out.
     _uv(session, "actionlint")
     _uv(session, "zizmor", ".github/workflows")
+
+
+@nox.session
+def image_scan(session: nox.Session) -> None:
+    """
+    Scan the pinned build image for fixable CVEs in bundled native libs.
+
+    ``pip-audit`` (the ``audit`` session) sees only Python deps; this covers
+    the OpenSSL/libffi/xz/... shared objects Nuitka freezes into the
+    standalone dist -- and the manylinux OpenSSL is the EOL 1.1.x series, so a
+    CVE there arrives with no push a code-time gate would catch.  Needs docker
+    + network (Trivy pulls the digest-pinned image and its vuln DB).  Reports
+    only fixable HIGH/CRITICAL CVEs in the rpm packages that actually ship a
+    ``.so``, so it is an ACTIONABLE rebuild trigger, not noise.  Opt-in (absent
+    from the default sessions); the weekly ``audit.yml`` runs it.
+    """
+    if shutil.which("docker") is None:
+        session.skip("docker not available")
+    session.run(
+        "python",
+        "packaging/scan_image.py",
+        *session.posargs,
+        external=True,
+    )
 
 
 @nox.session
