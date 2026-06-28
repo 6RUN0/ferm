@@ -17,6 +17,7 @@ from pyferm.errors import FermError
 from pyferm.functions import (
     MAX_VALUE_DEPTH,
     Evaluator,
+    _perl_substr_index,
     ipfilter,
     realize_protocol,
     realize_protocol_keyword,
@@ -265,6 +266,66 @@ def test_builtin_substr_coerces_non_numeric_like_perl() -> None:
     # oracle does not even warn (verified against reference/src/ferm).
     assert _evaluator("@substr(hello, a, 2)").getvalues() == "he"
     assert _evaluator("@substr(hello, 1.5, 2.9)").getvalues() == "el"
+
+
+# A substr offset/length the way Perl's SvIsUV-aware ``pp_substr`` reads it.
+# Grouped by the branch each case pins; the integer UV cases are the
+# regression guard for the fuzzer-found bug where general IV numification
+# wrapped a [2**63, 2**64) magnitude negative (see _perl_substr_index).
+_SUBSTR_INDEX_CASES = [
+    # No leading numeric prefix -> 0 (match is None).
+    ("non_numeric", "abc", 0),
+    ("empty", "", 0),
+    ("whitespace_only", "  ", 0),
+    ("sign_without_digits", "+", 0),
+    ("letter_before_digits", "x12", 0),
+    # Integer prefix: read up to the first non-numeric character.
+    ("zero", "0", 0),
+    ("small_positive", "5", 5),
+    ("trailing_garbage", "12abc", 12),
+    ("leading_whitespace", "  7", 7),
+    ("explicit_plus", "+9", 9),
+    ("leading_whitespace_negative", "  -5", -5),
+    ("small_negative", "-3", -3),
+    # UV-aware integer boundary: a magnitude in [2**63, 2**64) stays a
+    # large *positive* value rather than wrapping to a negative IV.
+    ("uv_at_2_63", str(2**63), 2**63),
+    ("uv_max", str(2**64 - 1), 2**64 - 1),
+    # One past UV_MAX (Perl stores it as an NV) saturates to -1.
+    ("just_past_uv_max", str(2**64), -1),
+    ("far_past_uv_max", str(2**64 + 100), -1),
+    # Negative magnitude clamps to IV_MIN (-2**63).
+    ("iv_min", str(-(2**63)), -(2**63)),
+    ("just_below_iv_min", "-" + str(2**63 + 1), -(2**63)),
+    ("far_below_iv_min", "-" + str(2**70), -(2**63)),
+    # Float path (a '.' or an exponent): truncate toward zero, not floor.
+    ("float_truncates_positive", "1.9", 1),
+    ("float_truncates_negative", "-1.9", -1),
+    ("float_half", "2.5", 2),
+    ("float_leading_dot", ".5", 0),
+    ("float_trailing_dot", "1.", 1),
+    # Exponent forces the float path even with no '.' in the mantissa.
+    ("exponent_positive", "1e3", 1000),
+    ("exponent_negative_value", "-1e3", -1000),
+    ("exponent_signed_plus", "1e+2", 100),
+    ("exponent_signed_minus", "1e-2", 0),
+    # Float saturation mirrors the integer path at the UV/IV boundaries.
+    ("float_in_uv_window", "1e19", 10**19),
+    ("float_at_uv_max_plus_one", "18446744073709551616.0", -1),  # == 2**64
+    ("float_just_past_uv_max", "3e19", -1),  # in [2**64, 2**65)
+    ("float_past_uv_max", "1e30", -1),
+    ("float_below_iv_min", "-1e30", -(2**63)),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [(text, expected) for _, text, expected in _SUBSTR_INDEX_CASES],
+    ids=[name for name, _, _ in _SUBSTR_INDEX_CASES],
+)
+def test_perl_substr_index_coercion(text: str, expected: int) -> None:
+    """``_perl_substr_index`` reads an offset/length exactly like Perl."""
+    assert _perl_substr_index(text) == expected
 
 
 def test_builtin_basename_dirname() -> None:
