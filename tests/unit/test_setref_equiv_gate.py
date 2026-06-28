@@ -32,7 +32,13 @@ from pathlib import Path
 import pytest
 
 _HERE = Path(__file__).resolve()
-_REPO_ROOT = _HERE.parents[2]
+# Under a mutmut sweep this file is the copy in <repo>/mutants/tests/unit,
+# so parents[2] is <repo>/mutants, which has no reference/ corpus (mutmut
+# copies only src + tests).  Fall back to the real repo root one level up.
+_repo_root = _HERE.parents[2]
+if not (_repo_root / "reference").is_dir() and _repo_root.name == "mutants":
+    _repo_root = _repo_root.parent
+_REPO_ROOT = _repo_root
 _REFERENCE_ROOT = _REPO_ROOT / "reference"
 
 # The golden-harness canonicalizers (sort.pl replica + result sed) live

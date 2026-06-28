@@ -408,8 +408,14 @@ source_paths = ["src"]
 # kill a mutant (the trampoline activates via sys.path + env var).
 pytest_add_cli_args_test_selection = ["tests/unit"]
 # Deterministic test order keeps mutmut's per-test timing baseline
-# (its timeout estimates) stable across runs.
-pytest_add_cli_args = ["-p", "no:randomly"]
+# (its timeout estimates) stable across runs.  ``no:unraisableexception``
+# is mutation-only: a mutant that abandons a generator leaves an open
+# scandir handle that the GC reaps at an arbitrary later moment, and the
+# strict ``filterwarnings=error`` would escalate that teardown-time
+# ResourceWarning into a spurious kill (pytest exits non-zero on teardown,
+# not on an assertion), inflating the kill rate.  The strict gate and leak
+# detection stay fully active in every ordinary session.
+pytest_add_cli_args = ["-p", "no:randomly", "-p", "no:unraisableexception"]
 
 [dependency-groups]
 dev = ["nox>=2026.4.10", "pre-commit>=4.6.0"]
