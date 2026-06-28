@@ -510,6 +510,81 @@ This item shares its machinery — `diff_tables` and the live nft snapshot
 --check` exposing a cron/monit exit-code contract: in sync / drifted /
 error), so the two are natural siblings and belong adjacent here.
 
+**Drift-detection as a cron/monit exit-code contract
+(`ferm --plan --check`).**
+
+Today `ferm --plan` is a *diagnostic* diff for humans: it prints the
+live-vs-desired differences and returns 0 in the normal case (1 only on
+`@preserve`). For cron/monit a *machine* mode is needed — the exit code
+as the contract: `0 = in sync`, `2 = drift detected`, `1 = error` —
+printing nothing (or a one-line summary) rather than the full diff. That
+is the single missing piece; the diff itself is already computed by
+`diff_tables`. ferm stays a stateless CLI — no daemon — and a `monit
+check program` / cron line drives the cadence. This is the runtime
+counterpart of etckeeper: etckeeper catches a change to the *config
+file*, drift-detection catches a change to the *installed state*. Touches
+the core lightly (a new flag and an exit-code path over the existing
+diff).
+
+**stdin and shebang: an existing contract to document, not a feature to
+build.**
+
+Both already work mechanically and only need a documented contract plus
+an e2e test:
+
+- *stdin* — `ferm -` reads the config from standard input in both the
+  Perl oracle and the port (`open_script`: `filename == '-'` → STDIN), so
+  `echo "…" | ferm -` works today; the POD documents it only obliquely.
+- *shebang* — `ferm` takes the input file as its first positional
+  argument, so a `#!/usr/bin/ferm` script is directly executable. The one
+  caveat is the classic kernel shebang limitation: a single interpreter
+  argument only, so `#!/usr/bin/ferm --nft` is unreliable and the
+  supported form is `#!/usr/bin/env -S ferm --nft`.
+
+The work here is documenting the supported patterns and adding an e2e
+test that a shebang script actually applies its rules — a contract, not
+new behaviour. (The earlier `--eval "string"` idea is dropped: it is pure
+sugar over the already-working `ferm -` pipe and would only add CLI
+surface.)
+
+**NetworkManager / systemd-networkd dispatcher hooks (packaging
+artifacts).**
+
+Re-apply rules when an interface goes up/down — dynamic interface names,
+VPN tunnels — via dispatcher scripts in `/etc/NetworkManager/dispatcher.d/`
+and `networkd-dispatcher`, which call `ferm` (optionally `--def DEV=$1`)
+on the state change. This is distinct from ferm's in-loop `@hook
+pre/post/flush` (shell run *inside* the apply cycle); a dispatcher runs
+*outside*, on the interface event, and then invokes ferm. No core change
+— packaged hook scripts plus an example. The real pain it addresses: a
+`@def $DEV` baked into the config breaks when the interface is renamed.
+
+**CrowdSec / fail2ban coexistence recipe (docs + example).**
+
+Modern intrusion responders (CrowdSec's nftables bouncer, fail2ban)
+populate an nft named set that a rule then drops on. Phase 5 shipped named
+sets, so the integration point exists; coexistence is by separate nft
+tables with per-table drop-terminal semantics (the `@extset` keyword was
+considered and rejected — a ferm table that flush-replaces its own
+contents must not own an externally-populated set). This is a documented
+recipe plus an example (optionally an `@hook` sidecar in the style of the
+legacy iptables `DOCKER-USER` chain), not core code.
+
+**Config validation in pre-commit / CI (`--noexec`).**
+
+Package the already-available `ferm --noexec --lines` (parse and emit the
+ruleset without touching the kernel) as a `.pre-commit-hooks.yaml` hook
+and a reusable GitHub Action, so `.ferm` files are validated in their own
+repositories before deploy. Trivial — it wraps existing behaviour and
+widens the audience.
+
+**Less recommended (recorded so they are not revisited blindly).**
+
+- *ulogd2 configuration for NFLOG/ULOG* — niche; few deployments use it.
+- *A native Ansible module* — useful, but a separate project in another
+  language/ecosystem that would dilute focus; the dispatcher and CLI
+  integrations above cover the common automation need.
+
 ## Cross-cutting: IPv6
 
 IPv6 support improves *across* phases rather than as one block: Phase 1
