@@ -342,7 +342,7 @@ deliberately deferred.
 
 To keep `ferm --plan --nft` honest, the desired ruleset is pre-validated with
 `nft -c` before the diff in a real run (skipped under `--test`, which uses a
-fake nft): an un-appliable plan — for example an `arp` chain carrying a `tcp`
+fake nft): an un-applicable plan — for example an `arp` chain carrying a `tcp`
 match nft rejects with "conflicting protocols" — aborts with nft's own
 diagnostic and exit 1, instead of being presented as an actionable change.
 
@@ -460,6 +460,55 @@ programmable Python-config front end (classes, inheritance, composition)
 alongside the DSL — a different audience from the Phase 7 AST tools, not a
 replacement — gated behind a mandatory security review (it executes user
 code).
+
+### Phase 9 — Operational integration & system citizenship
+
+Operational glue around the stateless `ferm` CLI — making it a better
+citizen of the host, in the spirit of the Phase 4 etckeeper integration
+rather than extending the rule DSL. These items mostly live outside the
+core (sidecar scripts, packaging artifacts, cron jobs); where a core
+change is needed it is small and called out.
+
+**Prometheus textfile-collector metrics (sidecar; stateless core).**
+
+Firewall observability via the node_exporter *textfile collector*
+pattern: a cron job atomically writes a `*.prom` file into the collector
+directory (e.g. `/var/lib/node_exporter/textfile_collector/`) and the
+exporter scrapes it — no HTTP endpoint and no long-lived ferm process.
+The collector samples `nft -j list ruleset` (counters come for free from
+the nft backend) and emits aggregates. The core stays stateless; the only
+state is a small collector-local file holding the previous ruleset hash,
+alongside the `.prom` output itself.
+
+The metrics answer two questions — *when* the rules changed and *how*
+(coarsely) — while deliberately leaving the exact diff to the existing
+config history:
+
+- **When — two distinct clocks.** A config-driven apply records its time
+  precisely, written by the apply path itself
+  (`ferm_last_apply_timestamp_seconds`). An out-of-band change (someone
+  ran `nft` by hand) is detected by the collector comparing the live
+  ruleset hash against its previous sample, so its time is *approximate*,
+  bounded by the cron interval (`ferm_last_change_timestamp_seconds`, plus
+  `ferm_ruleset_info{hash="…"}` whose label flips on change). The pairing
+  is the payoff: a `last_change` that moved while `last_apply` did not is
+  an out-of-band drift signal.
+- **How — coarse only.** Counts and direction, built on the same
+  `diff_tables` engine `--plan` already uses: `ferm_drift` (live ≠
+  desired, 0/1), `ferm_drift_rules{change="added|removed"}`,
+  `ferm_rules_total{family,table,chain}`, `ferm_set_elements_total{set}`.
+  This shows "+3 rules in INPUT, blocklist grew by 200", not *which* rules
+  — per-rule text as a label would be a high-cardinality anti-pattern.
+- **The exact textual diff stays out of Prometheus.** It already lives in
+  the etckeeper history (Phase 4): every apply commits a semantic message
+  describing the kernel delta via the same `diff_tables`. Division of
+  labour: Prometheus points at "when + how much + drifted?"; `git log`
+  (etckeeper) / journald carries the exact "what".
+
+This item shares its machinery — `diff_tables` and the live nft snapshot
+— with a future **drift-detection** mode (a read-only `ferm --plan
+--check` exposing a cron/monit exit-code contract: in sync / drifted /
+error), so the two are natural siblings and belong adjacent here.
 
 ## Cross-cutting: IPv6
 
