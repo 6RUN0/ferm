@@ -641,8 +641,8 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
     Productions recognized:
 
-    - ``add table <fam> ferm``                           -- ignored
-    - ``flush table <fam> ferm``                         -- ignored
+    - ``add table <fam> ferm``                           -- materializes table
+    - ``flush table <fam> ferm``                         -- materializes table
     - ``add chain <fam> ferm <chain> { <header> }``     -- base chain
     - ``add chain <fam> ferm <chain>``                   -- user chain
     - ``add rule  <fam> ferm <chain> <body>``            -- rule
@@ -664,12 +664,18 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         parts = line.split()
         verb = parts[0]
 
-        # -- table envelope / flush directive: both are silently ignored ----
+        # -- table envelope / flush directive: declares (materializes) the
+        # ferm table; see the _ensure_ferm_table call below for why. ---------
         # Exact 4-token match: any extra token is a parse error.
         if parts[1:2] == ["table"] and verb in ("add", "flush"):
             if len(parts) != _NFT_TABLE_PARTS or parts[3] != "ferm":
                 raise _parse_error(lineno, raw)
             family = _check_family(family, parts[2], lineno, raw)
+            # Declaring the table materializes it even when the config
+            # renders no chains: diff_tables iterates desired tables, so a
+            # present-but-empty ferm table is what surfaces live foreign
+            # chains as removals.
+            _ensure_ferm_table(tables)
             continue
 
         if verb != "add":
@@ -1521,6 +1527,11 @@ def render_structured(plan: Plan) -> str:
             lines.append(
                 "  note: noflush -- existing built-in/undeclared rules"
                 " kept; declared user chains overwritten; policies applied"
+            )
+            lines.append(
+                "  note: noflush -- counts are the net positional diff;"
+                " apply re-appends listed rules to unflushed chains, so"
+                " live rules overlapping the config are duplicated"
             )
         lines.extend(
             f"  ~ policy {c.table}/{c.chain}: {c.old} -> {c.new}"

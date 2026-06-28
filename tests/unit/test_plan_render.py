@@ -106,3 +106,21 @@ def test_structured_skips_clean_family_with_unsupported() -> None:
     assert "not supported" in out.lower()
     assert "family ip\n" not in out
     assert "0 to add" not in out
+
+
+def test_structured_noflush_note_warns_about_reappend_undercount() -> None:
+    # Under --noflush the structured banner must carry two notes: the
+    # survives/flushed split AND the re-append caveat. The second is the point
+    # of the ticket -- the counts are a net positional diff, but an apply
+    # appends the listed rules to unflushed chains, so live rules overlapping
+    # the config are duplicated and never appear in the counts.
+    diff = PlanDiff(
+        noflush=True,
+        rules_added=[
+            RuleChange("filter", "INPUT", "-p tcp --dport 80 -j ACCEPT")
+        ],
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert "note: noflush -- existing built-in/undeclared rules kept" in out
+    assert "note: noflush -- counts are the net positional diff" in out
+    assert "duplicated" in out

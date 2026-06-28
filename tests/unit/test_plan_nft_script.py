@@ -9,7 +9,14 @@ for iptables, so diff_tables and render_plan consume it unchanged.
 import pytest
 
 from pyferm.errors import FermError
-from pyferm.plan import parse_nft_script
+from pyferm.plan import (
+    ParsedChain,
+    ParsedSet,
+    ParsedTable,
+    build_nft_delta,
+    diff_tables,
+    parse_nft_script,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,17 +74,27 @@ def test_user_chain_rules_appended() -> None:
     assert tables["ferm"].chains["mychain"].rules == ["ip daddr 10.0.0.1 drop"]
 
 
-def test_add_table_and_flush_table_ignored() -> None:
-    """add table / flush table lines are structural envelope -- ignored."""
+def test_add_table_and_flush_table_materialize_empty_table() -> None:
+    """add table / flush table carry no rules but declare the ferm table.
+
+    The envelope lines produce no chains or sets, yet declaring the table
+    materializes a present-but-empty ferm entry.  diff_tables iterates desired
+    tables, so an absent ferm table would skip the diff entirely and let
+    foreign chains in the live kernel table pass silently as "No changes".
+    """
     text = "add table ip ferm\nflush table ip ferm\n"
     tables = parse_nft_script(text)
-    assert tables == {}
+    assert set(tables) == {"ferm"}
+    assert tables["ferm"].chains == {}
+    assert tables["ferm"].sets == {}
 
 
-def test_flush_table_bridge_ignored() -> None:
-    """flush table accepts any nft family, not just ip/ip6."""
+def test_flush_table_bridge_materializes_empty_table() -> None:
+    """flush table accepts any nft family and declares the ferm table."""
     text = "flush table bridge ferm\n"
-    assert parse_nft_script(text) == {}
+    tables = parse_nft_script(text)
+    assert set(tables) == {"ferm"}
+    assert tables["ferm"].chains == {}
 
 
 def test_empty_input_returns_empty_dict() -> None:
@@ -220,3 +237,54 @@ def test_add_chain_extra_token_before_brace_raises() -> None:
     )
     with pytest.raises(FermError):
         parse_nft_script(text)
+
+
+def test_envelope_only_desired_surfaces_live_foreign_chain() -> None:
+    """The end-to-end payoff of materializing the envelope-only table.
+
+    A chainless config diffed against a live ferm table that still holds a
+    user chain reports that chain as foreign (an apply would flush it) rather
+    than reporting "No changes".  Before the fix the desired ferm table was
+    absent, diff_tables skipped it, and the foreign chain was lost.
+    """
+    desired = parse_nft_script("add table ip ferm\nflush table ip ferm\n")
+    current = {"ferm": ParsedTable(chains={"oldchain": ParsedChain("-")})}
+    diff = diff_tables(current, desired, noflush=False)
+    assert [fc.chain for fc in diff.foreign_chains] == ["oldchain"]
+    assert diff.has_changes()
+
+
+def test_envelope_only_desired_surfaces_live_foreign_set() -> None:
+    """The set path is the symmetric payoff of materializing the envelope.
+
+    diff_tables iterates the desired table's sets the same way it iterates its
+    chains, so a chainless, setless config diffed against a live ferm table
+    holding a named set reports that set as a removal.  Without the empty-table
+    materialization the desired ferm table is absent and the foreign set is
+    lost exactly as the foreign chain would be.
+    """
+    desired = parse_nft_script("add table ip ferm\nflush table ip ferm\n")
+    current = {
+        "ferm": ParsedTable(
+            sets={"oldset": ParsedSet("oldset", elements=["10.0.0.1"])}
+        )
+    }
+    diff = diff_tables(current, desired, noflush=False)
+    assert [(sc.name, sc.kind) for sc in diff.set_changes] == [
+        ("oldset", "remove")
+    ]
+    assert diff.has_changes()
+
+
+def test_envelope_only_desired_emits_delete_chain_delta() -> None:
+    """build_nft_delta also consumes parse_nft_script, so the materialized
+    empty table propagates to the apply path: an envelope-only config against a
+    live ferm table holding a user chain emits a `delete chain` delta instead
+    of an empty (no-op) delta.  This locks the apply-path reachability of the
+    fix, not just the read-only diff.
+    """
+    previous = "table ip ferm {\n\tchain oldchain {\n\t}\n}\n"
+    desired_save = "add table ip ferm\nflush table ip ferm\n"
+    delta = build_nft_delta(previous, desired_save, family="ip")
+    assert delta is not None
+    assert "delete chain ip ferm oldchain" in delta
