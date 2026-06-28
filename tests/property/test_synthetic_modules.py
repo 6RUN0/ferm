@@ -27,6 +27,7 @@ stderr, and canonicalized stdout.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from pyferm.modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
 from tests.corpus.canon import canonicalize
 
 _HERE = Path(__file__).resolve().parent
@@ -1643,6 +1645,68 @@ _CASES: list[Case] = [
             "}\n"
         ),
     ),
+    # -- tcpmss match (!mss) -------------------------------------------
+    Case(
+        "tcpmss_match_mss",
+        _block("filter", "INPUT", "proto tcp mod tcpmss mss 1400 ACCEPT"),
+    ),
+    # -- ebtables named protocols (proto IPv4/IPv6/ARP/RARP/802_1Q) ----
+    # ebtables lives in its own domain; these names are eb-only PROTO_DEFS
+    # keys with no iptables namesake, so the iptables-focused matrix above
+    # never reaches them.
+    Case(
+        "eb_proto_ipv4",
+        "domain eb chain FORWARD {\n"
+        "    proto IPv4 ip-source 192.168.1.1 DROP;\n"
+        "}\n",
+    ),
+    Case(
+        "eb_proto_ipv6",
+        "domain eb chain FORWARD {\n"
+        "    proto IPv6 ip6-source 2001:db8::1 DROP;\n"
+        "}\n",
+    ),
+    Case(
+        "eb_proto_arp",
+        "domain eb chain FORWARD {\n"
+        "    proto ARP arp-mac-src 00:11:22:33:44:55 ACCEPT;\n"
+        "}\n",
+    ),
+    Case(
+        "eb_proto_rarp",
+        "domain eb chain FORWARD {\n    proto RARP ACCEPT;\n}\n",
+    ),
+    Case(
+        "eb_proto_802_1q",
+        "domain eb chain FORWARD {\n    proto 802_1Q ACCEPT;\n}\n",
+    ),
+    # -- ebtables nat-family targets (arpreply/dnat/redirect/snat) ------
+    # Lower-case eb targets, distinct from the upper-case iptables DNAT/SNAT
+    # targets; only reachable in the eb domain's nat table.
+    Case(
+        "eb_target_arpreply",
+        "domain eb table nat chain PREROUTING {\n"
+        "    arpreply arpreply-mac 00:00:de:ad:be:ef arpreply-target DROP;\n"
+        "}\n",
+    ),
+    Case(
+        "eb_target_dnat",
+        "domain eb table nat chain PREROUTING {\n"
+        "    dnat to-destination 00:00:de:ad:be:ef dnat-target DROP;\n"
+        "}\n",
+    ),
+    Case(
+        "eb_target_redirect",
+        "domain eb table nat chain PREROUTING {\n"
+        "    redirect redirect-target DROP;\n"
+        "}\n",
+    ),
+    Case(
+        "eb_target_snat",
+        "domain eb table nat chain POSTROUTING {\n"
+        "    snat to-source 00:00:de:ad:be:ef snat-target DROP;\n"
+        "}\n",
+    ),
 ]
 
 
@@ -1677,3 +1741,66 @@ def test_synthetic_module_matches_oracle(
     assert port[0] == oracle[0], f"exit verdict differs\n{port[2]}{oracle[2]}"
     assert port[2] == oracle[2], "stderr differs"
     assert canonicalize(port[1]) == canonicalize(oracle[1])
+
+
+#: Module names the differential matrix deliberately does not synthesize.
+#: Keep this empty unless a module genuinely cannot be expressed as a
+#: standalone rule; a newly registered ``add_*_def`` should gain a ``Case``
+#: above, not a waiver.  Map each entry to the reason / covering suite.
+_COVERAGE_WAIVERS: dict[str, str] = {}
+
+
+def _registry_module_names() -> set[str]:
+    """All module names registered across families (skip the '' default)."""
+    names: set[str] = set()
+    for registry in (PROTO_DEFS, MATCH_DEFS, TARGET_DEFS):
+        for family_defs in registry.values():
+            names.update(name for name in family_defs if name)
+    return names
+
+
+def _case_tokens() -> set[str]:
+    """Whitespace tokens across all case configs, stripped of punctuation."""
+    tokens: set[str] = set()
+    for case in _CASES:
+        for word in re.split(r"\s+", case.config):
+            tokens.add(word.strip('";,!'))
+    return tokens
+
+
+def test_every_registered_module_has_a_synthetic_case() -> None:
+    """Guard the matrix's completeness: a new module must gain a Case.
+
+    ``_CASES`` is hand-maintained, so a freshly registered module would
+    otherwise carry zero differential coverage with nothing to flag it.
+    Matching is by module name appearing as a token in some case config --
+    coarse, so a module whose name happens to coincide with a common token
+    (e.g. ``to``, ``set``, ``mode``) could be reported covered by an
+    incidental match rather than a dedicated Case; the guard's strength is a
+    distinctively-named new module, whose name cannot appear by accident.
+    No registered module currently relies on an incidental match.
+    """
+    registry = _registry_module_names()
+
+    # Guard the guard: a waiver must name a real module that genuinely has no
+    # Case, else a stale/typo'd waiver silently masks a future coverage gap.
+    stale = set(_COVERAGE_WAIVERS) - registry
+    assert not stale, (
+        f"_COVERAGE_WAIVERS names unknown modules: {sorted(stale)}"
+    )
+    redundant = set(_COVERAGE_WAIVERS) & _case_tokens()
+    assert not redundant, (
+        "_COVERAGE_WAIVERS names modules that already have a case (drop the "
+        f"waiver): {sorted(redundant)}"
+    )
+
+    tokens = _case_tokens()
+    uncovered = {
+        name
+        for name in registry
+        if name not in tokens and name not in _COVERAGE_WAIVERS
+    }
+    assert not uncovered, (
+        "registered modules with no synthetic case (add a Case above or a "
+        f"_COVERAGE_WAIVERS entry): {sorted(uncovered)}"
+    )

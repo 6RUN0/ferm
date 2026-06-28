@@ -1,0 +1,112 @@
+---
+# Weekly kernel-level e2e: the rollback/lockout/apply safety net and the
+# nft-conformance differential layer.  These exercise a real kernel
+# (netfilter is a namespaced subsystem of the shared kernel) and need
+# docker or rootless user namespaces, so they are deliberately out of the
+# per-PR test.yml -- which proves the port emits correct text, not that it
+# can install or roll back a ruleset.  A scheduled trigger keeps the most
+# dangerous failure modes honest between releases without taxing every PR.
+#
+# Like audit.yml: GitHub fires `schedule` from the default branch only, so
+# while the port lives on python-port a paths-scoped push stopgap covers it;
+# once it lands on master the cron takes over.
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 06:40 UTC; off-peak and staggered from audit.yml's 06:20.
+    - cron: '40 6 * * 1'
+  push:
+    branches: [python-port]
+    paths:
+      - '.github/workflows/e2e.yml'
+      - 'tests/e2e/**'
+      - 'tests/conformance/**'
+      - 'src/pyferm/**'
+      - 'noxfile.py'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  kernel-e2e:
+    runs-on: ubuntu-latest
+    # Each leg spins throwaway containers or clones the nft corpus; cap the
+    # job so a hung pull/fetch fails instead of stalling to the 6h default.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # docker-backed legs self-skip without the daemon; nft_conformance
+        # is host/rootless (needs the nftables userspace + git clone).
+        session:
+          - lockout
+          - nft_e2e
+          - datapath_e2e
+          - etckeeper_e2e
+          - docker_coexistence_e2e
+          - nft_conformance
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install the nftables userspace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables
+
+      # The host/rootless legs (nft_conformance layer 2) drive nft inside
+      # ``unshare -rn``; Ubuntu 24.04 runners gate unprivileged user
+      # namespaces behind an AppArmor knob, so without this the live-nft
+      # readback silently self-skips and the run goes green without ever
+      # exercising the differential. A no-op where the knob is absent.
+      - name: Allow unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Run the kernel e2e session
+        # Pass the matrix value through the environment, never interpolated
+        # into the shell, so it cannot become a command-injection sink.
+        env:
+          SESSION: ${{ matrix.session }}
+        run: uv run nox -s "$SESSION"
+
+  # A red scheduled run otherwise only emails the workflow author; an issue
+  # is the durable, visible escalation path (mirrors audit.yml).  Push- and
+  # dispatch-triggered failures stay out: the operator already sees those.
+  escalate:
+    needs: kernel-e2e
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Escalate a failed scheduled run to an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository
+            }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='Weekly kernel e2e is red'
+          body="Scheduled kernel-e2e run failed: $RUN_URL"
+          number=$(gh issue list --state open \
+            --search "\"$title\" in:title" \
+            --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

@@ -202,3 +202,44 @@ jobs:
 
       - name: Differential fuzzing against the oracle (thorough)
         run: uv run nox -s fuzz
+
+  # Light per-PR kernel proof: the rootless delta-apply e2e wraps its nft
+  # work in its own ``unshare -rn`` (no docker), so it runs on a stock
+  # runner and gives the nft data path a live backstop every PR. The heavy
+  # docker e2e (lockout/datapath/conformance) stays on the weekly e2e.yml.
+  # The test self-skips when unprivileged user namespaces or nft are
+  # absent, so a skip here means "not exercised", not "passed".
+  kernel-rootless:
+    runs-on: ubuntu-latest
+    # Cap the job so a hung apt/uv-sync/nft step fails fast instead of
+    # stalling a PR to the 6h default (mirrors e2e.yml's kernel-e2e).
+    timeout-minutes: 15
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install the nftables userspace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables
+
+      # Ubuntu 24.04 runners gate unprivileged user namespaces behind an
+      # AppArmor knob; relax it so the test's rootless ``unshare -rn``
+      # actually runs instead of self-skipping. A no-op where the knob is
+      # absent.
+      - name: Allow unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Rootless live-nft delta-apply e2e (no docker)
+        run: uv run nox -s delta_apply_e2e

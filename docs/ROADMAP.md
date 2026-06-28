@@ -423,7 +423,21 @@ and the opt-in `delta_apply_e2e` session already exercise that path
 structurally and end-to-end; a generator would duplicate the reinterpreter
 without producing new signal.
 
-### Phase 6 — Standard rule library (ready-made patterns)
+The `--plan` and `--nft` golden files
+(`tests/golden/{plan,plan_nft,nft,delta_nft}/`) are **deterministic
+self-snapshots, not oracle-checked**: the Perl oracle has no `--plan`/`--nft`
+backend, so no independent ground truth exists for these layers and the
+checked-in expected output is pyferm's own, cross-checked by hand at
+authoring time. They catch a *regression away from* the snapshot (proven:
+reversing set-element order fails them) but not a snapshot that was *wrong at
+birth*. The nft layer is partially anchored by the opt-in `nft -c` pre-check,
+the per-PR `delta_apply_e2e` gate (rootless live-`nft` data-path readback),
+and the weekly `nft_conformance` session (live-`nft` canon differential); the
+iptables `--plan` layer is the least-anchored and relies on the authoring-time
+cross-check. The one anchor still missing from PR CI is a per-PR
+`nft_conformance` run, so the nft *canon* (as opposed to the data path) has
+only a weekly automated backstop — promoting it is the standing remedy; the
+heavier docker e2e/conformance suites stay deliberately out of PR CI.
 
 An includable `.ferm` macro library with a search path (e.g.
 `@forward_port`, `@masquerade`); richer recipes (`@block_country`,

@@ -148,14 +148,20 @@ def test_inline_anonymous_range_set_normalizes_to_cidr() -> None:
 
 def test_inline_l4proto_set_orders_by_protocol_number() -> None:
     # A folded `meta l4proto { ... }` carries protocol names; nft reads the
-    # set back ordered by protocol number while keeping the names.  Both diff
+    # set back ordered by protocol *number* while keeping the names.  Both diff
     # sides must canonicalize to that order or two adjacent protocol-only
     # rules folding into a set show a perpetual phantom "change".
+    #
+    # esp (50) and ah (51) are chosen deliberately: their alphabetical order
+    # (ah, esp) is the reverse of their protocol-number order (esp, ah), so a
+    # regression to a plain alphabetical sort fails this test.  A tcp/udp pair
+    # would not -- its two orderings coincide, hiding the bug.
     desired = canonicalize_nft_rule(
-        "meta l4proto { udp, tcp } accept", family="ip"
+        "meta l4proto { ah, esp } accept", family="ip"
     )
     current = canonicalize_nft_rule(
-        "meta l4proto { tcp, udp } accept", family="ip"
+        "meta l4proto { esp, ah } accept", family="ip"
     )
     assert desired == current
-    assert "{ tcp, udp }" in desired
+    assert "{ esp, ah }" in desired
+    assert "{ ah, esp }" not in desired
