@@ -759,7 +759,7 @@ def build_rpm(session: nox.Session) -> None:
     Build the native .rpm in the pinned Fedora image (opt-in, docker).
 
     Packs a clean source tree into the spec's Source0 tarball, runs
-    rpmbuild + rpmlint (E: reds) inside the digest-pinned fedora:41 toolchain
+    rpmbuild + rpmlint (E: reds) inside the digest-pinned fedora:43 toolchain
     image, and version-anchors the rpm Version field. Version flows from the
     single host function (full PEP 440 to hatch-vcs, rpm-sanitized to the
     Version field). Cold runs pull the base image; absent from ``preflight``
@@ -781,11 +781,14 @@ def rpm_smoke(session: nox.Session) -> None:
     """
     Install-smoke the built .rpm in clean Fedora containers (opt-in, docker).
 
-    Runs the install-smoke cells against the artifact in ``dist/`` (build it
+    Runs two install-smoke cells against the artifact in ``dist/`` (build it
     first with ``nox -s build_rpm``): a clean install (version, config parse,
-    example, stdlib-resolver fallback, file-based not-enabled assert), the
-    Perl-ferm legacy migration, and the symlinked-legacy refusal. Absent from
-    ``preflight``.
+    example, stdlib-resolver fallback, file-based not-enabled assert) and the
+    posture-downgrade breadcrumb when the prior unit was enabled. The deb's
+    Perl-ferm legacy migration and symlinked-legacy refusal cells are deb-only
+    by design (rpm's %config(noreplace) does not adopt a %pre-seeded file, and
+    Fedora's Perl ferm already owns the same /etc/ferm/ferm.conf path, so there
+    is no cross-path legacy to refuse). Absent from ``preflight``.
     """
     session.run(
         "python",
@@ -804,7 +807,7 @@ def build_apk(session: nox.Session) -> None:
 
     Packs a clean source tree into the APKBUILD's source tarball, runs
     ``abuild`` (whose sanity / file-tracking / dependency checks are the lint
-    gate) inside the digest-pinned alpine:3.22 toolchain image, and
+    gate) inside the digest-pinned alpine:3.24 toolchain image, and
     version-anchors the apk pkgver. Version flows from the single host function
     (full PEP 440 to hatch-vcs, apk-sanitized to the pkgver). Cold runs pull
     base image; absent from ``preflight`` (like ``build_deb``/``build_rpm``).
@@ -825,11 +828,14 @@ def apk_smoke(session: nox.Session) -> None:
     """
     Install-smoke the built .apk in clean Alpine containers (opt-in, docker).
 
-    Runs the install-smoke cells against the artifact in ``dist/`` (build it
+    Runs two install-smoke cells against the artifact in ``dist/`` (build it
     first with ``nox -s build_apk``): a clean install (version, config parse,
     example, OpenRC-service present-but-not-enabled, conf-hint rewrite,
-    stdlib-resolver fallback) and the posture-downgrade breadcrumb. Absent from
-    ``preflight``.
+    stdlib-resolver fallback) and the posture-downgrade breadcrumb when the
+    prior service was enabled. The deb's Perl-ferm legacy migration and
+    symlinked-legacy refusal cells are deb-only by design (apk auto-protects
+    /etc on upgrade and Alpine has no cross-path legacy config to refuse).
+    Absent from ``preflight``.
     """
     session.run(
         "python",

@@ -4,8 +4,8 @@
 # image digest. Tag-only would be a regression of the project's supply-chain
 # floor (the .deb and .rpm images and the Nuitka image are digest-pinned too).
 #
-# frozen: alpine:3.22 2026-06-29
-FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+# frozen: alpine:3.24 2026-06-29
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # The apk toolchain is installed at IMAGE BUILD time (not when abuild runs):
 # abuild then runs against an image that already carries alpine-sdk and the

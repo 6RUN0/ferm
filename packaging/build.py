@@ -45,6 +45,10 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _IMAGE = "ferm-build"
@@ -60,13 +64,13 @@ _DEB_EMAIL = "boris@talovikov.ru"
 #: the spec. The smoke runs on a stock Fedora to prove a non-toolchain host.
 _RPM_IMAGE = "ferm-rpm-build"
 _RPM_DIR = _REPO_ROOT / "packaging" / "rpm"
-_RPM_SMOKE_BASE = "fedora:41"
+_RPM_SMOKE_BASE = "fedora:43"
 #: Native .apk build image (Alpine + abuild toolchain) and the source dir
 #: holding the APKBUILD, the OpenRC service and the install scriptlets. The
 #: smoke runs on a stock Alpine to prove a non-toolchain host.
 _APK_IMAGE = "ferm-apk-build"
 _APK_DIR = _REPO_ROOT / "packaging" / "apk"
-_APK_SMOKE_BASE = "alpine:3.22"
+_APK_SMOKE_BASE = "alpine:3.24"
 #: pyproject distribution name (``[project].name``); the rpm Source0 tarball is
 #: ``<dist>-<version>.tar.gz`` and the spec's ``%autosetup`` unpacks that dir.
 _PACKAGE_DIST = "ferm"
@@ -210,6 +214,24 @@ def _validate_tag(tag: str) -> None:
         )
 
 
+def _tag_version(sanitize: Callable[[str], str] | None = None) -> str:
+    """
+    Return the (optionally sanitized) prefix-stripped release tag, or "".
+
+    Centralizes the release discriminator: the value is a release version ONLY
+    when GITHUB_REF_TYPE == "tag" (not the mere presence of GITHUB_REF_NAME,
+    which GitHub sets on branch pushes too). _validate_tag runs BEFORE the
+    value is returned, so the injection-defense ordering holds for every
+    caller.
+    """
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    if not ref or os.environ.get("GITHUB_REF_TYPE") != "tag":
+        return ""
+    _validate_tag(ref)
+    stripped = _strip_tag_prefix(ref)
+    return sanitize(stripped) if sanitize else stripped
+
+
 #: PEP 440 charset gate for the OFF-TAG (setuptools-scm) version. The tag path
 #: validates via ``_validate_tag``; this enforces the same injection-defense on
 #: the dev/dispatch path before the value flows to ``sed``/``--define``/env.
@@ -275,6 +297,13 @@ def _sanitize_apk(version: str) -> str:
     release), ``.postN`` -> ``_pN`` (the Alpine post suffix, sorts ABOVE the
     release like PEP 440 intends). The full PEP 440 string is fed to hatch-vcs
     separately, so the wheel METADATA keeps the exact version regardless.
+
+    Caveat: apk orders ``_alpha < _beta < _pre < _rc < release``, so mapping
+    ``.devN`` to ``_preN`` sorts a dev marker ABOVE ``_alpha``/``_beta``. The
+    PEP 440 ``dev < alpha`` ordering therefore holds only for the combined
+    ``aN.devM`` shape (where the ``_alphaN`` prefix dominates the compare), not
+    for a bare ``.devM``. This affects only unpublished dev/CI artifacts;
+    released versions never carry a bare dev marker.
     """
     base = version.split("+", 1)[0]
     base = re.sub(r"\.post(\d+)", r"_p\1", base)
@@ -284,15 +313,25 @@ def _sanitize_apk(version: str) -> str:
     return re.sub(r"(?<=\d)rc(\d+)", r"_rc\1", base)
 
 
-#: Shell ``sani()`` mirroring _sanitize_deb/_sanitize_rpm, injected into the
-#: install-smoke cells so the package Version can be anchored against the
+#: Shell ``sani()`` mirroring _sanitize_deb EXACTLY (and _sanitize_rpm up to
+#: the hyphen -- deb keeps ``-`` where rpm maps it to ``~``), injected into the
+#: deb install-smoke cell so the package Version can be anchored against the
 #: binary's PEP 440 self-report (a ~-prefixed pre-release no longer equals a
-#: bare ``${ver%%+*}``). An independent reimplementation IS the point -- it
-#: is the verification oracle, not a reuse of the Python sanitizer.
+#: bare ``${ver%%+*}``). An independent reimplementation IS the point -- it is
+#: the verification oracle, not a reuse of the Python sanitizer.
 _SANI_SH_TILDE = (
     "sani() { printf '%s' \"${1%%+*}\" | "
     "sed -E 's/([0-9])(a|b|rc)([0-9])/\\1~\\2\\3/g; "
     "s/\\.dev([0-9])/~dev\\1/g'; }\n"
+)
+
+#: Shell ``sani()`` faithful to _sanitize_rpm: _SANI_SH_TILDE plus the rpm
+#: '-'->'~' map (rpm forbids '-' in a Version). deb keeps '-', so it stays on
+#: _SANI_SH_TILDE.
+_SANI_SH_RPM = (
+    "sani() { printf '%s' \"${1%%+*}\" | "
+    "sed -E 's/([0-9])(a|b|rc)([0-9])/\\1~\\2\\3/g; "
+    "s/\\.dev([0-9])/~dev\\1/g; s/-/~/g'; }\n"
 )
 
 #: Shell ``sani()`` mirroring _sanitize_apk for the apk install-smoke anchor.
@@ -349,10 +388,8 @@ def _resolve_version() -> str:
     ``GITHUB_REF_TYPE``, not the mere presence of ``GITHUB_REF_NAME`` (which
     GitHub sets on branch pushes / ``workflow_dispatch`` too).
     """
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        return _strip_tag_prefix(ref)
+    if tv := _tag_version():
+        return tv
     return _scm_version()
 
 
@@ -863,10 +900,17 @@ def _action_build(args: argparse.Namespace) -> int:
     return 0
 
 
-def _ensure_deb_image() -> None:
-    """Build the digest-pinned debian build image (toolchain baked in)."""
+def _ensure_native_image(image: str, context_dir: Path) -> None:
+    """
+    Build a digest-pinned native build image (toolchain baked in).
+
+    Shared by the deb/rpm/apk drivers: each passes its own image tag and build
+    context. Unlike ``_ensure_image`` (the Nuitka image), this does not probe a
+    toolchain afterward -- the native build steps fail loudly on a missing
+    tool.
+    """
     subprocess.run(
-        ["docker", "build", "-t", _DEB_IMAGE, str(_DEB_DIR)],
+        ["docker", "build", "-t", image, str(context_dir)],
         check=True,
     )
 
@@ -959,16 +1003,12 @@ def _action_build_deb(args: argparse.Namespace) -> int:
     injected as the package METADATA pretend version, the deb-sanitized string
     stamps the changelog and anchors the dpkg Version field.
     """
-    _ensure_deb_image()
+    _ensure_native_image(_DEB_IMAGE, _DEB_DIR)
     version_full = _resolve_version()
     version_deb = _sanitize_deb(version_full)
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    tag_ver = ""
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        # The build anchor compares the sanitized dpkg Version against this, so
-        # it must be sanitized too (a tilde'd pre-release tag, else mismatch).
-        tag_ver = _sanitize_deb(_strip_tag_prefix(ref))
+    # The build anchor compares the sanitized dpkg Version against this, so it
+    # must be sanitized too (a tilde'd pre-release tag, else mismatch).
+    tag_ver = _tag_version(_sanitize_deb)
     tree = _deb_source_tree(args.mode, args.tag)
     args.out.mkdir(parents=True, exist_ok=True)
     # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
@@ -1136,8 +1176,20 @@ def _smoke_cell_symlink_refusal() -> str:
     )
 
 
-def _run_smoke_cell(out: Path, script: str, tag_ver: str, label: str) -> None:
-    """Run one install-smoke cell in a clean debian container."""
+def _run_install_smoke_cell(
+    out: Path,
+    base_image: str,
+    script: str,
+    tag_ver: str,
+    label: str,
+    fmt: str,
+) -> None:
+    """
+    Run one install-smoke cell in a clean container for any native format.
+
+    Shared by the deb/rpm/apk smoke actions: they differ only in the stock base
+    image and the format noun (``fmt``) used in the failure message.
+    """
     run = subprocess.run(
         [
             "docker",
@@ -1147,7 +1199,7 @@ def _run_smoke_cell(out: Path, script: str, tag_ver: str, label: str) -> None:
             f"{out}:/work-out:ro",
             "-e",
             f"TAG_VER={tag_ver}",
-            _DEB_SMOKE_BASE,
+            base_image,
             "sh",
             "-c",
             script,
@@ -1159,7 +1211,7 @@ def _run_smoke_cell(out: Path, script: str, tag_ver: str, label: str) -> None:
     marker = f"{label}-OK"
     if run.returncode != 0 or marker not in run.stdout:
         raise SystemExit(
-            f"deb install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
+            f"{fmt} install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
         )
 
 
@@ -1230,25 +1282,20 @@ def _action_smoke_deb(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"no pyferm_*.deb in {out} -- run --action=build-deb first",
         )
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    tag_ver = ""
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        tag_ver = _strip_tag_prefix(ref)
-    _run_smoke_cell(out, _smoke_cell_clean(), tag_ver, "CELL1")
-    _run_smoke_cell(out, _smoke_cell_migration(), tag_ver, "CELL2")
-    _run_smoke_cell(out, _smoke_cell_symlink_refusal(), tag_ver, "CELL3")
+    tag_ver = _tag_version()
+    base = _DEB_SMOKE_BASE
+    _run_install_smoke_cell(
+        out, base, _smoke_cell_clean(), tag_ver, "CELL1", "deb"
+    )
+    _run_install_smoke_cell(
+        out, base, _smoke_cell_migration(), tag_ver, "CELL2", "deb"
+    )
+    _run_install_smoke_cell(
+        out, base, _smoke_cell_symlink_refusal(), tag_ver, "CELL3", "deb"
+    )
     _assert_deb_source_tar_clean()
     _assert_sdist_allowlist(out)
     return 0
-
-
-def _ensure_rpm_image() -> None:
-    """Build the digest-pinned Fedora build image (toolchain baked in)."""
-    subprocess.run(
-        ["docker", "build", "-t", _RPM_IMAGE, str(_RPM_DIR)],
-        check=True,
-    )
 
 
 def _rpm_source_tree(mode: str, tag: str | None) -> Path:
@@ -1330,14 +1377,10 @@ def _action_build_rpm(args: argparse.Namespace) -> int:
     hatch-vcs pretend version (the wheel METADATA), the rpm-sanitized string is
     the rpm Version field and the version-anchor expectation.
     """
-    _ensure_rpm_image()
+    _ensure_native_image(_RPM_IMAGE, _RPM_DIR)
     version_full = _resolve_version()
     version_rpm = _sanitize_rpm(version_full)
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    tag_ver = ""
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        tag_ver = _sanitize_rpm(_strip_tag_prefix(ref))
+    tag_ver = _tag_version(_sanitize_rpm)
     tree = _rpm_source_tree(args.mode, args.tag)
     sources = _rpm_sources_dir(tree, version_rpm)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -1403,7 +1446,7 @@ def _rpm_smoke_cell_clean() -> str:
         # binary's PEP 440 self-report run through the same sanitizer; on a tag
         # the binary must also self-report the tag's full PEP 440 version.
         # TAG_VER is the unsanitized tag here.
-        + _SANI_SH_TILDE
+        + _SANI_SH_RPM
         + "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
         "vrpm=$(rpm -q --qf '%{VERSION}' pyferm)\n"
         'expect=$(sani "$vferm")\n'
@@ -1436,35 +1479,6 @@ def _rpm_smoke_cell_breadcrumb() -> str:
     )
 
 
-def _run_rpm_smoke_cell(
-    out: Path, script: str, tag_ver: str, label: str
-) -> None:
-    """Run one install-smoke cell in a clean Fedora container."""
-    run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{out}:/work-out:ro",
-            "-e",
-            f"TAG_VER={tag_ver}",
-            _RPM_SMOKE_BASE,
-            "sh",
-            "-c",
-            script,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    marker = f"{label}-OK"
-    if run.returncode != 0 or marker not in run.stdout:
-        raise SystemExit(
-            f"rpm install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
-        )
-
-
 def _action_smoke_rpm(args: argparse.Namespace) -> int:
     """
     Install-smoke the built .rpm in clean Fedora containers.
@@ -1484,24 +1498,17 @@ def _action_smoke_rpm(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"no pyferm-*.rpm in {out} -- run --action=build-rpm first",
         )
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    tag_ver = ""
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        # The smoke anchors the binary's PEP 440 self-report against the tag
-        # (unsanitized); the package Version is anchored via shell sani().
-        tag_ver = _strip_tag_prefix(ref)
-    _run_rpm_smoke_cell(out, _rpm_smoke_cell_clean(), tag_ver, "CELL1")
-    _run_rpm_smoke_cell(out, _rpm_smoke_cell_breadcrumb(), tag_ver, "CELL2")
-    return 0
-
-
-def _ensure_apk_image() -> None:
-    """Build the digest-pinned Alpine build image (toolchain baked in)."""
-    subprocess.run(
-        ["docker", "build", "-t", _APK_IMAGE, str(_APK_DIR)],
-        check=True,
+    # The smoke anchors the binary's PEP 440 self-report against the tag
+    # (unsanitized); the package Version is anchored via shell sani().
+    tag_ver = _tag_version()
+    base = _RPM_SMOKE_BASE
+    _run_install_smoke_cell(
+        out, base, _rpm_smoke_cell_clean(), tag_ver, "CELL1", "rpm"
     )
+    _run_install_smoke_cell(
+        out, base, _rpm_smoke_cell_breadcrumb(), tag_ver, "CELL2", "rpm"
+    )
+    return 0
 
 
 def _apk_source_tree(mode: str, tag: str | None) -> Path:
@@ -1608,14 +1615,10 @@ def _action_build_apk(args: argparse.Namespace) -> int:
     hatch-vcs pretend version (the wheel METADATA), the apk-sanitized string is
     the pkgver and the version-anchor expectation.
     """
-    _ensure_apk_image()
+    _ensure_native_image(_APK_IMAGE, _APK_DIR)
     version_full = _resolve_version()
     version_apk = _sanitize_apk(version_full)
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    tag_ver = ""
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        tag_ver = _sanitize_apk(_strip_tag_prefix(ref))
+    tag_ver = _tag_version(_sanitize_apk)
     tree = _apk_source_tree(args.mode, args.tag)
     sources = _apk_sources_dir(tree, version_apk)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -1719,35 +1722,6 @@ def _apk_smoke_cell_breadcrumb() -> str:
     )
 
 
-def _run_apk_smoke_cell(
-    out: Path, script: str, tag_ver: str, label: str
-) -> None:
-    """Run one install-smoke cell in a clean Alpine container."""
-    run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{out}:/work-out:ro",
-            "-e",
-            f"TAG_VER={tag_ver}",
-            _APK_SMOKE_BASE,
-            "sh",
-            "-c",
-            script,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    marker = f"{label}-OK"
-    if run.returncode != 0 or marker not in run.stdout:
-        raise SystemExit(
-            f"apk install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
-        )
-
-
 def _action_smoke_apk(args: argparse.Namespace) -> int:
     """
     Install-smoke the built .apk in clean Alpine containers.
@@ -1770,13 +1744,14 @@ def _action_smoke_apk(args: argparse.Namespace) -> int:
     # The smoke anchors the apk pkgver against the binary's PEP 440 self-report
     # via shell sani() (artifact + binary, not a host re-resolve); on a tag the
     # binary must also self-report the tag's full PEP 440 version.
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    tag_ver = ""
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        tag_ver = _strip_tag_prefix(ref)
-    _run_apk_smoke_cell(out, _apk_smoke_cell_clean(), tag_ver, "CELL1")
-    _run_apk_smoke_cell(out, _apk_smoke_cell_breadcrumb(), tag_ver, "CELL2")
+    tag_ver = _tag_version()
+    base = _APK_SMOKE_BASE
+    _run_install_smoke_cell(
+        out, base, _apk_smoke_cell_clean(), tag_ver, "CELL1", "apk"
+    )
+    _run_install_smoke_cell(
+        out, base, _apk_smoke_cell_breadcrumb(), tag_ver, "CELL2", "apk"
+    )
     return 0
 
 
@@ -1885,10 +1860,8 @@ def _expected_version(binary: Path) -> str:
     name and fail the smoke gate. Only ``GITHUB_REF_TYPE == "tag"`` is a
     release.
     """
-    ref = os.environ.get("GITHUB_REF_NAME", "")
-    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
-        _validate_tag(ref)
-        return _strip_tag_prefix(ref)
+    if tv := _tag_version():
+        return tv
     return _detect_version(binary)
 
 

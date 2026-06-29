@@ -123,18 +123,28 @@ install -Dpm0644 packaging/deb/examples/ssh-throttle.conf.example \
 %post
 # Anti-lockout: a firewall must NOT apply rules or auto-enable on install, so
 # %%systemd_post is intentionally NOT used (it would run preset-based enable).
-# Only tell systemd the new unit exists.
+# Only tell systemd the new unit exists. daemon-reload runs unconditionally
+# (install AND upgrade): the unit file may have changed on an upgrade too.
 systemctl daemon-reload >/dev/null 2>&1 || :
 # Posture-downgrade breadcrumb (mirror of the .deb postinst): if the previous
 # ferm unit was ENABLED (detected file-wise by the wants symlink, reliable in
 # a container/chroot), warn durably that this package does not auto-enable, so
 # the firewall will not come up on the next reboot.
-WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
-BREADCRUMB=%{_sysconfdir}/ferm/POSTURE-DOWNGRADE.README
-if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
-    mkdir -p %{_sysconfdir}/ferm
-    tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
-    cat > "$tmp" <<'EOF'
+#
+# Gated to FRESH INSTALL only ($1 = 1; rpm passes $1>=2 on upgrade). On a fresh
+# install a pre-existing wants symlink genuinely means a prior (Perl) ferm was
+# enabled -- a real posture downgrade. On an UPGRADE the wants symlink is just
+# pyferm's own unit that the admin enabled after the first install, which is
+# indistinguishable from the legacy signal and would re-fire a FALSE warning
+# every time. A `dnf swap ferm pyferm` installs pyferm fresh ($1 = 1), so the
+# legitimate "prior ferm enabled" signal is preserved.
+if [ "$1" = 1 ]; then
+    WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
+    BREADCRUMB=%{_sysconfdir}/ferm/POSTURE-DOWNGRADE.README
+    if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
+        mkdir -p %{_sysconfdir}/ferm
+        tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
+        cat > "$tmp" <<'EOF'
 PYFERM POSTURE DOWNGRADE -- ACTION REQUIRED
 
 The previous ferm service was enabled on this host, but the pyferm package
@@ -147,9 +157,10 @@ reboot. Review /etc/ferm/ferm.conf (and /etc/ferm/ferm.d/), then opt in:
 
 Delete this file once you have re-enabled the service (or decided not to).
 EOF
-    mv -f "$tmp" "$BREADCRUMB"
-    echo "pyferm: previous ferm was enabled; this package does NOT auto-enable" \
-         "the unit. See $BREADCRUMB." >&2
+        mv -f "$tmp" "$BREADCRUMB"
+        echo "pyferm: previous ferm was enabled; this package does NOT auto-enable" \
+             "the unit. See $BREADCRUMB." >&2
+    fi
 fi
 
 %preun
@@ -170,11 +181,13 @@ fi
 %doc README.md
 %dir %{_pkgdocdir}/examples
 %{_pkgdocdir}/examples/ssh-throttle.conf.example
-# The console entry-point scripts are NOT captured by %%pyproject_save_files in
-# the pinned image's macro version, so they are listed explicitly (listing them
-# when the macro DID capture them would double-list and fail the build). This is
-# coupled to the pinned fedora image's macro version: RE-CHECK on any image
-# digest bump -- if a newer pyproject-rpm-macros captures them, drop these two.
+# The console entry-point scripts are listed explicitly -- the recommended
+# Fedora idiom. %%pyproject_save_files captures bindir scripts ONLY when invoked
+# with the +auto (or +bindir) argument; without it (as here, where it is passed
+# just the import package name) it never captures them, so these lines must STAY.
+# A future maintainer who wants auto-capture must add +auto/+bindir to
+# %%pyproject_save_files AND remove these two lines together -- doing one without
+# the other either double-lists (build fails) or drops the executables.
 %{_bindir}/ferm
 %{_bindir}/import-ferm
 %dir %{_sysconfdir}/ferm

@@ -14,15 +14,24 @@ BREADCRUMB=/etc/ferm/POSTURE-DOWNGRADE.README
 
 case "$1" in
     configure)
-        # Trigger: the old unit's wants symlink exists AND this package did
-        # not enable the unit (we always ship --no-enable). Write the
-        # breadcrumb only if absent, so a repeated dpkg-reconfigure does not
-        # clobber/duplicate the signal (idempotency) yet never silences it.
-        if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
-            mkdir -p /etc/ferm
-            # Atomic write: render to a temp file, then rename into place.
-            tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
-            cat > "$tmp" <<'EOF'
+        # Gated to FIRST configure only ($2 empty; on an upgrade dpkg passes
+        # the previously-configured version as $2). On a fresh install a
+        # pre-existing wants symlink genuinely means a prior (Perl) ferm was
+        # enabled -- a real posture downgrade. After self-enable the symlink is
+        # just pyferm's own unit, indistinguishable from the legacy signal, so
+        # re-firing on every upgrade would be a FALSE warning. An apt
+        # Replaces-driven first install also configures with empty $2, so the
+        # legitimate "prior ferm enabled" signal is preserved.
+        if [ -z "$2" ]; then
+            # Trigger: the old unit's wants symlink exists AND this package did
+            # not enable the unit (we always ship --no-enable). Write the
+            # breadcrumb only if absent, so a repeated dpkg-reconfigure does not
+            # clobber/duplicate the signal (idempotency) yet never silences it.
+            if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
+                mkdir -p /etc/ferm
+                # Atomic write: render to a temp file, then rename into place.
+                tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
+                cat > "$tmp" <<'EOF'
 PYFERM POSTURE DOWNGRADE -- ACTION REQUIRED
 
 The previous ferm service was enabled on this host, but the pyferm package
@@ -35,9 +44,10 @@ reboot. Review /etc/ferm/ferm.conf (and /etc/ferm/ferm.d/), then opt in:
 
 Delete this file once you have re-enabled the service (or decided not to).
 EOF
-            mv -f "$tmp" "$BREADCRUMB"
-            echo "pyferm: previous ferm was enabled; this package does NOT" \
-                 "auto-enable the unit. See $BREADCRUMB." >&2
+                mv -f "$tmp" "$BREADCRUMB"
+                echo "pyferm: previous ferm was enabled; this package does NOT" \
+                     "auto-enable the unit. See $BREADCRUMB." >&2
+            fi
         fi
         ;;
 esac

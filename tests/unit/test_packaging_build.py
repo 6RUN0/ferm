@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -299,3 +301,87 @@ def test_licenses_present_fails_without_manifest(tmp_path: Path) -> None:
     (dist / "LICENSES").mkdir(parents=True)
     with pytest.raises(SystemExit, match="no license manifest"):
         build._assert_licenses_present(dist)
+
+
+# -- shell sani() oracles vs the Python sanitizers (differential) -----------
+
+#: A version corpus that exercises every marker the sanitizers transform,
+#: INCLUDING a hyphen-bearing version so the rpm '-'->'~' path is covered.
+#: Single-digit marker numbers keep both sides defined (the shell oracles match
+#: one digit; the Python regexes match one or more).
+_SANI_CORPUS = (
+    "0.1.0",
+    "1.2.3",
+    "0.1.0a2",
+    "0.1.0b1",
+    "0.1.0rc3",
+    "0.1.0.dev5",
+    "0.1.0a3.dev5",
+    "0.1.0.post1",
+    "0.1.0-1",
+)
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+@pytest.mark.parametrize("version", _SANI_CORPUS)
+def test_shell_sani_oracles_agree_with_python_sanitizers(version: str) -> None:
+    # The install-smoke cells re-implement each Python sanitizer as a shell
+    # sani() oracle (the verification oracle, not a reuse). Prove the two agree
+    # over the corpus -- a drift between them would make the version-anchor
+    # gate either false-red or false-green. "0.1.0-1" exercises the rpm
+    # '-'->'~' map that the deb oracle deliberately omits.
+    build = _load_build()
+    for const, python_fn in (
+        (build._SANI_SH_TILDE, build._sanitize_deb),
+        (build._SANI_SH_RPM, build._sanitize_rpm),
+        (build._SANI_SH_APK, build._sanitize_apk),
+    ):
+        run = subprocess.run(
+            ["sh", "-c", const + 'sani "$1"', "_", version],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert run.stdout.strip() == python_fn(version)
+
+
+# -- native source tree (dev mode) ------------------------------------------
+
+
+def test_native_source_tree_dev_copies_clean_inputs() -> None:
+    # Dev mode copies the working-tree build inputs into a scratch dir; the
+    # shipped sources and metadata must be present and the dev-only droppings
+    # (OMC state, bytecode) must be stripped so they never reach the wheel.
+    build = _load_build()
+    tree = build._native_source_tree("test-", "dev", None)
+    for rel in ("pyproject.toml", "README.md", "CHANGELOG.md", "COPYING"):
+        assert (tree / rel).is_file()
+    assert (tree / "src").is_dir()
+    assert (tree / "packaging").is_dir()
+    assert not (tree / ".omc").exists()
+    assert not list(tree.rglob("__pycache__"))
+    assert not list(tree.rglob("*.pyc"))
+
+
+# -- maintainer identity is consistent across the native packages -----------
+
+
+def test_maintainer_identity_is_consistent() -> None:
+    # The deb/rpm/apk metadata must all carry the same maintainer identity as
+    # the build driver's _DEB_FULLNAME/_DEB_EMAIL (the dch source of truth), or
+    # a release would stamp mismatched maintainers across the three channels.
+    build = _load_build()
+    root = _find_repo_root()
+    full = f"{build._DEB_FULLNAME} <{build._DEB_EMAIL}>"
+    control = (root / "packaging" / "deb" / "debian" / "control").read_text(
+        encoding="utf-8",
+    )
+    spec = (root / "packaging" / "rpm" / "pyferm.spec").read_text(
+        encoding="utf-8",
+    )
+    apkbuild = (root / "packaging" / "apk" / "APKBUILD").read_text(
+        encoding="utf-8",
+    )
+    assert full in control  # Maintainer: field
+    assert full in spec  # %changelog entry
+    assert full in apkbuild  # # Maintainer: line

@@ -8,7 +8,7 @@
 Filters = [
     # rpmlint's dictionary does not know netfilter/firewall vocabulary; these
     # are correct domain terms, not typos.
-    '.*spelling-error.*(iptables|ip6tables|arptables|ebtables|nftables|netfilter|conf|systemctl|dnspython|etckeeper).*',
+    '.*spelling-error.*(iptables|ip6tables|arptables|ebtables|nftables|netfilter|systemctl|dnspython|etckeeper).*',
     # The maintenance scriptlets intentionally use mktemp/mv/rm: the atomic
     # posture-downgrade breadcrumb write in %post and its cleanup in %postun.
     # They mirror the reviewed .deb maintscripts. (No %pre: the spec ships no

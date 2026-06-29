@@ -31,8 +31,6 @@ stop() {
 	eend $? "Failed to flush firewall rules"
 }
 
-reload() {
-	ebegin "Reloading firewall rules (ferm)"
-	/usr/bin/ferm /etc/ferm/ferm.conf
-	eend $? "Failed to reload firewall rules"
-}
+# ferm reapplies the whole ruleset atomically, so a reload is identical to a
+# start -- delegate rather than duplicate.
+reload() { start; }
