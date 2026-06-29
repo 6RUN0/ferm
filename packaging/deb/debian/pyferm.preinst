@@ -11,6 +11,8 @@ set -e
 
 LEGACY=/etc/ferm.conf
 TARGET=/etc/ferm/ferm.conf
+WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
+MARKER=/run/pyferm-legacy-was-enabled
 
 case "$1" in
     install|upgrade)
@@ -34,6 +36,34 @@ case "$1" in
                 # it instead of silently installing the package default.
                 mkdir -p /etc/ferm
                 cp -p -- "$LEGACY" "$TARGET"
+            fi
+        fi
+
+        # Posture-downgrade SNAPSHOT (paired with the postinst breadcrumb).
+        # preinst runs FIRST in the dpkg transaction -- before the legacy ferm
+        # package's own removal strips its enablement artifacts -- so it is the
+        # only point that reliably observes a prior ferm's posture. Record a
+        # durable marker if ANY enablement regime shows the old ferm was on:
+        #   - the systemd wants symlink (the postinst's own file-wise signal),
+        #   - SysV rc?.d start links (a sysvinit-managed legacy ferm enables
+        #     via /etc/rc[2-5].d/S??ferm, which the wants-symlink probe alone
+        #     would miss entirely -- the target-mismatch hole), and
+        #   - systemctl is-enabled (best-effort, failure ignored; unreliable in
+        #     a chroot / PID1-less container, hence only a supplementary signal,
+        #     never the sole one).
+        # Gated to a genuine fresh/legacy install ($1=install with no prior
+        # pyferm in $2): on a pyferm self-upgrade ($1=upgrade) or a
+        # reinstall-over-removed ($2 set) the wants symlink is just pyferm's own
+        # unit and must not be mistaken for the legacy signal. The marker lives
+        # in /run (not /etc): preinst runs before /etc/ferm may exist, /run is
+        # writable this early, and the postinst consumes the marker within the
+        # same apt run, so /run's reboot-clear is irrelevant and no purge
+        # cleanup is needed.
+        if [ "$1" = install ] && [ -z "$2" ]; then
+            if [ -L "$WANTS" ] \
+                || ls /etc/rc[2-5].d/S??ferm >/dev/null 2>&1 \
+                || systemctl is-enabled ferm >/dev/null 2>&1; then
+                : > "$MARKER" || true
             fi
         fi
         ;;

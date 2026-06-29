@@ -100,6 +100,18 @@ configuration managers) will have their dependency satisfied by `pyferm`,
 but any `systemctl enable ferm` those tools may run will apply the default
 DROP configuration. Audit what your automation does before installing.
 
+**Alpine (`.apk`, OpenRC):** the posture-downgrade advisory (a breadcrumb
+warning that the firewall will no longer auto-apply after migrating) is
+reliable only when `pyferm` is *layered* while the legacy `ferm` is still
+present — `apk` has no pre-removal hook, and the usual two-transaction
+migration (`apk del ferm` then `apk add pyferm`) may have already removed the
+legacy OpenRC runlevel symlink before `pyferm`'s post-install script samples
+it, so the advisory can be missed. This is fail-safe — `pyferm` ships its
+service un-added to any runlevel regardless, so a missed advisory never
+causes a lockout; only the warning is lost. The `.deb`/`.rpm` packages do not
+have this gap: they snapshot the prior posture in a pre-install hook that runs
+before the legacy package is removed.
+
 ### PyPI (pip)
 
 ```sh
@@ -324,7 +336,9 @@ sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
 
 **2. ferm's native `--nft` backend (opt-in, experimental).** This translates
 the config into a native nft ruleset (see *Project status* above). Install
-`nftables` (a Recommends of the package) and pass `--nft`:
+`nftables` (a Recommends of the deb/rpm package; the apk declares no
+recommends, so on Alpine install it explicitly with `apk add nftables`) and
+pass `--nft`:
 
 ```sh
 ferm --noexec --lines --nft /etc/ferm/ferm.conf   # inspect
@@ -345,8 +359,9 @@ ExecStop=
 ExecStop=/usr/bin/ferm --nft -F /etc/ferm/ferm.conf
 ```
 
-On Alpine (**OpenRC**), add `--nft` to the `ferm` invocations in `start()`,
-`reload()` and `stop()` in `/etc/init.d/ferm`.
+On Alpine (**OpenRC**), add `--nft` to the `ferm` invocations in `start()` and
+`stop()` in `/etc/init.d/ferm`; `reload()` delegates to `start()`, so it
+inherits the flag automatically.
 
 ## Development
 

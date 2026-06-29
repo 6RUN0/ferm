@@ -1041,8 +1041,11 @@ def _action_build_deb(args: argparse.Namespace) -> int:
     ]
     subprocess.run(cmd, check=True)
     debs = sorted(args.out.glob("pyferm_*.deb"))
-    if not debs:
-        raise SystemExit(f"no pyferm_*.deb produced in {args.out}")
+    if len(debs) != 1:
+        raise SystemExit(
+            f"expected exactly one pyferm_*.deb in {args.out}, found "
+            f"{len(debs)} (a stale artifact would confuse the smoke gate)",
+        )
     return 0
 
 
@@ -1089,7 +1092,7 @@ def _smoke_cell_clean() -> str:
         # example on install. Remove it so the smoke reflects a normal system.
         "rm -f /etc/dpkg/dpkg.cfg.d/docker\n"
         "apt-get update >/dev/null\n"
-        "apt-get install -y --no-install-recommends /work-out/pyferm_*.deb"
+        "apt-get install -y --no-install-recommends /work-out/$ART"
         " >/dev/null\n"
         "ferm --version\n"
         "import-ferm --help >/dev/null\n"
@@ -1116,7 +1119,7 @@ def _smoke_cell_clean() -> str:
         # unsanitized tag here.
         + _SANI_SH_TILDE
         + "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
-        "vdeb=$(dpkg-deb -f /work-out/pyferm_*.deb Version)\n"
+        "vdeb=$(dpkg-deb -f /work-out/$ART Version)\n"
         'expect=$(sani "$vferm")\n'
         '[ "$vdeb" = "$expect" ] || { echo "deb $vdeb != sani($vferm)='
         '$expect" >&2; exit 1; }\n'
@@ -1149,7 +1152,7 @@ def _smoke_cell_migration() -> str:
         " --no-install-recommends"
         " -o Dpkg::Options::=--force-confold"
         " -o Dpkg::Options::=--force-confdef"
-        " /work-out/pyferm_*.deb >/dev/null\n"
+        " /work-out/$ART >/dev/null\n"
         # the admin config is preserved, not clobbered by the shipped default
         "grep -q 'MARKER admin config' /etc/ferm/ferm.conf\n"
         # the posture-downgrade breadcrumb is written somewhere durable
@@ -1165,7 +1168,7 @@ def _smoke_cell_symlink_refusal() -> str:
         "apt-get update >/dev/null\n"
         "printf 'evil\\n' > /tmp/evil.conf\n"
         "ln -sf /tmp/evil.conf /etc/ferm.conf\n"
-        "apt-get install -y --no-install-recommends /work-out/pyferm_*.deb"
+        "apt-get install -y --no-install-recommends /work-out/$ART"
         " >/dev/null 2>/tmp/err.txt || true\n"
         # the shipped default lands as a REGULAR file, never a symlink to the
         # attacker-controlled path, and carries no evil content
@@ -1181,14 +1184,20 @@ def _run_install_smoke_cell(
     base_image: str,
     script: str,
     tag_ver: str,
+    art: str,
     label: str,
     fmt: str,
 ) -> None:
     """
     Run one install-smoke cell in a clean container for any native format.
 
-    Shared by the deb/rpm/apk smoke actions: they differ only in the stock base
-    image and the format noun (``fmt``) used in the failure message.
+    Shared by the deb/rpm/apk smoke actions: they differ only in the stock
+    base image, the single artifact basename (``art``, referenced as ``$ART``
+    in the cell), and the format noun (``fmt``) used in the failure message.
+    ``art`` is the exact basename the host already resolved to a single file,
+    passed by env (injection-safe, mirroring ``TAG_VER``) so the cell
+    references ``/work-out/$ART`` instead of a ``*`` glob that misbehaves on
+    >1 match.
     """
     run = subprocess.run(
         [
@@ -1199,6 +1208,8 @@ def _run_install_smoke_cell(
             f"{out}:/work-out:ro",
             "-e",
             f"TAG_VER={tag_ver}",
+            "-e",
+            f"ART={art}",
             base_image,
             "sh",
             "-c",
@@ -1278,20 +1289,23 @@ def _action_smoke_deb(args: argparse.Namespace) -> int:
     # named volume).
     out = args.out.resolve()
     debs = sorted(out.glob("pyferm_*.deb"))
-    if not debs:
+    if len(debs) != 1:
         raise SystemExit(
-            f"no pyferm_*.deb in {out} -- run --action=build-deb first",
+            f"expected exactly one pyferm_*.deb in {out}, found {len(debs)} "
+            "-- run --action=build-deb into a clean dist first (an ambiguous "
+            "or missing artifact would version-anchor the wrong file)",
         )
+    art = debs[0].name
     tag_ver = _tag_version()
     base = _DEB_SMOKE_BASE
     _run_install_smoke_cell(
-        out, base, _smoke_cell_clean(), tag_ver, "CELL1", "deb"
+        out, base, _smoke_cell_clean(), tag_ver, art, "CELL1", "deb"
     )
     _run_install_smoke_cell(
-        out, base, _smoke_cell_migration(), tag_ver, "CELL2", "deb"
+        out, base, _smoke_cell_migration(), tag_ver, art, "CELL2", "deb"
     )
     _run_install_smoke_cell(
-        out, base, _smoke_cell_symlink_refusal(), tag_ver, "CELL3", "deb"
+        out, base, _smoke_cell_symlink_refusal(), tag_ver, art, "CELL3", "deb"
     )
     _assert_deb_source_tar_clean()
     _assert_sdist_allowlist(out)
@@ -1410,8 +1424,11 @@ def _action_build_rpm(args: argparse.Namespace) -> int:
     ]
     subprocess.run(cmd, check=True)
     rpms = sorted(args.out.glob("pyferm-*.rpm"))
-    if not rpms:
-        raise SystemExit(f"no pyferm-*.rpm produced in {args.out}")
+    if len(rpms) != 1:
+        raise SystemExit(
+            f"expected exactly one pyferm-*.rpm in {args.out}, found "
+            f"{len(rpms)} (a stale artifact would confuse the smoke gate)",
+        )
     return 0
 
 
@@ -1426,7 +1443,7 @@ def _rpm_smoke_cell_clean() -> str:
         # file) actually lands -- the rpm analog of the deb smoke removing the
         # docker doc path-exclude; a normal Fedora host installs docs.
         "dnf -y --setopt=install_weak_deps=False --setopt=tsflags= install"
-        " /work-out/pyferm-*.rpm >/dev/null\n"
+        " /work-out/$ART >/dev/null\n"
         "ferm --version\n"
         "import-ferm --help >/dev/null\n"
         # the shipped default config parses (--test: no real iptables needed)
@@ -1471,7 +1488,7 @@ def _rpm_smoke_cell_breadcrumb() -> str:
         "ln -s /usr/lib/systemd/system/ferm.service"
         " /etc/systemd/system/multi-user.target.wants/ferm.service\n"
         "dnf -y --setopt=install_weak_deps=False --setopt=tsflags= install"
-        " /work-out/pyferm-*.rpm >/dev/null\n"
+        " /work-out/$ART >/dev/null\n"
         # this package does not auto-enable its unit (anti-lockout), so it
         # warns durably: the posture-downgrade breadcrumb must be written.
         "test -f /etc/ferm/POSTURE-DOWNGRADE.README\n"
@@ -1494,19 +1511,22 @@ def _action_smoke_rpm(args: argparse.Namespace) -> int:
     # named volume).
     out = args.out.resolve()
     rpms = sorted(out.glob("pyferm-*.rpm"))
-    if not rpms:
+    if len(rpms) != 1:
         raise SystemExit(
-            f"no pyferm-*.rpm in {out} -- run --action=build-rpm first",
+            f"expected exactly one pyferm-*.rpm in {out}, found {len(rpms)} "
+            "-- run --action=build-rpm into a clean dist first (an ambiguous "
+            "or missing artifact would version-anchor the wrong file)",
         )
+    art = rpms[0].name
     # The smoke anchors the binary's PEP 440 self-report against the tag
     # (unsanitized); the package Version is anchored via shell sani().
     tag_ver = _tag_version()
     base = _RPM_SMOKE_BASE
     _run_install_smoke_cell(
-        out, base, _rpm_smoke_cell_clean(), tag_ver, "CELL1", "rpm"
+        out, base, _rpm_smoke_cell_clean(), tag_ver, art, "CELL1", "rpm"
     )
     _run_install_smoke_cell(
-        out, base, _rpm_smoke_cell_breadcrumb(), tag_ver, "CELL2", "rpm"
+        out, base, _rpm_smoke_cell_breadcrumb(), tag_ver, art, "CELL2", "rpm"
     )
     return 0
 
@@ -1648,8 +1668,11 @@ def _action_build_apk(args: argparse.Namespace) -> int:
     ]
     subprocess.run(cmd, check=True)
     apks = sorted(args.out.glob("pyferm-*.apk"))
-    if not apks:
-        raise SystemExit(f"no pyferm-*.apk produced in {args.out}")
+    if len(apks) != 1:
+        raise SystemExit(
+            f"expected exactly one pyferm-*.apk in {args.out}, found "
+            f"{len(apks)} (a stale artifact would confuse the smoke gate)",
+        )
     return 0
 
 
@@ -1661,7 +1684,7 @@ def _apk_smoke_cell_clean() -> str:
         # not in /etc/apk/keys. The hard depends (iptables) resolves from the
         # repos; apk has no Recommends, so py3-dnspython is never pulled -- the
         # stdlib-resolver fallback below must run without it.
-        "apk add --no-cache --allow-untrusted /work-out/pyferm-*.apk"
+        "apk add --no-cache --allow-untrusted /work-out/$ART"
         " >/dev/null\n"
         "ferm --version\n"
         "import-ferm --help >/dev/null\n"
@@ -1691,7 +1714,7 @@ def _apk_smoke_cell_clean() -> str:
         # is the unsanitized tag.
         + _SANI_SH_APK
         + "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
-        "vapk=$(basename /work-out/pyferm-*.apk | sed -n"
+        "vapk=$(basename /work-out/$ART | sed -n"
         " 's/^pyferm-\\(.*\\)-r[0-9]*\\.apk$/\\1/p')\n"
         'expect=$(sani "$vferm")\n'
         '[ "$vapk" = "$expect" ] || { echo "apk $vapk != sani($vferm)='
@@ -1713,7 +1736,7 @@ def _apk_smoke_cell_breadcrumb() -> str:
         # the file-wise check needs).
         "mkdir -p /etc/runlevels/default\n"
         "ln -sf /etc/init.d/ferm /etc/runlevels/default/ferm\n"
-        "apk add --no-cache --allow-untrusted /work-out/pyferm-*.apk"
+        "apk add --no-cache --allow-untrusted /work-out/$ART"
         " >/dev/null\n"
         # this package adds the service to no runlevel (anti-lockout), so it
         # warns durably: the posture-downgrade breadcrumb must be written.
@@ -1737,20 +1760,23 @@ def _action_smoke_apk(args: argparse.Namespace) -> int:
     # named volume).
     out = args.out.resolve()
     apks = sorted(out.glob("pyferm-*.apk"))
-    if not apks:
+    if len(apks) != 1:
         raise SystemExit(
-            f"no pyferm-*.apk in {out} -- run --action=build-apk first",
+            f"expected exactly one pyferm-*.apk in {out}, found {len(apks)} "
+            "-- run --action=build-apk into a clean dist first (an ambiguous "
+            "or missing artifact would version-anchor the wrong file)",
         )
+    art = apks[0].name
     # The smoke anchors the apk pkgver against the binary's PEP 440 self-report
     # via shell sani() (artifact + binary, not a host re-resolve); on a tag the
     # binary must also self-report the tag's full PEP 440 version.
     tag_ver = _tag_version()
     base = _APK_SMOKE_BASE
     _run_install_smoke_cell(
-        out, base, _apk_smoke_cell_clean(), tag_ver, "CELL1", "apk"
+        out, base, _apk_smoke_cell_clean(), tag_ver, art, "CELL1", "apk"
     )
     _run_install_smoke_cell(
-        out, base, _apk_smoke_cell_breadcrumb(), tag_ver, "CELL2", "apk"
+        out, base, _apk_smoke_cell_breadcrumb(), tag_ver, art, "CELL2", "apk"
     )
     return 0
 

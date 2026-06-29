@@ -120,6 +120,31 @@ install -Dpm0644 packaging/deb/examples/ssh-throttle.conf.example \
 # upgrades, and a `dnf swap ferm pyferm` carries the existing file over per
 # rpm's standard config-on-erase handling (kept as .rpmsave if modified).
 
+%pre
+# Posture-downgrade SNAPSHOT (paired with the %post breadcrumb). Note this is a
+# DIFFERENT use of %pre than the config migration declined above: the
+# %config(noreplace) objection there is that rpm overwrites a file pre-placed in
+# %pre on a fresh install -- but a /run marker is NOT a packaged file, so that
+# objection does not apply, and %pre is exactly the right hook here. It runs
+# before the new package's files and, on a swap/obsolete, before the old
+# package's %postun strips its enablement artifacts, so it is the only point
+# that reliably observes a prior ferm's posture.
+#
+# Gated to a fresh install ($1 = 1; rpm passes $1 >= 2 on upgrade), matching the
+# %post fresh-install gate; a `dnf swap ferm pyferm` installs pyferm fresh
+# ($1 = 1). Record the marker if ANY enablement regime shows the old ferm was
+# on: the systemd wants symlink, the SysV rc?.d start links (a sysvinit host the
+# wants-symlink probe alone would miss), or systemctl is-enabled (best-effort,
+# failure ignored; unreliable in a chroot, hence only supplementary).
+if [ "$1" = 1 ]; then
+    WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
+    MARKER=/run/pyferm-legacy-was-enabled
+    if [ -L "$WANTS" ] || ls /etc/rc[2-5].d/S??ferm >/dev/null 2>&1 \
+       || systemctl is-enabled ferm >/dev/null 2>&1; then
+        : > "$MARKER" 2>/dev/null || :
+    fi
+fi
+
 %post
 # Anti-lockout: a firewall must NOT apply rules or auto-enable on install, so
 # %%systemd_post is intentionally NOT used (it would run preset-based enable).
@@ -127,8 +152,9 @@ install -Dpm0644 packaging/deb/examples/ssh-throttle.conf.example \
 # (install AND upgrade): the unit file may have changed on an upgrade too.
 systemctl daemon-reload >/dev/null 2>&1 || :
 # Posture-downgrade breadcrumb (mirror of the .deb postinst): if the previous
-# ferm unit was ENABLED (detected file-wise by the wants symlink, reliable in
-# a container/chroot), warn durably that this package does not auto-enable, so
+# ferm unit was ENABLED (observed file-wise by the wants symlink, the SysV
+# rc?.d start links, or the %pre snapshot marker -- all reliable in a
+# container/chroot), warn durably that this package does not auto-enable, so
 # the firewall will not come up on the next reboot.
 #
 # Gated to FRESH INSTALL only ($1 = 1; rpm passes $1>=2 on upgrade). On a fresh
@@ -140,10 +166,17 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 # legitimate "prior ferm enabled" signal is preserved.
 if [ "$1" = 1 ]; then
     WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
+    MARKER=/run/pyferm-legacy-was-enabled
     BREADCRUMB=%{_sysconfdir}/ferm/POSTURE-DOWNGRADE.README
-    if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
+    if [ ! -e "$BREADCRUMB" ] && { [ -L "$WANTS" ] || [ -e "$MARKER" ] \
+       || ls /etc/rc[2-5].d/S??ferm >/dev/null 2>&1; }; then
         mkdir -p %{_sysconfdir}/ferm
-        tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
+        # The scriptlet runs without `set -e` (rpm idiom), so guard the
+        # breadcrumb write: a failed mktemp must not leave $tmp empty and let
+        # the cat/mv operate on a bogus path. Bail out (exit 0) rather than
+        # continue silently -- the breadcrumb is best-effort, not a hard error.
+        tmp="$(mktemp "${BREADCRUMB}.XXXXXX")" || exit 0
+        [ -n "$tmp" ] || exit 0
         cat > "$tmp" <<'EOF'
 PYFERM POSTURE DOWNGRADE -- ACTION REQUIRED
 
@@ -161,6 +194,9 @@ EOF
         echo "pyferm: previous ferm was enabled; this package does NOT auto-enable" \
              "the unit. See $BREADCRUMB." >&2
     fi
+    # Consume the %pre snapshot marker once read (best-effort). It is in /run
+    # and self-clears on reboot, but drop it now to avoid a stale re-read.
+    rm -f "$MARKER" 2>/dev/null || :
 fi
 
 %preun
@@ -170,7 +206,7 @@ fi
 
 %postun
 %systemd_postun ferm.service
-if [ $1 -eq 0 ]; then
+if [ "$1" -eq 0 ]; then
     # Final removal: drop the posture-downgrade breadcrumb so it does not
     # orphan in /etc/ferm (mirror of the .deb postrm purge).
     rm -f %{_sysconfdir}/ferm/POSTURE-DOWNGRADE.README

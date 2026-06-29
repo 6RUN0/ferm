@@ -1,8 +1,8 @@
 #!/bin/sh
 # Posture-downgrade signal. If the host had the (Perl) ferm unit ENABLED --
-# detected FILE-wise by the on-disk wants symlink, not the systemctl
-# enabled-state query (unreliable in a chroot / PID1-less container) -- but
-# this package ships
+# detected FILE-wise by the on-disk wants symlink, the SysV rc?.d start links,
+# or the preinst snapshot marker (NOT the systemctl enabled-state query, which
+# is unreliable in a chroot / PID1-less container) -- but this package ships
 # the unit --no-enable, then the firewall will NOT come up on the next reboot
 # on a host where it DID. Warn DURABLY: a postinst stderr line is swallowed
 # by unattended apt, so the authoritative signal is a breadcrumb file plus
@@ -10,6 +10,7 @@
 set -e
 
 WANTS=/etc/systemd/system/multi-user.target.wants/ferm.service
+MARKER=/run/pyferm-legacy-was-enabled
 BREADCRUMB=/etc/ferm/POSTURE-DOWNGRADE.README
 
 case "$1" in
@@ -23,11 +24,18 @@ case "$1" in
         # Replaces-driven first install also configures with empty $2, so the
         # legitimate "prior ferm enabled" signal is preserved.
         if [ -z "$2" ]; then
-            # Trigger: the old unit's wants symlink exists AND this package did
-            # not enable the unit (we always ship --no-enable). Write the
-            # breadcrumb only if absent, so a repeated dpkg-reconfigure does not
-            # clobber/duplicate the signal (idempotency) yet never silences it.
-            if [ -L "$WANTS" ] && [ ! -e "$BREADCRUMB" ]; then
+            # Trigger: a prior ferm enablement is observed AND this package did
+            # not enable the unit (we always ship --no-enable). Enablement is
+            # observed across ALL regimes -- the live wants symlink, the preinst
+            # snapshot marker (which also closes the SysV target-mismatch and
+            # the ordering window where legacy removal precedes this script),
+            # and a direct SysV rc?.d probe as a belt-and-braces fallback should
+            # the snapshot be absent. Write the breadcrumb only if absent, so a
+            # repeated dpkg-reconfigure does not clobber/duplicate the signal
+            # (idempotency) yet never silences it.
+            if [ ! -e "$BREADCRUMB" ] \
+                && { [ -L "$WANTS" ] || [ -e "$MARKER" ] \
+                     || ls /etc/rc[2-5].d/S??ferm >/dev/null 2>&1; }; then
                 mkdir -p /etc/ferm
                 # Atomic write: render to a temp file, then rename into place.
                 tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
@@ -48,6 +56,10 @@ EOF
                 echo "pyferm: previous ferm was enabled; this package does NOT" \
                      "auto-enable the unit. See $BREADCRUMB." >&2
             fi
+            # Consume the preinst snapshot marker once read (best-effort). It is
+            # in /run and self-clears on reboot, but drop it now so a later
+            # dpkg-reconfigure does not re-read a stale legacy signal.
+            rm -f "$MARKER"
         fi
         ;;
 esac

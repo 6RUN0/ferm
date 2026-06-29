@@ -152,6 +152,21 @@ here so they are not lost.
 - *Own apt repository* (reprepro/aptly) — the `.deb` ships as a GitHub
   Release asset; a signed apt repo is a separate distribution-lifecycle step.
 
+**Known limitation — apk posture-downgrade advisory:** the posture-downgrade
+breadcrumb (warning that the firewall will no longer auto-apply after a
+legacy `ferm` → `pyferm` migration) is reliable on `.deb`/`.rpm` because a
+pre-install hook (deb `preinst` / rpm `%pre`) snapshots the prior enablement
+across **all** regimes — the systemd wants symlink, the SysV `rc[2-5].d`
+start links, and best-effort `systemctl is-enabled` — into a `/run` marker
+that the post-install step consumes, *before* the legacy package is removed.
+`apk` has no pre-removal hook and the usual migration is two transactions
+(`apk del ferm` then `apk add pyferm`), so by the time `pyferm`'s
+post-install runs the legacy OpenRC runlevel symlink may already be gone and
+the advisory is missed. It is reliable only when `pyferm` is layered while
+the legacy `ferm` is still present. This is fail-safe — `pyferm` ships its
+service un-added to any runlevel regardless, so a missed advisory never
+causes a lockout; only the warning is lost.
+
 **CVE-rebuild of bundled native libraries (automatable trigger SHIPPED;
 recovery remains the owner's ongoing debt):**
 
@@ -239,13 +254,19 @@ implemented on the `python-port` branch (not yet released): under `--nft`,
 the live `nft list table` snapshot) instead of `flush table` + full rebuild.
 Unchanged chains and unchanged named sets are left untouched, so their
 per-rule packet/byte counters and kernel state survive a reload. A
-`--full-reload` flag opts back into the legacy flush-replace behaviour. The
+`--full-reload` flag opts back into a full rebuild, applied as an atomic
+whole-table replace (`delete table` + `add table`) rather than a plain
+`flush table`: `flush table` only empties chains of rules and keeps their
+declarations, so a base chain removed from the config would survive
+empty-but-hooked (still enforcing its policy); the replace drops it for real.
+One consequence: set elements injected out-of-band into ferm's own table do
+not survive a full reload — the default delta path is what preserves them. The
 first run (no prior snapshot), an empty snapshot, or a diff that contains a
 set type/flags retype or removal deterministically falls back to a full
 reload; the fallback predicate is a single named function. The delta stays one
 `nft -f` transaction (atomicity preserved). The delta is convergent: elements
 that exist in the kernel but not in the config are removed, matching the
-semantics of flush-replace.
+semantics of a full rebuild.
 
 The second slice — **config history and rollback via etckeeper** — is also
 implemented on the `python-port` branch (not yet released). Rather than ferm

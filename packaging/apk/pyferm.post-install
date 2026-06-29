@@ -6,6 +6,16 @@
 # firewall will NOT come up on the next boot on a host where it DID. Warn
 # DURABLY with a breadcrumb file, since a post-install stderr line is easily
 # missed.
+#
+# LIMITATION (no pre-removal hook): unlike the .deb preinst / .rpm %pre, apk has
+# no script that runs BEFORE the legacy package is removed, and a typical
+# migration is TWO separate transactions (`apk del ferm` then `apk add pyferm`).
+# By the time this post-install runs, the legacy OpenRC runlevel symlinks may
+# already be gone, so the advisory can be MISSED. The breadcrumb is therefore
+# reliable only when pyferm is LAYERED while the legacy ferm is still present
+# (its runlevel symlink still on disk). This is fail-safe: a missed breadcrumb
+# never causes lockout (pyferm ships its service un-added to any runlevel
+# regardless) -- only the advisory is lost. Documented in README / ROADMAP.
 set -e
 
 BREADCRUMB=/etc/ferm/POSTURE-DOWNGRADE.README

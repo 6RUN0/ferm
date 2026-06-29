@@ -219,13 +219,17 @@ def _maintscripts() -> list[str]:
     return [_read(f"pyferm.{stage}") for stage in stages]
 
 
-def test_maintscripts_detect_enabled_by_file_not_systemctl() -> None:
-    # systemctl is-enabled is unreliable in a chroot / PID1-less container;
-    # the migration logic must detect the old unit via the on-disk wants
-    # symlink instead.
+def test_maintscripts_detect_enabled_by_file_first() -> None:
+    # systemctl is-enabled is unreliable in a chroot / PID1-less container, so
+    # the AUTHORITATIVE detection stays file-wise (the on-disk wants symlink
+    # and the SysV rc?.d start links). is-enabled is permitted only as a
+    # best-effort SUPPLEMENTARY signal -- never the sole gate -- so every use
+    # must redirect its output and ignore failure.
     joined = "\n".join(_maintscripts())
     assert "multi-user.target.wants/ferm.service" in joined
-    assert "is-enabled" not in joined
+    for line in joined.splitlines():
+        if "is-enabled" in line and not line.lstrip().startswith("#"):
+            assert ">/dev/null" in line, line
 
 
 def test_preinst_refuses_symlink_legacy_config() -> None:
@@ -249,6 +253,38 @@ def test_downgrade_signal_is_durable_not_only_stderr() -> None:
     # stderr): a breadcrumb file written somewhere durable.
     postinst = _read("pyferm.postinst")
     assert "POSTURE-DOWNGRADE" in postinst
+
+
+_MARKER = "/run/pyferm-legacy-was-enabled"
+_SYSV_PROBE = r"ls\s+/etc/rc\[2-5\]\.d/S\?\?ferm"
+
+
+def test_preinst_snapshots_multi_regime_enablement() -> None:
+    # preinst runs BEFORE the legacy package's removal, so it is the only
+    # point that reliably observes a prior ferm's posture. It must snapshot
+    # enablement across ALL regimes -- the systemd wants symlink, the SysV
+    # rc?.d links (the target-mismatch hole the wants probe alone misses), and
+    # best-effort systemctl is-enabled -- into the durable /run marker.
+    preinst = _read("pyferm.preinst")
+    assert "multi-user.target.wants/ferm.service" in preinst
+    assert re.search(_SYSV_PROBE, preinst)
+    assert re.search(r"systemctl\s+is-enabled\s+ferm", preinst)
+    # the marker is WRITTEN, and only on a genuine fresh/legacy install
+    assert _MARKER in preinst
+    assert re.search(r'>\s*"\$MARKER"', preinst)
+    assert re.search(r'\[ "\$1" = install \] && \[ -z "\$2" \]', preinst)
+
+
+def test_postinst_honors_marker_and_probes_sysv() -> None:
+    # The postinst breadcrumb must fire on the preinst marker AND directly
+    # probe the SysV rc?.d links, not only the live systemd wants symlink, so a
+    # sysvinit legacy ferm (target mismatch) and the late-sampling ordering
+    # hole are both covered. The marker is consumed (removed) once read.
+    postinst = _read("pyferm.postinst")
+    assert _MARKER in postinst
+    assert re.search(r'\[ -e "\$MARKER" \]', postinst)
+    assert re.search(_SYSV_PROBE, postinst)
+    assert re.search(r'rm -f "\$MARKER"', postinst)
 
 
 # -- copyright (consistency, load-bearing) --------------------------------

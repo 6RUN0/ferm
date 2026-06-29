@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -385,3 +386,57 @@ def test_maintainer_identity_is_consistent() -> None:
     assert full in control  # Maintainer: field
     assert full in spec  # %changelog entry
     assert full in apkbuild  # # Maintainer: line
+
+
+# -- rpm posture-downgrade snapshot/breadcrumb ------------------------------
+
+
+def _read_spec() -> str:
+    spec = _find_repo_root() / "packaging" / "rpm" / "pyferm.spec"
+    return spec.read_text(encoding="utf-8")
+
+
+def _scriptlet(spec: str, start: str, end: str) -> str:
+    """Return the body of an rpm spec section between two %-section markers."""
+    body: list[str] = []
+    collecting = False
+    for line in spec.splitlines():
+        if line.strip() == start:
+            collecting = True
+            continue
+        if collecting and line.strip() == end:
+            break
+        if collecting:
+            body.append(line)
+    assert body, f"empty or missing {start} section"
+    return "\n".join(body)
+
+
+_MARKER = "/run/pyferm-legacy-was-enabled"
+_SYSV_PROBE = r"ls\s+/etc/rc\[2-5\]\.d/S\?\?ferm"
+
+
+def test_rpm_spec_pre_snapshots_enablement_marker() -> None:
+    # %pre is rpm's pre-removal hook (it runs before the new files and, on a
+    # swap, before the old %postun), so it is where a prior ferm's posture is
+    # snapshotted across ALL regimes -- the systemd wants symlink, the SysV
+    # rc?.d start links (the target-mismatch hole), and best-effort
+    # is-enabled -- into the same /run marker the deb preinst writes.
+    pre = _scriptlet(_read_spec(), "%pre", "%post")
+    assert "multi-user.target.wants/ferm.service" in pre
+    assert re.search(_SYSV_PROBE, pre)
+    assert re.search(r"systemctl\s+is-enabled\s+ferm", pre)
+    assert _MARKER in pre
+    assert re.search(r'>\s*"\$MARKER"', pre)
+    assert re.search(r'\[ "\$1" = 1 \]', pre)  # fresh install only
+
+
+def test_rpm_spec_post_honors_marker_and_probes_sysv() -> None:
+    # The %post breadcrumb must fire on the %pre marker AND directly probe the
+    # SysV rc?.d links, not only the live systemd wants symlink, mirroring the
+    # deb postinst. The marker is consumed (removed) once read.
+    post = _scriptlet(_read_spec(), "%post", "%preun")
+    assert _MARKER in post
+    assert re.search(r'\[ -e "\$MARKER" \]', post)
+    assert re.search(_SYSV_PROBE, post)
+    assert re.search(r'rm -f "\$MARKER"', post)
