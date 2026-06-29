@@ -27,7 +27,6 @@ stderr, and canonicalized stdout.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -46,10 +45,19 @@ _ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
 @dataclass(frozen=True)
 class Case:
-    """A synthesized ferm config and the id under which it is reported."""
+    """A synthesized ferm config and the id under which it is reported.
+
+    ``modules`` names the registered netfilter module(s) the case is
+    specifically designed to exercise.  It drives the completeness gate
+    (:func:`test_every_registered_module_has_a_synthetic_case`): coverage
+    is decided by this explicit tag, never by a module name happening to
+    appear as an incidental token in ``config``.  Cases that do not target
+    a specific module (none currently) leave it at the empty default.
+    """
 
     case_id: str
     config: str
+    modules: tuple[str, ...] = ()
 
 
 def _block(table: str, chain: str, *rules: str) -> str:
@@ -68,10 +76,12 @@ _CASES: list[Case] = [
     Case(
         "tproxy_mark",
         _block("mangle", "PREROUTING", "proto tcp TPROXY tproxy-mark 0x1/0x1"),
+        modules=("TPROXY",),
     ),
     Case(
         "tproxy_on_port",
         _block("mangle", "PREROUTING", "proto tcp TPROXY on-port 50080"),
+        modules=("TPROXY",),
     ),
     Case(
         "tproxy_on_ip_port",
@@ -80,6 +90,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp TPROXY on-ip 127.0.0.1 on-port 50080",
         ),
+        modules=("TPROXY",),
     ),
     Case(
         "tproxy_udp",
@@ -88,42 +99,51 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto udp TPROXY tproxy-mark 0x1/0x1 on-port 50080",
         ),
+        modules=("TPROXY",),
     ),
     # -- geoip match (!src-cc=s !dst-cc=s; CC list is one string) ------
     Case(
         "geoip_src_cc",
         _block("filter", "INPUT", "mod geoip src-cc US ACCEPT"),
+        modules=("geoip",),
     ),
     Case(
         "geoip_dst_cc",
         _block("filter", "INPUT", "mod geoip dst-cc DE DROP"),
+        modules=("geoip",),
     ),
     Case(
         "geoip_cc_list",
         # The CC list is a single scalar; the comma is a token separator,
         # so it must be quoted to survive tokenization.
         _block("filter", "INPUT", 'mod geoip src-cc "US,DE" ACCEPT'),
+        modules=("geoip",),
     ),
     Case(
         "geoip_negated",
         _block("filter", "INPUT", "mod geoip ! src-cc RU DROP"),
+        modules=("geoip",),
     ),
     Case(
         "geoip_proto",
         _block("filter", "INPUT", "mod geoip proto tcp dst-cc DE ACCEPT"),
+        modules=("geoip",),
     ),
     # -- set match (!match-set=sc, flags, counters, negation) ----------
     Case(
         "set_match_src",
         _block("filter", "INPUT", "mod set match-set foo src ACCEPT"),
+        modules=("set",),
     ),
     Case(
         "set_flags_src_dst",
         _block("filter", "INPUT", "mod set match-set foo (src dst) ACCEPT"),
+        modules=("set",),
     ),
     Case(
         "set_negated",
         _block("filter", "INPUT", "mod set ! match-set foo src DROP"),
+        modules=("set",),
     ),
     Case(
         "set_return_nomatch",
@@ -132,6 +152,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod set match-set foo src return-nomatch ACCEPT",
         ),
+        modules=("set",),
     ),
     Case(
         "set_multiple_refs",
@@ -142,6 +163,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod set match-set foo src match-set bar dst ACCEPT",
         ),
+        modules=("set",),
     ),
     Case(
         "set_packets_gt",
@@ -150,19 +172,23 @@ _CASES: list[Case] = [
             "INPUT",
             "mod set match-set foo src packets-gt 5 ACCEPT",
         ),
+        modules=("set",),
     ),
     # -- CONNMARK target (set-xmark save/restore-mark nfmask ctmask) ---
     Case(
         "connmark_set_xmark",
         _block("filter", "INPUT", "proto tcp CONNMARK set-xmark 0x1/0xff"),
+        modules=("CONNMARK",),
     ),
     Case(
         "connmark_save_mark",
         _block("filter", "INPUT", "proto tcp CONNMARK save-mark"),
+        modules=("CONNMARK",),
     ),
     Case(
         "connmark_restore_mark",
         _block("filter", "INPUT", "proto tcp CONNMARK restore-mark"),
+        modules=("CONNMARK",),
     ),
     Case(
         "connmark_masks",
@@ -171,15 +197,18 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp CONNMARK save-mark nfmask 0xff ctmask 0xff",
         ),
+        modules=("CONNMARK",),
     ),
     # -- TCPMSS target (set-mss clamp-mss-to-pmtu; needs proto tcp) ----
     Case(
         "tcpmss_set_mss",
         _block("mangle", "FORWARD", "proto tcp TCPMSS set-mss 1400"),
+        modules=("TCPMSS",),
     ),
     Case(
         "tcpmss_clamp",
         _block("mangle", "FORWARD", "proto tcp TCPMSS clamp-mss-to-pmtu"),
+        modules=("TCPMSS",),
     ),
     Case(
         # Deliberate error-parity probe: TCPMSS without a preceding
@@ -188,6 +217,7 @@ _CASES: list[Case] = [
         # signal.
         "tcpmss_no_proto",
         _block("mangle", "FORWARD", "TCPMSS set-mss 1400"),
+        modules=("TCPMSS",),
     ),
     # -- cross axes: cartesian proto expansion crossed with a module ---
     Case(
@@ -197,6 +227,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto (tcp udp) mod set match-set foo src ACCEPT",
         ),
+        modules=("set",),
     ),
     # ================================================================
     # Batch 2: exotic DSL paths most likely to expose port divergence
@@ -212,6 +243,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp mod multiport source-ports (22) ACCEPT",
         ),
+        modules=("multiport",),
     ),
     Case(
         "multiport_dst_list",
@@ -221,6 +253,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto udp mod multiport destination-ports (22 80 443) ACCEPT",
         ),
+        modules=("multiport",),
     ),
     Case(
         "multiport_ports_range",
@@ -230,6 +263,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp mod multiport ports (1024:2048) ACCEPT",
         ),
+        modules=("multiport",),
     ),
     Case(
         "multiport_negated",
@@ -238,6 +272,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp mod multiport destination-ports !(200 201 202) DROP",
         ),
+        modules=("multiport",),
     ),
     # -- tcp proto-flags (tcp-flags!=cc double-comma encoding) ---------
     # Exercises the protocol-level options registered via add_proto_def.
@@ -249,6 +284,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp tcp-flags (SYN ACK) SYN DROP",
         ),
+        modules=("tcp",),
     ),
     Case(
         "tcp_flags_all",
@@ -258,6 +294,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp tcp-flags ALL SYN DROP",
         ),
+        modules=("tcp",),
     ),
     Case(
         "tcp_flags_negated",
@@ -268,18 +305,22 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp tcp-flags ! (SYN RST) RST ACCEPT",
         ),
+        modules=("tcp",),
     ),
     Case(
         "tcp_syn",
         _block("filter", "INPUT", "proto tcp syn ACCEPT"),
+        modules=("tcp",),
     ),
     Case(
         "tcp_syn_negated",
         _block("filter", "INPUT", "proto tcp !syn DROP"),
+        modules=("tcp",),
     ),
     Case(
         "tcp_option",
         _block("filter", "INPUT", "proto tcp tcp-option 8 ACCEPT"),
+        modules=("tcp",),
     ),
     Case(
         "tcp_mss",
@@ -290,6 +331,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp mss 1024:1536 DROP",
         ),
+        modules=("tcp",),
     ),
     # -- conntrack (!ctstate=c, negatable scalars) ---------------------
     # Verifies: --match conntrack in output.
@@ -300,6 +342,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod conntrack ctstate (NEW ESTABLISHED) ACCEPT",
         ),
+        modules=("conntrack",),
     ),
     Case(
         "conntrack_ctstate_single",
@@ -308,6 +351,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod conntrack ctstate ESTABLISHED ACCEPT",
         ),
+        modules=("conntrack",),
     ),
     Case(
         "conntrack_ctstate_negated",
@@ -316,6 +360,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod conntrack ! ctstate INVALID DROP",
         ),
+        modules=("conntrack",),
     ),
     Case(
         "conntrack_ctorigsrc_dst",
@@ -325,6 +370,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod conntrack ctorigsrc 192.0.2.1 ctorigdst 198.51.100.1 ACCEPT",
         ),
+        modules=("conntrack",),
     ),
     Case(
         "conntrack_ctproto",
@@ -333,6 +379,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod conntrack ctproto tcp ACCEPT",
         ),
+        modules=("conntrack",),
     ),
     # -- u32 raw match (!u32=m: array -> repeated --u32 options) --------
     # The =m encoding and shell_escape of the quoted expression is the
@@ -347,6 +394,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod u32 u32 "0x6&0xff=0x6" ACCEPT',
         ),
+        modules=("u32",),
     ),
     Case(
         "u32_negated",
@@ -355,24 +403,29 @@ _CASES: list[Case] = [
             "INPUT",
             'mod u32 ! u32 "0x0>>22&0x3c@12>>26=0x1" DROP',
         ),
+        modules=("u32",),
     ),
     # -- MARK target (set-mark set-xmark and-mark or-mark xor-mark) ----
     # Verifies: --jump MARK in output.
     Case(
         "mark_set",
         _block("mangle", "PREROUTING", "MARK set-mark 0x1"),
+        modules=("MARK",),
     ),
     Case(
         "mark_set_xmark",
         _block("mangle", "PREROUTING", "MARK set-xmark 0x1/0xff"),
+        modules=("MARK",),
     ),
     Case(
         "mark_or",
         _block("mangle", "PREROUTING", "MARK or-mark 0x2"),
+        modules=("MARK",),
     ),
     Case(
         "mark_xor",
         _block("mangle", "PREROUTING", "MARK xor-mark 0x3"),
+        modules=("MARK",),
     ),
     # -- recent (!set*0 !update*0 !rcheck*0 + scalars) -----------------
     # Verifies: --match recent in output.
@@ -383,6 +436,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod recent set name foo rsource DROP",
         ),
+        modules=("recent",),
     ),
     Case(
         "recent_update",
@@ -391,6 +445,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod recent update seconds 60 hitcount 4 name foo ACCEPT",
         ),
+        modules=("recent",),
     ),
     Case(
         "recent_negated_rcheck",
@@ -400,6 +455,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod recent ! rcheck DROP",
         ),
+        modules=("recent",),
     ),
     # -- time (=c comma-joined days array, *0 flags) -------------------
     # Verifies: --match time in output; days array comma-joined.
@@ -410,6 +466,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod time timestart 08:00 timestop 18:00 ACCEPT",
         ),
+        modules=("time",),
     ),
     Case(
         "time_days",
@@ -419,6 +476,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod time days (Mon Tue Wed) ACCEPT",
         ),
+        modules=("time",),
     ),
     Case(
         "time_datestart_kerneltz",
@@ -427,6 +485,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod time datestart 2024-01-01 kerneltz ACCEPT",
         ),
+        modules=("time",),
     ),
     # -- icmp / icmpv6 proto (alias icmpv6-type:=icmp-type) -----------
     # Domain-scoped configs: domain ip uses iptables, ip6 uses ip6tables.
@@ -438,6 +497,7 @@ _CASES: list[Case] = [
             "    proto icmp icmp-type echo-request ACCEPT;\n"
             "}\n"
         ),
+        modules=("icmp",),
     ),
     Case(
         "icmpv6_echo_request",
@@ -448,6 +508,7 @@ _CASES: list[Case] = [
             "    proto ipv6-icmp icmpv6-type echo-request ACCEPT;\n"
             "}\n"
         ),
+        modules=("icmp",),
     ),
     # -- REDIRECT target (nat table) -----------------------------------
     # Verifies: --jump REDIRECT in output.
@@ -458,6 +519,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp REDIRECT to-ports 8080",
         ),
+        modules=("REDIRECT",),
     ),
     Case(
         "redirect_random",
@@ -466,6 +528,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp REDIRECT to-ports 8080 random",
         ),
+        modules=("REDIRECT",),
     ),
     # -- hashlimit (=c mode, =s scalars, continuation opts) ------------
     # Verifies: --match hashlimit in output; mode comma-joined.
@@ -478,6 +541,7 @@ _CASES: list[Case] = [
             "mod hashlimit hashlimit 10/min hashlimit-burst 5"
             " hashlimit-mode srcip hashlimit-name foo ACCEPT",
         ),
+        modules=("hashlimit",),
     ),
     Case(
         "hashlimit_upto",
@@ -486,6 +550,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod hashlimit hashlimit-upto 5/min hashlimit-name bar ACCEPT",
         ),
+        modules=("hashlimit",),
     ),
     # ================================================================
     # Batch 3: quoting/shell_escape parity + NAT ranges + exotic DSL
@@ -498,6 +563,7 @@ _CASES: list[Case] = [
         "log_prefix_trailing_space",
         # Trailing space inside the prefix forces quoting in output.
         _block("filter", "INPUT", 'LOG log-prefix "fw drop: "'),
+        modules=("LOG",),
     ),
     Case(
         "log_prefix_brackets",
@@ -506,16 +572,19 @@ _CASES: list[Case] = [
             "INPUT",
             'LOG log-prefix "with [brackets] and spaces"',
         ),
+        modules=("LOG",),
     ),
     Case(
         "log_level_and_prefix",
         # A prefix with no spaces is emitted unquoted; level is a plain int.
         _block("filter", "INPUT", 'LOG log-level 4 log-prefix "pfx-no-space"'),
+        modules=("LOG",),
     ),
     Case(
         "log_prefix_punctuation",
         # Punctuation-only prefix has no space -> unquoted in output.
         _block("filter", "INPUT", 'LOG log-prefix "fw:drop!"'),
+        modules=("LOG",),
     ),
     # -- NFLOG target --------------------------------------------------
     # Verifies: --jump NFLOG --nflog-prefix (quoting parity).
@@ -526,10 +595,12 @@ _CASES: list[Case] = [
             "INPUT",
             'NFLOG nflog-prefix "nf log here" nflog-group 1',
         ),
+        modules=("NFLOG",),
     ),
     Case(
         "nflog_group_threshold",
         _block("filter", "INPUT", "NFLOG nflog-group 2 nflog-threshold 5"),
+        modules=("NFLOG",),
     ),
     # -- ULOG target ---------------------------------------------------
     # Verifies: --jump ULOG --ulog-prefix (quoting parity).
@@ -540,10 +611,12 @@ _CASES: list[Case] = [
             "INPUT",
             'ULOG ulog-prefix "ulog pfx" ulog-nlgroup 1',
         ),
+        modules=("ULOG",),
     ),
     Case(
         "ulog_group_cprange",
         _block("filter", "INPUT", "ULOG ulog-nlgroup 2 ulog-cprange 100"),
+        modules=("ULOG",),
     ),
     # -- comment match (comment=s: quoted scalar) ----------------------
     # Verifies: --match comment --comment "..." (quoting parity).
@@ -554,6 +627,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod comment comment "has spaces" ACCEPT',
         ),
+        modules=("comment",),
     ),
     Case(
         "comment_punctuation",
@@ -562,6 +636,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod comment comment "rule #1: allow" ACCEPT',
         ),
+        modules=("comment",),
     ),
     # -- string match (algo=s, from=s, to=s, string, hex-string) ------
     # Verifies: --match string --string/--hex-string quoting parity.
@@ -573,6 +648,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod string string "GET /" algo bm ACCEPT',
         ),
+        modules=("string",),
     ),
     Case(
         "string_hex_plain",
@@ -581,6 +657,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod string algo kmp from 0 to 100 hex-string "deadbeef" ACCEPT',
         ),
+        modules=("string",),
     ),
     Case(
         "string_hex_pipe",
@@ -591,6 +668,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod string hex-string "|deadbeef|" algo bm ACCEPT',
         ),
+        modules=("string",),
     ),
     # -- DNAT target (to-destination=m, to:= alias, ranges) -----------
     # to-destination=m: an ferm array expands to repeated --to-destination
@@ -600,10 +678,12 @@ _CASES: list[Case] = [
         "dnat_to_alias",
         # to:=to-destination alias; both names must produce identical output.
         _block("nat", "PREROUTING", "proto tcp DNAT to 192.0.2.1"),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_to_destination",
         _block("nat", "PREROUTING", "proto tcp DNAT to-destination 192.0.2.1"),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_addr_range",
@@ -612,6 +692,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp DNAT to-destination 192.0.2.1-192.0.2.10",
         ),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_addr_port",
@@ -620,6 +701,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp DNAT to-destination 192.0.2.1:8080",
         ),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_addr_port_range",
@@ -628,6 +710,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp DNAT to-destination 192.0.2.1:8080-8090",
         ),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_multi",
@@ -637,6 +720,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp DNAT to-destination (192.0.2.1 192.0.2.2)",
         ),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_persistent",
@@ -645,6 +729,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp DNAT to-destination 192.0.2.1 persistent",
         ),
+        modules=("DNAT",),
     ),
     Case(
         "dnat_random",
@@ -653,6 +738,7 @@ _CASES: list[Case] = [
             "PREROUTING",
             "proto tcp DNAT to-destination 192.0.2.1 random",
         ),
+        modules=("DNAT",),
     ),
     # -- SNAT target (to-source=m, to:= alias) -------------------------
     # Verifies: --jump SNAT --to-source in output.
@@ -663,6 +749,7 @@ _CASES: list[Case] = [
             "POSTROUTING",
             "outerface eth0 SNAT to-source 192.0.2.1",
         ),
+        modules=("SNAT",),
     ),
     Case(
         "snat_range",
@@ -671,6 +758,7 @@ _CASES: list[Case] = [
             "POSTROUTING",
             "outerface eth0 SNAT to-source 192.0.2.1-192.0.2.10",
         ),
+        modules=("SNAT",),
     ),
     Case(
         "snat_to_alias",
@@ -679,6 +767,7 @@ _CASES: list[Case] = [
             "POSTROUTING",
             "outerface eth0 SNAT to 192.0.2.1",
         ),
+        modules=("SNAT",),
     ),
     Case(
         "snat_persistent",
@@ -687,12 +776,14 @@ _CASES: list[Case] = [
             "POSTROUTING",
             "outerface eth0 SNAT to-source 192.0.2.1 persistent",
         ),
+        modules=("SNAT",),
     ),
     # -- MASQUERADE target ---------------------------------------------
     # Verifies: --jump MASQUERADE in output.
     Case(
         "masq_bare",
         _block("nat", "POSTROUTING", "outerface eth0 MASQUERADE"),
+        modules=("MASQUERADE",),
     ),
     Case(
         "masq_to_ports",
@@ -701,14 +792,17 @@ _CASES: list[Case] = [
             "POSTROUTING",
             "outerface eth0 MASQUERADE to-ports 1024-2048",
         ),
+        modules=("MASQUERADE",),
     ),
     Case(
         "masq_random",
         _block("nat", "POSTROUTING", "outerface eth0 MASQUERADE random"),
+        modules=("MASQUERADE",),
     ),
     Case(
         "masq_random_fully",
         _block("nat", "POSTROUTING", "outerface eth0 MASQUERADE random-fully"),
+        modules=("MASQUERADE",),
     ),
     # -- NETMAP target -------------------------------------------------
     # Verifies: --jump NETMAP --to in output.
@@ -719,6 +813,7 @@ _CASES: list[Case] = [
             "POSTROUTING",
             "outerface eth0 NETMAP to 192.0.2.0/24",
         ),
+        modules=("NETMAP",),
     ),
     # -- iprange match (!src-range !dst-range) -------------------------
     # Verifies: --match iprange --src-range/--dst-range in output.
@@ -729,6 +824,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod iprange src-range 192.0.2.1-192.0.2.50 ACCEPT",
         ),
+        modules=("iprange",),
     ),
     Case(
         "iprange_src_negated",
@@ -737,6 +833,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod iprange ! src-range 192.0.2.1-192.0.2.50 DROP",
         ),
+        modules=("iprange",),
     ),
     Case(
         "iprange_dst",
@@ -745,6 +842,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod iprange dst-range 198.51.100.1-198.51.100.50 ACCEPT",
         ),
+        modules=("iprange",),
     ),
     # -- CT target (notrack*0 helper ctevents=c zone) ------------------
     # ctevents=c: array is comma-joined (=c encoding).
@@ -752,19 +850,23 @@ _CASES: list[Case] = [
     Case(
         "ct_notrack",
         _block("filter", "INPUT", "CT notrack"),
+        modules=("CT",),
     ),
     Case(
         "ct_helper",
         _block("filter", "INPUT", "CT helper ftp"),
+        modules=("CT",),
     ),
     Case(
         "ct_ctevents_array",
         # (new destroy) is comma-joined to new,destroy by the =c encoder.
         _block("filter", "INPUT", "CT ctevents (new destroy)"),
+        modules=("CT",),
     ),
     Case(
         "ct_zone",
         _block("filter", "INPUT", "CT zone 1"),
+        modules=("CT",),
     ),
     # -- dccp proto (dccp-types!=c dccp-option!) -----------------------
     # Verifies: --protocol dccp --dccp-types in output.
@@ -775,6 +877,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto dccp dccp-types (REQUEST RESPONSE) DROP",
         ),
+        modules=("dccp",),
     ),
     Case(
         "dccp_types_negated",
@@ -783,24 +886,29 @@ _CASES: list[Case] = [
             "INPUT",
             "proto dccp dccp-types ! (RESET SYNC) ACCEPT",
         ),
+        modules=("dccp",),
     ),
     Case(
         "dccp_option",
         _block("filter", "INPUT", "proto dccp dccp-option 2 ACCEPT"),
+        modules=("dccp",),
     ),
     # -- owner match (!uid-owner !gid-owner, OUTPUT chain) -------------
     # Verifies: --match owner --uid-owner/--gid-owner in output.
     Case(
         "owner_uid",
         _block("filter", "OUTPUT", "mod owner uid-owner 0 ACCEPT"),
+        modules=("owner",),
     ),
     Case(
         "owner_uid_negated",
         _block("filter", "OUTPUT", "mod owner ! uid-owner 1000 DROP"),
+        modules=("owner",),
     ),
     Case(
         "owner_gid",
         _block("filter", "OUTPUT", "mod owner gid-owner 100 ACCEPT"),
+        modules=("owner",),
     ),
     # -- mac match (mac-source!) ---------------------------------------
     # mac-source! means the ! comes AFTER the keyword and BEFORE the arg
@@ -813,6 +921,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod mac mac-source 00:11:22:33:44:55 ACCEPT",
         ),
+        modules=("mac",),
     ),
     Case(
         "mac_source_negated",
@@ -822,6 +931,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod mac mac-source ! 00:11:22:33:44:55 DROP",
         ),
+        modules=("mac",),
     ),
     # -- rt match (IPv6 routing header, domain ip6) --------------------
     # rt-0-addrs=c: address array is comma-joined.
@@ -833,6 +943,7 @@ _CASES: list[Case] = [
             "    proto ipv6-route mod rt rt-type 0 ACCEPT;\n"
             "}\n"
         ),
+        modules=("rt",),
     ),
     Case(
         "rt_addrs_ip6",
@@ -842,6 +953,7 @@ _CASES: list[Case] = [
             " (2001:db8::1 2001:db8::2) rt-0-not-strict ACCEPT;\n"
             "}\n"
         ),
+        modules=("rt",),
     ),
     # -- TCPOPTSTRIP target (strip-options=c) --------------------------
     # strip-options=c: array (wscale timestamp) -> wscale,timestamp.
@@ -853,13 +965,16 @@ _CASES: list[Case] = [
             "FORWARD",
             "TCPOPTSTRIP strip-options (wscale timestamp)",
         ),
+        modules=("TCPOPTSTRIP",),
     ),
     # ================================================================
     # Batch 4: registry completeness sweep (remaining modules)
     # ================================================================
     # -- REJECT target (reject-with) ---------------------------------
     # Verifies: --jump REJECT (bare and with reject-with) in output.
-    Case("reject_bare", _block("filter", "INPUT", "REJECT")),
+    Case(
+        "reject_bare", _block("filter", "INPUT", "REJECT"), modules=("REJECT",)
+    ),
     Case(
         "reject_icmp_port_unreach",
         _block(
@@ -867,6 +982,7 @@ _CASES: list[Case] = [
             "INPUT",
             "REJECT reject-with icmp-port-unreachable",
         ),
+        modules=("REJECT",),
     ),
     Case(
         "reject_tcp_reset",
@@ -875,6 +991,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp REJECT reject-with tcp-reset",
         ),
+        modules=("REJECT",),
     ),
     # -- state match (!state=c) --------------------------------------
     # Verifies: --match state --state in output.
@@ -885,10 +1002,12 @@ _CASES: list[Case] = [
             "INPUT",
             "mod state state (NEW ESTABLISHED) ACCEPT",
         ),
+        modules=("state",),
     ),
     Case(
         "state_negated",
         _block("filter", "INPUT", "mod state ! state INVALID DROP"),
+        modules=("state",),
     ),
     # -- statistic match (mode=s probability=s every=s packet=s) ----
     # Verifies: --match statistic --mode in output.
@@ -899,6 +1018,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod statistic mode random probability 0.5 ACCEPT",
         ),
+        modules=("statistic",),
     ),
     Case(
         "statistic_nth",
@@ -907,12 +1027,14 @@ _CASES: list[Case] = [
             "INPUT",
             "mod statistic mode nth every 4 packet 0 ACCEPT",
         ),
+        modules=("statistic",),
     ),
     # -- addrtype match (!src-type !dst-type limit-iface-in*0) -------
     # Verifies: --match addrtype --src-type/--dst-type in output.
     Case(
         "addrtype_src",
         _block("filter", "INPUT", "mod addrtype src-type LOCAL ACCEPT"),
+        modules=("addrtype",),
     ),
     Case(
         "addrtype_dst_negated",
@@ -921,6 +1043,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod addrtype ! dst-type BROADCAST DROP",
         ),
+        modules=("addrtype",),
     ),
     # -- connlimit match (!connlimit-upto !connlimit-above mask) -----
     # Verifies: --match connlimit --connlimit-above in output.
@@ -931,6 +1054,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod connlimit connlimit-above 10 connlimit-mask 24 DROP",
         ),
+        modules=("connlimit",),
     ),
     Case(
         "connlimit_saddr",
@@ -939,6 +1063,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod connlimit connlimit-above 5 connlimit-saddr DROP",
         ),
+        modules=("connlimit",),
     ),
     # -- connbytes match (!connbytes connbytes-dir connbytes-mode) ---
     # Verifies: --match connbytes in output.
@@ -950,6 +1075,7 @@ _CASES: list[Case] = [
             "mod connbytes connbytes 1024"
             " connbytes-dir both connbytes-mode bytes ACCEPT",
         ),
+        modules=("connbytes",),
     ),
     Case(
         "connbytes_negated",
@@ -959,22 +1085,26 @@ _CASES: list[Case] = [
             "mod connbytes ! connbytes 65536"
             " connbytes-dir original connbytes-mode packets DROP",
         ),
+        modules=("connbytes",),
     ),
     # -- connmark match (!mark; distinct from CONNMARK target) -------
     # Verifies: --match connmark --mark in output.
     Case(
         "connmark_match_value",
         _block("filter", "INPUT", "mod connmark mark 7 ACCEPT"),
+        modules=("connmark",),
     ),
     Case(
         "connmark_match_negated",
         _block("filter", "INPUT", "mod connmark ! mark 0x10 DROP"),
+        modules=("connmark",),
     ),
     # -- connlabel match (!label set*0) ------------------------------
     # Verifies: --match connlabel --label in output.
     Case(
         "connlabel_match",
         _block("filter", "INPUT", "mod connlabel label test ACCEPT"),
+        modules=("connlabel",),
     ),
     Case(
         "connlabel_set_flag",
@@ -984,26 +1114,31 @@ _CASES: list[Case] = [
             "INPUT",
             "mod connlabel label test set ACCEPT",
         ),
+        modules=("connlabel",),
     ),
     # -- mark match (!mark; distinct from MARK target) ---------------
     # Verifies: --match mark --mark in output.
     Case(
         "mark_match_value",
         _block("filter", "INPUT", "mod mark mark 0x1 ACCEPT"),
+        modules=("mark",),
     ),
     Case(
         "mark_match_negated",
         _block("filter", "INPUT", "mod mark ! mark 0x2 DROP"),
+        modules=("mark",),
     ),
     # -- realm match (realm!) ----------------------------------------
     # Verifies: --match realm --realm in output.
     Case(
         "realm_value",
         _block("filter", "INPUT", "mod realm realm 42 ACCEPT"),
+        modules=("realm",),
     ),
     Case(
         "realm_negated",
         _block("filter", "INPUT", "mod realm realm ! 99 DROP"),
+        modules=("realm",),
     ),
     # -- pkttype match (pkt-type!) -----------------------------------
     # Verifies: --match pkttype --pkt-type in output.
@@ -1014,6 +1149,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod pkttype pkt-type unicast ACCEPT",
         ),
+        modules=("pkttype",),
     ),
     Case(
         "pkttype_negated",
@@ -1022,6 +1158,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod pkttype pkt-type ! broadcast DROP",
         ),
+        modules=("pkttype",),
     ),
     # -- physdev match (physdev-in! physdev-out! physdev-is-*) -------
     # Verifies: --match physdev in output.
@@ -1032,6 +1169,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod physdev physdev-in eth0 ACCEPT",
         ),
+        modules=("physdev",),
     ),
     Case(
         "physdev_bridged",
@@ -1040,12 +1178,14 @@ _CASES: list[Case] = [
             "INPUT",
             "mod physdev physdev-is-bridged ACCEPT",
         ),
+        modules=("physdev",),
     ),
     # -- socket match (transparent*0 nowildcard*0 restore-skmark*0) -
     # Verifies: --match socket --transparent in output.
     Case(
         "socket_transparent",
         _block("filter", "INPUT", "mod socket transparent ACCEPT"),
+        modules=("socket",),
     ),
     # -- limit match (limit=s limit-burst=s) -------------------------
     # Verifies: --match limit --limit in output.
@@ -1056,20 +1196,24 @@ _CASES: list[Case] = [
             "INPUT",
             "mod limit limit 10/min limit-burst 5 ACCEPT",
         ),
+        modules=("limit",),
     ),
     Case(
         "limit_simple",
         _block("filter", "INPUT", "mod limit limit 5/sec ACCEPT"),
+        modules=("limit",),
     ),
     # -- length match (length!) --------------------------------------
     # Verifies: --match length --length in output.
     Case(
         "length_range",
         _block("filter", "INPUT", "mod length length 100:200 ACCEPT"),
+        modules=("length",),
     ),
     Case(
         "length_negated",
         _block("filter", "INPUT", "mod length length ! 1500 DROP"),
+        modules=("length",),
     ),
     # -- length2 match (length! layer3*0 layer4*0 layer5*0) ----------
     Case(
@@ -1079,56 +1223,67 @@ _CASES: list[Case] = [
             "INPUT",
             "mod length2 length 64:1400 ACCEPT",
         ),
+        modules=("length2",),
     ),
     # -- quota match (quota=s) ---------------------------------------
     Case(
         "quota_bytes",
         _block("filter", "INPUT", "mod quota quota 1000000 DROP"),
+        modules=("quota",),
     ),
     # -- random match (average) --------------------------------------
     Case(
         "random_average",
         _block("filter", "INPUT", "mod random average 50 ACCEPT"),
+        modules=("random",),
     ),
     # -- tos match (!tos) --------------------------------------------
     # Verifies: --match tos --tos in output.
     Case(
         "tos_match_value",
         _block("filter", "INPUT", "mod tos tos 0x10 ACCEPT"),
+        modules=("tos",),
     ),
     Case(
         "tos_match_negated",
         _block("filter", "INPUT", "mod tos ! tos 0x08 DROP"),
+        modules=("tos",),
     ),
     # -- ttl match (ttl-eq ttl-lt=s ttl-gt=s) -----------------------
     # Verifies: --match ttl --ttl-eq/--ttl-lt in output.
     Case(
         "ttl_match_eq",
         _block("filter", "INPUT", "mod ttl ttl-eq 64 ACCEPT"),
+        modules=("ttl",),
     ),
     Case(
         "ttl_match_lt",
         _block("filter", "INPUT", "mod ttl ttl-lt 10 DROP"),
+        modules=("ttl",),
     ),
     # -- dscp match (dscp dscp-class) --------------------------------
     # Verifies: --match dscp --dscp/--dscp-class in output.
     Case(
         "dscp_match_hex",
         _block("filter", "INPUT", "mod dscp dscp 0x0a ACCEPT"),
+        modules=("dscp",),
     ),
     Case(
         "dscp_match_class",
         _block("filter", "INPUT", "mod dscp dscp-class EF ACCEPT"),
+        modules=("dscp",),
     ),
     # -- ecn match (ecn-tcp-cwr*0 ecn-tcp-ece*0 ecn-ip-ect) ---------
     # Verifies: --match ecn in output.
     Case(
         "ecn_match_cwr",
         _block("filter", "INPUT", "mod ecn ecn-tcp-cwr ACCEPT"),
+        modules=("ecn",),
     ),
     Case(
         "ecn_match_ect",
         _block("filter", "INPUT", "mod ecn ecn-ip-ect 0 ACCEPT"),
+        modules=("ecn",),
     ),
     # -- sctp proto (chunk-types!=sc, port access) -------------------
     # chunk-types!=sc: negation between keyword and two scalar args
@@ -1141,6 +1296,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto sctp chunk-types any INIT ACCEPT",
         ),
+        modules=("sctp",),
     ),
     Case(
         "sctp_chunk_negated",
@@ -1149,16 +1305,19 @@ _CASES: list[Case] = [
             "INPUT",
             "proto sctp chunk-types ! any DATA DROP",
         ),
+        modules=("sctp",),
     ),
     # -- udp proto (no options; sport/dport from base match def) -----
     # Verifies: --protocol udp --sport/--dport in output.
     Case(
         "udp_sport",
         _block("filter", "INPUT", "proto udp sport 53 ACCEPT"),
+        modules=("udp",),
     ),
     Case(
         "udp_dport",
         _block("filter", "INPUT", "proto udp dport 123 ACCEPT"),
+        modules=("udp",),
     ),
     # -- ah proto (ahspi! ahlen! ahres*0) ----------------------------
     Case(
@@ -1168,6 +1327,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto ah mod ah ahspi 1:1000 ACCEPT",
         ),
+        modules=("ah",),
     ),
     # -- esp proto (espspi!) -----------------------------------------
     Case(
@@ -1177,6 +1337,7 @@ _CASES: list[Case] = [
             "INPUT",
             "proto esp mod esp espspi 1:1000 ACCEPT",
         ),
+        modules=("esp",),
     ),
     # -- mh proto (IPv6 mobile header, mh-type!) ---------------------
     # Proto-level option, not a match module; needs domain ip6.
@@ -1188,6 +1349,7 @@ _CASES: list[Case] = [
             "    proto mh mh-type 1 ACCEPT;\n"
             "}\n"
         ),
+        modules=("mh",),
     ),
     Case(
         "mh_type_negated",
@@ -1196,6 +1358,7 @@ _CASES: list[Case] = [
             "    proto mh mh-type ! 2 DROP;\n"
             "}\n"
         ),
+        modules=("mh",),
     ),
     # -- hl match (IPv6 hop-limit; hl-eq! hl-lt=s hl-gt=s) ----------
     # Verifies: --match hl --hl-eq/--hl-lt in ip6tables output.
@@ -1206,6 +1369,7 @@ _CASES: list[Case] = [
             "    mod hl hl-eq 64 ACCEPT;\n"
             "}\n"
         ),
+        modules=("hl",),
     ),
     Case(
         "hl_match_lt",
@@ -1214,6 +1378,7 @@ _CASES: list[Case] = [
             "    mod hl hl-lt 10 DROP;\n"
             "}\n"
         ),
+        modules=("hl",),
     ),
     # -- hbh match (hop-by-hop options header, IPv6) -----------------
     Case(
@@ -1223,6 +1388,7 @@ _CASES: list[Case] = [
             "    mod hbh hbh-len 0 ACCEPT;\n"
             "}\n"
         ),
+        modules=("hbh",),
     ),
     # -- dst match (destination options header, IPv6, !dst-len=s) ---
     Case(
@@ -1232,11 +1398,13 @@ _CASES: list[Case] = [
             "    mod dst dst-len 0 ACCEPT;\n"
             "}\n"
         ),
+        modules=("dst",),
     ),
     # -- eui64 match (no options, IPv6 EUI-64 address check) ---------
     Case(
         "eui64_bare",
         ("domain ip6 table filter chain INPUT {\n    mod eui64 ACCEPT;\n}\n"),
+        modules=("eui64",),
     ),
     # -- ipv6header match (header!=c soft*0, IPv6) -------------------
     # Verifies: --match ipv6header --header (comma-joined) in output.
@@ -1247,6 +1415,7 @@ _CASES: list[Case] = [
             "    mod ipv6header header (frag auth) ACCEPT;\n"
             "}\n"
         ),
+        modules=("ipv6header",),
     ),
     Case(
         "ipv6header_negated",
@@ -1255,6 +1424,7 @@ _CASES: list[Case] = [
             "    mod ipv6header header ! (ah) DROP;\n"
             "}\n"
         ),
+        modules=("ipv6header",),
     ),
     # -- ipv4options match (flags!=c any*0) --------------------------
     Case(
@@ -1264,16 +1434,19 @@ _CASES: list[Case] = [
             "INPUT",
             "mod ipv4options flags (rr lsrr ssrr) any ACCEPT",
         ),
+        modules=("ipv4options",),
     ),
     # -- rpfilter match (loose*0 validmark*0 accept-local*0 invert*0)
     # Verifies: --match rpfilter in output.
     Case(
         "rpfilter_bare",
         _block("filter", "INPUT", "mod rpfilter ACCEPT"),
+        modules=("rpfilter",),
     ),
     Case(
         "rpfilter_loose",
         _block("filter", "INPUT", "mod rpfilter loose ACCEPT"),
+        modules=("rpfilter",),
     ),
     # -- policy match (dir pol strict*0 + IPsec sub-options) ---------
     # The most complex match module: multiple positional scalars.
@@ -1285,6 +1458,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod policy dir in pol ipsec proto esp mode tunnel ACCEPT",
         ),
+        modules=("policy",),
     ),
     Case(
         "policy_none",
@@ -1293,6 +1467,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod policy dir out pol none ACCEPT",
         ),
+        modules=("policy",),
     ),
     # -- condition match (condition!) --------------------------------
     Case(
@@ -1302,17 +1477,20 @@ _CASES: list[Case] = [
             "INPUT",
             "mod condition condition foo ACCEPT",
         ),
+        modules=("condition",),
     ),
     # -- helper match (helper) ---------------------------------------
     Case(
         "helper_ftp",
         _block("filter", "INPUT", "mod helper helper ftp ACCEPT"),
+        modules=("helper",),
     ),
     # -- nth match (every counter start packet) ----------------------
     # Verifies: --match nth --every in output.
     Case(
         "nth_every",
         _block("filter", "INPUT", "mod nth every 4 ACCEPT"),
+        modules=("nth",),
     ),
     Case(
         "nth_full",
@@ -1321,11 +1499,13 @@ _CASES: list[Case] = [
             "INPUT",
             "mod nth every 4 counter 0 start 0 packet 0 ACCEPT",
         ),
+        modules=("nth",),
     ),
     # -- osf match (!genre ttl=s log=s) ------------------------------
     Case(
         "osf_genre",
         _block("filter", "INPUT", "mod osf genre Linux ACCEPT"),
+        modules=("osf",),
     ),
     # -- nfacct match (nfacct-name=s) --------------------------------
     Case(
@@ -1335,6 +1515,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod nfacct nfacct-name counter1 ACCEPT",
         ),
+        modules=("nfacct",),
     ),
     # -- fuzzy match (lower-limit=s upper-limit=s) -------------------
     Case(
@@ -1344,6 +1525,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod fuzzy lower-limit 20 upper-limit 100 ACCEPT",
         ),
+        modules=("fuzzy",),
     ),
     # -- psd match (all four scalar options required) ----------------
     Case(
@@ -1356,11 +1538,13 @@ _CASES: list[Case] = [
             " psd-lo-ports-weight 1"
             " psd-hi-ports-weight 3 ACCEPT",
         ),
+        modules=("psd",),
     ),
     # -- devgroup match (!src-group !dst-group) ----------------------
     Case(
         "devgroup_src",
         _block("filter", "INPUT", "mod devgroup src-group 1 ACCEPT"),
+        modules=("devgroup",),
     ),
     Case(
         "devgroup_dst_negated",
@@ -1369,11 +1553,13 @@ _CASES: list[Case] = [
             "INPUT",
             "mod devgroup ! dst-group 2 DROP",
         ),
+        modules=("devgroup",),
     ),
     # -- cpu match (!cpu) --------------------------------------------
     Case(
         "cpu_match",
         _block("filter", "INPUT", "mod cpu cpu 0 ACCEPT"),
+        modules=("cpu",),
     ),
     # -- account match (aaddr=s aname=s ashort*0) --------------------
     Case(
@@ -1383,6 +1569,7 @@ _CASES: list[Case] = [
             "INPUT",
             "mod account aaddr 192.0.2.0/24 aname acct1 ACCEPT",
         ),
+        modules=("account",),
     ),
     # -- bpf match (bytecode with spaces: quoting parity probe) ------
     # Verifies: --match bpf --bytecode "..." in output.
@@ -1393,6 +1580,7 @@ _CASES: list[Case] = [
             "INPUT",
             'mod bpf bytecode "4,48 0 0 9,21 0 1 17,6 0 0 1,6 0 0 0" ACCEPT',
         ),
+        modules=("bpf",),
     ),
     # -- cgroup match (path!) ----------------------------------------
     Case(
@@ -1402,11 +1590,13 @@ _CASES: list[Case] = [
             "INPUT",
             'mod cgroup path "/sys/fs/cgroup/foo" ACCEPT',
         ),
+        modules=("cgroup",),
     ),
     # -- ipvs match (!ipvs*0 !vproto !vaddr !vport ...) --------------
     Case(
         "ipvs_flag",
         _block("filter", "INPUT", "mod ipvs ipvs ACCEPT"),
+        modules=("ipvs",),
     ),
     # == Target modules ===============================================
     # -- DSCP target (set-dscp set-dscp-class) -----------------------
@@ -1414,78 +1604,100 @@ _CASES: list[Case] = [
     Case(
         "dscp_target_hex",
         _block("mangle", "PREROUTING", "DSCP set-dscp 0x0a"),
+        modules=("DSCP",),
     ),
     Case(
         "dscp_target_class",
         _block("mangle", "PREROUTING", "DSCP set-dscp-class EF"),
+        modules=("DSCP",),
     ),
     # -- TOS target (set-tos and-tos or-tos xor-tos) ----------------
     # Verifies: --jump TOS in output.
     Case(
         "tos_target_set",
         _block("mangle", "PREROUTING", "TOS set-tos 0x10"),
+        modules=("TOS",),
     ),
     Case(
         "tos_target_and",
         _block("mangle", "PREROUTING", "TOS and-tos 0xf0"),
+        modules=("TOS",),
     ),
     # -- TTL target (ttl-set ttl-dec ttl-inc, IPv4) ------------------
     # Verifies: --jump TTL in output.
     Case(
         "ttl_target_set",
         _block("mangle", "PREROUTING", "TTL ttl-set 64"),
+        modules=("TTL",),
     ),
     Case(
         "ttl_target_dec",
         _block("mangle", "PREROUTING", "TTL ttl-dec 1"),
+        modules=("TTL",),
     ),
     # -- ECN target (ecn-tcp-remove*0) -------------------------------
     Case(
         "ecn_target",
         _block("mangle", "POSTROUTING", "ECN ecn-tcp-remove"),
+        modules=("ECN",),
     ),
     # -- HL target (hl-set hl-dec hl-inc, IPv6) ----------------------
     # Verifies: --jump HL in ip6tables output.
     Case(
         "hl_target_set",
         ("domain ip6 table mangle chain PREROUTING {\n    HL hl-set 64;\n}\n"),
+        modules=("HL",),
     ),
     Case(
         "hl_target_dec",
         ("domain ip6 table mangle chain PREROUTING {\n    HL hl-dec 1;\n}\n"),
+        modules=("HL",),
     ),
     # -- CHECKSUM target (checksum-fill*0) ---------------------------
     Case(
         "checksum_fill",
         _block("mangle", "POSTROUTING", "CHECKSUM checksum-fill"),
+        modules=("CHECKSUM",),
     ),
     # -- CLASSIFY target (set-class) ---------------------------------
     Case(
         "classify_set_class",
         _block("mangle", "POSTROUTING", "CLASSIFY set-class 1:1"),
+        modules=("CLASSIFY",),
     ),
     # -- NFQUEUE target (queue-num queue-balance queue-bypass*0) -----
     # Verifies: --jump NFQUEUE in output.
     Case(
         "nfqueue_num",
         _block("filter", "INPUT", "NFQUEUE queue-num 0"),
+        modules=("NFQUEUE",),
     ),
     Case(
         "nfqueue_balance",
         _block("filter", "INPUT", "NFQUEUE queue-balance 0:3"),
+        modules=("NFQUEUE",),
     ),
     # -- NOTRACK target (no options) ---------------------------------
-    Case("notrack_bare", _block("filter", "INPUT", "NOTRACK")),
+    Case(
+        "notrack_bare",
+        _block("filter", "INPUT", "NOTRACK"),
+        modules=("NOTRACK",),
+    ),
     # -- TRACE target (no options) -----------------------------------
-    Case("trace_bare", _block("filter", "INPUT", "TRACE")),
+    Case("trace_bare", _block("filter", "INPUT", "TRACE"), modules=("TRACE",)),
     # -- MIRROR target (no options) ----------------------------------
-    Case("mirror_bare", _block("filter", "INPUT", "MIRROR")),
+    Case(
+        "mirror_bare", _block("filter", "INPUT", "MIRROR"), modules=("MIRROR",)
+    ),
     # -- TARPIT target (no options) ----------------------------------
-    Case("tarpit_bare", _block("filter", "INPUT", "TARPIT")),
+    Case(
+        "tarpit_bare", _block("filter", "INPUT", "TARPIT"), modules=("TARPIT",)
+    ),
     # -- IPV4OPTSSTRIP target (no options) ---------------------------
     Case(
         "ipv4optsstrip_bare",
         _block("filter", "INPUT", "IPV4OPTSSTRIP"),
+        modules=("IPV4OPTSSTRIP",),
     ),
     # -- SYNPROXY target (sack-perm*0 timestamp*0 wscale=s mss=s) ---
     # Verifies: --jump SYNPROXY in output.
@@ -1496,10 +1708,12 @@ _CASES: list[Case] = [
             "INPUT",
             "proto tcp SYNPROXY sack-perm timestamp wscale 7 mss 1460",
         ),
+        modules=("SYNPROXY",),
     ),
     Case(
         "synproxy_bare",
         _block("filter", "INPUT", "proto tcp SYNPROXY"),
+        modules=("SYNPROXY",),
     ),
     # -- SECMARK target (selctx) -------------------------------------
     Case(
@@ -1509,30 +1723,36 @@ _CASES: list[Case] = [
             "INPUT",
             "SECMARK selctx system_u:object_r:ssh_server_packet_t:s0",
         ),
+        modules=("SECMARK",),
     ),
     # -- CONNSECMARK target (save*0 restore*0) -----------------------
     Case(
         "connsecmark_save",
         _block("mangle", "INPUT", "CONNSECMARK save"),
+        modules=("CONNSECMARK",),
     ),
     Case(
         "connsecmark_restore",
         _block("mangle", "INPUT", "CONNSECMARK restore"),
+        modules=("CONNSECMARK",),
     ),
     # -- SET target (add-set=sc del-set=sc exist*0) ------------------
     # Verifies: --jump SET --add-set/--del-set in output.
     Case(
         "set_target_add",
         _block("filter", "INPUT", "SET add-set foo src"),
+        modules=("SET",),
     ),
     Case(
         "set_target_del",
         _block("filter", "INPUT", "SET del-set bar dst"),
+        modules=("SET",),
     ),
     # -- AUDIT target (type) -----------------------------------------
     Case(
         "audit_accept",
         _block("filter", "INPUT", "AUDIT type accept"),
+        modules=("AUDIT",),
     ),
     # -- HMARK target (hmark-tuple quoted; =m encoding for tuple) ----
     # The comma-containing tuple value must be quoted in ferm.
@@ -1545,6 +1765,7 @@ _CASES: list[Case] = [
             'HMARK hmark-tuple "src,dst,sport,dport,proto"'
             " hmark-mod 10 hmark-offset 10",
         ),
+        modules=("HMARK",),
     ),
     # -- IDLETIMER target (timeout label) ----------------------------
     Case(
@@ -1554,26 +1775,31 @@ _CASES: list[Case] = [
             "PREROUTING",
             "IDLETIMER timeout 10 label test",
         ),
+        modules=("IDLETIMER",),
     ),
     # -- ROUTE target (oif iif gw continue*0 tee*0) -----------------
     # Verifies: --jump ROUTE in output.
     Case(
         "route_oif",
         _block("mangle", "PREROUTING", "ROUTE oif eth0"),
+        modules=("ROUTE",),
     ),
     Case(
         "route_iif_continue",
         _block("mangle", "PREROUTING", "ROUTE iif eth1 continue"),
+        modules=("ROUTE",),
     ),
     # -- LED target (led-trigger-id led-delay led-always-blink*0) ---
     Case(
         "led_trigger",
         _block("mangle", "PREROUTING", "LED led-trigger-id myled"),
+        modules=("LED",),
     ),
     # -- TEE target (gateway) ----------------------------------------
     Case(
         "tee_gateway",
         _block("mangle", "PREROUTING", "TEE gateway 192.0.2.1"),
+        modules=("TEE",),
     ),
     # -- CLUSTERIP target (new*0 hashmode clustermac ...) ------------
     Case(
@@ -1585,6 +1811,7 @@ _CASES: list[Case] = [
             " clustermac 01:00:5e:00:00:20"
             " total-nodes 2 local-node 1",
         ),
+        modules=("CLUSTERIP",),
     ),
     # -- BALANCE target (to:= alias, nat) ----------------------------
     Case(
@@ -1594,11 +1821,13 @@ _CASES: list[Case] = [
             "PREROUTING",
             "BALANCE to 10.0.0.1-10.0.0.3",
         ),
+        modules=("BALANCE",),
     ),
     # -- SAME target (nat) -------------------------------------------
     Case(
         "same_to",
         _block("nat", "PREROUTING", "SAME to 192.168.1.1"),
+        modules=("SAME",),
     ),
     # -- RATEEST target (rateest-name rateest-interval rateest-ewmalog)
     Case(
@@ -1609,21 +1838,25 @@ _CASES: list[Case] = [
             "RATEEST rateest-name myest"
             " rateest-interval 1000 rateest-ewmalog 8",
         ),
+        modules=("RATEEST",),
     ),
     # -- RTPENGINE target (id with quoted space) ----------------------
     # Verifies: --jump RTPENGINE --id "..." quoting parity.
     Case(
         "rtpengine_id",
         _block("nat", "PREROUTING", 'RTPENGINE id "0 DFGH"'),
+        modules=("RTPENGINE",),
     ),
     # -- JOOL / JOOL_SIIT targets (instance) -------------------------
     Case(
         "jool_instance",
         _block("nat", "PREROUTING", "JOOL instance default"),
+        modules=("JOOL",),
     ),
     Case(
         "jool_siit_instance",
         _block("nat", "PREROUTING", "JOOL_SIIT instance default"),
+        modules=("JOOL_SIIT",),
     ),
     # -- DNPT / SNPT targets (IPv6 NAT prefix translation) -----------
     # Verifies: --jump DNPT/SNPT in ip6tables output.
@@ -1635,6 +1868,7 @@ _CASES: list[Case] = [
             " dst-pfx 2001:db8::/32;\n"
             "}\n"
         ),
+        modules=("DNPT",),
     ),
     Case(
         "snpt_pfx",
@@ -1644,11 +1878,13 @@ _CASES: list[Case] = [
             " dst-pfx 2001:db8:1::/32;\n"
             "}\n"
         ),
+        modules=("SNPT",),
     ),
     # -- tcpmss match (!mss) -------------------------------------------
     Case(
         "tcpmss_match_mss",
         _block("filter", "INPUT", "proto tcp mod tcpmss mss 1400 ACCEPT"),
+        modules=("tcpmss",),
     ),
     # -- ebtables named protocols (proto IPv4/IPv6/ARP/RARP/802_1Q) ----
     # ebtables lives in its own domain; these names are eb-only PROTO_DEFS
@@ -1659,26 +1895,31 @@ _CASES: list[Case] = [
         "domain eb chain FORWARD {\n"
         "    proto IPv4 ip-source 192.168.1.1 DROP;\n"
         "}\n",
+        modules=("IPv4",),
     ),
     Case(
         "eb_proto_ipv6",
         "domain eb chain FORWARD {\n"
         "    proto IPv6 ip6-source 2001:db8::1 DROP;\n"
         "}\n",
+        modules=("IPv6",),
     ),
     Case(
         "eb_proto_arp",
         "domain eb chain FORWARD {\n"
         "    proto ARP arp-mac-src 00:11:22:33:44:55 ACCEPT;\n"
         "}\n",
+        modules=("ARP",),
     ),
     Case(
         "eb_proto_rarp",
         "domain eb chain FORWARD {\n    proto RARP ACCEPT;\n}\n",
+        modules=("RARP",),
     ),
     Case(
         "eb_proto_802_1q",
         "domain eb chain FORWARD {\n    proto 802_1Q ACCEPT;\n}\n",
+        modules=("802_1Q",),
     ),
     # -- ebtables nat-family targets (arpreply/dnat/redirect/snat) ------
     # Lower-case eb targets, distinct from the upper-case iptables DNAT/SNAT
@@ -1688,24 +1929,28 @@ _CASES: list[Case] = [
         "domain eb table nat chain PREROUTING {\n"
         "    arpreply arpreply-mac 00:00:de:ad:be:ef arpreply-target DROP;\n"
         "}\n",
+        modules=("arpreply",),
     ),
     Case(
         "eb_target_dnat",
         "domain eb table nat chain PREROUTING {\n"
         "    dnat to-destination 00:00:de:ad:be:ef dnat-target DROP;\n"
         "}\n",
+        modules=("dnat",),
     ),
     Case(
         "eb_target_redirect",
         "domain eb table nat chain PREROUTING {\n"
         "    redirect redirect-target DROP;\n"
         "}\n",
+        modules=("redirect",),
     ),
     Case(
         "eb_target_snat",
         "domain eb table nat chain POSTROUTING {\n"
         "    snat to-source 00:00:de:ad:be:ef snat-target DROP;\n"
         "}\n",
+        modules=("snat",),
     ),
 ]
 
@@ -1746,7 +1991,8 @@ def test_synthetic_module_matches_oracle(
 #: Module names the differential matrix deliberately does not synthesize.
 #: Keep this empty unless a module genuinely cannot be expressed as a
 #: standalone rule; a newly registered ``add_*_def`` should gain a ``Case``
-#: above, not a waiver.  Map each entry to the reason / covering suite.
+#: (tagged via its ``modules`` field) above, not a waiver.  Map each entry
+#: to the reason / covering suite.
 _COVERAGE_WAIVERS: dict[str, str] = {}
 
 
@@ -1759,28 +2005,57 @@ def _registry_module_names() -> set[str]:
     return names
 
 
-def _case_tokens() -> set[str]:
-    """Whitespace tokens across all case configs, stripped of punctuation."""
-    tokens: set[str] = set()
+def _tagged_modules() -> set[str]:
+    """Modules explicitly claimed by a Case via its ``modules`` field.
+
+    This is the *only* coverage signal: a module counts as covered iff a
+    Case is deliberately tagged with its name.  Incidental token
+    co-occurrence in a config (e.g. a ``proto tcp`` prefix mentioning
+    ``tcp``) never grants coverage.
+    """
+    tagged: set[str] = set()
     for case in _CASES:
-        for word in re.split(r"\s+", case.config):
-            tokens.add(word.strip('";,!'))
-    return tokens
+        tagged.update(case.modules)
+    return tagged
+
+
+def _uncovered_modules(
+    registry: set[str], tagged: set[str], waivers: set[str]
+) -> set[str]:
+    """Registry modules neither tagged by a Case nor explicitly waived.
+
+    Pure set arithmetic so the gate and its self-test share one definition
+    of "uncovered" and cannot drift apart.
+    """
+    return registry - tagged - waivers
+
+
+def test_case_tags_name_only_real_modules() -> None:
+    """Every ``modules`` tag must name a registered module.
+
+    A typo'd or stale tag would otherwise silently "cover" nothing while
+    leaving the real module uncovered -- defeating the gate.
+    """
+    registry = _registry_module_names()
+    bogus = _tagged_modules() - registry
+    assert not bogus, (
+        f"Case.modules tags name unknown modules: {sorted(bogus)}"
+    )
 
 
 def test_every_registered_module_has_a_synthetic_case() -> None:
-    """Guard the matrix's completeness: a new module must gain a Case.
+    """Guard the matrix's completeness: a new module must gain a tagged Case.
 
     ``_CASES`` is hand-maintained, so a freshly registered module would
     otherwise carry zero differential coverage with nothing to flag it.
-    Matching is by module name appearing as a token in some case config --
-    coarse, so a module whose name happens to coincide with a common token
-    (e.g. ``to``, ``set``, ``mode``) could be reported covered by an
-    incidental match rather than a dedicated Case; the guard's strength is a
-    distinctively-named new module, whose name cannot appear by accident.
-    No registered module currently relies on an incidental match.
+    Coverage is decided by the explicit ``Case.modules`` tag -- never by a
+    module name appearing as an incidental whitespace token in some config
+    (the prior token-based gate falsely reported such modules covered).
+    Removing the dedicated Case for any module therefore turns this gate
+    red; see :func:`test_gate_flags_an_untagged_module` for the proof.
     """
     registry = _registry_module_names()
+    tagged = _tagged_modules()
 
     # Guard the guard: a waiver must name a real module that genuinely has no
     # Case, else a stale/typo'd waiver silently masks a future coverage gap.
@@ -1788,19 +2063,39 @@ def test_every_registered_module_has_a_synthetic_case() -> None:
     assert not stale, (
         f"_COVERAGE_WAIVERS names unknown modules: {sorted(stale)}"
     )
-    redundant = set(_COVERAGE_WAIVERS) & _case_tokens()
+    redundant = set(_COVERAGE_WAIVERS) & tagged
     assert not redundant, (
-        "_COVERAGE_WAIVERS names modules that already have a case (drop the "
-        f"waiver): {sorted(redundant)}"
+        "_COVERAGE_WAIVERS names modules that already have a tagged case "
+        f"(drop the waiver): {sorted(redundant)}"
     )
 
-    tokens = _case_tokens()
-    uncovered = {
-        name
-        for name in registry
-        if name not in tokens and name not in _COVERAGE_WAIVERS
-    }
+    uncovered = _uncovered_modules(registry, tagged, set(_COVERAGE_WAIVERS))
     assert not uncovered, (
-        "registered modules with no synthetic case (add a Case above or a "
-        f"_COVERAGE_WAIVERS entry): {sorted(uncovered)}"
+        "registered modules with no synthetic case (add a tagged Case above "
+        f"or a _COVERAGE_WAIVERS entry): {sorted(uncovered)}"
     )
+
+
+def test_gate_flags_an_untagged_module() -> None:
+    """Self-test: the gate's logic must flag a module that no Case tags.
+
+    Feeds the coverage computation a synthetic registry containing a module
+    name that appears in no ``Case.modules`` tuple, and asserts it is
+    reported uncovered.  This proves the gate has teeth: were a tag removed
+    from a Case, that module would fall into the uncovered set and
+    :func:`test_every_registered_module_has_a_synthetic_case` would fail.
+    """
+    tagged = _tagged_modules()
+    sentinel = "definitely_not_a_registered_module"
+    assert sentinel not in tagged
+
+    # A real module that IS tagged must NOT be reported uncovered, while the
+    # untagged sentinel MUST be -- exactly the discrimination the gate needs.
+    a_real_tag = next(iter(tagged))
+    registry = {sentinel, a_real_tag}
+    uncovered = _uncovered_modules(registry, tagged, waivers=set())
+    assert uncovered == {sentinel}
+
+    # And a waiver must be able to excuse it (the gate's escape hatch).
+    excused = _uncovered_modules(registry, tagged, waivers={sentinel})
+    assert excused == set()
