@@ -754,6 +754,94 @@ def deb_smoke(session: nox.Session) -> None:
 
 
 @nox.session
+def build_rpm(session: nox.Session) -> None:
+    """
+    Build the native .rpm in the pinned Fedora image (opt-in, docker).
+
+    Packs a clean source tree into the spec's Source0 tarball, runs
+    rpmbuild + rpmlint (E: reds) inside the digest-pinned fedora:41 toolchain
+    image, and version-anchors the rpm Version field. Version flows from the
+    single host function (full PEP 440 to hatch-vcs, rpm-sanitized to the
+    Version field). Cold runs pull the base image; absent from ``preflight``
+    (like ``build_deb``).
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=build-rpm",
+        "--mode=dev",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
+def rpm_smoke(session: nox.Session) -> None:
+    """
+    Install-smoke the built .rpm in clean Fedora containers (opt-in, docker).
+
+    Runs the install-smoke cells against the artifact in ``dist/`` (build it
+    first with ``nox -s build_rpm``): a clean install (version, config parse,
+    example, stdlib-resolver fallback, file-based not-enabled assert), the
+    Perl-ferm legacy migration, and the symlinked-legacy refusal. Absent from
+    ``preflight``.
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=smoke-rpm",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
+def build_apk(session: nox.Session) -> None:
+    """
+    Build the native .apk in the pinned Alpine image (opt-in, docker).
+
+    Packs a clean source tree into the APKBUILD's source tarball, runs
+    ``abuild`` (whose sanity / file-tracking / dependency checks are the lint
+    gate) inside the digest-pinned alpine:3.22 toolchain image, and
+    version-anchors the apk pkgver. Version flows from the single host function
+    (full PEP 440 to hatch-vcs, apk-sanitized to the pkgver). Cold runs pull
+    base image; absent from ``preflight`` (like ``build_deb``/``build_rpm``).
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=build-apk",
+        "--mode=dev",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
+def apk_smoke(session: nox.Session) -> None:
+    """
+    Install-smoke the built .apk in clean Alpine containers (opt-in, docker).
+
+    Runs the install-smoke cells against the artifact in ``dist/`` (build it
+    first with ``nox -s build_apk``): a clean install (version, config parse,
+    example, OpenRC-service present-but-not-enabled, conf-hint rewrite,
+    stdlib-resolver fallback) and the posture-downgrade breadcrumb. Absent from
+    ``preflight``.
+    """
+    session.run(
+        "python",
+        "packaging/build.py",
+        "--action=smoke-apk",
+        "--out",
+        "dist",
+        external=True,
+    )
+
+
+@nox.session
 def audit(session: nox.Session) -> None:
     """Security/vulnerability audit (bandit + pip-audit)."""
     _uv(session, "bandit", "-q", "-c", "pyproject.toml", "-r", "src")

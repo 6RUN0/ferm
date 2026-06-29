@@ -311,6 +311,49 @@ ferm rollback --to <sha>
 Man-страница `ferm(1)` (написана в `reference/doc/ferm.pod`) — это
 исчерпывающий справочник по синтаксису конфигурации.
 
+### Использование nftables-бэкенда
+
+Бэкенд по умолчанию управляет `iptables`/`iptables-restore`. Есть два способа
+сделать так, чтобы ваши правила оказались в подсистеме ядра `nft`.
+
+**1. Переключить системный `iptables` на nft-вариант (рекомендуется,
+стабильно).** В Debian / Ubuntu сама команда `iptables` — это альтернатива
+между legacy- и nft-реализацией. Выберите nft-вариант, и ferm менять не
+нужно — его `iptables-restore` начнёт писать прямо в nft-таблицы ядра:
+
+```sh
+sudo update-alternatives --set iptables  /usr/sbin/iptables-nft
+sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
+# или интерактивно: sudo update-alternatives --config iptables
+```
+
+**2. Нативный бэкенд ferm `--nft` (opt-in, экспериментальный).** Он
+транслирует конфигурацию в нативный nft-набор правил (см. *Состояние проекта*
+выше). Установите `nftables` (это Recommends пакета) и передайте `--nft`:
+
+```sh
+ferm --noexec --lines --nft /etc/ferm/ferm.conf   # посмотреть
+sudo ferm --nft /etc/ferm/ferm.conf               # применить
+```
+
+Чтобы его использовала служба **systemd**, добавьте drop-in-переопределение
+через `sudo systemctl edit ferm` (пустые присваивания сбрасывают значения
+юнита перед переустановкой — systemd требует этого для переопределения
+`ExecStart`):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/ferm --nft /etc/ferm/ferm.conf
+ExecReload=
+ExecReload=/usr/bin/ferm --nft /etc/ferm/ferm.conf
+ExecStop=
+ExecStop=/usr/bin/ferm --nft -F /etc/ferm/ferm.conf
+```
+
+В Alpine (**OpenRC**) добавьте `--nft` к вызовам `ferm` в `start()`,
+`reload()` и `stop()` в `/etc/init.d/ferm`.
+
 ## Разработка
 
 Проект полностью управляется через `uv` и оркеструется через `nox`:

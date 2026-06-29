@@ -99,25 +99,85 @@ def test_strip_tag_prefix_removes_py_v() -> None:
     "version",
     [
         "0.1.0",
-        "0.1.1.dev3",
-        "0.0.1.dev1511",  # state (a), local segment already dropped
+        "1.2.3",
+        "10.20.30",
     ],
 )
-def test_sanitize_deb_is_noop_without_local_segment(version: str) -> None:
+def test_sanitize_deb_is_noop_on_a_final_release(version: str) -> None:
+    # A final release carries no local segment and no pre-release/dev marker,
+    # so the deb sanitizer leaves it untouched.
     build = _load_build()
     assert build._sanitize_deb(version) == version
 
 
-def test_sanitize_deb_drops_local_segment() -> None:
-    # Native dpkg forbids a debian revision and dislikes the local +g<hash>
-    # PEP 440 segment; the chosen strategy DROPS the whole +-segment (NOT
-    # +-> ~), incl. the .dYYYYMMDD dirty marker that rides in the same segment.
+def test_sanitize_deb_drops_local_segment_and_tildes_dev() -> None:
+    # Native dpkg dislikes the local +g<hash> PEP 440 segment; the strategy
+    # DROPS the whole +-segment (incl. the .dYYYYMMDD dirty marker) AND
+    # ~-prefixes the dev/pre-release marker so it sorts BELOW the release.
     build = _load_build()
-    assert build._sanitize_deb("0.1.1.dev3+gabc1234") == "0.1.1.dev3"
+    assert build._sanitize_deb("0.1.1.dev3+gabc1234") == "0.1.1~dev3"
     assert (
         build._sanitize_deb("0.0.1.dev1511+g4fcd266ae.d20260616")
-        == "0.0.1.dev1511"
+        == "0.0.1~dev1511"
     )
+
+
+@pytest.mark.parametrize(
+    ("version", "deb", "rpm"),
+    [
+        ("0.1.0a2", "0.1.0~a2", "0.1.0~a2"),
+        ("0.1.0b1", "0.1.0~b1", "0.1.0~b1"),
+        ("0.1.0rc3", "0.1.0~rc3", "0.1.0~rc3"),
+        ("0.1.0.dev5", "0.1.0~dev5", "0.1.0~dev5"),
+        ("0.1.0a3.dev5", "0.1.0~a3~dev5", "0.1.0~a3~dev5"),
+        ("0.1.0", "0.1.0", "0.1.0"),
+        ("0.1.0.post1", "0.1.0.post1", "0.1.0.post1"),  # post sorts ABOVE base
+    ],
+)
+def test_sanitize_deb_rpm_tilde_orders_prerelease_below_final(
+    version: str, deb: str, rpm: str
+) -> None:
+    # ~-prefixing a pre-release/dev marker makes a later final release sort
+    # ABOVE the alpha in rpmvercmp/dpkg verrevcmp, so apt/dnf deliver the
+    # upgrade. A post-release is left bare -- it legitimately sorts above base.
+    build = _load_build()
+    assert build._sanitize_deb(version) == deb
+    assert build._sanitize_rpm(version) == rpm
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("0.1.0a2", "0.1.0_alpha2"),
+        ("0.1.0b1", "0.1.0_beta1"),
+        ("0.1.0rc3", "0.1.0_rc3"),
+        ("0.1.0.dev5", "0.1.0_pre5"),
+        ("0.1.0.post1", "0.1.0_p1"),
+        ("0.1.0a3.dev5+gabc", "0.1.0_alpha3_pre5"),
+    ],
+)
+def test_sanitize_apk_maps_markers_to_alpine_suffixes(
+    version: str, expected: str
+) -> None:
+    # Alpine's grammar wants _alpha/_beta/_rc/_pre (sort below the release) and
+    # _p (post, sorts above); the local +segment is dropped like deb/rpm.
+    build = _load_build()
+    assert build._sanitize_apk(version) == expected
+
+
+def test_scm_version_charset_gate_rejects_metacharacters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The off-tag version flows to sed/--define/env; a non-PEP-440 charset must
+    # fail CLOSED before any subprocess consumes it (injection defense).
+    build = _load_build()
+
+    class _Result:
+        stdout = "0.1.0; rm -rf /\n"
+
+    monkeypatch.setattr(build.subprocess, "run", lambda *_a, **_k: _Result())
+    with pytest.raises(SystemExit, match="scm version"):
+        build._scm_version()
 
 
 @pytest.mark.parametrize(
@@ -199,7 +259,7 @@ def test_print_version_deb_flag_sanitizes(
     assert capsys.readouterr().out == "0.1.1.dev3+gabc1234\n"
 
     assert build.main(["--action=print-version", "--deb"]) == 0
-    assert capsys.readouterr().out == "0.1.1.dev3\n"
+    assert capsys.readouterr().out == "0.1.1~dev3\n"
 
 
 def _fake_dist(root: Path, *, with_license: bool) -> Path:

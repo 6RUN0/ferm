@@ -305,6 +305,49 @@ Notes and boundaries:
 The `ferm(1)` man page (authored in `reference/doc/ferm.pod`) is the
 extensive reference for the configuration syntax.
 
+### Using the nftables backend
+
+ferm's default backend drives `iptables`/`iptables-restore`. There are two
+ways to have your rules end up in the kernel's `nft` subsystem instead.
+
+**1. Point the system `iptables` at its nft variant (recommended, stable).**
+On Debian / Ubuntu the `iptables` command is itself an alternative between a
+legacy and an nft implementation. Select the nft variant and ferm needs no
+change — its `iptables-restore` then writes straight into the nft kernel
+tables:
+
+```sh
+sudo update-alternatives --set iptables  /usr/sbin/iptables-nft
+sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
+# or pick interactively: sudo update-alternatives --config iptables
+```
+
+**2. ferm's native `--nft` backend (opt-in, experimental).** This translates
+the config into a native nft ruleset (see *Project status* above). Install
+`nftables` (a Recommends of the package) and pass `--nft`:
+
+```sh
+ferm --noexec --lines --nft /etc/ferm/ferm.conf   # inspect
+sudo ferm --nft /etc/ferm/ferm.conf               # apply
+```
+
+To make the **systemd** service use it, add a drop-in override with
+`sudo systemctl edit ferm` (the empty assignments clear the unit's values
+before resetting them — systemd requires this to override `ExecStart`):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/ferm --nft /etc/ferm/ferm.conf
+ExecReload=
+ExecReload=/usr/bin/ferm --nft /etc/ferm/ferm.conf
+ExecStop=
+ExecStop=/usr/bin/ferm --nft -F /etc/ferm/ferm.conf
+```
+
+On Alpine (**OpenRC**), add `--nft` to the `ferm` invocations in `start()`,
+`reload()` and `stop()` in `/etc/init.d/ferm`.
+
 ## Development
 
 The project is managed entirely with `uv` and orchestrated with `nox`:

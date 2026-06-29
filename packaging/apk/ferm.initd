@@ -1,0 +1,38 @@
+#!/sbin/openrc-run
+# OpenRC service for the ferm Python port (pyferm) -- the Alpine analog of the
+# systemd unit shipped with the .deb/.rpm. Like the unit, it is INSTALLED but
+# NOT added to a runlevel on install (anti-lockout): a firewall must never come
+# up implicitly. Opt in with `rc-update add ferm boot && rc-service ferm start`
+# (the `boot` runlevel matters -- see the depend() note below).
+
+# shellcheck disable=SC2034  # consumed by openrc-run, not this script
+description="for Easy Rule Making (load firewall rules)"
+
+depend() {
+	# Load rules before the network is brought up, after local mounts so
+	# /etc/ferm is available. Mirrors the unit's Before=network-pre.target.
+	# NOTE: `before net` only orders ferm ahead of networking when both run in
+	# the same runlevel transition -- enroll ferm in the `boot` runlevel (where
+	# Alpine starts networking), not `default`, or the rules load after the
+	# network is already up.
+	need localmount
+	before net
+}
+
+start() {
+	ebegin "Loading firewall rules (ferm)"
+	/usr/bin/ferm /etc/ferm/ferm.conf
+	eend $? "Failed to load firewall rules"
+}
+
+stop() {
+	ebegin "Flushing firewall rules (ferm)"
+	/usr/bin/ferm -F /etc/ferm/ferm.conf
+	eend $? "Failed to flush firewall rules"
+}
+
+reload() {
+	ebegin "Reloading firewall rules (ferm)"
+	/usr/bin/ferm /etc/ferm/ferm.conf
+	eend $? "Failed to reload firewall rules"
+}

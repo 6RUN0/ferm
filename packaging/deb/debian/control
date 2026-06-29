@@ -18,7 +18,10 @@ Architecture: all
 Depends:
  ${python3:Depends},
  ${misc:Depends},
-Recommends: python3-dnspython
+Recommends:
+ nftables,
+ python3-dnspython,
+ etckeeper,
 Provides: ferm
 Conflicts: ferm
 Replaces: ferm

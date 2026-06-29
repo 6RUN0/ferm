@@ -1,0 +1,9 @@
+#!/bin/sh
+# Drop the posture-downgrade breadcrumb on removal so it does not orphan in
+# /etc/ferm (mirror of the .deb postrm purge / .rpm %postun cleanup). apk runs
+# this only on an actual delete, not on upgrade.
+set -e
+
+rm -f /etc/ferm/POSTURE-DOWNGRADE.README
+
+exit 0

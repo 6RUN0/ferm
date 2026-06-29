@@ -73,11 +73,17 @@ def test_control_architecture_all_pure_python() -> None:
     assert re.search(r"^Architecture:\s*all\b", control, re.MULTILINE)
 
 
-def test_control_recommends_optional_dnspython() -> None:
-    # @resolve() is optional; the resolver falls back to stdlib getaddrinfo
-    # without it, so dnspython is a Recommends, not a Depends.
+def test_control_recommends_optional_integrations() -> None:
+    # The optional integrations are Recommends, not Depends: @resolve() falls
+    # back to stdlib getaddrinfo without dnspython, the --nft backend is opt-in
+    # (nftables), and etckeeper versioning of /etc is optional. The field is
+    # multi-line, so match within the Recommends block (continuation lines are
+    # indented; the next field starts with a capital at column 0).
     control = _read("control")
-    assert re.search(r"^Recommends:.*python3-dnspython", control, re.MULTILINE)
+    block = re.search(r"^Recommends:[^A-Z]*", control, re.MULTILINE)
+    assert block is not None
+    for pkg in ("nftables", "python3-dnspython", "etckeeper"):
+        assert pkg in block.group(0), pkg
 
 
 def test_control_build_depends_carry_dynamic_version_backend() -> None:

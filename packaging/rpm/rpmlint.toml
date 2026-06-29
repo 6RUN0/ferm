@@ -1,0 +1,21 @@
+# Curated rpmlint baseline for the pyferm package (the rpm analog of the
+# project's lintian posture for the .deb). The build gates on rpmlint errors
+# (": E: "); these filters drop the known-acceptable findings so the gate stays
+# meaningful -- a real error still reds it -- without tripping on domain
+# vocabulary or the deliberately "dangerous" maintenance scriptlets.
+#
+# Each Filters entry is a Python regex matched against a full rpmlint line.
+Filters = [
+    # rpmlint's dictionary does not know netfilter/firewall vocabulary; these
+    # are correct domain terms, not typos.
+    '.*spelling-error.*(iptables|ip6tables|arptables|ebtables|nftables|netfilter|conf|systemctl|dnspython|etckeeper).*',
+    # The maintenance scriptlets intentionally use mktemp/mv/rm: the atomic
+    # posture-downgrade breadcrumb write in %post and its cleanup in %postun.
+    # They mirror the reviewed .deb maintscripts. (No %pre: the spec ships no
+    # legacy-config migration -- see the note in pyferm.spec.)
+    '.*dangerous-command-in-%(post|postun).*',
+    # The %changelog carries a 0.0.0 seed entry; the real version is injected at
+    # build time via --define (mirrors the .deb changelog seed), so the
+    # changelog version intentionally trails the built one.
+    '.*incoherent-version-in-changelog.*',
+]

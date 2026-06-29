@@ -1,0 +1,38 @@
+#!/bin/sh
+# Posture-downgrade signal (the apk analog of the .deb postinst / .rpm %post
+# breadcrumb). If the host had a ferm OpenRC service ENABLED -- detected
+# FILE-wise by an on-disk runlevel symlink, not a query -- but this package
+# ships the service WITHOUT adding it to a runlevel (anti-lockout), then the
+# firewall will NOT come up on the next boot on a host where it DID. Warn
+# DURABLY with a breadcrumb file, since a post-install stderr line is easily
+# missed.
+set -e
+
+BREADCRUMB=/etc/ferm/POSTURE-DOWNGRADE.README
+
+# Trigger: a ferm service is wired into some runlevel AND this package did not
+# add it (we never call rc-update add). Write the breadcrumb only if absent, so
+# a reinstall does not clobber/duplicate the signal yet never silences it.
+if ls /etc/runlevels/*/ferm >/dev/null 2>&1 && [ ! -e "$BREADCRUMB" ]; then
+	mkdir -p /etc/ferm
+	# Atomic write: render to a temp file, then rename into place.
+	tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
+	cat > "$tmp" <<'EOF'
+PYFERM POSTURE DOWNGRADE -- ACTION REQUIRED
+
+The previous ferm service was enabled on this host, but the pyferm package
+installs its OpenRC service WITHOUT adding it to a runlevel (anti-lockout).
+
+As a result your firewall will NOT be applied automatically on the next
+boot. Review /etc/ferm/ferm.conf (and /etc/ferm/ferm.d/), then opt in:
+
+    rc-update add ferm boot && rc-service ferm start
+
+Delete this file once you have re-enabled the service (or decided not to).
+EOF
+	mv -f "$tmp" "$BREADCRUMB"
+	echo "pyferm: previous ferm was enabled; this package does NOT add the" \
+	     "service to a runlevel. See $BREADCRUMB." >&2
+fi
+
+exit 0

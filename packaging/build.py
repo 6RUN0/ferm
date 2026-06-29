@@ -56,6 +56,20 @@ _DEB_DIR = _REPO_ROOT / "packaging" / "deb"
 #: be a lintian E:. Matches debian/control's Maintainer and the git identity.
 _DEB_FULLNAME = "Boris Talovikov"
 _DEB_EMAIL = "boris@talovikov.ru"
+#: Native .rpm build image (Fedora + rpm toolchain) and the source dir holding
+#: the spec. The smoke runs on a stock Fedora to prove a non-toolchain host.
+_RPM_IMAGE = "ferm-rpm-build"
+_RPM_DIR = _REPO_ROOT / "packaging" / "rpm"
+_RPM_SMOKE_BASE = "fedora:41"
+#: Native .apk build image (Alpine + abuild toolchain) and the source dir
+#: holding the APKBUILD, the OpenRC service and the install scriptlets. The
+#: smoke runs on a stock Alpine to prove a non-toolchain host.
+_APK_IMAGE = "ferm-apk-build"
+_APK_DIR = _REPO_ROOT / "packaging" / "apk"
+_APK_SMOKE_BASE = "alpine:3.22"
+#: pyproject distribution name (``[project].name``); the rpm Source0 tarball is
+#: ``<dist>-<version>.tar.gz`` and the spec's ``%autosetup`` unpacks that dir.
+_PACKAGE_DIST = "ferm"
 #: Canonical dist directory name inside the shipped tar (``ferm.dist/``).
 #: Nuitka names it after the main module (``entry.dist``); the container
 #: build script renames it so the user-facing path matches docs.
@@ -150,6 +164,10 @@ _ACTIONS = (
     "build",
     "build-deb",
     "smoke-deb",
+    "build-rpm",
+    "smoke-rpm",
+    "build-apk",
+    "smoke-apk",
     "print-version",
     "verify-golden",
     "smoke",
@@ -192,20 +210,98 @@ def _validate_tag(tag: str) -> None:
         )
 
 
+#: PEP 440 charset gate for the OFF-TAG (setuptools-scm) version. The tag path
+#: validates via ``_validate_tag``; this enforces the same injection-defense on
+#: the dev/dispatch path before the value flows to ``sed``/``--define``/env.
+_VALID_SCM_RE = re.compile(r"^[0-9][0-9A-Za-z.+!~-]*$")
+
+
+def _tilde_prerelease(base: str) -> str:
+    """
+    ``~``-prefix PEP 440 pre-release/dev markers so they sort BELOW the final.
+
+    ``rpmvercmp`` and dpkg ``verrevcmp`` both rank a trailing alphanumeric run
+    (``a2``, ``dev5``) ABOVE the bare release, so an un-prefixed ``0.1.0a2``
+    sorts above ``0.1.0`` and the final release looks like a DOWNGRADE -- the
+    package manager then refuses the upgrade. ``~`` is the one token both
+    comparators sort before the empty end-of-part, so ``0.1.0~a2`` restores the
+    PEP 440 order. ``.postN`` is intentionally left alone: a post-release
+    legitimately sorts ABOVE its base release.
+    """
+    base = re.sub(r"(?<=\d)(a|b|rc)(\d+)", r"~\1\2", base)
+    return re.sub(r"\.dev(\d+)", r"~dev\1", base)
+
+
 def _sanitize_deb(version: str) -> str:
     """
     Normalize a PEP 440 version into a native-dpkg-safe version.
 
     Native dpkg forbids a debian revision (``-N``) and the local PEP 440
     segment (``+g<hash>``, plus the ``.dYYYYMMDD`` dirty marker that rides in
-    it) is unwanted in a native version. The chosen strategy DROPS the whole
-    local ``+`` segment (``0.1.1.dev3+gabc1234`` -> ``0.1.1.dev3``), NOT
-    ``+`` -> ``~`` -- one strategy, one dpkg sort order. On a release tag the
-    version is already clean, so this is a no-op there. The SAME function is
-    used for the changelog and the version-anchor gate, or the gate would
-    false-red.
+    it) is unwanted in a native version, so this DROPS the whole local ``+``
+    segment. Pre-release/dev markers are then ``~``-prefixed (see
+    ``_tilde_prerelease``) so a later final release sorts ABOVE the alpha and
+    ``apt`` delivers the upgrade. The SAME function feeds the changelog
+    and the version-anchor gate, or the gate would false-red.
     """
-    return version.split("+", 1)[0]
+    return _tilde_prerelease(version.split("+", 1)[0])
+
+
+def _sanitize_rpm(version: str) -> str:
+    """
+    Normalize a PEP 440 version into an rpm-safe Version field.
+
+    rpm forbids ``-`` in a Version (it separates name-version-release), so this
+    DROPS the local ``+...`` segment and maps any ``-`` to ``~``. Pre-release/
+    dev markers are ``~``-prefixed (see ``_tilde_prerelease``) so a later final
+    release sorts ABOVE the alpha -- the ordering the apk sanitizer reaches
+    with its ``_alpha``/``_pre`` suffixes, one strategy across all three native
+    packages. The full PEP 440 string is fed to hatch-vcs (the spec's
+    ``scm_version``), so the wheel METADATA keeps the exact version regardless.
+    """
+    return _tilde_prerelease(version.split("+", 1)[0]).replace("-", "~")
+
+
+def _sanitize_apk(version: str) -> str:
+    """
+    Normalize a PEP 440 version into an Alpine-pkgver-safe Version field.
+
+    Alpine's grammar accepts a numeric release optionally followed by
+    ``_<suffix><number>`` markers, NOT the PEP 440 ``a``/``b``/``rc``/``.dev``/
+    ``.post`` spellings. So this DROPS the local ``+...`` segment (as the
+    deb/rpm sanitizers do) and maps the markers to their Alpine forms: ``a`` ->
+    ``_alpha``, ``b`` -> ``_beta``, ``rc`` -> ``_rc``, ``.devN`` -> ``_preN``
+    (``_pre`` keeps dev builds distinct from a real alpha; both sort BELOW the
+    release), ``.postN`` -> ``_pN`` (the Alpine post suffix, sorts ABOVE the
+    release like PEP 440 intends). The full PEP 440 string is fed to hatch-vcs
+    separately, so the wheel METADATA keeps the exact version regardless.
+    """
+    base = version.split("+", 1)[0]
+    base = re.sub(r"\.post(\d+)", r"_p\1", base)
+    base = re.sub(r"\.dev(\d+)", r"_pre\1", base)
+    base = re.sub(r"(?<=\d)a(\d+)", r"_alpha\1", base)
+    base = re.sub(r"(?<=\d)b(\d+)", r"_beta\1", base)
+    return re.sub(r"(?<=\d)rc(\d+)", r"_rc\1", base)
+
+
+#: Shell ``sani()`` mirroring _sanitize_deb/_sanitize_rpm, injected into the
+#: install-smoke cells so the package Version can be anchored against the
+#: binary's PEP 440 self-report (a ~-prefixed pre-release no longer equals a
+#: bare ``${ver%%+*}``). An independent reimplementation IS the point -- it
+#: is the verification oracle, not a reuse of the Python sanitizer.
+_SANI_SH_TILDE = (
+    "sani() { printf '%s' \"${1%%+*}\" | "
+    "sed -E 's/([0-9])(a|b|rc)([0-9])/\\1~\\2\\3/g; "
+    "s/\\.dev([0-9])/~dev\\1/g'; }\n"
+)
+
+#: Shell ``sani()`` mirroring _sanitize_apk for the apk install-smoke anchor.
+_SANI_SH_APK = (
+    "sani() { printf '%s' \"${1%%+*}\" | "
+    "sed -E 's/\\.post([0-9])/_p\\1/g; s/\\.dev([0-9])/_pre\\1/g; "
+    "s/([0-9])a([0-9])/\\1_alpha\\2/g; s/([0-9])b([0-9])/\\1_beta\\2/g; "
+    "s/([0-9])rc([0-9])/\\1_rc\\2/g'; }\n"
+)
 
 
 def _scm_version() -> str:
@@ -233,7 +329,14 @@ def _scm_version() -> str:
         raise SystemExit(
             "`uvx hatch version` produced no version on stdout",
         )
-    return lines[-1].strip()
+    version = lines[-1].strip()
+    # Charset-gate the off-tag version too (the tag path has _validate_tag), so
+    # the same injection-defense holds before it flows to sed/--define/env.
+    if not _VALID_SCM_RE.fullmatch(version):
+        raise SystemExit(
+            f"refusing scm version {version!r}: not a PEP 440 charset",
+        )
+    return version
 
 
 def _resolve_version() -> str:
@@ -768,27 +871,40 @@ def _ensure_deb_image() -> None:
     )
 
 
-def _deb_source_tree(mode: str, tag: str | None) -> Path:
+def _native_source_tree(prefix: str, mode: str, tag: str | None) -> Path:
     """
-    Assemble a clean source tree with ``debian/`` at its root for dpkg.
+    Assemble the clean source tree a native package's tarball is built from.
 
-    Release: ``git archive`` the tag (clean, tag-bound, export-ignore honored).
-    Dev: copy the working-tree build inputs -- the changes under test are
-    typically uncommitted, so ``git archive`` would miss them. Either way the
-    ``debian/`` dir (which lives under ``packaging/deb/``) is overlaid at the
-    tree root, where ``dpkg-buildpackage`` expects it.
+    Shared by the deb/rpm/apk drivers. Release: ``git archive`` the tag (clean,
+    tag-bound, export-ignore honored). Dev: copy the working-tree build inputs
+    -- the changes under test are typically uncommitted, so ``git archive``
+    would miss them. Dev-only droppings (OMC state, bytecode) are stripped so
+    they never reach the wheel hatchling builds from this tree; release mode
+    never carries them, and a release build must match the dev one.
     """
     if mode == "release":
         if not tag:
             raise SystemExit("--mode=release requires --tag <py-vX.Y.Z>")
-        tree = _git_archive(tag)
-    else:
-        tree = _scratch_dir("ferm-deb-dev-") / "tree"
-        tree.mkdir(parents=True)
-        for rel in ("pyproject.toml", "README.md", "CHANGELOG.md", "COPYING"):
-            shutil.copy2(_REPO_ROOT / rel, tree / rel)
-        shutil.copytree(_REPO_ROOT / "src", tree / "src")
-        shutil.copytree(_DEB_DIR, tree / "packaging" / "deb")
+        return _git_archive(tag)
+    tree = _scratch_dir(prefix) / "tree"
+    tree.mkdir(parents=True)
+    for rel in ("pyproject.toml", "README.md", "CHANGELOG.md", "COPYING"):
+        shutil.copy2(_REPO_ROOT / rel, tree / rel)
+    junk = shutil.ignore_patterns(".omc", "__pycache__", "*.pyc")
+    shutil.copytree(_REPO_ROOT / "src", tree / "src", ignore=junk)
+    shutil.copytree(_REPO_ROOT / "packaging", tree / "packaging", ignore=junk)
+    return tree
+
+
+def _deb_source_tree(mode: str, tag: str | None) -> Path:
+    """
+    Assemble a clean source tree with ``debian/`` at its root for dpkg.
+
+    Shares ``_native_source_tree`` (release ``git archive`` / dev working-tree
+    copy), then overlays the ``debian/`` dir (which lives under
+    ``packaging/deb/``) at the tree root where ``dpkg-buildpackage`` wants it.
+    """
+    tree = _native_source_tree("ferm-deb-dev-", mode, tag)
     shutil.copytree(tree / "packaging" / "deb" / "debian", tree / "debian")
     return tree
 
@@ -850,7 +966,9 @@ def _action_build_deb(args: argparse.Namespace) -> int:
     tag_ver = ""
     if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
         _validate_tag(ref)
-        tag_ver = _strip_tag_prefix(ref)
+        # The build anchor compares the sanitized dpkg Version against this, so
+        # it must be sanitized too (a tilde'd pre-release tag, else mismatch).
+        tag_ver = _sanitize_deb(_strip_tag_prefix(ref))
     tree = _deb_source_tree(args.mode, args.tag)
     args.out.mkdir(parents=True, exist_ok=True)
     # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
@@ -950,19 +1068,21 @@ def _smoke_cell_clean() -> str:
         "printf 'domain ip table filter chain OUTPUT {\\n"
         " daddr @resolve(localhost) ACCEPT;\\n}\\n' > /tmp/r.ferm\n"
         "ferm --noexec --lines /tmp/r.ferm >/dev/null\n"
-        # version-anchor: read BOTH from the installed artifact (not a host
-        # string) -- catches a 0+unknown from a wrong PYBUILD_NAME.
-        "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
+        # version-anchor (sani() oracle): the package Version must equal the
+        # binary's PEP 440 self-report run through the SAME sanitizer -- a
+        # ~-prefixed pre-release no longer equals a bare ${vferm%%+*}. On a tag
+        # the binary must also self-report the tag's full PEP 440 version
+        # (catches a 0+unknown from a wrong PYBUILD_NAME). TAG_VER is the
+        # unsanitized tag here.
+        + _SANI_SH_TILDE
+        + "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
         "vdeb=$(dpkg-deb -f /work-out/pyferm_*.deb Version)\n"
-        "sani=${vferm%%+*}\n"
+        'expect=$(sani "$vferm")\n'
+        '[ "$vdeb" = "$expect" ] || { echo "deb $vdeb != sani($vferm)='
+        '$expect" >&2; exit 1; }\n'
         'if [ -n "$TAG_VER" ]; then\n'
         '  case "$vferm" in *"$TAG_VER") ;; *) echo "ferm $vferm not tag'
         ' $TAG_VER" >&2; exit 1;; esac\n'
-        '  case "$vdeb" in "$TAG_VER"*) ;; *) echo "deb $vdeb !^ tag'
-        ' $TAG_VER" >&2; exit 1;; esac\n'
-        "else\n"
-        '  [ "$vdeb" = "$sani" ] || { echo "deb $vdeb != sani($vferm)=$sani"'
-        " >&2; exit 1; }\n"
         "fi\n"
         "echo CELL1-OK\n"
     )
@@ -1120,6 +1240,543 @@ def _action_smoke_deb(args: argparse.Namespace) -> int:
     _run_smoke_cell(out, _smoke_cell_symlink_refusal(), tag_ver, "CELL3")
     _assert_deb_source_tar_clean()
     _assert_sdist_allowlist(out)
+    return 0
+
+
+def _ensure_rpm_image() -> None:
+    """Build the digest-pinned Fedora build image (toolchain baked in)."""
+    subprocess.run(
+        ["docker", "build", "-t", _RPM_IMAGE, str(_RPM_DIR)],
+        check=True,
+    )
+
+
+def _rpm_source_tree(mode: str, tag: str | None) -> Path:
+    """
+    Assemble a clean source tree the spec's Source0 tarball is built from.
+
+    Delegates to ``_native_source_tree``: the tree carries ``packaging/`` (the
+    spec installs the shipped ferm.conf, unit and example from
+    ``packaging/deb/``) plus the python sources and metadata.
+    """
+    return _native_source_tree("ferm-rpm-dev-", mode, tag)
+
+
+def _rpm_sources_dir(tree: Path, version_rpm: str) -> Path:
+    """
+    Pack the source tree into ``ferm-<version>.tar.gz`` next to the spec.
+
+    Returns a scratch dir mounted at ``/work-src``: it holds the Source0
+    tarball (top dir ``ferm-<version>/``, matching the spec's ``%autosetup``)
+    and a copy of the spec, so the container reads both from one mount.
+    """
+    sources = _scratch_dir("ferm-rpm-src-")
+    arc_prefix = f"{_PACKAGE_DIST}-{version_rpm}"
+    with tarfile.open(sources / f"{arc_prefix}.tar.gz", "w:gz") as tar:
+        tar.add(tree, arcname=arc_prefix)
+    rpm_dir = tree / "packaging" / "rpm"
+    shutil.copy2(rpm_dir / "pyferm.spec", sources / "pyferm.spec")
+    shutil.copy2(rpm_dir / "rpmlint.toml", sources / "rpmlint.toml")
+    return sources
+
+
+def _rpm_container_script(uid: int, gid: int) -> str:
+    """
+    Render the in-container rpm build: rpmbuild, rpmlint, version-anchor.
+
+    Builds from the spec + tarball under ``/work-src`` (the version is charset-
+    validated host-side and passed by env, never interpolated into shell --
+    injection-safe), gates rpmlint on errors only (``E:``; warnings stay
+    informational, like the deb's ``lintian --fail-on error``), version-anchors
+    the rpm Version field, and hands the artifact to the invoking uid.
+    """
+    return (
+        "set -e\n"
+        "rpmbuild -ba /work-src/pyferm.spec"
+        ' --define "_topdir /tmp/rpmbuild"'
+        ' --define "_sourcedir /work-src"'
+        ' --define "_ferm_version $RPM_VER"'
+        ' --define "_ferm_scm_version $SCM_VER"\n'
+        "rpm=$(ls /tmp/rpmbuild/RPMS/noarch/pyferm-*.noarch.rpm)\n"
+        'echo "RPM_ARTIFACT=$rpm"\n'
+        # rpmlint: fail only on E:, warnings stay informational (baseline noise
+        # like no-manual-page-for-binary / no-documentation). The curated
+        # config filters domain spelling + by-design scriptlet findings.
+        'rpmlint -c /work-src/rpmlint.toml "$rpm" | tee /tmp/rl.txt || true\n'
+        'if grep -q ": E: " /tmp/rl.txt; then echo "rpmlint errors" >&2;'
+        " exit 1; fi\n"
+        "ver=$(rpm -qp --qf '%{VERSION}' \"$rpm\")\n"
+        'echo "RPM_VERSION_FIELD=$ver"\n'
+        # version-anchor: on a tag the rpm Version must START WITH the tag;
+        # off-tag it must EQUAL the host-sanitized version (catches a pretend-
+        # version drift or a 0+unknown from a missing dist name).
+        'if [ -n "$TAG_VER" ]; then\n'
+        '  case "$ver" in "$TAG_VER"*) ;; *) echo "version-anchor: rpm'
+        ' $ver does not start with tag $TAG_VER" >&2; exit 1;; esac\n'
+        "else\n"
+        '  [ "$ver" = "$EXPECT_RPM_VER" ] || { echo "version-anchor: rpm'
+        ' $ver != expected $EXPECT_RPM_VER" >&2; exit 1; }\n'
+        "fi\n"
+        'cp "$rpm" /work-out/\n'
+        f"chown {uid}:{gid} /work-out/pyferm-*.rpm\n"
+    )
+
+
+def _action_build_rpm(args: argparse.Namespace) -> int:
+    """
+    Build the native ``.rpm`` in the pinned Fedora image; gate it.
+
+    Version flows from the single host function: the full PEP 440 string is the
+    hatch-vcs pretend version (the wheel METADATA), the rpm-sanitized string is
+    the rpm Version field and the version-anchor expectation.
+    """
+    _ensure_rpm_image()
+    version_full = _resolve_version()
+    version_rpm = _sanitize_rpm(version_full)
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    tag_ver = ""
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        tag_ver = _sanitize_rpm(_strip_tag_prefix(ref))
+    tree = _rpm_source_tree(args.mode, args.tag)
+    sources = _rpm_sources_dir(tree, version_rpm)
+    args.out.mkdir(parents=True, exist_ok=True)
+    # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
+    # not a bind mount, so the artifact would never reach the host dir.
+    out = args.out.resolve()
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{sources}:/work-src:ro",
+        "-v",
+        f"{out}:/work-out",
+        "-e",
+        f"RPM_VER={version_rpm}",
+        "-e",
+        f"SCM_VER={version_full}",
+        "-e",
+        f"EXPECT_RPM_VER={version_rpm}",
+        "-e",
+        f"TAG_VER={tag_ver}",
+        _RPM_IMAGE,
+        "sh",
+        "-c",
+        _rpm_container_script(os.getuid(), os.getgid()),
+    ]
+    subprocess.run(cmd, check=True)
+    rpms = sorted(args.out.glob("pyferm-*.rpm"))
+    if not rpms:
+        raise SystemExit(f"no pyferm-*.rpm produced in {args.out}")
+    return 0
+
+
+def _rpm_smoke_cell_clean() -> str:
+    """Cell 1: clean install, version-anchor, config, example, not-enabled."""
+    return (
+        "set -e\n"
+        # install_weak_deps=False so the Recommends (python3-dnspython) is NOT
+        # pulled -- the stdlib-resolver fallback below must run without it. The
+        # hard Requires (iptables) is still resolved from the repos. tsflags=
+        # clears the Fedora image's ``nodocs`` so the shipped example (a doc
+        # file) actually lands -- the rpm analog of the deb smoke removing the
+        # docker doc path-exclude; a normal Fedora host installs docs.
+        "dnf -y --setopt=install_weak_deps=False --setopt=tsflags= install"
+        " /work-out/pyferm-*.rpm >/dev/null\n"
+        "ferm --version\n"
+        "import-ferm --help >/dev/null\n"
+        # the shipped default config parses (--test: no real iptables needed)
+        "ferm --noexec --lines --test /etc/ferm/ferm.conf >/dev/null\n"
+        # the throttle example is really installed
+        "test -f /usr/share/doc/pyferm/examples/ssh-throttle.conf.example\n"
+        # anti-lockout: the unit is NOT enabled (no wants symlink on disk)
+        "test ! -L /etc/systemd/system/multi-user.target.wants/ferm.service\n"
+        # resolver stdlib fallback works without python3-dnspython: an A-record
+        # @resolve() (localhost -> 127.0.0.1 via getaddrinfo) must not fail.
+        # REAL resolution (not --test, which would use a mock zonefile), so
+        # iptables must be present -- it came in as a hard Requires above.
+        "printf 'domain ip table filter chain OUTPUT {\\n"
+        " daddr @resolve(localhost) ACCEPT;\\n}\\n' > /tmp/r.ferm\n"
+        "ferm --noexec --lines /tmp/r.ferm >/dev/null\n"
+        # version-anchor (sani() oracle): the rpm Version must equal the
+        # binary's PEP 440 self-report run through the same sanitizer; on a tag
+        # the binary must also self-report the tag's full PEP 440 version.
+        # TAG_VER is the unsanitized tag here.
+        + _SANI_SH_TILDE
+        + "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
+        "vrpm=$(rpm -q --qf '%{VERSION}' pyferm)\n"
+        'expect=$(sani "$vferm")\n'
+        '[ "$vrpm" = "$expect" ] || { echo "rpm $vrpm != sani($vferm)='
+        '$expect" >&2; exit 1; }\n'
+        'if [ -n "$TAG_VER" ]; then\n'
+        '  case "$vferm" in *"$TAG_VER") ;; *) echo "ferm $vferm not tag'
+        ' $TAG_VER" >&2; exit 1;; esac\n'
+        "fi\n"
+        "echo CELL1-OK\n"
+    )
+
+
+def _rpm_smoke_cell_breadcrumb() -> str:
+    """Cell 2: posture-downgrade breadcrumb when the old unit was enabled."""
+    return (
+        "set -e\n"
+        "mkdir -p /usr/lib/systemd/system"
+        " /etc/systemd/system/multi-user.target.wants\n"
+        # the previous ferm unit was ENABLED -- its wants symlink is on disk
+        "touch /usr/lib/systemd/system/ferm.service\n"
+        "ln -s /usr/lib/systemd/system/ferm.service"
+        " /etc/systemd/system/multi-user.target.wants/ferm.service\n"
+        "dnf -y --setopt=install_weak_deps=False --setopt=tsflags= install"
+        " /work-out/pyferm-*.rpm >/dev/null\n"
+        # this package does not auto-enable its unit (anti-lockout), so it
+        # warns durably: the posture-downgrade breadcrumb must be written.
+        "test -f /etc/ferm/POSTURE-DOWNGRADE.README\n"
+        "echo CELL2-OK\n"
+    )
+
+
+def _run_rpm_smoke_cell(
+    out: Path, script: str, tag_ver: str, label: str
+) -> None:
+    """Run one install-smoke cell in a clean Fedora container."""
+    run = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{out}:/work-out:ro",
+            "-e",
+            f"TAG_VER={tag_ver}",
+            _RPM_SMOKE_BASE,
+            "sh",
+            "-c",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = f"{label}-OK"
+    if run.returncode != 0 or marker not in run.stdout:
+        raise SystemExit(
+            f"rpm install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
+        )
+
+
+def _action_smoke_rpm(args: argparse.Namespace) -> int:
+    """
+    Install-smoke the built .rpm in clean Fedora containers.
+
+    Two cells: a clean install (version, config parse, example, stdlib-resolver
+    fallback, file-based not-enabled assert) and the posture-downgrade
+    breadcrumb when the prior unit was enabled. The deb's legacy-config
+    migration and symlink-refusal cells have no rpm analog (see the spec: rpm
+    %config(noreplace) does not adopt a %pre-seeded file, and the migration is
+    a Debian-ism). Operates on the .rpm already in ``--out``.
+    """
+    # Absolute path: docker bind mounts need it (a relative path becomes a
+    # named volume).
+    out = args.out.resolve()
+    rpms = sorted(out.glob("pyferm-*.rpm"))
+    if not rpms:
+        raise SystemExit(
+            f"no pyferm-*.rpm in {out} -- run --action=build-rpm first",
+        )
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    tag_ver = ""
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        # The smoke anchors the binary's PEP 440 self-report against the tag
+        # (unsanitized); the package Version is anchored via shell sani().
+        tag_ver = _strip_tag_prefix(ref)
+    _run_rpm_smoke_cell(out, _rpm_smoke_cell_clean(), tag_ver, "CELL1")
+    _run_rpm_smoke_cell(out, _rpm_smoke_cell_breadcrumb(), tag_ver, "CELL2")
+    return 0
+
+
+def _ensure_apk_image() -> None:
+    """Build the digest-pinned Alpine build image (toolchain baked in)."""
+    subprocess.run(
+        ["docker", "build", "-t", _APK_IMAGE, str(_APK_DIR)],
+        check=True,
+    )
+
+
+def _apk_source_tree(mode: str, tag: str | None) -> Path:
+    """
+    Assemble a clean source tree the APKBUILD's source tarball is built from.
+
+    Delegates to ``_native_source_tree``: the tree carries ``packaging/`` (the
+    APKBUILD installs the ferm.conf and example from ``packaging/deb/``)
+    plus the python sources and metadata.
+    """
+    return _native_source_tree("ferm-apk-dev-", mode, tag)
+
+
+def _apk_sources_dir(tree: Path, version_apk: str) -> Path:
+    """
+    Pack the source tree into ``pyferm-<version>.tar.gz`` next to the APKBUILD.
+
+    Returns a scratch dir mounted at ``/work-src``: it holds the source tarball
+    (top dir ``pyferm-<version>/``, matching the APKBUILD's ``builddir``) and a
+    copy of the APKBUILD, the OpenRC service and the install scriptlets, so the
+    container reads them all from one mount. The tarball is named for the apk
+    pkgver because abuild derives both the source name and builddir from it.
+    """
+    sources = _scratch_dir("ferm-apk-src-")
+    arc_prefix = f"pyferm-{version_apk}"
+    with tarfile.open(sources / f"{arc_prefix}.tar.gz", "w:gz") as tar:
+        tar.add(tree, arcname=arc_prefix)
+    apk_dir = tree / "packaging" / "apk"
+    for name in (
+        "APKBUILD",
+        "ferm.initd",
+        "pyferm.post-install",
+        "pyferm.post-deinstall",
+    ):
+        shutil.copy2(apk_dir / name, sources / name)
+    return sources
+
+
+def _apk_container_script(uid: int, gid: int) -> str:
+    """
+    Render the in-container apk build: abuild, sanitycheck, version-anchor.
+
+    Generates a throwaway signing key (abuild signs the package), stamps the
+    pkgver into the APKBUILD (the version is charset-validated host-side and
+    passed by env, never interpolated into shell -- injection-safe), exports
+    full PEP 440 version for hatch-vcs, runs ``abuild`` (whose own sanity /
+    file-tracking / dependency checks are the lint gate, the analog of the
+    deb's lintian and the rpm's rpmlint), version-anchors the pkgver, and hands
+    the artifact to the invoking uid. ``-F`` lets abuild run as root in the
+    container; the ``-doc`` auto-subpackage is excluded when locating the main
+    artifact.
+    """
+    return (
+        "set -e\n"
+        # abuild refuses to run as root without -F and needs a signing key to
+        # sign the package (the smoke installs it with --allow-untrusted, so
+        # the key never has to be trusted downstream). Copy the public key into
+        # /etc/apk/keys directly (abuild-keygen -i would shell out to sudo,
+        # absent in the image) so abuild's final repo-index signing verifies.
+        "abuild-keygen -a -n >/dev/null 2>&1\n"
+        'cp "$HOME"/.abuild/*.rsa.pub /etc/apk/keys/\n'
+        "mkdir -p /tmp/aports/pyferm\n"
+        "cp /work-src/APKBUILD /work-src/ferm.initd"
+        " /work-src/pyferm.post-install /work-src/pyferm.post-deinstall"
+        " /work-src/pyferm-*.tar.gz /tmp/aports/pyferm/\n"
+        "cd /tmp/aports/pyferm\n"
+        'sed -i "s/^pkgver=.*/pkgver=$APK_VER/" APKBUILD\n'
+        "export SETUPTOOLS_SCM_PRETEND_VERSION=$SCM_VER\n"
+        "export REPODEST=/tmp/repo\n"
+        # checksum populates sha512sums for the local source; validate lints
+        # the APKBUILD fields; the build itself fails on any unpackaged file or
+        # version drift. -d disables the dependency check: a noarch wheel needs
+        # neither the runtime depends (iptables, verified by the smoke) nor a
+        # network round-trip to install them, and the makedepends are baked
+        # into the image.
+        "abuild -F checksum\n"
+        "abuild -F validate\n"
+        "abuild -F -d\n"
+        "apk=$(find /tmp/repo -name 'pyferm-*.apk'"
+        " ! -name 'pyferm-doc-*.apk' | head -1)\n"
+        '[ -n "$apk" ] || { echo "no pyferm apk produced" >&2; exit 1; }\n'
+        'echo "APK_ARTIFACT=$apk"\n'
+        # version-anchor: pkgver parsed from the .apk filename.
+        'ver=$(basename "$apk" | sed -n'
+        " 's/^pyferm-\\(.*\\)-r[0-9]*\\.apk$/\\1/p')\n"
+        'echo "APK_VERSION_FIELD=$ver"\n'
+        'if [ -n "$TAG_VER" ]; then\n'
+        '  case "$ver" in "$TAG_VER"*) ;; *) echo "version-anchor: apk'
+        ' $ver does not start with tag $TAG_VER" >&2; exit 1;; esac\n'
+        "else\n"
+        '  [ "$ver" = "$EXPECT_APK_VER" ] || { echo "version-anchor: apk'
+        ' $ver != expected $EXPECT_APK_VER" >&2; exit 1; }\n'
+        "fi\n"
+        'cp "$apk" /work-out/\n'
+        f"chown {uid}:{gid} /work-out/pyferm-*.apk\n"
+    )
+
+
+def _action_build_apk(args: argparse.Namespace) -> int:
+    """
+    Build the native ``.apk`` in the pinned Alpine image; gate it.
+
+    Version flows from the single host function: the full PEP 440 string is the
+    hatch-vcs pretend version (the wheel METADATA), the apk-sanitized string is
+    the pkgver and the version-anchor expectation.
+    """
+    _ensure_apk_image()
+    version_full = _resolve_version()
+    version_apk = _sanitize_apk(version_full)
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    tag_ver = ""
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        tag_ver = _sanitize_apk(_strip_tag_prefix(ref))
+    tree = _apk_source_tree(args.mode, args.tag)
+    sources = _apk_sources_dir(tree, version_apk)
+    args.out.mkdir(parents=True, exist_ok=True)
+    # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
+    # not a bind mount, so the artifact would never reach the host dir.
+    out = args.out.resolve()
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{sources}:/work-src:ro",
+        "-v",
+        f"{out}:/work-out",
+        "-e",
+        f"APK_VER={version_apk}",
+        "-e",
+        f"SCM_VER={version_full}",
+        "-e",
+        f"EXPECT_APK_VER={version_apk}",
+        "-e",
+        f"TAG_VER={tag_ver}",
+        _APK_IMAGE,
+        "sh",
+        "-c",
+        _apk_container_script(os.getuid(), os.getgid()),
+    ]
+    subprocess.run(cmd, check=True)
+    apks = sorted(args.out.glob("pyferm-*.apk"))
+    if not apks:
+        raise SystemExit(f"no pyferm-*.apk produced in {args.out}")
+    return 0
+
+
+def _apk_smoke_cell_clean() -> str:
+    """Cell 1: clean install, version-anchor, config, example, not-enabled."""
+    return (
+        "set -e\n"
+        # --allow-untrusted: the package was signed with a throwaway build key
+        # not in /etc/apk/keys. The hard depends (iptables) resolves from the
+        # repos; apk has no Recommends, so py3-dnspython is never pulled -- the
+        # stdlib-resolver fallback below must run without it.
+        "apk add --no-cache --allow-untrusted /work-out/pyferm-*.apk"
+        " >/dev/null\n"
+        "ferm --version\n"
+        "import-ferm --help >/dev/null\n"
+        # the shipped default config parses (--test: no real iptables needed)
+        "ferm --noexec --lines --test /etc/ferm/ferm.conf >/dev/null\n"
+        # the throttle example is really installed
+        "test -f /usr/share/doc/pyferm/examples/ssh-throttle.conf.example\n"
+        # anti-lockout: OpenRC service installed but added to NO runlevel
+        "test -f /etc/init.d/ferm\n"
+        "! ls /etc/runlevels/*/ferm >/dev/null 2>&1\n"
+        # the systemd opt-in hint was rewritten to the OpenRC form for Alpine
+        "grep -q 'rc-update add ferm' /etc/ferm/ferm.conf\n"
+        "! grep -q 'systemctl enable --now ferm' /etc/ferm/ferm.conf\n"
+        # resolver stdlib fallback works without py3-dnspython: an A-record
+        # @resolve() (localhost -> 127.0.0.1 via getaddrinfo) must not fail.
+        # REAL resolution (not --test), so iptables must be present -- it came
+        # in as a hard depends above.
+        "printf 'domain ip table filter chain OUTPUT {\\n"
+        " daddr @resolve(localhost) ACCEPT;\\n}\\n' > /tmp/r.ferm\n"
+        "ferm --noexec --lines /tmp/r.ferm >/dev/null\n"
+        # version-anchor (sani() oracle): the apk pkgver (from the artifact
+        # filename) must equal the binary's PEP 440 self-report run through the
+        # same apk sanitizer; on a tag the binary must also self-report the
+        # tag's full PEP 440 version (a failed injection would report 0.0.0 and
+        # mismatch). Derived from the artifact + binary, NOT a host re-resolve,
+        # so a commit between build and smoke does not false-red. TAG_VER here
+        # is the unsanitized tag.
+        + _SANI_SH_APK
+        + "vferm=$(ferm --version | head -1 | cut -d' ' -f2)\n"
+        "vapk=$(basename /work-out/pyferm-*.apk | sed -n"
+        " 's/^pyferm-\\(.*\\)-r[0-9]*\\.apk$/\\1/p')\n"
+        'expect=$(sani "$vferm")\n'
+        '[ "$vapk" = "$expect" ] || { echo "apk $vapk != sani($vferm)='
+        '$expect" >&2; exit 1; }\n'
+        'if [ -n "$TAG_VER" ]; then\n'
+        '  case "$vferm" in *"$TAG_VER") ;; *) echo "ferm $vferm not tag'
+        ' $TAG_VER" >&2; exit 1;; esac\n'
+        "fi\n"
+        "echo CELL1-OK\n"
+    )
+
+
+def _apk_smoke_cell_breadcrumb() -> str:
+    """Cell 2: posture-downgrade breadcrumb when an old service was enabled."""
+    return (
+        "set -e\n"
+        # the previous ferm service was ENABLED -- its runlevel symlink is on
+        # disk (dangling until our package lands /etc/init.d/ferm, which is all
+        # the file-wise check needs).
+        "mkdir -p /etc/runlevels/default\n"
+        "ln -sf /etc/init.d/ferm /etc/runlevels/default/ferm\n"
+        "apk add --no-cache --allow-untrusted /work-out/pyferm-*.apk"
+        " >/dev/null\n"
+        # this package adds the service to no runlevel (anti-lockout), so it
+        # warns durably: the posture-downgrade breadcrumb must be written.
+        "test -f /etc/ferm/POSTURE-DOWNGRADE.README\n"
+        "echo CELL2-OK\n"
+    )
+
+
+def _run_apk_smoke_cell(
+    out: Path, script: str, tag_ver: str, label: str
+) -> None:
+    """Run one install-smoke cell in a clean Alpine container."""
+    run = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{out}:/work-out:ro",
+            "-e",
+            f"TAG_VER={tag_ver}",
+            _APK_SMOKE_BASE,
+            "sh",
+            "-c",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = f"{label}-OK"
+    if run.returncode != 0 or marker not in run.stdout:
+        raise SystemExit(
+            f"apk install-smoke {label} failed:\n{run.stdout}\n{run.stderr}",
+        )
+
+
+def _action_smoke_apk(args: argparse.Namespace) -> int:
+    """
+    Install-smoke the built .apk in clean Alpine containers.
+
+    Two cells: a clean install (version, config parse, example, OpenRC-service
+    present-but-not-enabled, conf-hint rewrite, stdlib-resolver fallback) and
+    the posture-downgrade breadcrumb when an old service was enabled. The deb's
+    legacy-config migration and symlink-refusal cells have no apk analog (apk
+    auto-protects /etc on upgrade, and there is no cross-path legacy config on
+    Alpine). Operates on the .apk already in ``--out``.
+    """
+    # Absolute path: docker bind mounts need it (a relative path becomes a
+    # named volume).
+    out = args.out.resolve()
+    apks = sorted(out.glob("pyferm-*.apk"))
+    if not apks:
+        raise SystemExit(
+            f"no pyferm-*.apk in {out} -- run --action=build-apk first",
+        )
+    # The smoke anchors the apk pkgver against the binary's PEP 440 self-report
+    # via shell sani() (artifact + binary, not a host re-resolve); on a tag the
+    # binary must also self-report the tag's full PEP 440 version.
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    tag_ver = ""
+    if ref and os.environ.get("GITHUB_REF_TYPE") == "tag":
+        _validate_tag(ref)
+        tag_ver = _strip_tag_prefix(ref)
+    _run_apk_smoke_cell(out, _apk_smoke_cell_clean(), tag_ver, "CELL1")
+    _run_apk_smoke_cell(out, _apk_smoke_cell_breadcrumb(), tag_ver, "CELL2")
     return 0
 
 
@@ -1486,6 +2143,14 @@ def main(argv: list[str] | None = None) -> int:
         return _action_build_deb(args)
     if args.action == "smoke-deb":
         return _action_smoke_deb(args)
+    if args.action == "build-rpm":
+        return _action_build_rpm(args)
+    if args.action == "smoke-rpm":
+        return _action_smoke_rpm(args)
+    if args.action == "build-apk":
+        return _action_build_apk(args)
+    if args.action == "smoke-apk":
+        return _action_smoke_apk(args)
     if args.action == "print-version":
         return _action_print_version(args)
     if args.action == "verify-golden":
