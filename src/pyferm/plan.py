@@ -643,6 +643,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
     - ``add table <fam> ferm``                           -- materializes table
     - ``flush table <fam> ferm``                         -- materializes table
+    - ``delete table <fam> ferm``                        -- resets the table
     - ``add chain <fam> ferm <chain> { <header> }``     -- base chain
     - ``add chain <fam> ferm <chain>``                   -- user chain
     - ``add rule  <fam> ferm <chain> <body>``            -- rule
@@ -667,10 +668,17 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         # -- table envelope / flush directive: declares (materializes) the
         # ferm table; see the _ensure_ferm_table call below for why. ---------
         # Exact 4-token match: any extra token is a parse error.
-        if parts[1:2] == ["table"] and verb in ("add", "flush"):
+        if parts[1:2] == ["table"] and verb in ("add", "flush", "delete"):
             if len(parts) != _NFT_TABLE_PARTS or parts[3] != "ferm":
                 raise _parse_error(lineno, raw)
             family = _check_family(family, parts[2], lineno, raw)
+            if verb == "delete":
+                # `delete table` drops every object; a following `add table`
+                # re-materializes it empty.  This models the atomic whole-table
+                # replace (delete + re-add) the nft backend emits on a full
+                # reload so a removed base chain cannot survive empty.
+                tables.pop("ferm", None)
+                continue
             # Declaring the table materializes it even when the config
             # renders no chains: diff_tables iterates desired tables, so a
             # present-but-empty ferm table is what surfaces live foreign
@@ -1053,9 +1061,11 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:
     Index a ``render().save`` script into verbatim lines keyed by object name.
 
     Productions mirror :func:`parse_nft_script`; ``add table``/``flush table``
-    carry no per-object content and are skipped.  An unrecognized line is a
-    render-contract violation (render produced it), so it raises
-    :func:`internal_error` rather than being silently dropped.
+    carry no per-object content and are skipped, and ``delete table`` (the
+    whole-table replace a full reload applies) resets the index so only
+    objects after it count.  An unrecognized line is a render-contract
+    violation (render produced it), so it raises :func:`internal_error` rather
+    than being silently dropped.
     """
     index = _DesiredIndex()
     for line in desired_save.splitlines():
@@ -1063,6 +1073,9 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:
         if not stripped or stripped.startswith("#"):
             continue
         parts = stripped.split()
+        if parts[:2] == ["delete", "table"]:
+            index = _DesiredIndex()  # whole-table replace: drop anything prior
+            continue
         if parts[:2] in (["add", "table"], ["flush", "table"]):
             continue
         if len(parts) <= _DESIRED_NAME_INDEX or parts[0] != "add":

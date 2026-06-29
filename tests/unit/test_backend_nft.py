@@ -2036,13 +2036,18 @@ def test_commit_full_reload_opts_out(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "flush table ip ferm" in proc.stdout  # legacy full reload
+    # Full reload atomically replaces the whole table (delete + re-add) rather
+    # than `flush table`, which would keep a removed base chain's declaration
+    # (hook + policy) alive.  See _full_reload_text.
+    assert "delete table ip ferm" in proc.stdout
+    assert "flush table ip ferm" not in proc.stdout
 
 
 def test_commit_first_run_falls_back_to_full_reload(tmp_path: Path) -> None:
     # no mock-previous -> previous is None -> needs_full_reload -> full reload
     out = _run_apply(tmp_path, _FERM, None)
-    assert "flush table ip ferm" in out
+    assert "delete table ip ferm" in out
+    assert "flush table ip ferm" not in out
 
 
 def test_commit_idempotent_delta_emits_nothing(tmp_path: Path) -> None:
@@ -2086,7 +2091,39 @@ def test_commit_set_retype_falls_back_to_full_reload(tmp_path: Path) -> None:
     # a set 'remove' -> build_nft_delta returns None -> commit full-reloads
     # rather than emit a refcount-unsafe 'delete set'.
     out = _run_apply(tmp_path, _FERM_SET_INTERVAL, _MOCK_SET_PLAIN)
-    assert "flush table ip ferm" in out  # full reload, not a delta
+    # full reload (whole-table replace), not a delta
+    assert "delete table ip ferm" in out
+    assert "flush table ip ferm" not in out
+
+
+def test_commit_full_reload_noflush_neither_flushes_nor_deletes(
+    tmp_path: Path,
+) -> None:
+    # --noflush keeps the apply append-only: serialize_table emits no `flush
+    # table`, and the full-reload transform must not inject `delete table`
+    # either (that would defeat append-only semantics).
+    ferm_file = tmp_path / "c.ferm"
+    ferm_file.write_text(_FERM, encoding="utf-8")
+    proc = subprocess.run(
+        [
+            _sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--full-reload",
+            "--noflush",
+            "--test",
+            "--noexec",
+            "--lines",
+            str(ferm_file),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "flush table ip ferm" not in proc.stdout
+    assert "delete table ip ferm" not in proc.stdout
 
 
 # ---------------------------------------------------------------------------

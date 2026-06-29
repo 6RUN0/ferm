@@ -88,11 +88,11 @@ def test_empty_delta_leaves_rule_handles_unchanged(tmp_path: Path) -> None:
     ferm_file.write_text(_CONFIG, encoding="utf-8")
     py = sys.executable
     proc = _run_in_netns(
-        f"{py} -m pyferm --nft {ferm_file}\n"
+        f"{py} -m pyferm --nft --no-etckeeper {ferm_file}\n"
         "handle1=$(nft --handle list chain ip ferm INPUT"
         " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
         '[ -n "$handle1" ] || { echo "handle1 capture failed" >&2; exit 1; }\n'
-        f"{py} -m pyferm --nft {ferm_file}\n"
+        f"{py} -m pyferm --nft --no-etckeeper {ferm_file}\n"
         "handle2=$(nft --handle list chain ip ferm INPUT"
         " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
         '[ -n "$handle2" ] || { echo "handle2 capture failed" >&2; exit 1; }\n'
@@ -105,32 +105,80 @@ def test_empty_delta_leaves_rule_handles_unchanged(tmp_path: Path) -> None:
     )
 
 
-def test_full_reload_increments_rule_handles(tmp_path: Path) -> None:
-    """``--full-reload`` flushes and re-adds every rule, changing handles.
+def test_full_reload_rebuilds_the_table(tmp_path: Path) -> None:
+    """``--full-reload`` tears the whole table down and rebuilds it.
 
-    ``flush table`` deletes all rules; they are re-added with fresh kernel
-    handles.  This is the contrast to the empty-delta no-op: the rule object
-    itself was replaced, so its accumulated packet/byte counters are lost.
+    The full reload emits ``delete table`` + ``add table``, so every object is
+    replaced (rule counters are lost).  A rule's handle NUMBER can coincide
+    after the rebuild because nft restarts handle numbering for the fresh
+    table, so the reliable observable is an out-of-band object injected before
+    the
+    reload: a user chain ``sentinel`` the config never declares must NOT
+    survive.  (``flush table`` would have kept its empty declaration alive, so
+    this also guards the leftover-chain fix for non-base chains.)
     """
     ferm_file = tmp_path / "c.ferm"
     ferm_file.write_text(_CONFIG, encoding="utf-8")
     py = sys.executable
     proc = _run_in_netns(
-        f"{py} -m pyferm --nft {ferm_file}\n"
-        "handle1=$(nft --handle list chain ip ferm INPUT"
-        " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
-        '[ -n "$handle1" ] || { echo "handle1 capture failed" >&2; exit 1; }\n'
-        f"{py} -m pyferm --nft --full-reload {ferm_file}\n"
-        "handle2=$(nft --handle list chain ip ferm INPUT"
-        " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
-        '[ -n "$handle2" ] || { echo "handle2 capture failed" >&2; exit 1; }\n'
-        'echo "handle1=$handle1 handle2=$handle2"\n'
-        '[ "$handle1" != "$handle2" ]\n'
+        f"{py} -m pyferm --nft --no-etckeeper {ferm_file}\n"
+        # Inject a chain the config does not own.
+        "nft add chain ip ferm sentinel\n"
+        "nft list chain ip ferm sentinel >/dev/null 2>&1"
+        ' || { echo "sentinel not created" >&2; exit 1; }\n'
+        f"{py} -m pyferm --nft --no-etckeeper --full-reload {ferm_file}\n"
+        "nft list table ip ferm\n"
+        # Rebuilt from scratch: the out-of-band chain is gone, config stays.
+        "! nft list chain ip ferm sentinel >/dev/null 2>&1\n"
     )
     assert proc.returncode == 0, proc.stderr
-    assert re.search(r"handle1=[0-9]+", proc.stdout), (
-        "handle was not captured (grep returned empty)"
+    assert "chain sentinel" not in proc.stdout
+    assert "dport 80" in proc.stdout  # the config's own rule was re-added
+
+
+# Two base chains; the FORWARD one (hook forward, policy drop) is dropped in
+# the follow-up config to prove a full reload removes it for real.
+_CONFIG_TWO_BASE_CHAINS = """\
+domain ip table filter {
+    chain INPUT {
+        policy ACCEPT;
+        proto tcp dport 80 ACCEPT;
+    }
+    chain FORWARD {
+        policy DROP;
+        proto tcp dport 443 ACCEPT;
+    }
+}
+"""
+
+
+def test_full_reload_removes_dropped_base_chain(tmp_path: Path) -> None:
+    """A base chain removed from config must NOT survive a full reload.
+
+    ``flush table`` empties chains of rules but keeps their declarations, so a
+    removed base chain with ``policy drop`` would stay bound to its hook and
+    keep dropping all hooked traffic -- a silent lockout the operator believes
+    they removed.  The whole-table replace (``delete table; add table``) drops
+    the chain for real, matching what ``--plan`` reports.
+    """
+    full = tmp_path / "full.ferm"
+    full.write_text(_CONFIG_TWO_BASE_CHAINS, encoding="utf-8")
+    reduced = tmp_path / "reduced.ferm"
+    reduced.write_text(_CONFIG, encoding="utf-8")  # INPUT only, no FORWARD
+    py = sys.executable
+    proc = _run_in_netns(
+        f"{py} -m pyferm --nft --no-etckeeper {full}\n"
+        # FORWARD base chain must exist after the first apply.
+        "nft list chain ip ferm FORWARD >/dev/null 2>&1"
+        ' || { echo "FORWARD not created" >&2; exit 1; }\n'
+        f"{py} -m pyferm --nft --no-etckeeper --full-reload {reduced}\n"
+        "nft list table ip ferm\n"
+        # FORWARD must be gone (not merely emptied).
+        "! nft list chain ip ferm FORWARD >/dev/null 2>&1\n"
     )
+    assert proc.returncode == 0, proc.stderr
+    assert "chain FORWARD" not in proc.stdout
+    assert "chain INPUT" in proc.stdout  # the surviving chain is still there
 
 
 def test_delta_preserves_named_set_handle(tmp_path: Path) -> None:
@@ -142,10 +190,11 @@ def test_delta_preserves_named_set_handle(tmp_path: Path) -> None:
     unchanged after the second apply (pyferm skipped ``nft -f`` entirely,
     so nothing in the table was touched, including the named set).
 
-    Note: nft reuses set handles when ``flush table`` + ``add set`` happen
-    with the same name, so the set handle itself is not a reliable
-    discriminator between delta and full-reload.  Rule handles ARE: they
-    increment whenever rules are flushed and re-added.
+    The observable is the dport 80 rule handle: an empty delta skips ``nft -f``
+    entirely, so the handle is identical across the two applies.  (Full-reload
+    rebuild is covered by :func:`test_full_reload_rebuilds_the_table`; its
+    handle would not be a reliable discriminator here because a whole-table
+    replace restarts nft handle numbering.)
     """
     ferm_file = tmp_path / "c.ferm"
     ferm_file.write_text(_CONFIG_SET, encoding="utf-8")
@@ -153,13 +202,13 @@ def test_delta_preserves_named_set_handle(tmp_path: Path) -> None:
     # Use the dport 80 rule handle as the stability probe -- it is present in
     # both _CONFIG and _CONFIG_SET and always gets a non-zero kernel handle.
     proc = _run_in_netns(
-        f"{py} -m pyferm --nft {ferm_file}\n"
+        f"{py} -m pyferm --nft --no-etckeeper {ferm_file}\n"
         "rh1=$(nft --handle list chain ip ferm INPUT"
         " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
         '[ -n "$rh1" ]'
         ' || { echo "rh1 capture failed" >&2; exit 1; }\n'
         # Second apply: same config, set unchanged -> empty delta.
-        f"{py} -m pyferm --nft {ferm_file}\n"
+        f"{py} -m pyferm --nft --no-etckeeper {ferm_file}\n"
         "rh2=$(nft --handle list chain ip ferm INPUT"
         " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
         '[ -n "$rh2" ]'
@@ -167,21 +216,10 @@ def test_delta_preserves_named_set_handle(tmp_path: Path) -> None:
         'echo "rh1=$rh1 rh2=$rh2"\n'
         # Unchanged: empty delta left the table untouched.
         '[ "$rh1" = "$rh2" ]\n'
-        # Full-reload contrast: rule handles must change (chain was flushed).
-        f"{py} -m pyferm --nft --full-reload {ferm_file}\n"
-        "rh3=$(nft --handle list chain ip ferm INPUT"
-        " | grep 'dport 80' | grep -oP 'handle \\K[0-9]+')\n"
-        '[ -n "$rh3" ]'
-        ' || { echo "rh3 capture failed" >&2; exit 1; }\n'
-        'echo "rh3=$rh3"\n'
-        '[ "$rh1" != "$rh3" ]\n'
     )
     assert proc.returncode == 0, proc.stderr
     assert re.search(r"rh1=[0-9]+", proc.stdout), (
         "rule handle was not captured (grep returned empty)"
-    )
-    assert re.search(r"rh3=[0-9]+", proc.stdout), (
-        "rule handle after full-reload was not captured"
     )
 
 

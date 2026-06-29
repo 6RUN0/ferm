@@ -462,6 +462,32 @@ def serialize_table(
     return "".join(lines)
 
 
+def _full_reload_text(save: str, family: str) -> str:
+    """
+    Convert a flush-form save into an atomic whole-table replace.
+
+    ``flush table`` empties chains of rules but keeps their declarations, so a
+    base chain dropped from the config survives empty-but-hooked (still
+    enforcing its policy) and a removed named set keeps its definition.
+    Replacing the single ``flush table`` line with ``delete table`` +
+    ``add table`` drops every leftover chain/set and rebuilds from scratch,
+    converging like ``iptables-restore``.  The leading ``add table`` already in
+    ``save`` makes the ``delete`` safe on a first run, and the whole script
+    stays one atomic ``nft -f`` transaction.
+
+    The transform is applied only to the apply text, never to ``save`` itself:
+    ``save`` is also parsed by :func:`build_nft_delta` (which rejects any table
+    verb other than ``add``/``flush``) and backs the ``.nft`` goldens.
+    """
+    prefix = f"{family} {NFT_TABLE_NAME}"
+    flush_line = f"flush table {prefix}\n"
+    replacement = f"delete table {prefix}\nadd table {prefix}\n"
+    # No flush line (e.g. a save with nothing to flush) -> nothing to rewrite,
+    # so this is a no-op; the leftover-chain hazard only exists where a flush
+    # would have kept declarations alive.
+    return save.replace(flush_line, replacement, 1)
+
+
 # ---------------------------------------------------------------------------
 # ferm ontology -> nft family / base-chain mapping
 # ---------------------------------------------------------------------------
@@ -1405,6 +1431,7 @@ class NftBackend(Backend):
             domain_info.previous
         )
         apply_text = save
+        full_reload = True
         if use_delta:
             assert domain_info.previous is not None
             delta = build_nft_delta(domain_info.previous, save, family=family)
@@ -1412,6 +1439,12 @@ class NftBackend(Backend):
                 # None -> refcount-unsafe; keep apply_text == save (full
                 # reload).  "" stays "" -> empty-delta no-op below.
                 apply_text = delta
+                full_reload = False
+        if full_reload and not options.noflush:
+            # Whole-table replace, not `flush table`: the latter keeps a
+            # removed base chain's declaration (hook + policy) alive.
+            # --noflush stays append-only (no flush line to rewrite).
+            apply_text = _full_reload_text(save, family)
         if options.lines and apply_text:
             tool = domain_info.tools[TOOL_NFT]
             if options.shell:
