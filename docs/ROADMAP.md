@@ -152,20 +152,21 @@ here so they are not lost.
 - *Own apt repository* (reprepro/aptly) — the `.deb` ships as a GitHub
   Release asset; a signed apt repo is a separate distribution-lifecycle step.
 
-**Known limitation — apk posture-downgrade advisory:** the posture-downgrade
+**Cross-distro posture-downgrade advisory (verified):** the posture-downgrade
 breadcrumb (warning that the firewall will no longer auto-apply after a
-legacy `ferm` → `pyferm` migration) is reliable on `.deb`/`.rpm` because a
-pre-install hook (deb `preinst` / rpm `%pre`) snapshots the prior enablement
-across **all** regimes — the systemd wants symlink, the SysV `rc[2-5].d`
-start links, and best-effort `systemctl is-enabled` — into a `/run` marker
-that the post-install step consumes, *before* the legacy package is removed.
-`apk` has no pre-removal hook and the usual migration is two transactions
-(`apk del ferm` then `apk add pyferm`), so by the time `pyferm`'s
-post-install runs the legacy OpenRC runlevel symlink may already be gone and
-the advisory is missed. It is reliable only when `pyferm` is layered while
-the legacy `ferm` is still present. This is fail-safe — `pyferm` ships its
-service un-added to any runlevel regardless, so a missed advisory never
-causes a lockout; only the warning is lost.
+legacy `ferm` → `pyferm` migration) fires on all three formats. On
+`.deb`/`.rpm` a pre-install hook (deb `preinst` / rpm `%pre`) snapshots the
+prior enablement across **all** regimes — the systemd wants symlink, the SysV
+`rc[2-5].d` start links, and best-effort `systemctl is-enabled` — into a
+`/run` marker that the post-install step consumes, *before* the legacy package
+is removed. On Alpine the usual migration is two transactions (`apk del ferm`
+then `apk add pyferm`) and `apk` has no pre-removal hook, but this is fine: the
+OpenRC runlevel symlink is admin state that `apk del` does not remove (the
+upstream `ferm` aport ships no deinstall scriptlet), and `apk add pyferm`
+re-lands its own service before its post-install probes, so the symlink is
+present; the probe uses `[ -L ]` (lstat) so it matches whether the symlink is
+live or dangling. Fail-safe regardless — the service is added to no runlevel,
+so even a missed advisory never causes a lockout.
 
 **CVE-rebuild of bundled native libraries (automatable trigger SHIPPED;
 recovery remains the owner's ongoing debt):**

@@ -101,16 +101,19 @@ but any `systemctl enable ferm` those tools may run will apply the default
 DROP configuration. Audit what your automation does before installing.
 
 **Alpine (`.apk`, OpenRC):** the posture-downgrade advisory (a breadcrumb
-warning that the firewall will no longer auto-apply after migrating) is
-reliable only when `pyferm` is *layered* while the legacy `ferm` is still
-present — `apk` has no pre-removal hook, and the usual two-transaction
-migration (`apk del ferm` then `apk add pyferm`) may have already removed the
-legacy OpenRC runlevel symlink before `pyferm`'s post-install script samples
-it, so the advisory can be missed. This is fail-safe — `pyferm` ships its
-service un-added to any runlevel regardless, so a missed advisory never
-causes a lockout; only the warning is lost. The `.deb`/`.rpm` packages do not
-have this gap: they snapshot the prior posture in a pre-install hook that runs
-before the legacy package is removed.
+warning that the firewall will no longer auto-apply after migrating) works
+across the usual two-transaction migration (`apk del ferm` then
+`apk add pyferm`), even though `apk` has no pre-removal hook. The OpenRC
+runlevel symlink is admin state, not a package-owned file, so `apk del ferm`
+leaves it in place (the upstream Alpine `ferm` aport ships no deinstall
+scriptlet that would remove it), and `apk add pyferm` lays its own service
+down before its post-install runs, so the symlink is present at probe time.
+Detection uses `[ -L ]` (lstat), so it holds whether the symlink is live or
+dangling. Fail-safe regardless — `pyferm` ships its service un-added to any
+runlevel, so even a missed advisory never causes a lockout. The `.deb`/`.rpm`
+packages snapshot the prior posture in a pre-install hook (which runs before
+the legacy package is removed) across systemd, SysV and `systemctl
+is-enabled`.
 
 ### PyPI (pip)
 

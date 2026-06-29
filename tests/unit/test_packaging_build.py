@@ -388,6 +388,22 @@ def test_maintainer_identity_is_consistent() -> None:
     assert full in apkbuild  # # Maintainer: line
 
 
+def test_apk_post_install_probes_runlevel_symlink_with_lstat() -> None:
+    # The posture-downgrade probe must use `[ -L ]` (lstat), not `ls`, on the
+    # runlevel symlink: after `apk del ferm` the package-owned init script is
+    # gone, so a symlink can be dangling, and busybox `ls` follows it and fails
+    # -- which would silently drop the advisory. `[ -L ]` matches live OR
+    # dangling. Guards the empirically-found probe regression.
+    root = _find_repo_root()
+    script = (root / "packaging" / "apk" / "pyferm.post-install").read_text(
+        encoding="utf-8",
+    )
+    assert '[ -L "$runlevel_link" ]' in script
+    assert "for runlevel_link in /etc/runlevels/*/ferm" in script
+    # The buggy follow-the-symlink probe must not be the trigger guard.
+    assert "if ls /etc/runlevels/*/ferm" not in script
+
+
 # -- rpm posture-downgrade snapshot/breadcrumb ------------------------------
 
 
