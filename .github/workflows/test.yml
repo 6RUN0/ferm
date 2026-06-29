@@ -241,5 +241,23 @@ jobs:
       - name: Sync the locked environment
         run: uv sync --locked
 
+      # Make "ran" observable: the delta-apply test self-skips when rootless
+      # user namespaces are unavailable, so a green leg could mean "never
+      # exercised" rather than "passed". Where the AppArmor knob exists the
+      # relaxation step above was supposed to enable rootless userns; assert it
+      # actually works and fail loudly otherwise. No ``|| true`` -- a blocked
+      # userns here is a CI regression, not a skip. Where the knob is absent the
+      # relaxation does not apply, so the assertion is skipped.
+      - name: Require rootless user namespaces (no silent self-skip)
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            if ! unshare -rn true; then
+              echo "rootless user namespaces still blocked despite the" \
+                   "AppArmor relaxation; the delta-apply e2e would self-skip" >&2
+              exit 1
+            fi
+          fi
+
       - name: Rootless live-nft delta-apply e2e (no docker)
         run: uv run nox -s delta_apply_e2e

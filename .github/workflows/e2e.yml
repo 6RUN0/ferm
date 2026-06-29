@@ -81,11 +81,51 @@ jobs:
           SESSION: ${{ matrix.session }}
         run: uv run nox -s "$SESSION"
 
+  # The native package artifacts (.deb/.rpm/.apk) and their in-container
+  # install-smoke: out of the per-PR test.yml because each leg builds inside a
+  # pinned distro toolchain image (docker) and re-globs a single artifact in
+  # dist/. One format per job keeps dist/ clean -- the smoke cells break on
+  # more than one matching artifact -- and lets the three run in parallel.
+  package-smoke:
+    runs-on: ubuntu-latest
+    # Cold runs pull a distro base image and build the package; cap so a hung
+    # pull/build fails instead of stalling to the 6h default (like kernel-e2e).
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        format:
+          - {name: deb, build: build_deb, smoke: deb_smoke}
+          - {name: rpm, build: build_rpm, smoke: rpm_smoke}
+          - {name: apk, build: build_apk, smoke: apk_smoke}
+    steps:
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: Build the native package and run its install-smoke
+        # Pass the matrix sessions through the environment, never interpolated
+        # into the shell, so they cannot become a command-injection sink. The
+        # job's fresh dist/ guarantees the smoke cells see exactly one artifact.
+        env:
+          BUILD: ${{ matrix.format.build }}
+          SMOKE: ${{ matrix.format.smoke }}
+        run: uv run nox -s "$BUILD" "$SMOKE"
+
   # A red scheduled run otherwise only emails the workflow author; an issue
   # is the durable, visible escalation path (mirrors audit.yml).  Push- and
   # dispatch-triggered failures stay out: the operator already sees those.
   escalate:
-    needs: kernel-e2e
+    needs: [kernel-e2e, package-smoke]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
