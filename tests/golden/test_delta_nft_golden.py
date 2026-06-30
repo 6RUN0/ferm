@@ -22,6 +22,12 @@ from pathlib import Path
 
 import pytest
 
+# This module drives the pyferm CLI as ``python -m pyferm`` (the source
+# module), not the packaged binary, so it cannot run in the binary
+# verify-golden venv, which is deliberately pyferm-free. Skip there; the
+# normal test run installs pyferm and exercises it.
+pytest.importorskip("pyferm")
+
 _HERE = Path(__file__).resolve().parent
 _DELTA_DIR = _HERE / "delta_nft"
 _CASES = sorted(_DELTA_DIR.glob("*.ferm"))
