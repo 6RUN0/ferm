@@ -6,13 +6,27 @@ file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-For the history of the original Perl implementation (versions up to and
-including `v2.8`), see [`reference/NEWS`](reference/NEWS).
+For the history of the original Perl implementation, see
+[`reference/NEWS`](reference/NEWS).
 
 ## [Unreleased]
 
 ### Added
 
+- **Read-only plan mode (`--plan`).** `ferm --plan` computes the ruleset and
+  reports what would change against the live kernel without applying anything,
+  for both the default `iptables` backend and `--nft`. `--plan-format` selects
+  a `structured` summary (default) or a unified `diff`. The run is exit-coded:
+  `0` when nothing would change, non-zero otherwise. `@preserve` is reported as
+  unsupported under `--plan`.
+- **Config history and rollback via etckeeper.** When
+  [etckeeper](https://etckeeper.branchable.com/) manages `/etc`, every
+  successful apply records a commit in the `/etc` history with a semantic
+  message describing the kernel-ruleset delta (for example `filter/INPUT:
+  +3 -1`). `ferm rollback`, `rollback --list`, and `rollback --to <sha>` revert
+  `/etc/ferm` to an earlier revision and re-apply it (git-only; the source is
+  restored and regenerated, not the exact prior bytes). On by default when
+  etckeeper is installed; `--no-etckeeper` turns it off for a single run.
 - **Named nft sets via `@set`.** A `@set $name = (...)` declaration binds a
   reusable set of ports, addresses, or interface names. Under `--nft` the set
   is emitted as a first-class nft object (`add set` + `add element`) and the
@@ -22,10 +36,6 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
   the identical cartesian product a literal list would produce — a config using
   `@set` works on both backends. `ferm --plan --nft` reports set additions,
   removals, and element changes alongside chain and rule diffs.
-- **First `ferm --plan --nft` after upgrading may show a one-time large diff**
-  when a config adopts `@set`: the live kernel still holds the previous linear
-  rules, so each rule that now references a set appears as a change until the
-  next apply. This is expected and resolves on the first apply.
 - **Base-chain priority knob (`--nft`).** A built-in chain may carry an
   explicit nft priority, written after the chain name: `chain FORWARD
   priority -1 { ... }`. The priority may be a plain integer or an nft
@@ -50,13 +60,47 @@ including `v2.8`), see [`reference/NEWS`](reference/NEWS).
 
 ### Changed
 
-- The `--nft` backend now folds adjacent rules that differ in a single value
+- **`--nft` applies an incremental delta by default.** Instead of flushing and
+  rebuilding ferm's table on every apply, the `--nft` backend now diffs the
+  desired ruleset against the live one and applies only the changed sets,
+  chains, and rules in a single atomic `nft -f -` transaction, preserving
+  untouched counters. `--full-reload` restores the previous flush-and-rebuild
+  behaviour. A first apply, an empty live snapshot, or a set retype falls back
+  to a full reload automatically; a delta that would delete a set falls back
+  too (the delta path never deletes a set).
+- The `--nft` backend folds adjacent rules that differ in a single value
   into anonymous nft sets (`tcp dport { 22, 80, 443 }`), producing more compact
   output. Negated matches and per-rule-distinct statements stay linear.
-- **First `ferm --plan --nft` after upgrading shows a large diff**: the live
-  kernel still holds the previous linear rules, so each folded rule appears as
-  `remove (N linear) + add (1 set)`. This is expected and resolves on the next
-  apply.
+- **`--nft` folds single-key rules with distinct verdicts into a verdict map**
+  (`tcp dport vmap { 22 : accept, 80 : drop }`) and collapses address ranges
+  into interval sets, for more compact output.
+
+### Packaging
+
+- **Native `.rpm` and `.apk` packages.** Alongside the PyPI wheel/sdist, the
+  `.deb`, and the standalone binary, RPM (`.rpm`, for RPM-based distros) and
+  Alpine (`.apk`, OpenRC) packages are now built and smoke-tested. Like the
+  `.deb` they replace a prior `ferm` and ship the starter config un-applied
+  (anti-lockout); the Alpine package carries a posture-downgrade advisory
+  across the two-transaction `apk` migration.
+
+### Security
+
+- **The standalone binary refuses to run from a writable dist directory.**
+  Run as root, it verifies its own `ferm.dist/` directory is owned by root and
+  not group- or world-writable before loading its bundled shared objects,
+  otherwise printing how to fix the permissions. This blocks a local attacker
+  from planting a malicious shared object next to the binary.
+  `FERM_SKIP_DIST_PERM_CHECK=1` overrides it for a deliberately non-standard
+  layout.
+
+### Notes
+
+- **The first `ferm --plan --nft` after upgrading may show a one-time large
+  diff.** When a config adopts `@set` or rule/verdict-map folding, the live
+  kernel still holds the previous linear rules, so each affected rule appears
+  as a change (for folding, `remove (N linear) + add (1 set)`) until the next
+  apply. This is expected and resolves on the first apply.
 
 ## [0.1.0a3] - 2026-06-16
 
@@ -191,12 +235,12 @@ are unchanged unless `--nft` is passed.
 
 ### Changed
 
-- `dnspython` is now an optional dependency (`pip install pyferm[dns]`).
+- `dnspython` is now an optional dependency (`pip install ferm[dns]`).
   Without it, `@resolve` uses the system stub resolver (`getaddrinfo`) and
   supports only `A`/`AAAA` records; `NS`/`MX` and other types raise a clear
   error. **Migration:** installs that relied on the previously-transitive
   `dnspython` get the stub backend after upgrading; reinstall with
-  `pyferm[dns]` to restore `NS`/`MX` support.
+  `ferm[dns]` to restore `NS`/`MX` support.
 
 ### Added — Phase 1 (faithful port)
 

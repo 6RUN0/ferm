@@ -46,13 +46,14 @@ uv run nox -s crashfuzz -- 300     # both targets, 300s each
 Standalone (any libFuzzer flag works):
 
 ```sh
-uv run --group crashfuzz python fuzz/fuzz_config.py \
+uv run --group crashfuzz --python 3.13 python fuzz/fuzz_config.py \
     fuzz/corpus/config tests/corpus/configs -max_total_time=60
-uv run --group crashfuzz python fuzz/fuzz_import.py \
+uv run --group crashfuzz --python 3.13 python fuzz/fuzz_import.py \
     fuzz/corpus/import fuzz/seeds/import -max_total_time=60
 ```
 
-`atheris` ships cp311–cp313 wheels only, so the session pins Python 3.13.
+`atheris` ships cp311–cp313 wheels only, so pin Python 3.13 (the `crashfuzz`
+nox session does this for you).
 
 ## Layout
 

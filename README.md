@@ -56,15 +56,18 @@ There are no required runtime dependencies. `@resolve()` uses
 vocabulary, including `NS`/`MX`); otherwise it falls back to the system stub
 resolver (`getaddrinfo`, honouring `/etc/nsswitch.conf`), which answers only
 `A`/`AAAA` records — other types then raise a clear error. Install the `dns`
-extra (`pip install pyferm[dns]`) for the full set of record types. The stub
+extra (`pip install ferm[dns]`) for the full set of record types. The stub
 resolver consults system sources such as `/etc/hosts` and mDNS that dnspython
 bypasses, so the two backends can diverge when those local sources differ from
 authoritative DNS.
 
 ## Installation
 
-Three distribution forms are available. All carry the same version derived
-from the same git tag.
+Several distribution forms are available; all carry the same version derived
+from the same git tag. PyPI, the native `.deb`, and the standalone binary are
+documented below. Native `.rpm` (RPM-based distros) and `.apk` (Alpine)
+packages are also built — install them with your distribution's package
+manager; their migration behaviour is covered in the warning above.
 
 ### WARNING: the default configuration blocks all inbound traffic
 
@@ -176,7 +179,7 @@ keyword. The native `--nft` backend instead manages a single
 `table <family> ferm` and leaves other tables untouched — but it does not
 support `@preserve`.
 
-### Installation (standalone binary)
+### Standalone binary
 
 A self-contained binary is published for **Linux x86_64** (glibc **2.28**
 or newer). It carries its own Python runtime and a bundled `dnspython`,
@@ -380,10 +383,10 @@ Selected `nox` sessions:
 
 | Session         | Purpose                                                         |
 | --------------- | --------------------------------------------------------------- |
-| `lint`          | `ruff` lint + format check                                      |
+| `lint`          | all pre-commit hooks (`ruff` lint + format, codespell, …)       |
 | `tests`         | unit + golden-file suite                                        |
 | `typecheck`     | `mypy` + `pyright` (`verifytypes` 100%)                         |
-| `golden_oracle` | golden output diffed against the Perl oracle + differential fuzz |
+| `golden_oracle` | golden output diffed against the Perl oracle                    |
 | `coverage`      | coverage with an enforced floor                                 |
 | `matrix`        | the suite across Python 3.11–3.14                               |
 | `fuzz`          | Hypothesis differential fuzzing vs. the oracle                  |
@@ -402,7 +405,7 @@ Hypothesis-generated inputs — so divergences are caught automatically.
 
 ## License
 
-GPL-2.0-or-later. See `reference/COPYING`.
+GPL-2.0-or-later. See `COPYING`.
 
 Original authors: Auke Kok and Max Kellermann. Python port maintained by
 Boris Talovikov.

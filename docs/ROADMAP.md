@@ -8,8 +8,13 @@ summarises the strategy and phase breakdown.
 `iptables`) is complete. Phase 2 (native `nft` backend behind `--nft`) is
 available but **opt-in / experimental** — functional and adversarially
 reviewed, but without a Perl-oracle differential test and with the
-documented DROP-policy and `@preserve` differences. The default backend
-stays `iptables`. See [`CHANGELOG.md`](../CHANGELOG.md).
+documented DROP-policy and `@preserve` differences. Phase 3 (packaging) has
+shipped a first alpha to PyPI (`ferm`), with `.deb`/`.rpm`/`.apk` packages
+and a standalone binary. Phases 4 (operational safety: `--plan`, delta-apply,
+etckeeper rollback) and 5 (nft-native sets, interval sets, verdict maps,
+native `reject-with`) are implemented on the `python-port` branch but not yet
+released. The default backend stays `iptables`. See
+[`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Guiding principle: one variable per phase
 
@@ -107,20 +112,22 @@ no Perl-oracle differential test (only the golden + `nft -c` harness), and
 the DROP-policy shift and `@preserve` regression above are by design — the
 default `iptables` backend is unchanged.
 
-### Phase 3 — Binary packaging (optional)
+### Phase 3 — Packaging (optional) ✅
 
 Optionally ship a self-contained binary (Nuitka). Order-independent: can
 land any time after Phase 1.
 
-Three release artifacts now ship from one source and one git-tag version
+Release artifacts now ship from one source and one git-tag version
 (`hatch-vcs`, scoped to the port's `py-v<PEP440>` tags): the standalone
 Nuitka binary, a **PyPI wheel + sdist** (`uv build`/`uv publish` via Trusted
-Publishing, no token secrets), and a **native `.deb`** (`debhelper`/
+Publishing, no token secrets), a **native `.deb`** (`debhelper`/
 `dh-python`, drop-in over the upstream Perl `ferm` via
-`Provides/Conflicts/Replaces`). The `.deb` ships a starter `/etc/ferm/ferm.conf`
-and a systemd unit that is **not** enabled on install (anti-lockout); the
-admin opts in with `systemctl enable --now ferm`. Build-provenance
-attestation covers all three.
+`Provides/Conflicts/Replaces`), and native **`.rpm`** and **`.apk`** packages
+for RPM-based and Alpine (OpenRC) distros. The `.deb`/`.rpm`/`.apk` ship a
+starter `/etc/ferm/ferm.conf` and a service unit that is **not** enabled on
+install (anti-lockout); the admin opts in with `systemctl enable --now ferm`
+(`rc-update add ferm` on Alpine). Build-provenance attestation covers the
+binary, wheel, sdist, and `.deb`; the `.rpm`/`.apk` are not yet attested.
 
 #### Deferred packaging debt
 
@@ -242,7 +249,7 @@ This is mitigated today by the digest-pinned build image (the exact `.so`
 set is fixed by the image), so it is recorded as a residual to tighten if
 the normalization ever outlives the digest pin, not an open hole.
 
-### Phase 4 — Operational safety (diff/apply engine)
+### Phase 4 — Operational safety (diff/apply engine) ✅
 
 Depends on Phase 2 (native nft: handles + atomic transactions). A
 `commit` strategy that computes and applies a delta rather than a full
@@ -283,7 +290,7 @@ operator-facing details.
 
 #### Deferred items
 
-The following are explicitly out of scope for this slice and recorded here so
+The following are explicitly out of scope for Phase 4 and recorded here so
 they are not lost.
 
 - *Rule-granular delta by nft handle* — per-rule packet/byte counters survive
@@ -305,7 +312,7 @@ they are not lost.
 - *append-only `--noflush`* under `--nft` — remains deferred.
 - *JSON output mode* (`nft -j`) — not related to the delta path.
 
-### Phase 5 — nft-native expressiveness
+### Phase 5 — nft-native expressiveness ✅
 
 Depends on Phase 2 — the payoff for going native: sets, maps, intervals,
 concatenations, native `reject-with`, and the performance wins on
@@ -375,8 +382,8 @@ deliberate, documented exceptions recorded below.
 
 #### Deferred debt
 
-The following items are explicitly **out of scope** of the anonymous-set
-slice and recorded here so they are not lost.
+The following items are explicitly **out of scope** of Phase 5 and recorded
+here so they are not lost.
 
 - *iptables port-range form (`lo-hi` vs `lo:hi`)* — ferm emits an iptables
   `--dport lo-hi` (dash) form that modern `nft`-backed `iptables-restore`
@@ -460,6 +467,8 @@ cross-check. The one anchor still missing from PR CI is a per-PR
 `nft_conformance` run, so the nft *canon* (as opposed to the data path) has
 only a weekly automated backstop — promoting it is the standing remedy; the
 heavier docker e2e/conformance suites stay deliberately out of PR CI.
+
+### Phase 6 — Standard rule library (ready-made patterns)
 
 An includable `.ferm` macro library with a search path (e.g.
 `@forward_port`, `@masquerade`); richer recipes (`@block_country`,
