@@ -7,8 +7,14 @@
 # Each Filters entry is a Python regex matched against a full rpmlint line.
 Filters = [
     # rpmlint's dictionary does not know netfilter/firewall vocabulary; these
-    # are correct domain terms, not typos.
-    '.*spelling-error.*(iptables|ip6tables|arptables|ebtables|nftables|netfilter|systemctl|dnspython|etckeeper).*',
+    # are correct domain terms, not typos. ``frontend`` (the Summary describes
+    # ferm as a frontend for iptables) and ``conf`` (ferm.conf) are likewise
+    # correct, just absent from rpmlint's word list.
+    '.*spelling-error.*(iptables|ip6tables|arptables|ebtables|nftables|netfilter|systemctl|dnspython|etckeeper|frontend|conf).*',
+    # The bundled COPYING is the verbatim upstream GPLv2 text, which carries the
+    # historical FSF postal address. It is the license as published; rewriting
+    # an address into a license file is not ours to do, so this is filtered.
+    '.*incorrect-fsf-address.*/COPYING$',
     # The maintenance scriptlets intentionally use mktemp/mv/rm: the atomic
     # posture-downgrade breadcrumb write in %post and its cleanup in %postun.
     # They mirror the reviewed .deb maintscripts. (No %pre: the spec ships no
