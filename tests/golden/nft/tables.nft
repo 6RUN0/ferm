@@ -1,5 +1,6 @@
 add table ip ferm
-flush table ip ferm
+delete table ip ferm
+add table ip ferm
 add chain ip ferm INPUT { type filter hook input priority 0; }
 add chain ip ferm mangle_INPUT { type filter hook input priority -150; }
 add rule ip ferm INPUT tcp dport 22 accept

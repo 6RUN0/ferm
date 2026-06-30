@@ -1,11 +1,13 @@
 add table ip ferm
-flush table ip ferm
+delete table ip ferm
+add table ip ferm
 add set ip ferm m { type ipv4_addr; }
 add element ip ferm m { 10.0.0.1 }
 add chain ip ferm INPUT { type filter hook input priority 0; }
 add rule ip ferm INPUT ip saddr @m accept
 add table ip6 ferm
-flush table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
 add set ip6 ferm m { type ipv6_addr; }
 add element ip6 ferm m { 2001:db8::1 }
 add chain ip6 ferm INPUT { type filter hook input priority 0; }

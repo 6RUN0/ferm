@@ -1,5 +1,6 @@
 add table ip ferm
-flush table ip ferm
+delete table ip ferm
+add table ip ferm
 add set ip ferm r { type ipv4_addr; flags interval; }
 add element ip ferm r { 10.0.0.0-10.0.0.255, 172.16.0.5, 192.168.0.0/16 }
 add chain ip ferm INPUT { type filter hook input priority 0; }

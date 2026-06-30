@@ -1,5 +1,6 @@
 add table ip ferm
-flush table ip ferm
+delete table ip ferm
+add table ip ferm
 add set ip ferm ssh { type inet_service; }
 add element ip ferm ssh { 22, 2222 }
 add chain ip ferm INPUT { type filter hook input priority 0; }

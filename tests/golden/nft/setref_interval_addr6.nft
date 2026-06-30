@@ -1,5 +1,6 @@
 add table ip6 ferm
-flush table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
 add set ip6 ferm r { type ipv6_addr; flags interval; }
 add element ip6 ferm r { 2001:db8::1-2001:db8::ff, 2001:db8:1::/48 }
 add chain ip6 ferm INPUT { type filter hook input priority 0; }

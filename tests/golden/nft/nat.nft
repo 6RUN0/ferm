@@ -1,5 +1,6 @@
 add table ip ferm
-flush table ip ferm
+delete table ip ferm
+add table ip ferm
 add chain ip ferm nat_POSTROUTING { type nat hook postrouting priority 100; }
 add chain ip ferm nat_PREROUTING { type nat hook prerouting priority -100; }
 add rule ip ferm nat_POSTROUTING oifname "eth0" snat to 192.168.1.1
