@@ -1825,6 +1825,14 @@ def _action_verify_golden(args: argparse.Namespace) -> int:
         f"! ldd {in_dist} | grep -q /opt/python && "  # self-containment
         "env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C PYTHONPATH= PYTHONHOME= "
         "FERM_GOLDEN_TARGET=binary "
+        # The container runs as root, but the bind-mounted dist is owned by the
+        # CI build user and mounted read-only -- so the load-time dist-perm
+        # guard (root must not load non-root-owned objects) fires and refuses
+        # every invocation. That guard protects real root installs; this
+        # hermetic, network-less verify container has no privilege boundary to
+        # defend, and the dist cannot be chowned through a :ro mount. Opt out
+        # via the documented override so the golden parity check can run.
+        "FERM_SKIP_DIST_PERM_CHECK=1 "
         f"FERM_BINARY={in_dist} "
         # -o addopts= neutralizes repo addopts: /opt/golden-venv carries only
         # pytest, not pytest-timeout/xdist the repo config may reference.
