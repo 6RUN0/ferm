@@ -36,6 +36,12 @@ case "$1" in
             if [ ! -e "$BREADCRUMB" ] \
                 && { [ -L "$WANTS" ] || [ -e "$MARKER" ] \
                      || ls /etc/rc[2-5].d/S??ferm >/dev/null 2>&1; }; then
+                # The breadcrumb is advisory, not a hard error (mirrors the
+                # rpm %post guard). Wrap the whole write in `{ ...; } || true`
+                # so a failed mkdir/mktemp/mv under `set -e` (e.g. ENOSPC or a
+                # read-only /etc) does not abort the install -- only the
+                # advisory is lost; the firewall posture is unchanged.
+                {
                 mkdir -p /etc/ferm
                 # Atomic write: render to a temp file, then rename into place.
                 tmp="$(mktemp "${BREADCRUMB}.XXXXXX")"
@@ -55,6 +61,7 @@ EOF
                 mv -f "$tmp" "$BREADCRUMB"
                 echo "pyferm: previous ferm was enabled; this package does NOT" \
                      "auto-enable the unit. See $BREADCRUMB." >&2
+                } || true
             fi
             # Consume the preinst snapshot marker once read (best-effort). It is
             # in /run and self-clears on reboot, but drop it now so a later

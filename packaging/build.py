@@ -1364,6 +1364,11 @@ def _rpm_container_script(uid: int, gid: int) -> str:
         # like no-manual-page-for-binary / no-documentation). The curated
         # config filters domain spelling + by-design scriptlet findings.
         'rpmlint -c /work-src/rpmlint.toml "$rpm" | tee /tmp/rl.txt || true\n'
+        # Fail closed if rpmlint did not run to completion (crash, missing
+        # binary, bad config): its summary footer must be present, else the
+        # ": E: " grep below would pass vacuously on empty output.
+        "grep -Eq '[0-9]+ packages and [0-9]+ specfiles checked' /tmp/rl.txt"
+        ' || { echo "rpmlint did not run to completion" >&2; exit 1; }\n'
         'if grep -q ": E: " /tmp/rl.txt; then echo "rpmlint errors" >&2;'
         " exit 1; fi\n"
         "ver=$(rpm -qp --qf '%{VERSION}' \"$rpm\")\n"

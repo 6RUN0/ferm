@@ -12,8 +12,10 @@ Filters = [
     # The maintenance scriptlets intentionally use mktemp/mv/rm: the atomic
     # posture-downgrade breadcrumb write in %post and its cleanup in %postun.
     # They mirror the reviewed .deb maintscripts. (No %pre: the spec ships no
-    # legacy-config migration -- see the note in pyferm.spec.)
-    '.*dangerous-command-in-%(post|postun).*',
+    # legacy-config migration -- see the note in pyferm.spec.) Anchored to those
+    # exact commands so a future genuinely-dangerous command in these sections
+    # is NOT silently whitelisted.
+    '.*dangerous-command-in-%(post|postun) (mktemp|mv|rm)(\s.*)?$',
     # The %changelog carries a 0.0.0 seed entry; the real version is injected at
     # build time via --define (mirrors the .deb changelog seed), so the
     # changelog version intentionally trails the built one.
