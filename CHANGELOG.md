@@ -11,7 +11,7 @@ For the history of the original Perl implementation, see
 
 ## [Unreleased]
 
-## [0.1.0a5] - 2026-06-30
+## [0.1.0a6] - 2026-06-30
 
 ### Added
 
@@ -310,6 +310,6 @@ are unchanged unless `--nft` is passed.
   `preflight` and into GitHub Actions CI (static checks split out, patch
   gate on PRs, weekly audit + Dependabot).
 
-[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a5...develop
-[0.1.0a5]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...py-v0.1.0a5
+[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a6...develop
+[0.1.0a6]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...py-v0.1.0a6
 [0.1.0a3]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a3

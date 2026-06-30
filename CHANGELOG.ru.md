@@ -11,6 +11,8 @@
 
 ## [Не выпущено]
 
+## [0.1.0a6] - 2026-06-30
+
 ### Добавлено
 
 - **Режим плана только для чтения (`--plan`).** `ferm --plan` вычисляет набор
@@ -324,5 +326,6 @@ Perl-реализации и генерирует наборы правил `ipt
   обязательный `preflight` и в CI GitHub Actions (статические проверки
   выделены отдельно, patch-гейт на PR, еженедельный audit + Dependabot).
 
-[Не выпущено]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...develop
+[Не выпущено]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a6...develop
+[0.1.0a6]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...py-v0.1.0a6
 [0.1.0a3]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a3
