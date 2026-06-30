@@ -2027,6 +2027,11 @@ def _action_run_dns_gate(args: argparse.Namespace) -> int:
             f"{dist_root}:/work-dist:ro",
             "-e",
             f"FERM_BINARY=/work-dist/{_DIST_DIRNAME}/ferm",
+            # The container runs the binary as root over a CI-user-owned,
+            # read-only dist, tripping the load-time dist-perm guard. This gate
+            # proves dnspython resolves; opt out via the documented override.
+            "-e",
+            "FERM_SKIP_DIST_PERM_CHECK=1",
             _DNS_GATE_IMAGE,
         ],
         capture_output=True,
@@ -2081,6 +2086,12 @@ def _action_run_interactive_gate(args: argparse.Namespace) -> int:
             f"FERM_BINARY=/work-dist/{_DIST_DIRNAME}/ferm",
             "-e",
             "DATAPATH_SCENARIO=interactive",
+            # Runs the binary as root (NET_ADMIN to apply nft) over a
+            # CI-user-owned, read-only dist, tripping the load-time dist-perm
+            # guard. This gate proves the confirm/timeout + termios path; opt
+            # out via the documented override.
+            "-e",
+            "FERM_SKIP_DIST_PERM_CHECK=1",
             _INTERACTIVE_GATE_IMAGE,
             "python3",
             "/work/datapath/driver.py",
@@ -2129,6 +2140,13 @@ def _action_run_on_image(args: argparse.Namespace) -> int:
         "run",
         "--rm",
         "--network=none",
+        # The dist is owned by the CI build user and mounted read-only, but
+        # the container runs the binary as root, so the load-time dist-perm
+        # guard refuses it before any work. This gate proves the FLOOR glibc
+        # loads and runs the binary, not the dist-perm posture; opt out via
+        # the documented override (real root installs ship a root-owned dist).
+        "-e",
+        "FERM_SKIP_DIST_PERM_CHECK=1",
         "-v",
         f"{_REPO_ROOT}:/work:ro",
         "-v",
