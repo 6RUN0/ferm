@@ -122,6 +122,94 @@ jobs:
           name: pyferm-deb
           path: dist/pyferm_*.deb
 
+  build-rpm:
+    # Parallel to `build`/`build-deb`: the native .rpm is an independent
+    # reversible stage. Builds inside the digest-pinned Fedora toolchain image.
+    runs-on: ubuntu-latest
+    # Cold runs pull a distro base image and build the package; cap so a hung
+    # pull/build fails instead of stalling to the 6h default (mirrors e2e.yml).
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          # No cache on the release trust boundary: a tag-triggered publish
+          # must not consume a potentially poisoned runtime cache (zizmor
+          # cache-poisoning). Releases are rare; cache speed is irrelevant.
+          enable-cache: false
+
+      - name: Verify the lockfile is in sync
+        run: uv lock --check
+
+      # Builds the digest-pinned fedora image, packs a clean git-archive source
+      # tree, runs rpmbuild + rpmlint (E: reds), version-anchors the rpm
+      # Version field.
+      - name: Build the native .rpm (release mode, clean checkout)
+        run: |
+          python packaging/build.py --action=build-rpm --mode=release \
+            --tag "${GITHUB_REF_NAME}" --out dist
+
+      # Install-smoke in clean Fedora containers: clean install + the
+      # posture-downgrade breadcrumb when the prior unit was enabled.
+      - name: Install-smoke the .rpm
+        run: python packaging/build.py --action=smoke-rpm --out dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # frozen: v4.6.2
+        with:
+          name: pyferm-rpm
+          path: dist/pyferm-*.rpm
+
+  build-apk:
+    # Parallel to `build`/`build-deb`: the native .apk is an independent
+    # reversible stage. Builds inside the digest-pinned Alpine toolchain image.
+    runs-on: ubuntu-latest
+    # Cold runs pull a distro base image and build the package; cap so a hung
+    # pull/build fails instead of stalling to the 6h default (mirrors e2e.yml).
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # frozen: v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # frozen: v8.2.0
+        with:
+          # No cache on the release trust boundary: a tag-triggered publish
+          # must not consume a potentially poisoned runtime cache (zizmor
+          # cache-poisoning). Releases are rare; cache speed is irrelevant.
+          enable-cache: false
+
+      - name: Verify the lockfile is in sync
+        run: uv lock --check
+
+      # Builds the digest-pinned alpine image, packs a clean git-archive source
+      # tree, runs abuild (its sanity / file-tracking / dependency checks are
+      # the lint gate), version-anchors the apk pkgver.
+      - name: Build the native .apk (release mode, clean checkout)
+        run: |
+          python packaging/build.py --action=build-apk --mode=release \
+            --tag "${GITHUB_REF_NAME}" --out dist
+
+      # Install-smoke in clean Alpine containers: clean install + the
+      # posture-downgrade breadcrumb when the prior service was enabled.
+      - name: Install-smoke the .apk
+        run: python packaging/build.py --action=smoke-apk --out dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # frozen: v4.6.2
+        with:
+          name: pyferm-apk
+          path: dist/pyferm-*.apk
+
   dry-run-pypi:
     # Tokenless early diagnostics on workflow_dispatch: build + a publish
     # dry-run with NO id-token, so the token topology is pinned statically --
@@ -159,8 +247,8 @@ jobs:
         run: uv publish --dry-run
 
   publish-pypi:
-    # The single IRREVERSIBLE step, last: both reversible stages must pass.
-    needs: [build, build-deb]
+    # The single IRREVERSIBLE step, last: every reversible stage must pass.
+    needs: [build, build-deb, build-rpm, build-apk]
     # Ref-guard ON THE JOB so workflow_dispatch never enters the token-bearing
     # job at all (not merely skips a step).
     if: startsWith(github.ref, 'refs/tags/py-v')
@@ -222,7 +310,7 @@ jobs:
         run: uv publish --trusted-publishing always
 
   publish:
-    needs: [build, build-deb]
+    needs: [build, build-deb, build-rpm, build-apk]
     # Ref-guard so workflow_dispatch builds the gates but never publishes;
     # only a pushed py-v* tag reaches this job.
     if: startsWith(github.ref, 'refs/tags/py-v')
@@ -253,21 +341,51 @@ jobs:
           name: pyferm-deb
           path: dist/
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # frozen: v4.3.0
+        with:
+          name: pyferm-rpm
+          path: dist/
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # frozen: v4.3.0
+        with:
+          name: pyferm-apk
+          path: dist/
+
+      # GitHub rewrites any character outside [A-Za-z0-9._-] in a release asset
+      # name on upload -- a pre-release tilde in the deb/rpm version (0.1.0~a4)
+      # becomes '.'. Left alone, the documented curl URL and the SHA256SUMS
+      # entry (both built from the local basename) would not match the stored
+      # asset: the download 404s and `sha256sum -c` silently skips the file.
+      # Normalize the names to that safe charset BEFORE we checksum, attest,
+      # render notes, and upload, so all of them agree byte-for-byte and GitHub
+      # has nothing left to rewrite. The Version field inside the package is
+      # untouched (apt/dnf read the metadata, not the filename).
+      - name: Normalize native-package asset names to GitHub's safe charset
+        run: |
+          cd dist
+          for f in pyferm_*.deb pyferm-*.rpm pyferm-*.apk; do
+            [ -e "$f" ] || continue
+            safe=$(printf '%s' "$f" | tr -c 'A-Za-z0-9._-' '.')
+            [ "$f" = "$safe" ] || mv -- "$f" "$safe"
+          done
+
       # attest-build-provenance signs WHATEVER it is handed, so cross-check
       # the digest this job received against the build job's SHA256SUMS
       # first; a swap in artifact storage would otherwise be attested as
-      # genuine. Then append the .deb digest to the same manifest.
+      # genuine. Then append every native-package digest to the same manifest.
       - name: Verify artifact integrity and extend the manifest
         run: |
           cd dist && sha256sum -c SHA256SUMS
-          sha256sum pyferm_*.deb >> SHA256SUMS
+          sha256sum pyferm_*.deb pyferm-*.rpm pyferm-*.apk >> SHA256SUMS
 
-      - name: Attest build provenance (binary + deb)
+      - name: Attest build provenance (binary + deb + rpm + apk)
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # frozen: v1.4.4
         with:
           subject-path: |
             dist/ferm-*-linux-x86_64.tar.gz
             dist/pyferm_*.deb
+            dist/pyferm-*.rpm
+            dist/pyferm-*.apk
 
       # The official gh client, not a third-party action.  --verify-tag
       # refuses if the tag is absent from the remote, closing the window
@@ -283,9 +401,17 @@ jobs:
         run: |
           ver="${GITHUB_REF_NAME#py-v}"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          # Native-package versions are sanitized per packaging grammar (deb/rpm
+          # tilde a pre-release, apk maps aN->_alphaN), so the asset basenames
+          # do NOT follow @VER@. Read them back from the real downloaded files
+          # (each format has exactly one artifact, asserted at build time).
+          deb=$(basename dist/pyferm_*.deb)
+          rpm=$(basename dist/pyferm-*.rpm)
+          apk=$(basename dist/pyferm-*.apk)
           # Render the install section from the committed template; gh PREPENDS
           # --notes-file content to the API-generated changelog.
           sed -e "s|@VER@|${ver}|g" -e "s|@BASE@|${base}|g" \
+            -e "s|@DEB@|${deb}|g" -e "s|@RPM@|${rpm}|g" -e "s|@APK@|${apk}|g" \
             packaging/release-notes.md.tmpl > release-notes.md
           # A PEP 440 pre-release (aN/bN/rcN) must not be published as the
           # "Latest" release; flag it so stable tags stay the default.
@@ -295,5 +421,7 @@ jobs:
             *a*|*b*|*rc*) flags+=(--prerelease) ;;
           esac
           gh release create "${GITHUB_REF_NAME}" \
-            dist/ferm-*-linux-x86_64.tar.gz dist/pyferm_*.deb dist/SHA256SUMS \
+            dist/ferm-*-linux-x86_64.tar.gz \
+            dist/pyferm_*.deb dist/pyferm-*.rpm dist/pyferm-*.apk \
+            dist/SHA256SUMS \
             "${flags[@]}"

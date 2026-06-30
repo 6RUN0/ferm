@@ -18,15 +18,43 @@ pip install --pre 'ferm[dns]==@VER@'
 ### Debian / Ubuntu — native `.deb`
 
 ```sh
-curl -fLO @BASE@/pyferm_@VER@_all.deb
+curl -fLO @BASE@/@DEB@
 curl -fLO @BASE@/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
-sudo apt install ./pyferm_@VER@_all.deb
+sudo apt install ./@DEB@
 ```
 
 The package installs `/usr/bin/ferm` and a `ferm.service` unit that is **not**
 enabled or started on install (anti-lockout). Enable it only after writing
 `/etc/ferm/ferm.conf`.
+
+### Fedora / RHEL / Rocky — native `.rpm`
+
+```sh
+curl -fLO @BASE@/@RPM@
+curl -fLO @BASE@/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+sudo dnf install ./@RPM@
+```
+
+A `noarch` package: it installs `/usr/bin/ferm` and a `ferm.service` unit that
+is **not** enabled or started on install (anti-lockout). Enable it only after
+writing `/etc/ferm/ferm.conf`.
+
+### Alpine — native `.apk`
+
+```sh
+curl -fLO @BASE@/@APK@
+curl -fLO @BASE@/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+# --allow-untrusted: a manually downloaded .apk is not signed by a
+# configured repository key.
+sudo apk add --allow-untrusted ./@APK@
+```
+
+The package installs `/usr/bin/ferm` and an OpenRC `ferm` service that is
+**not** enabled or started on install (anti-lockout). Enable it only after
+writing `/etc/ferm/ferm.conf`.
 
 ### Standalone binary — Linux x86_64 (glibc 2.28+)
 
