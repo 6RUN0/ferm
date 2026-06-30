@@ -341,6 +341,7 @@ def test_shell_sani_oracles_agree_with_python_sanitizers(version: str) -> None:
             ["sh", "-c", const + 'sani "$1"', "_", version],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         assert run.stdout.strip() == python_fn(version)
