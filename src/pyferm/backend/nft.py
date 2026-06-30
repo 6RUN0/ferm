@@ -476,8 +476,10 @@ def _full_reload_text(save: str, family: str) -> str:
     stays one atomic ``nft -f`` transaction.
 
     The transform is applied only to the apply text, never to ``save`` itself:
-    ``save`` is also parsed by :func:`build_nft_delta` (which rejects any table
-    verb other than ``add``/``flush``) and backs the ``.nft`` goldens.
+    ``save`` is also parsed by :func:`build_nft_delta` and backs the ``.nft``
+    goldens, and by contract carries only ``add``/``flush`` table verbs -- the
+    ``delete table`` reset is introduced here, into the apply text alone, which
+    is fed straight to ``nft -f`` and never re-parsed.
     """
     prefix = f"{family} {NFT_TABLE_NAME}"
     flush_line = f"flush table {prefix}\n"
