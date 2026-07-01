@@ -134,9 +134,16 @@ class FunctionCallNode(Node):
 
 @dataclass(frozen=True)
 class SubchainNode(Node):
-    """@subchain/@gotosubchain: chain declaration plus jump/goto."""
+    """
+    @subchain/@gotosubchain: chain declaration plus jump/goto.
+
+    ``keyword`` (the subchain/@subchain/@gotosubchain form) is carried for the
+    walk, which consumes the leading token before dispatch; parse_to_block
+    leaves it empty and works from the span.
+    """
 
     span: tuple[Token, ...]
+    keyword: str = ""
 
 
 @dataclass(frozen=True)

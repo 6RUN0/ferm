@@ -123,31 +123,12 @@ if TYPE_CHECKING:
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS = {"realgoto": "goto"}
 
-#: Leading keywords the dispatch treats as their own (non-rule) statement,
-#: routed to the streaming shim per keyword.  Everything else that leads a
-#: statement (a match/target/shortcut, ``!``/``$``/``&``, a deprecated alias)
-#: starts a rule, captured whole and sliced on the walk by visit_RuleNode.
-#: These never carry a ``!`` prefix, so the shim path needs no negation.
-_NON_RULE_LEADING: Final = frozenset(
-    {
-        ";",
-        "}",
-        "@else",
-        "hook",
-        "@hook",
-        "include",
-        "@include",
-        "@preserve",
-        "domain",
-        "table",
-        "chain",
-        "policy",
-        "priority",
-        "subchain",
-        "@subchain",
-        "@gotosubchain",
-    }
-)
+#: Control tokens that lead a statement but are not promoted to a node: the
+#: statement terminator, the block terminator, and a leftover @else. They go
+#: to the streaming shim (the leaf dispatch); every other non-rule statement
+#: keyword is now a typed node (routed by _dispatch_leading). None carries a
+#: ``!`` prefix, so the shim path needs no negation.
+_NON_RULE_LEADING: Final = frozenset({";", "}", "@else"})
 
 #: Rule keywords that themselves consume a following ``{ ... }`` block, so a
 #: top-level ``{`` after one is the subchain body (part of the rule), not a
@@ -946,6 +927,195 @@ class Parser:
             span.append(tok)
         return tuple(span)
 
+    def _parse_include(self, rule: Rule, level: int) -> None:
+        """Resolve and parse ``@include`` targets (Perl ``:2270``)."""
+        if self.tokenizer.peek_token() == "@glob":
+            files = [
+                stringify(name)
+                for name in to_array(self.evaluator.getvalues())
+            ]
+        else:
+            files = collect_filenames(
+                self.tokenizer.script.filename,
+                to_array(self.evaluator.getvalues()),
+            )
+        if self.tokenizer.next_token() != ";":
+            error(
+                'Missing ";" - "include FILENAME" must be the last '
+                "command in a rule"
+            )
+        for filename in files:
+            self._include_file(filename, level, rule)
+
+    def _parse_hook(self, rule: Rule) -> None:
+        """Register a pre/post/flush shell hook (Perl ``:2258``)."""
+        if rule.domain is not None:
+            error('"hook" must be the first token in a command')
+        position = self.evaluator.getvar()
+        if position == "pre":
+            hooks = self.pre_hooks
+        elif position == "post":
+            hooks = self.post_hooks
+        elif position == "flush":
+            hooks = self.flush_hooks
+        else:
+            error(f"Invalid hook position: '{position}'")
+        hooks.append(stringify(self.evaluator.getvar()))
+        self.tokenizer.expect_token(";")
+
+    def _parse_header(
+        self, keyword: str, rule: Rule, prev: Rule | None
+    ) -> Rule:
+        """
+        Handle a domain/table/chain/policy/priority header (Perl ``:2500``).
+
+        Returns the resulting pending rule: a fresh level after an array
+        replay or a policy, or the same rule with its context set.
+        """
+        rule.non_empty = True
+
+        if keyword == "domain":
+            if rule.domain is not None:
+                error("Domain is already specified")
+            domains = self.evaluator.getvalues()
+            if isinstance(domains, list):
+
+                def build_domain(item: Value) -> Rule | None:
+                    inner = new_level(rule)
+                    if not self.set_domain(inner, item):
+                        return None
+                    inner.domain_both = True
+                    return inner
+
+                self._replay_array(domains, build_domain)
+                return new_level(prev)
+            if not self.set_domain(rule, domains):
+                self.evaluator.collect_tokens()
+                return new_level(prev)
+            return rule
+
+        if keyword == "table":
+            if rule.table is not None:
+                warning("Table is already specified")
+            tables = self.evaluator.getvalues()
+            if rule.domain is None:
+                self.set_domain(rule, self.options.domain or "ip")
+            if isinstance(tables, list):
+
+                def build_table(item: Value) -> Rule | None:
+                    inner = new_level(rule)
+                    inner.table = item
+                    self.scope.top.auto["TABLE"] = item
+                    return inner
+
+                self._replay_array(tables, build_table)
+                return new_level(prev)
+            rule.table = tables
+            self.scope.top.auto["TABLE"] = tables
+            return rule
+
+        if keyword == "chain":
+            if rule.chain is not None:
+                warning("Chain is already specified")
+            chains = self.evaluator.getvalues()
+            for chain in to_array(chains):
+                if isinstance(chain, str) and _LOWER_BUILTIN_RE.fullmatch(
+                    chain
+                ):
+                    error("Please write built-in chain names in upper case")
+            if rule.domain is None:
+                self.set_domain(rule, self.options.domain or "ip")
+            if rule.table is None:
+                rule.table = "filter"
+            domain = _domain_key(rule.domain)
+            for table in to_array(rule.table):
+                table_info = self.domains[domain].tables.setdefault(
+                    stringify(table), TableInfo()
+                )
+                for chain in to_array(chains):
+                    name = stringify(chain)
+                    _check_chain_name(name)
+                    table_info.chains.setdefault(name, ChainInfo())
+            if isinstance(chains, list):
+
+                def build_chain(item: Value) -> Rule | None:
+                    inner = new_level(rule)
+                    inner.chain = item
+                    self.scope.top.auto["CHAIN"] = item
+                    return inner
+
+                self._replay_array(chains, build_chain)
+                return new_level(prev)
+            rule.chain = chains
+            self.scope.top.auto["CHAIN"] = chains
+            return rule
+
+        if rule.chain is None:
+            error("Chain must be specified")
+
+        if keyword == "policy":
+            if rule.has_rule:
+                error("Cannot specify matches for policy")
+            policy = self.evaluator.getvar()
+            if not isinstance(policy, str) or not is_netfilter_core_target(
+                policy
+            ):
+                error(f"Invalid policy target: {policy}")
+            self.tokenizer.expect_token(";")
+            domain = _domain_key(rule.domain)
+            domain_info = self.domains[domain]
+            domain_info.enabled = True
+            for table in to_array(rule.table):
+                table_info = domain_info.tables.setdefault(
+                    stringify(table), TableInfo()
+                )
+                for chain in to_array(rule.chain):
+                    table_info.chains.setdefault(
+                        stringify(chain), ChainInfo()
+                    ).policy = policy
+            return new_level(prev)
+
+        # priority: an nft base-chain priority override that precedes the
+        # block (does NOT consume a trailing ';'); leave rule.chain intact so
+        # the following '{' inherits it.
+        if rule.has_rule:
+            error("Cannot specify matches for priority")
+        token = stringify(self.evaluator.getvar())
+        sign = self.tokenizer.peek_token()
+        if sign in ("+", "-"):
+            self.tokenizer.next_token()
+            magnitude = stringify(self.evaluator.getvar())
+            token = f"{token} {sign} {magnitude}"
+        elif (
+            isinstance(sign, str)
+            and token.isalpha()
+            and _GLUED_SIGN_RE.fullmatch(sign)
+        ):
+            self.tokenizer.next_token()
+            token = f"{token} {sign[0]} {sign[1:]}"
+        domain = _domain_key(rule.domain)
+        try:
+            priority = resolve_chain_priority(domain, token)
+        except ValueError:
+            error(f"Invalid chain priority: {token}")
+        domain_info = self.domains[domain]
+        domain_info.enabled = True
+        already_set = False
+        for table in to_array(rule.table):
+            table_info = domain_info.tables.setdefault(
+                stringify(table), TableInfo()
+            )
+            for chain in to_array(rule.chain):
+                chain_info = table_info.chains.setdefault(
+                    stringify(chain), ChainInfo()
+                )
+                if chain_info.priority is not None:
+                    already_set = True
+                chain_info.priority = priority
+        if already_set:
+            warning("Priority is already specified")
+        return rule
+
     def _dispatch_leading(self, walker: Walker, lead: object) -> object | None:
         """
         Route a promoted non-rule leading token to its typed node.
@@ -970,6 +1140,32 @@ class Parser:
         if lead == "@set":
             tokenizer.next_token()
             return walker.visit(SetNode(source_pos=pos, span=()))
+        if lead in ("@include", "include"):
+            tokenizer.next_token()
+            return walker.visit(IncludeNode(source_pos=pos, span=()))
+        if lead == "@preserve":
+            tokenizer.next_token()
+            return walker.visit(PreserveNode(source_pos=pos, span=()))
+        if lead in ("@hook", "hook"):
+            if lead == "hook":
+                warning("'hook' is deprecated, use '@hook'")
+            tokenizer.next_token()
+            return walker.visit(HookNode(source_pos=pos, span=()))
+        if lead in _HEADER_KEYWORDS:
+            tokenizer.next_token()
+            return walker.visit(
+                HeaderNode(
+                    source_pos=pos,
+                    keyword=str(lead),
+                    value_span=(),
+                    body=None,
+                )
+            )
+        if lead in _SUBCHAIN_KEYWORDS:
+            tokenizer.next_token()
+            return walker.visit(
+                SubchainNode(source_pos=pos, span=(), keyword=str(lead))
+            )
         return None
 
     def enter(self, level: int, prev: Rule | None) -> None:
@@ -1044,64 +1240,16 @@ class Parser:
                 self.evaluator.collect_tokens()
                 return "next"
 
-            # hooks for custom shell commands
-            if keyword == "hook":
-                warning("'hook' is deprecated, use '@hook'")
-                keyword = "@hook"
-                walker.shown_keyword = keyword
-
-            if keyword == "@hook":
-                if walker.rule.domain is not None:
-                    error('"hook" must be the first token in a command')
-                position = self.evaluator.getvar()
-                if position == "pre":
-                    hooks = self.pre_hooks
-                elif position == "post":
-                    hooks = self.post_hooks
-                elif position == "flush":
-                    hooks = self.flush_hooks
-                else:
-                    error(f"Invalid hook position: '{position}'")
-                hooks.append(stringify(self.evaluator.getvar()))
-                self.tokenizer.expect_token(";")
-                return "next"
-
-            # { is promoted to a typed BlockNode (see Walker.visit_BlockNode);
-            # the closing } still reaches the shim to end the level.
+            # hook/@hook -> HookNode, { -> BlockNode, @if -> IfNode, and every
+            # header/@include/@preserve/@def/@set/@subchain is promoted to its
+            # typed node (routed by _dispatch_leading); only the closing } (to
+            # end the level) and the leaf rule keywords still reach this shim.
             if keyword == "}":
                 if level <= base_level:
                     error('Unmatched "}"')
                 if walker.rule.non_empty:
                     error('Missing semicolon before "}"')
                 return "return"
-
-            # include another file
-            if keyword in ("@include", "include"):
-                if self.tokenizer.peek_token() == "@glob":
-                    files = [
-                        stringify(name)
-                        for name in to_array(self.evaluator.getvalues())
-                    ]
-                else:
-                    files = collect_filenames(
-                        self.tokenizer.script.filename,
-                        to_array(self.evaluator.getvalues()),
-                    )
-                if self.tokenizer.next_token() != ";":
-                    error(
-                        'Missing ";" - "include FILENAME" must be the last '
-                        "command in a rule"
-                    )
-                for filename in files:
-                    self._include_file(filename, level, walker.rule)
-                return "next"
-
-            # @def/@set are promoted to typed DefNode/SetNode (routed by
-            # _dispatch_leading); they never reach the leaf dispatch here.
-            if keyword == "@preserve":
-                self._parse_preserve(walker.rule)
-                walker.rule = new_level(prev)
-                return "next"
 
             # something not inherited by the parent closure
             walker.rule.non_empty = True
@@ -1115,176 +1263,12 @@ class Parser:
                 self._call_function(walker.rule)
                 return "next"
 
-            # where to put the rule?
-            if keyword == "domain":
-                if walker.rule.domain is not None:
-                    error("Domain is already specified")
-                domains = self.evaluator.getvalues()
-                if isinstance(domains, list):
-
-                    def build_domain(item: Value) -> Rule | None:
-                        inner = new_level(walker.rule)
-                        if not self.set_domain(inner, item):
-                            return None
-                        inner.domain_both = True
-                        return inner
-
-                    self._replay_array(domains, build_domain)
-                    walker.rule = new_level(prev)
-                elif not self.set_domain(walker.rule, domains):
-                    self.evaluator.collect_tokens()
-                    walker.rule = new_level(prev)
-                return "next"
-
-            if keyword == "table":
-                if walker.rule.table is not None:
-                    warning("Table is already specified")
-                tables = self.evaluator.getvalues()
-                if walker.rule.domain is None:
-                    self.set_domain(walker.rule, self.options.domain or "ip")
-                if isinstance(tables, list):
-
-                    def build_table(item: Value) -> Rule | None:
-                        inner = new_level(walker.rule)
-                        inner.table = item
-                        self.scope.top.auto["TABLE"] = item
-                        return inner
-
-                    self._replay_array(tables, build_table)
-                    walker.rule = new_level(prev)
-                else:
-                    walker.rule.table = tables
-                    self.scope.top.auto["TABLE"] = tables
-                return "next"
-
-            if keyword == "chain":
-                if walker.rule.chain is not None:
-                    warning("Chain is already specified")
-                chains = self.evaluator.getvalues()
-                for chain in to_array(chains):
-                    if isinstance(chain, str) and _LOWER_BUILTIN_RE.fullmatch(
-                        chain
-                    ):
-                        error(
-                            "Please write built-in chain names in upper case"
-                        )
-                if walker.rule.domain is None:
-                    self.set_domain(walker.rule, self.options.domain or "ip")
-                if walker.rule.table is None:
-                    walker.rule.table = "filter"
-                domain = _domain_key(walker.rule.domain)
-                for table in to_array(walker.rule.table):
-                    table_info = self.domains[domain].tables.setdefault(
-                        stringify(table), TableInfo()
-                    )
-                    for chain in to_array(chains):
-                        name = stringify(chain)
-                        _check_chain_name(name)
-                        table_info.chains.setdefault(name, ChainInfo())
-                if isinstance(chains, list):
-
-                    def build_chain(item: Value) -> Rule | None:
-                        inner = new_level(walker.rule)
-                        inner.chain = item
-                        self.scope.top.auto["CHAIN"] = item
-                        return inner
-
-                    self._replay_array(chains, build_chain)
-                    walker.rule = new_level(prev)
-                else:
-                    walker.rule.chain = chains
-                    self.scope.top.auto["CHAIN"] = chains
-                return "next"
-
+            # domain/table/chain/policy/priority (headers) and
+            # @subchain/subchain/@gotosubchain are promoted to typed nodes
+            # (routed by _dispatch_leading); the chain-context check below
+            # still guards the leaf rule keywords.
             if walker.rule.chain is None:
                 error("Chain must be specified")
-
-            # policy for a built-in chain
-            if keyword == "policy":
-                if walker.rule.has_rule:
-                    error("Cannot specify matches for policy")
-                policy = self.evaluator.getvar()
-                if not isinstance(policy, str) or not is_netfilter_core_target(
-                    policy
-                ):
-                    error(f"Invalid policy target: {policy}")
-                self.tokenizer.expect_token(";")
-                domain = _domain_key(walker.rule.domain)
-                domain_info = self.domains[domain]
-                domain_info.enabled = True
-                for table in to_array(walker.rule.table):
-                    table_info = domain_info.tables.setdefault(
-                        stringify(table), TableInfo()
-                    )
-                    for chain in to_array(walker.rule.chain):
-                        table_info.chains.setdefault(
-                            stringify(chain), ChainInfo()
-                        ).policy = policy
-                walker.rule = new_level(prev)
-                return "next"
-
-            # nft base-chain priority override (form A: `priority -N`
-            # written after the chain name, before the block -- so unlike
-            # `policy` it does NOT consume a trailing `;`).  Stored
-            # unconditionally; the backend validates (nft rejects it on a
-            # user chain, iptables rejects it outright).
-            if keyword == "priority":
-                if walker.rule.has_rule:
-                    error("Cannot specify matches for priority")
-                token = stringify(self.evaluator.getvar())
-                # nft landmark offset form (`dstnat - 10`) arrives as three
-                # tokens; fold the `+`/`-` and magnitude back in so the
-                # resolver sees one string.  A joined `dstnat-10` or a plain
-                # `-1` is already a single token and skips this.
-                sign = self.tokenizer.peek_token()
-                if sign in ("+", "-"):
-                    self.tokenizer.next_token()
-                    magnitude = stringify(self.evaluator.getvar())
-                    token = f"{token} {sign} {magnitude}"
-                elif (
-                    isinstance(sign, str)
-                    and token.isalpha()
-                    and _GLUED_SIGN_RE.fullmatch(sign)
-                ):
-                    # `filter -1` / `filter +5`: the sign is glued to the
-                    # number (a single token) right after a landmark name.
-                    # Fold it into the offset form so the resolver sees
-                    # `filter - 1` rather than leaving a stray `-1` token that
-                    # would mis-report as "Unrecognized keyword".
-                    self.tokenizer.next_token()
-                    token = f"{token} {sign[0]} {sign[1:]}"
-                domain = _domain_key(walker.rule.domain)
-                try:
-                    priority = resolve_chain_priority(domain, token)
-                except ValueError:
-                    error(f"Invalid chain priority: {token}")
-                domain_info = self.domains[domain]
-                domain_info.enabled = True
-                already_set = False
-                for table in to_array(walker.rule.table):
-                    table_info = domain_info.tables.setdefault(
-                        stringify(table), TableInfo()
-                    )
-                    for chain in to_array(walker.rule.chain):
-                        chain_info = table_info.chains.setdefault(
-                            stringify(chain), ChainInfo()
-                        )
-                        if chain_info.priority is not None:
-                            already_set = True
-                        chain_info.priority = priority
-                if already_set:
-                    warning("Priority is already specified")
-                # Unlike `policy` (which sits inside the block and resets to
-                # a fresh level), `priority` precedes the block at the chain
-                # level: leave `rule.chain` intact so the following `{`
-                # inherits it.
-                return "next"
-
-            if keyword in ("@subchain", "subchain", "@gotosubchain"):
-                walker.rule = self._parse_subchain(
-                    keyword, walker.rule, prev, level
-                )
-                return "next"
 
             # everything else is part of a "real" rule
             walker.rule.has_rule = True

@@ -37,10 +37,15 @@ if TYPE_CHECKING:
     from .tree import (
         BlockNode,
         DefNode,
+        HeaderNode,
+        HookNode,
         IfNode,
+        IncludeNode,
+        PreserveNode,
         RawShimNode,
         RuleNode,
         SetNode,
+        SubchainNode,
     )
 
 
@@ -198,4 +203,41 @@ class Walker(NodeVisitor):
     def visit_SetNode(self, node: SetNode) -> str:  # noqa: ARG002
         """Declare a named nft set (@set), reading operands live."""
         self.parser._parse_set(self.rule)
+        return "next"
+
+    def visit_IncludeNode(self, node: IncludeNode) -> str:  # noqa: ARG002
+        """Include another file/glob/pipe (@include), resolved at runtime."""
+        self.parser._parse_include(self.rule, self.level)
+        return "next"
+
+    def visit_PreserveNode(self, node: PreserveNode) -> str:  # noqa: ARG002
+        """Preserve matching live rules (@preserve), then reset the level."""
+        self.parser._parse_preserve(self.rule)
+        self.rule = new_level(self.prev)
+        return "next"
+
+    def visit_HookNode(self, node: HookNode) -> str:  # noqa: ARG002
+        """Register a pre/post/flush shell hook (@hook)."""
+        self.parser._parse_hook(self.rule)
+        return "next"
+
+    def visit_HeaderNode(self, node: HeaderNode) -> str:
+        """
+        Enter a domain/table/chain/policy/priority header.
+
+        The value is read live; _parse_header branches on the runtime type
+        (an array replays the block per item, a scalar sets the context) and
+        returns the resulting pending rule.
+        """
+        self.rule = self.parser._parse_header(
+            node.keyword, self.rule, self.prev
+        )
+        return "next"
+
+    def visit_SubchainNode(self, node: SubchainNode) -> str:
+        """Declare and enter an inline subchain (@subchain/@gotosubchain)."""
+        self.rule.non_empty = True
+        self.rule = self.parser._parse_subchain(
+            node.keyword, self.rule, self.prev, self.level
+        )
         return "next"
