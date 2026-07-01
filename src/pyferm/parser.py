@@ -136,12 +136,6 @@ _SUBCHAIN_KEYWORDS: Final = frozenset(
     {"subchain", "@subchain", "@gotosubchain"}
 )
 
-#: Leaf tokens that unconditionally consume the NEXT token via getvar /
-#: require_next_token (the negation prefix, an inline &call's name, a jump/goto
-#: target). A top-level }/;/{ right after one is that operand -- keep it in the
-#: rule span so the replay diagnoses it ("'}' not allowed here") instead of
-#: hitting end-of-file on the pushed-back token.
-_CONSUMES_NEXT_TOKEN: Final = frozenset({"!", "&", "jump", "goto"})
 
 #: Every promoted non-block statement keyword. Routed to its typed node both
 #: as a raw leading token (_dispatch_leading) and after a leading ``!``
@@ -914,21 +908,26 @@ class Parser:
 
     def _capture_rule_span(self) -> tuple[Token, ...]:
         """
-        Capture a rule statement as a raw span up to its top-level ``;``.
+        Capture a rule statement as a raw span, arity-agnostic on the walk.
 
-        Reads raw tokens (Line sentinels kept, for file:line on replay),
-        tracking ``{``/``(`` nesting so only a top-level ``;`` ends the span.
-        A top-level ``}`` belongs to the enclosing block, not the rule: it is
-        pushed back and the span ends before it (a missing ``;`` is diagnosed
-        by that ``}`` handler via the shared rule). Capture is lenient --
-        bracket mismatches are diagnosed on the walk, matching the streaming
-        oracle -- and the leading token is NOT consumed beforehand.
+        Reads raw tokens (Line sentinels kept for file:line on replay),
+        tracking ``{`` and ``(`` nesting SEPARATELY. The span ends at the
+        first top-level ``;``, at a top-level ``}`` (the enclosing block's
+        terminator, or an operand a preceding keyword consumes), or when a
+        top-level ``{...}`` block closes (the rule's block-form tail). Every
+        top-level ``{`` is KEPT in the span -- the capture never decides
+        operand-vs-block; the replay (visit_RuleNode) does, exactly as the
+        streaming oracle would: a keyword still awaiting a value reads the
+        ``{`` and its value-reader rejects it ("'{' not allowed here"), while
+        between keywords the ``{`` re-routes to visit_BlockNode. This subsumes
+        the old subchain-block and negation-operand special cases. Capture is
+        lenient (bracket mismatches surface on the walk); the leading token is
+        NOT consumed beforehand.
         """
         script = self.tokenizer.script
         span: list[Token] = [make_line_token(script.line)]
-        depth = 0
-        saw_subchain = False
-        consume_next = False
+        paren_depth = 0
+        brace_depth = 0
         while True:
             tok = self.tokenizer.next_raw_token()
             if tok is None:
@@ -937,42 +936,30 @@ class Parser:
                 self.tokenizer.handle_special_token(tok)
                 span.append(tok)
                 continue
-            if consume_next:
-                # the token right after a !/&/jump/goto is that keyword's
-                # operand, consumed on replay via getvar even when it is }/;/{;
-                # keep it in the span so replay diagnoses it, skipping the
-                # bracket logic below.
-                consume_next = False
-                span.append(tok)
-                continue
             if tok == "(":
-                depth += 1
-            elif tok == "{":
-                if depth == 0 and not saw_subchain:
-                    # a top-level '{' after matches opens a nested block: the
-                    # rule ends here and the block streams separately.
-                    script.tokens.appendleft(tok)
-                    break
-                depth += 1
+                paren_depth += 1
             elif tok == ")":
-                if depth > 0:
-                    depth -= 1
+                if paren_depth > 0:
+                    paren_depth -= 1
+            elif tok == "{":
+                brace_depth += 1
             elif tok == "}":
-                if depth == 0:
-                    # keep the top-level } in the span: a preceding keyword may
-                    # consume it as its operand (``! policy }``), otherwise the
-                    # replay's } handler diagnoses the missing ';' just as the
-                    # streaming loop would.
+                if brace_depth == 0:
+                    # a top-level } with no matching {: the enclosing block's
+                    # terminator, or an operand consumed by a preceding
+                    # keyword (``! policy }``, ``& }``). Keep it -- the replay
+                    # diagnoses it.
                     span.append(tok)
                     break
-                depth -= 1
-            elif tok == ";" and depth == 0:
+                brace_depth -= 1
+                if brace_depth == 0:
+                    # a top-level {...} block just closed: the block-form rule
+                    # (a match block or a subchain) ends here.
+                    span.append(tok)
+                    break
+            elif tok == ";" and brace_depth == 0 and paren_depth == 0:
                 span.append(tok)
                 break
-            if tok in _CONSUMES_NEXT_TOKEN:
-                consume_next = True
-            elif tok in _SUBCHAIN_KEYWORDS:
-                saw_subchain = True
             span.append(tok)
         return tuple(span)
 
@@ -1231,6 +1218,24 @@ class Parser:
             )
         return None
 
+    def _route_resolved_keyword(
+        self, walker: Walker, keyword: object
+    ) -> object | None:
+        """
+        Route a negation-resolved keyword (``! def``) to its typed node.
+
+        ``priority`` is a port-only keyword the Perl oracle does not know, so a
+        negated ``! priority`` must fall through to the leaf ("Unrecognized
+        keyword: priority" / the chain-context check) exactly as the oracle
+        does -- NOT run the port's priority feature as a header. Every other
+        promoted statement keyword routes normally: the oracle runs it under
+        negation, then reports the leftover negation, which the leaf check
+        after the dispatch reproduces.
+        """
+        if keyword == "priority":
+            return None
+        return self._visit_stmt_node(walker, keyword)
+
     def enter(self, level: int, prev: Rule | None) -> None:
         """
         Parse a block of rules at depth ``level`` (Perl ``:2123``).
@@ -1442,7 +1447,9 @@ class Parser:
         walker.dispatch = handle
         walker.resolve = self._resolve_keyword
         walker.route = lambda lead: self._dispatch_leading(walker, lead)
-        walker.route_resolved = lambda kw: self._visit_stmt_node(walker, kw)
+        walker.route_resolved = lambda kw: self._route_resolved_keyword(
+            walker, kw
+        )
         # Route by the RAW leading token (peeked, not consumed): a promoted
         # kind to its typed node (_dispatch_leading); a bare control token to
         # the leaf handle(); everything else starts a rule captured whole and
