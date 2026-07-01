@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pyferm.analysis import find_unused_defs
+from pyferm.analysis import (
+    find_undefined_chain_jumps,
+    find_unused_defs,
+)
 from pyferm.parser import Parser
 
 if TYPE_CHECKING:
@@ -58,3 +61,59 @@ def test_interpolation_is_known_limitation() -> None:
         'table filter chain OUTPUT { mod comment comment "$x" ACCEPT; }\n'
     )
     assert "$x" in find_unused_defs(_tree(cfg))  # documents the blind spot
+
+
+def test_dangling_jump_detected() -> None:
+    cfg = "table filter chain INPUT { jump MISSING; }\n"
+    assert "MISSING" in find_undefined_chain_jumps(_tree(cfg))
+
+
+def test_jump_to_declared_user_chain_not_flagged() -> None:
+    # THE false-positive guard: chains are declared by `chain FOO {}`, NOT only
+    # by @subchain. Jumping into a user chain is a basic ferm idiom.
+    cfg = (
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { jump FOO; }\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_jump_to_one_line_declared_chain_not_flagged() -> None:
+    # DOMINANT real-world style: `table filter chain FOO {}` collapses to ONE
+    # HeaderNode(keyword='table', value_span=(...,'chain','FOO')). The harvest
+    # must scan value_span for an embedded `chain <NAME>`, not just a leading
+    # keyword=='chain' -- else a jump to a one-line chain false-flags.
+    cfg = (
+        "table filter chain INPUT { jump FOO; }\n"
+        "table filter chain FOO { ACCEPT; }\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_jump_to_policy_declared_chain_not_flagged() -> None:
+    # A chain named by a one-line `... chain INPUT policy DROP;` header (no
+    # block) is still a declaration site.
+    cfg = (
+        "table filter chain INPUT policy DROP;\n"
+        "table filter chain OUT { jump INPUT; }\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_jump_into_chain_declared_in_untaken_if_branch() -> None:
+    # The chain is declared only inside an untaken @if branch; the structural
+    # tree sees both branches, so the jump is NOT flagged.
+    cfg = (
+        "@if 0 { table filter chain FOO { ACCEPT; } }\n"
+        "table filter chain INPUT { jump FOO; }\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_var_jump_target_is_known_limitation() -> None:
+    # `jump $t` -- target is a $var; contract narrowed to literal names, so it
+    # is NOT reported as undefined (pinned limitation).
+    cfg = "@def $t = FOO;\ntable filter chain INPUT { jump $t; }\n"
+    assert find_undefined_chain_jumps(_tree(cfg)) == []

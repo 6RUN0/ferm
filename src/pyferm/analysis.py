@@ -17,7 +17,15 @@ from .tree import Block, NodeVisitor
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from .tree import DefNode, IfNode, Node, RuleNode, SetNode
+    from .tree import (
+        DefNode,
+        HeaderNode,
+        IfNode,
+        Node,
+        RuleNode,
+        SetNode,
+        SubchainNode,
+    )
 
 _NAME_RE = re.compile(r"\w+")
 
@@ -111,3 +119,128 @@ def find_unused_defs(root: Block) -> list[str]:
     return sorted(
         name for name in collector.declared if name not in collector.mentioned
     )
+
+
+#: Subchain declaration keywords -- each names a chain.
+_SUBCHAIN_KW = frozenset({"@subchain", "subchain", "@gotosubchain"})
+
+#: A quoted token needs at least an opening and a closing quote.
+_QUOTE_PAIR_MIN_LEN = 2
+
+#: Tokens that end a run of chain names after a ``chain`` keyword: a block or
+#: statement boundary, or the start of a new header context. Parens are NOT
+#: here -- they wrap a ``chain (A B)`` array whose names are still collected.
+_CHAIN_NAME_STOP = frozenset(
+    {"{", "}", ";", "policy", "priority", "chain", "table", "domain"}
+)
+
+
+def _str_tokens(span: Sequence[object]) -> Iterator[str]:
+    """Yield only the plain string tokens (skip Line sentinels / non-str)."""
+    for tok in span:
+        if isinstance(tok, str):
+            yield tok
+
+
+def _is_quoted(tok: str) -> bool:
+    """Return whether a token is wrapped in a matching quote pair."""
+    return (
+        len(tok) >= _QUOTE_PAIR_MIN_LEN
+        and tok[0] in ("'", '"')
+        and tok[-1] == tok[0]
+    )
+
+
+def _unquote(tok: str) -> str:
+    """Strip a matching pair of surrounding quotes from a token."""
+    return tok[1:-1] if _is_quoted(tok) else tok
+
+
+def _declared_chains(span: Sequence[object]) -> Iterator[str]:
+    """
+    Yield every chain name a token span declares.
+
+    Scans for an EMBEDDED ``chain <name>...`` sub-sequence -- not just a
+    leading token -- so both the nested ``chain FOO {}`` and the dominant
+    one-line ``table filter chain FOO {}`` forms (one collapsed HeaderNode)
+    are harvested, plus a ``chain (A B)`` array and a ``... chain X policy``
+    header. Also yields a quoted ``@subchain "NAME"`` declaration. $var names
+    are skipped (the literal-only contract).
+    """
+    toks = list(_str_tokens(span))
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok == "chain":
+            i += 1
+            while i < len(toks) and toks[i] not in _CHAIN_NAME_STOP:
+                name = toks[i]
+                i += 1
+                if name in ("(", ")") or name.startswith("$"):
+                    continue  # array delimiters / $var (not a literal name)
+                yield _unquote(name)
+            continue
+        if tok in _SUBCHAIN_KW:
+            i += 1
+            if i < len(toks) and _is_quoted(toks[i]):
+                yield _unquote(toks[i])
+            continue
+        i += 1
+
+
+def _jump_targets(span: Sequence[object]) -> Iterator[str]:
+    """Yield the literal jump/goto targets in a token span ($var skipped)."""
+    toks = list(_str_tokens(span))
+    for i, tok in enumerate(toks):
+        if tok in ("jump", "goto") and i + 1 < len(toks):
+            target = toks[i + 1]
+            if not target.startswith("$"):
+                yield _unquote(target)
+
+
+class _ChainCollector(NodeVisitor):
+    """
+    Collect declared chain names from ALL declaration sites and jump targets.
+
+    Chains are declared by ``chain FOO {}`` (a HeaderNode, embedded in its
+    keyword+value_span), by a quoted ``@subchain``, and by the one-line
+    ``table filter chain FOO {}`` header -- NOT only SubchainNode. A
+    SubchainNode-only or leading-``chain``-only visitor would false-flag every
+    normally declared user chain. Chains/jumps inside @if branches and match
+    blocks are covered for free by _walk_all descending the structured
+    sub-Blocks.
+    """
+
+    def __init__(self) -> None:
+        """Start with empty chain and jump registries."""
+        self.declared: set[str] = set()
+        self.jumps: list[str] = []
+
+    def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
+        """Harvest chain names embedded in a header's keyword + value span."""
+        self.declared.update(
+            _declared_chains((node.keyword, *node.value_span))
+        )
+
+    def visit_RuleNode(self, node: RuleNode) -> None:  # noqa: N802
+        """Collect jumps, plus a mid-rule @subchain chain declaration."""
+        self.declared.update(_declared_chains(node.span))
+        self.jumps.extend(_jump_targets(node.span))
+
+    def visit_SubchainNode(self, node: SubchainNode) -> None:  # noqa: N802
+        """Harvest a leading @subchain chain declaration."""
+        self.declared.update(_declared_chains(node.span))
+
+
+def find_undefined_chain_jumps(root: Block) -> list[str]:
+    """
+    Return jump/goto targets whose chain is declared nowhere.
+
+    Consumes a Parser.parse_to_block tree. Harvests chain names from all
+    literal declaration sites (embedded ``chain <NAME>`` in a header, quoted
+    @subchain). The contract is narrowed to literal (syntactic) names; $var
+    targets/names and @include-file chains are pinned known limitations.
+    """
+    collector = _ChainCollector()
+    _walk_all(root, collector)
+    return sorted({t for t in collector.jumps if t not in collector.declared})
