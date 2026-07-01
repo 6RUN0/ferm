@@ -1,45 +1,63 @@
 """
 Walk-driven evaluator over the structural AST (strangler facade).
 
-Skeleton layer: every statement is a RawShimNode; the walker replays it
-through the existing streaming dispatch bound on the parser for the current
-block. This is a pure pass-through over streaming -- the dispatch reads each
-statement's operands live from the tokenizer exactly as before -- so golden
-stays byte-identical. Later layers replace RawShimNode kinds with typed nodes
-and real visit_* methods that read captured spans through a script.tokens swap.
+The per-block Walker owns statement order and the mutable dispatch state of
+one block -- the pending rule and the last-seen keyword -- which used to be
+_enter_body closure cells. Both the RawShimNode shim and the typed visit_*
+methods mutate that ONE rule, so a promoted { or @if cannot desync from
+matches that a preceding shim statement accumulated -- e.g. the saddr in
+``saddr 1.2.3.4 { ACCEPT; }`` must reach the nested rule.
+
+Un-promoted statements are RawShimNodes replayed through the block's streaming
+dispatch (handle); the dispatch reads their operands live from the tokenizer,
+a pure pass-through that keeps golden byte-identical. Later layers replace more
+RawShimNode kinds with typed nodes and real visit_* methods.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .errors import internal_error
+from .scope import Frame, new_level
 from .tree import NodeVisitor
+from .values import eval_bool
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .parser import NegatedFlag, Parser
-    from .tree import RawShimNode
+    from .scope import Rule
+    from .tree import BlockNode, IfNode, RawShimNode
 
 
 class Walker(NodeVisitor):
     """
-    Drives evaluation over the AST by delegating to the parser.
+    Drives evaluation over one block's AST, holding its dispatch state.
 
-    Bound per block to that block's streaming dispatch (handle), so the
-    mutable per-statement state (the pending rule, the scope) stays where it
-    always lived -- inside the parser -- while this facade owns statement
-    order.
+    Bound per _enter_body call to that block's context (level/prev/base_level)
+    and its streaming dispatch (handle). The pending ``rule`` and
+    ``shown_keyword`` live here -- not on the parser -- because each nested
+    block has its own, and both the shim and the typed visit_* methods must
+    share the block's single rule.
     """
 
     def __init__(
         self,
         parser: Parser,
-        dispatch: Callable[[object, NegatedFlag], str],
+        level: int,
+        prev: Rule | None,
+        base_level: int,
     ) -> None:
-        """Bind the walker to a parser and the current block's dispatch."""
+        """Open a fresh per-block dispatch context for _enter_body."""
         self.parser = parser
-        self._dispatch = dispatch
+        self.level = level
+        self.prev = prev
+        self.base_level = base_level
+        self.rule: Rule = new_level(prev)
+        self.shown_keyword: object = ""
+        #: Bound to this block's handle() right after it is defined.
+        self.dispatch: Callable[[object, NegatedFlag], str] | None = None
 
     def replay_shim(self, node: RawShimNode, negated: NegatedFlag) -> str:
         """
@@ -51,4 +69,48 @@ class Walker(NodeVisitor):
         afterwards -- is threaded as an argument because a frozen node cannot
         carry mutable state.
         """
-        return self._dispatch(node.keyword, negated)
+        assert self.dispatch is not None
+        return self.dispatch(node.keyword, negated)
+
+    def visit_BlockNode(self, node: BlockNode) -> str:  # noqa: ARG002
+        """
+        Enter a nested block, inheriting the current pending rule as context.
+
+        Mirrors the streaming ``{`` handler: push a scope frame, recurse into
+        enter() at the next level with self.rule as prev (so matches
+        accumulated before the brace reach the nested rules), pop, then reset
+        the pending rule to a fresh level. node.body is unused on the walk
+        path -- the nested statements stream through the recursion.
+        """
+        parser = self.parser
+        old_depth = len(parser.scope.stack)
+        parser.scope.push(Frame(auto=dict(parser.scope.top.auto)))
+        parser.enter(self.level + 1, self.rule)
+        parser.scope.pop()
+        if len(parser.scope.stack) != old_depth:
+            raise internal_error()
+        self.rule = new_level(self.prev)
+        return "next"
+
+    def visit_IfNode(self, node: IfNode) -> str:  # noqa: ARG002
+        """
+        Evaluate an @if condition first, then stream the taken branch.
+
+        Mirrors the streaming ``@if`` handler: the condition is read live and
+        evaluated BEFORE either branch is sliced (window B2). On true, nothing
+        is touched -- the taken then-branch streams as the next BlockNode and
+        any trailing ``@else`` body is swallowed by the @else shim. On false,
+        the then-block is swallowed via collect_tokens; a following ``@else``
+        is consumed so its block streams as the taken branch, otherwise the
+        pending rule is reset. node.cond_span is unused here: the condition is
+        read live, exactly as the streaming handler did.
+        """
+        parser = self.parser
+        if not eval_bool(parser.evaluator.getvalues()):
+            parser.evaluator.collect_tokens()
+            token = parser.tokenizer.peek_token()
+            if token is not None and token == "@else":
+                parser.tokenizer.require_next_token()
+            else:
+                self.rule = new_level(self.prev)
+        return "next"

@@ -84,14 +84,13 @@ from pyferm.scope import (
     new_level,
 )
 from pyferm.tokenizer import Token, make_line_token
-from pyferm.tree import RawShimNode
+from pyferm.tree import BlockNode, IfNode, Node, RawShimNode
 from pyferm.values import (
     Multi,
     Params,
     SetRef,
     Value,
     contains_deferred,
-    eval_bool,
     flatten,
     negate_value,
     realize_deferred,
@@ -653,45 +652,38 @@ class Parser:
         (see :func:`pyferm.scope.new_level`); the trailing consistency checks
         reproduce the oracle's "missing ``}``" / "missing ``;``" diagnostics.
         """
-        rule = new_level(prev)
-        # The keyword as last seen by the dispatcher: a handler may remap it
-        # (``hook``->``@hook``, a shortcut->its real keyword) and the trailing
-        # "Doesn't support negation" check must name the remapped form, as
-        # Perl's ``for ($keyword)`` aliases the variable (``:2881``).
-        shown_keyword: object = ""
+        # The per-block Walker owns statement order and this block's mutable
+        # dispatch state: the pending rule (walker.rule, seeded from prev) and
+        # walker.shown_keyword, the keyword as last seen by the dispatcher.  A
+        # handler may remap the keyword (``hook``->``@hook``, a shortcut->its
+        # real keyword); the trailing "Doesn't support negation" check must
+        # name the remapped form, as Perl's ``for ($keyword)`` aliases the
+        # variable (``:2881``).  Sharing this state is why a promoted { or @if
+        # cannot desync from a preceding shim statement's matches.
+        walker = Walker(self, level, prev, base_level)
 
         def script_position() -> SourcePosition:
             script = self.tokenizer.script
             return SourcePosition(script.filename, script.line)
 
         def handle(keyword: object, negated: NegatedFlag) -> str:
-            nonlocal rule, shown_keyword
-            shown_keyword = keyword
+            walker.shown_keyword = keyword
 
             # effectuation operator
             if keyword == ";":
-                if not rule.non_empty:
+                if not walker.rule.non_empty:
                     error('Empty rule before ";" not allowed')
-                if rule.has_rule and not rule.has_action:
+                if walker.rule.has_rule and not walker.rule.has_action:
                     error('No action defined; did you mean "NOP"?')
-                if rule.chain is None:
+                if walker.rule.chain is None:
                     error("No chain defined")
-                rule.script = script_position()
-                self.mkrules(rule)
-                rule = new_level(prev)
+                walker.rule.script = script_position()
+                self.mkrules(walker.rule)
+                walker.rule = new_level(prev)
                 return "next"
 
-            # conditional expression
-            if keyword == "@if":
-                if not eval_bool(self.evaluator.getvalues()):
-                    self.evaluator.collect_tokens()
-                    token = self.tokenizer.peek_token()
-                    if token is not None and token == "@else":
-                        self.tokenizer.require_next_token()
-                    else:
-                        rule = new_level(prev)
-                return "next"
-
+            # @if is promoted to a typed IfNode (see Walker.visit_IfNode);
+            # only a leftover @else after a true @if still reaches the shim.
             if keyword == "@else":
                 # a leftover "else" from a true "if": drop its body
                 self.evaluator.collect_tokens()
@@ -701,10 +693,10 @@ class Parser:
             if keyword == "hook":
                 warning("'hook' is deprecated, use '@hook'")
                 keyword = "@hook"
-                shown_keyword = keyword
+                walker.shown_keyword = keyword
 
             if keyword == "@hook":
-                if rule.domain is not None:
+                if walker.rule.domain is not None:
                     error('"hook" must be the first token in a command')
                 position = self.evaluator.getvar()
                 if position == "pre":
@@ -719,21 +711,12 @@ class Parser:
                 self.tokenizer.expect_token(";")
                 return "next"
 
-            # recursing operators
-            if keyword == "{":
-                old_depth = len(self.scope.stack)
-                self.scope.push(Frame(auto=dict(self.scope.top.auto)))
-                self.enter(level + 1, rule)
-                self.scope.pop()
-                if len(self.scope.stack) != old_depth:
-                    raise internal_error()
-                rule = new_level(prev)
-                return "next"
-
+            # { is promoted to a typed BlockNode (see Walker.visit_BlockNode);
+            # the closing } still reaches the shim to end the level.
             if keyword == "}":
                 if level <= base_level:
                     error('Unmatched "}"')
-                if rule.non_empty:
+                if walker.rule.non_empty:
                     error('Missing semicolon before "}"')
                 return "return"
 
@@ -755,27 +738,27 @@ class Parser:
                         "command in a rule"
                     )
                 for filename in files:
-                    self._include_file(filename, level, rule)
+                    self._include_file(filename, level, walker.rule)
                 return "next"
 
             # definition of a variable or function
             if keyword in ("@def", "def"):
-                self._parse_def(rule)
+                self._parse_def(walker.rule)
                 return "next"
 
             # named set declaration -- dispatch ONLY on @set, never bareword
             # "set", which is the live ipset match keyword
             if keyword == "@set":
-                self._parse_set(rule)
+                self._parse_set(walker.rule)
                 return "next"
 
             if keyword == "@preserve":
-                self._parse_preserve(rule)
-                rule = new_level(prev)
+                self._parse_preserve(walker.rule)
+                walker.rule = new_level(prev)
                 return "next"
 
             # something not inherited by the parent closure
-            rule.non_empty = True
+            walker.rule.non_empty = True
 
             if keyword == "$":
                 error(
@@ -783,53 +766,53 @@ class Parser:
                 )
 
             if keyword == "&":
-                self._call_function(rule)
+                self._call_function(walker.rule)
                 return "next"
 
             # where to put the rule?
             if keyword == "domain":
-                if rule.domain is not None:
+                if walker.rule.domain is not None:
                     error("Domain is already specified")
                 domains = self.evaluator.getvalues()
                 if isinstance(domains, list):
 
                     def build_domain(item: Value) -> Rule | None:
-                        inner = new_level(rule)
+                        inner = new_level(walker.rule)
                         if not self.set_domain(inner, item):
                             return None
                         inner.domain_both = True
                         return inner
 
                     self._replay_array(domains, build_domain)
-                    rule = new_level(prev)
-                elif not self.set_domain(rule, domains):
+                    walker.rule = new_level(prev)
+                elif not self.set_domain(walker.rule, domains):
                     self.evaluator.collect_tokens()
-                    rule = new_level(prev)
+                    walker.rule = new_level(prev)
                 return "next"
 
             if keyword == "table":
-                if rule.table is not None:
+                if walker.rule.table is not None:
                     warning("Table is already specified")
                 tables = self.evaluator.getvalues()
-                if rule.domain is None:
-                    self.set_domain(rule, self.options.domain or "ip")
+                if walker.rule.domain is None:
+                    self.set_domain(walker.rule, self.options.domain or "ip")
                 if isinstance(tables, list):
 
                     def build_table(item: Value) -> Rule | None:
-                        inner = new_level(rule)
+                        inner = new_level(walker.rule)
                         inner.table = item
                         self.scope.top.auto["TABLE"] = item
                         return inner
 
                     self._replay_array(tables, build_table)
-                    rule = new_level(prev)
+                    walker.rule = new_level(prev)
                 else:
-                    rule.table = tables
+                    walker.rule.table = tables
                     self.scope.top.auto["TABLE"] = tables
                 return "next"
 
             if keyword == "chain":
-                if rule.chain is not None:
+                if walker.rule.chain is not None:
                     warning("Chain is already specified")
                 chains = self.evaluator.getvalues()
                 for chain in to_array(chains):
@@ -839,12 +822,12 @@ class Parser:
                         error(
                             "Please write built-in chain names in upper case"
                         )
-                if rule.domain is None:
-                    self.set_domain(rule, self.options.domain or "ip")
-                if rule.table is None:
-                    rule.table = "filter"
-                domain = _domain_key(rule.domain)
-                for table in to_array(rule.table):
+                if walker.rule.domain is None:
+                    self.set_domain(walker.rule, self.options.domain or "ip")
+                if walker.rule.table is None:
+                    walker.rule.table = "filter"
+                domain = _domain_key(walker.rule.domain)
+                for table in to_array(walker.rule.table):
                     table_info = self.domains[domain].tables.setdefault(
                         stringify(table), TableInfo()
                     )
@@ -855,24 +838,24 @@ class Parser:
                 if isinstance(chains, list):
 
                     def build_chain(item: Value) -> Rule | None:
-                        inner = new_level(rule)
+                        inner = new_level(walker.rule)
                         inner.chain = item
                         self.scope.top.auto["CHAIN"] = item
                         return inner
 
                     self._replay_array(chains, build_chain)
-                    rule = new_level(prev)
+                    walker.rule = new_level(prev)
                 else:
-                    rule.chain = chains
+                    walker.rule.chain = chains
                     self.scope.top.auto["CHAIN"] = chains
                 return "next"
 
-            if rule.chain is None:
+            if walker.rule.chain is None:
                 error("Chain must be specified")
 
             # policy for a built-in chain
             if keyword == "policy":
-                if rule.has_rule:
+                if walker.rule.has_rule:
                     error("Cannot specify matches for policy")
                 policy = self.evaluator.getvar()
                 if not isinstance(policy, str) or not is_netfilter_core_target(
@@ -880,18 +863,18 @@ class Parser:
                 ):
                     error(f"Invalid policy target: {policy}")
                 self.tokenizer.expect_token(";")
-                domain = _domain_key(rule.domain)
+                domain = _domain_key(walker.rule.domain)
                 domain_info = self.domains[domain]
                 domain_info.enabled = True
-                for table in to_array(rule.table):
+                for table in to_array(walker.rule.table):
                     table_info = domain_info.tables.setdefault(
                         stringify(table), TableInfo()
                     )
-                    for chain in to_array(rule.chain):
+                    for chain in to_array(walker.rule.chain):
                         table_info.chains.setdefault(
                             stringify(chain), ChainInfo()
                         ).policy = policy
-                rule = new_level(prev)
+                walker.rule = new_level(prev)
                 return "next"
 
             # nft base-chain priority override (form A: `priority -N`
@@ -900,7 +883,7 @@ class Parser:
             # unconditionally; the backend validates (nft rejects it on a
             # user chain, iptables rejects it outright).
             if keyword == "priority":
-                if rule.has_rule:
+                if walker.rule.has_rule:
                     error("Cannot specify matches for priority")
                 token = stringify(self.evaluator.getvar())
                 # nft landmark offset form (`dstnat - 10`) arrives as three
@@ -924,7 +907,7 @@ class Parser:
                     # would mis-report as "Unrecognized keyword".
                     self.tokenizer.next_token()
                     token = f"{token} {sign[0]} {sign[1:]}"
-                domain = _domain_key(rule.domain)
+                domain = _domain_key(walker.rule.domain)
                 try:
                     priority = resolve_chain_priority(domain, token)
                 except ValueError:
@@ -932,11 +915,11 @@ class Parser:
                 domain_info = self.domains[domain]
                 domain_info.enabled = True
                 already_set = False
-                for table in to_array(rule.table):
+                for table in to_array(walker.rule.table):
                     table_info = domain_info.tables.setdefault(
                         stringify(table), TableInfo()
                     )
-                    for chain in to_array(rule.chain):
+                    for chain in to_array(walker.rule.chain):
                         chain_info = table_info.chains.setdefault(
                             stringify(chain), ChainInfo()
                         )
@@ -952,11 +935,13 @@ class Parser:
                 return "next"
 
             if keyword in ("@subchain", "subchain", "@gotosubchain"):
-                rule = self._parse_subchain(keyword, rule, prev, level)
+                walker.rule = self._parse_subchain(
+                    keyword, walker.rule, prev, level
+                )
                 return "next"
 
             # everything else is part of a "real" rule
-            rule.has_rule = True
+            walker.rule.has_rule = True
 
             # extended parameters: module load
             if isinstance(keyword, str) and re.fullmatch(
@@ -964,34 +949,41 @@ class Parser:
             ):
                 for value in to_array(self.evaluator.getvalues()):
                     module = stringify(value)
-                    if module in rule.match:
+                    if module in walker.rule.match:
                         continue
-                    family_defs = MATCH_DEFS.get(rule.domain_family or "", {})
+                    family_defs = MATCH_DEFS.get(
+                        walker.rule.domain_family or "", {}
+                    )
                     defs = family_defs.get(module)
-                    append_option(rule, "match", module)
-                    rule.match.add(module)
+                    append_option(walker.rule, "match", module)
+                    walker.rule.match.add(module)
                     if defs is not None:
-                        merge_keywords(rule, defs.keywords, module)
+                        merge_keywords(walker.rule, defs.keywords, module)
                 return "next"
 
             # shortcuts
-            if isinstance(keyword, str) and keyword not in rule.keywords:
-                family = rule.domain_family or ""
+            if (
+                isinstance(keyword, str)
+                and keyword not in walker.rule.keywords
+            ):
+                family = walker.rule.domain_family or ""
                 shortcut = SHORTCUTS.get(family, {}).get(keyword)
                 if shortcut is not None:
                     module = shortcut[0]
                     defs = MATCH_DEFS.get(family, {}).get(module)
-                    append_option(rule, "match", module)
-                    rule.match.add(module)
+                    append_option(walker.rule, "match", module)
+                    walker.rule.match.add(module)
                     if defs is not None:
-                        merge_keywords(rule, defs.keywords, module)
+                        merge_keywords(walker.rule, defs.keywords, module)
                     keyword = shortcut[1]
-                    shown_keyword = keyword
+                    walker.shown_keyword = keyword
 
             # keywords from rule.keywords
-            if isinstance(keyword, str) and keyword in rule.keywords:
-                realize_protocol_keyword(rule, keyword)
-                self.parse_option(rule.keywords[keyword], rule, negated)
+            if isinstance(keyword, str) and keyword in walker.rule.keywords:
+                realize_protocol_keyword(walker.rule, keyword)
+                self.parse_option(
+                    walker.rule.keywords[keyword], walker.rule, negated
+                )
                 return "next"
 
             # actions
@@ -999,35 +991,35 @@ class Parser:
                 target = self.evaluator.getvar()
                 if isinstance(target, str):
                     _check_chain_name(target)
-                self.set_target(rule, keyword, target)
+                self.set_target(walker.rule, keyword, target)
                 return "next"
 
             if isinstance(keyword, str) and is_netfilter_core_target(keyword):
-                self.set_target(rule, "jump", keyword)
+                self.set_target(walker.rule, "jump", keyword)
                 return "next"
 
             if keyword == "NOP":
-                if rule.has_action:
+                if walker.rule.has_action:
                     error("There can only one action per rule")
-                rule.has_action = True
+                walker.rule.has_action = True
                 return "next"
 
             if isinstance(keyword, str):
                 defs = is_netfilter_module_target(
-                    TARGET_DEFS, rule.domain_family, keyword
+                    TARGET_DEFS, walker.rule.domain_family, keyword
                 )
                 if defs is not None:
-                    self.set_module_target(rule, keyword, defs)
+                    self.set_module_target(walker.rule, keyword, defs)
                     return "next"
 
             # protocol specific options
             if keyword in ("proto", "protocol"):
-                self._parse_protocol(rule, negated)
+                self._parse_protocol(walker.rule, negated)
                 return "next"
 
             # port switches
             if isinstance(keyword, str) and re.fullmatch(r"[sd]port", keyword):
-                proto = realize_protocol(rule)
+                proto = realize_protocol(walker.rule)
                 valid = proto is not None and any(
                     isinstance(p, str) and p in PORT_PROTOCOLS
                     for p in to_array(proto)
@@ -1038,7 +1030,7 @@ class Parser:
                         '"proto tcp" or "proto udp" first'
                     )
                 append_option(
-                    rule,
+                    walker.rule,
                     keyword,
                     self.evaluator.getvalues(allow_negation=True),
                 )
@@ -1048,11 +1040,11 @@ class Parser:
 
         # The strangler facade: each statement is materialized as a tree node
         # and dispatched through the Walker, which replays it via the streaming
-        # handle() below.  Build and walk are interleaved per statement (no
-        # parse pre-pass), so diagnostics stay in source order.  At this layer
-        # every statement is a RawShimNode and the dispatch reads its operands
-        # live -- a pure pass-through, byte-identical to the old direct call.
-        walker = Walker(self, handle)
+        # handle() bound above.  Build and walk are interleaved per statement
+        # (no parse pre-pass), so diagnostics stay in source order.  At this
+        # layer every statement is a RawShimNode and the dispatch reads its
+        # operands live -- a pure pass-through, byte-identical to the old call.
+        walker.dispatch = handle
         while True:
             token = self.tokenizer.next_token()
             if token is None:
@@ -1073,21 +1065,37 @@ class Parser:
                 )
                 keyword = new_keyword
 
-            node = RawShimNode(
-                source_pos=script_position(),
-                keyword=keyword,
-                negated=negated.active,
-                span=(),
-            )
-            if walker.replay_shim(node, negated) == "return":
+            # Promoted kinds go to their typed visit_* method; everything
+            # else stays a RawShimNode replayed through the streaming handle.
+            # { and @if cannot be negated, so the negation check below is a
+            # no-op for them (parity with the old per-keyword dispatch).  Set
+            # shown_keyword here as handle() did on its first line, so a
+            # leftover-negation diagnostic names the promoted keyword too.
+            walker.shown_keyword = keyword
+            node: Node
+            if keyword == "{":
+                node = BlockNode(source_pos=script_position())
+                result = walker.visit(node)
+            elif keyword == "@if":
+                node = IfNode(source_pos=script_position(), cond_span=())
+                result = walker.visit(node)
+            else:
+                node = RawShimNode(
+                    source_pos=script_position(),
+                    keyword=keyword,
+                    negated=negated.active,
+                    span=(),
+                )
+                result = walker.replay_shim(node, negated)
+            if result == "return":
                 return
 
             if negated.active:
-                error(f"Doesn't support negation: {shown_keyword}")
+                error(f"Doesn't support negation: {walker.shown_keyword}")
 
         if level > base_level:
             error('Missing "}" at end of file')
-        if rule.non_empty:
+        if walker.rule.non_empty:
             error("Missing semicolon before end of file")
 
     # -- enter() sub-handlers (kept off the monolith for readability) ----

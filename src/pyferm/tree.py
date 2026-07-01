@@ -51,9 +51,16 @@ class RuleNode(Node):
 
 @dataclass(frozen=True)
 class BlockNode(Node):
-    """A nested { ... } block."""
+    """
+    A nested { ... } block.
 
-    body: Block
+    On the walk path body stays None: the nested statements stream through a
+    recursive enter() with their own Walker, so the walk never needs the
+    body captured. Parser.parse_to_block is the only builder that fills body
+    (for the structural analyzers).
+    """
+
+    body: Block | None = None
 
 
 @dataclass(frozen=True)
