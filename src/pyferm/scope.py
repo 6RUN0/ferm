@@ -48,6 +48,9 @@ class SourcePosition:
 
     filename: str
     line: int
+    #: Reserved forward seam for AST nodes; the tokenizer tracks only
+    #: line, so this stays None until a column-aware pass fills it.
+    column: int | None = None
 
 
 @dataclass
