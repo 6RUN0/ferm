@@ -169,21 +169,6 @@ class SetNode(Node):
     span: tuple[Token, ...]
 
 
-@dataclass(frozen=True)
-class RawShimNode(Node):
-    """
-    An un-promoted statement carried by the strangler shim.
-
-    Holds the leading (keyword, negated) plus a raw span; replayed through
-    the old streaming dispatch. Removed once every kind is promoted to a
-    typed node.
-    """
-
-    keyword: object
-    negated: bool
-    span: tuple[Token, ...]
-
-
 class NodeVisitor:
     """
     Dispatch visitor: visit_<ClassName>, no-op fallback.

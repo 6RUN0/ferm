@@ -39,3 +39,30 @@ def test_def_after_subchain_same_block() -> None:
         "table filter chain INPUT { "
         "proto tcp @subchain { ACCEPT; } @def $z = 1; saddr $z DROP; }\n"
     )
+
+
+def test_negated_promoted_keyword_reaches_typed_path() -> None:
+    # `! def` (leading `@!def` lexes to `!`, `def`): the negation resolves the
+    # keyword only in visit_RuleNode, AFTER the raw-lead router; it must still
+    # reach visit_DefNode, then report the leftover negation like the oracle.
+    assert_cli_parity(
+        "@!def $addr = 0.0.0.0;\ntable filter chain INPUT { ACCEPT; }\n"
+    )
+
+
+def test_negated_header_keyword() -> None:
+    assert_cli_parity("! domain ip;\ntable filter chain INPUT { ACCEPT; }\n")
+
+
+def test_bare_negation_before_brace() -> None:
+    # `!`/`&`/jump/goto consume the next token; a top-level } right after is
+    # that operand, so the replay must diagnose it, not hit end-of-file.
+    assert_cli_parity("domain ip { table filter { chain extra { } } !}\n")
+
+
+def test_inline_amp_before_brace() -> None:
+    assert_cli_parity("domain ip { table filter { chain extra { } } &}\n")
+
+
+def test_negated_header_operand_is_brace() -> None:
+    assert_cli_parity("table filter chain INPUT { ! policy }\n")

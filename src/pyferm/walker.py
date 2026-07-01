@@ -3,15 +3,17 @@ Walk-driven evaluator over the structural AST (strangler facade).
 
 The per-block Walker owns statement order and the mutable dispatch state of
 one block -- the pending rule and the last-seen keyword -- which used to be
-_enter_body closure cells. Both the RawShimNode shim and the typed visit_*
-methods mutate that ONE rule, so a promoted { or @if cannot desync from
-matches that a preceding shim statement accumulated -- e.g. the saddr in
-``saddr 1.2.3.4 { ACCEPT; }`` must reach the nested rule.
+_enter_body closure cells. Every typed visit_* method mutates that ONE rule,
+so a promoted { or @if cannot desync from matches a preceding statement
+accumulated -- e.g. the saddr in ``saddr 1.2.3.4 { ACCEPT; }`` must reach the
+nested rule.
 
-Un-promoted statements are RawShimNodes replayed through the block's streaming
-dispatch (handle); the dispatch reads their operands live from the tokenizer,
-a pure pass-through that keeps golden byte-identical. Later layers replace more
-RawShimNode kinds with typed nodes and real visit_* methods.
+Each statement is a typed node visited here; the leaf rule keywords and the
+bare control tokens (; } @else) that are not promoted stay in the parser's
+residual handle(), bound as self.dispatch and self.route. visit_RuleNode swaps
+a captured rule span into the tokenizer and replays it through the same router
+and leaf dispatch, so an over-captured promoted keyword never bypasses its
+typed path.
 """
 
 # The Walker is the evaluator half of the split parser: it drives the
@@ -42,7 +44,6 @@ if TYPE_CHECKING:
         IfNode,
         IncludeNode,
         PreserveNode,
-        RawShimNode,
         RuleNode,
         SetNode,
         SubchainNode,
@@ -86,19 +87,11 @@ class Walker(NodeVisitor):
         #: / control token. Shared by the read loop and visit_RuleNode so an
         #: over-captured promoted keyword never bypasses its typed path.
         self.route: Callable[[object], object | None] | None = None
-
-    def replay_shim(self, node: RawShimNode, negated: NegatedFlag) -> str:
-        """
-        Replay an un-promoted statement through the streaming dispatch.
-
-        The dispatch consumes this statement's operands live from the
-        tokenizer. The live NegatedFlag -- which a handler may clear when it
-        legitimately consumes the negation, and the caller re-checks
-        afterwards -- is threaded as an argument because a frozen node cannot
-        carry mutable state.
-        """
-        assert self.dispatch is not None
-        return self.dispatch(node.keyword, negated)
+        #: Bound to Parser._visit_stmt_node: routes an already-consumed
+        #: statement keyword to its typed node. Used when a leading ``!``
+        #: resolves to a promoted keyword (``! def``), so the resolved keyword
+        #: reaches its typed path instead of the (now def-less) leaf handle.
+        self.route_resolved: Callable[[object], object | None] | None = None
 
     def visit_BlockNode(self, node: BlockNode) -> str:  # noqa: ARG002
         """
@@ -160,6 +153,8 @@ class Walker(NodeVisitor):
         """
         assert self.dispatch is not None
         assert self.resolve is not None
+        assert self.route is not None
+        assert self.route_resolved is not None
         tokenizer = self.parser.tokenizer
         script = tokenizer.script
         old_tokens = script.tokens
@@ -167,22 +162,27 @@ class Walker(NodeVisitor):
         old_handle = script.handle
         old_tokens.appendleft(make_line_token(script.line))
         script.handle = None
-        assert self.route is not None
         try:
             script.tokens = deque(node.span)
             while True:
                 # A promoted kind (a { or @if from inline &function expansion,
                 # or a header/@def/... over-captured by the subchain over-read)
                 # is routed to its typed node via the SAME router the read loop
-                # uses, so it never bypasses its typed path. A rule keyword or
-                # control token (route returns None) goes to the leaf dispatch.
+                # uses, so it never bypasses its typed path.
                 lead = tokenizer.peek_token()
                 if lead is None:
                     break
                 result = self.route(lead)
                 if result is None:
                     keyword, negated = self.resolve(tokenizer.next_token())
-                    result = self.dispatch(keyword, negated)
+                    self.shown_keyword = keyword
+                    # A leading ``!`` resolves to a promoted keyword
+                    # (``! def``) only here, after the raw-lead router passed;
+                    # route the resolved keyword to its typed node so it is not
+                    # lost to the leaf handle, then report a leftover negation.
+                    result = self.route_resolved(keyword)
+                    if result is None:
+                        result = self.dispatch(keyword, negated)
                     if negated.active:
                         error(
                             f"Doesn't support negation: {self.shown_keyword}"

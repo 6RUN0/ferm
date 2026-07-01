@@ -95,7 +95,6 @@ from pyferm.tree import (
     IncludeNode,
     Node,
     PreserveNode,
-    RawShimNode,
     RuleNode,
     SetNode,
     SubchainNode,
@@ -135,6 +134,39 @@ _NON_RULE_LEADING: Final = frozenset({";", "}", "@else"})
 #: nested match block that would end the rule span.
 _SUBCHAIN_KEYWORDS: Final = frozenset(
     {"subchain", "@subchain", "@gotosubchain"}
+)
+
+#: Leaf tokens that unconditionally consume the NEXT token via getvar /
+#: require_next_token (the negation prefix, an inline &call's name, a jump/goto
+#: target). A top-level }/;/{ right after one is that operand -- keep it in the
+#: rule span so the replay diagnoses it ("'}' not allowed here") instead of
+#: hitting end-of-file on the pushed-back token.
+_CONSUMES_NEXT_TOKEN: Final = frozenset({"!", "&", "jump", "goto"})
+
+#: Every promoted non-block statement keyword. Routed to its typed node both
+#: as a raw leading token (_dispatch_leading) and after a leading ``!``
+#: resolves to it (``! def``): the oracle runs the keyword then reports the
+#: leftover negation, so the resolved keyword must not reach the leaf handle.
+#: Kept self-contained (no forward ref to _HEADER_KEYWORDS, defined later).
+_STMT_KEYWORDS: Final = frozenset(
+    {
+        "@def",
+        "def",
+        "@set",
+        "@include",
+        "include",
+        "@preserve",
+        "@hook",
+        "hook",
+        "domain",
+        "table",
+        "chain",
+        "policy",
+        "priority",
+        "subchain",
+        "@subchain",
+        "@gotosubchain",
+    }
 )
 
 #: Hard ceiling on nested-block recursion in :meth:`Parser.enter`.  Real
@@ -896,13 +928,24 @@ class Parser:
         span: list[Token] = [make_line_token(script.line)]
         depth = 0
         saw_subchain = False
+        consume_next = False
         while True:
             tok = self.tokenizer.next_raw_token()
             if tok is None:
                 break
             if not isinstance(tok, str):
                 self.tokenizer.handle_special_token(tok)
-            elif tok == "(":
+                span.append(tok)
+                continue
+            if consume_next:
+                # the token right after a !/&/jump/goto is that keyword's
+                # operand, consumed on replay via getvar even when it is }/;/{;
+                # keep it in the span so replay diagnoses it, skipping the
+                # bracket logic below.
+                consume_next = False
+                span.append(tok)
+                continue
+            if tok == "(":
                 depth += 1
             elif tok == "{":
                 if depth == 0 and not saw_subchain:
@@ -916,13 +959,19 @@ class Parser:
                     depth -= 1
             elif tok == "}":
                 if depth == 0:
-                    script.tokens.appendleft(tok)
+                    # keep the top-level } in the span: a preceding keyword may
+                    # consume it as its operand (``! policy }``), otherwise the
+                    # replay's } handler diagnoses the missing ';' just as the
+                    # streaming loop would.
+                    span.append(tok)
                     break
                 depth -= 1
             elif tok == ";" and depth == 0:
                 span.append(tok)
                 break
-            if isinstance(tok, str) and tok in _SUBCHAIN_KEYWORDS:
+            if tok in _CONSUMES_NEXT_TOKEN:
+                consume_next = True
+            elif tok in _SUBCHAIN_KEYWORDS:
                 saw_subchain = True
             span.append(tok)
         return tuple(span)
@@ -1134,37 +1183,51 @@ class Parser:
         if lead == "@if":
             tokenizer.next_token()
             return walker.visit(IfNode(source_pos=pos, cond_span=()))
-        if lead in ("@def", "def"):
+        if lead in _STMT_KEYWORDS:
             tokenizer.next_token()
+            return self._visit_stmt_node(walker, lead)
+        return None
+
+    def _visit_stmt_node(
+        self, walker: Walker, keyword: object
+    ) -> object | None:
+        """
+        Route an already-consumed statement keyword to its typed node.
+
+        The visit method reads the operands live, so the leading keyword must
+        already be consumed. Used for a raw leading keyword (after
+        _dispatch_leading consumes it) AND for a negation-resolved keyword
+        (``! def``, consumed by getvar) so it reaches its typed path instead of
+        the leaf handle. Returns None if ``keyword`` is not a promoted kind.
+        """
+        script = self.tokenizer.script
+        pos = SourcePosition(script.filename, script.line)
+        if keyword in ("@def", "def"):
             return walker.visit(DefNode(source_pos=pos, span=()))
-        if lead == "@set":
-            tokenizer.next_token()
+        if keyword == "@set":
             return walker.visit(SetNode(source_pos=pos, span=()))
-        if lead in ("@include", "include"):
-            tokenizer.next_token()
+        if keyword in ("@include", "include"):
             return walker.visit(IncludeNode(source_pos=pos, span=()))
-        if lead == "@preserve":
-            tokenizer.next_token()
+        if keyword == "@preserve":
             return walker.visit(PreserveNode(source_pos=pos, span=()))
-        if lead in ("@hook", "hook"):
-            if lead == "hook":
+        if keyword in ("@hook", "hook"):
+            if keyword == "hook":
                 warning("'hook' is deprecated, use '@hook'")
-            tokenizer.next_token()
+                # match handle()'s remap so a leftover-negation names @hook.
+                walker.shown_keyword = "@hook"
             return walker.visit(HookNode(source_pos=pos, span=()))
-        if lead in _HEADER_KEYWORDS:
-            tokenizer.next_token()
+        if keyword in _HEADER_KEYWORDS:
             return walker.visit(
                 HeaderNode(
                     source_pos=pos,
-                    keyword=str(lead),
+                    keyword=str(keyword),
                     value_span=(),
                     body=None,
                 )
             )
-        if lead in _SUBCHAIN_KEYWORDS:
-            tokenizer.next_token()
+        if keyword in _SUBCHAIN_KEYWORDS:
             return walker.visit(
-                SubchainNode(source_pos=pos, span=(), keyword=str(lead))
+                SubchainNode(source_pos=pos, span=(), keyword=str(keyword))
             )
         return None
 
@@ -1368,21 +1431,23 @@ class Parser:
 
             return error(f"Unrecognized keyword: {keyword}")
 
-        # The strangler facade: each statement is materialized as a tree node
-        # and dispatched through the Walker, which replays it via the streaming
-        # handle() bound above.  Build and walk are interleaved per statement
-        # (no parse pre-pass), so diagnostics stay in source order.  At this
-        # layer every statement is a RawShimNode and the dispatch reads its
-        # operands live -- a pure pass-through, byte-identical to the old call.
+        # parser.enter builds a walk-driven tree lazily: each statement is
+        # materialized as a typed node and dispatched through the Walker in
+        # source order (build+walk interleaved, no parse pre-pass), so
+        # diagnostics keep the streaming order.  handle() below is the residual
+        # leaf dispatch -- the rule keywords and the bare control tokens
+        # (; } @else) that are not promoted to nodes; visit_RuleNode replays a
+        # rule span through it (walker.dispatch), and the read loop calls it
+        # directly for a leading control token.
         walker.dispatch = handle
         walker.resolve = self._resolve_keyword
         walker.route = lambda lead: self._dispatch_leading(walker, lead)
+        walker.route_resolved = lambda kw: self._visit_stmt_node(walker, kw)
         # Route by the RAW leading token (peeked, not consumed): a promoted
-        # kind to its typed node (_dispatch_leading); an un-promoted non-rule
-        # statement keyword to the streaming shim; everything else starts a
-        # rule captured whole and sliced on the walk. A rule owns its own
-        # negation handling (its leading token may be ``!``); shim/control
-        # keywords never negate.
+        # kind to its typed node (_dispatch_leading); a bare control token to
+        # the leaf handle(); everything else starts a rule captured whole and
+        # sliced on the walk.  A rule owns its own negation handling (its
+        # leading token may be ``!``); control tokens never negate.
         while True:
             lead = self.tokenizer.peek_token()
             if lead is None:
@@ -1391,16 +1456,9 @@ class Parser:
             result = self._dispatch_leading(walker, lead)
             if result is None:
                 if isinstance(lead, str) and lead in _NON_RULE_LEADING:
-                    token = self.tokenizer.next_token()
-                    walker.shown_keyword = token
-                    shim = RawShimNode(
-                        source_pos=script_position(),
-                        keyword=token,
-                        negated=False,
-                        span=(),
-                    )
-                    result = walker.replay_shim(
-                        shim, NegatedFlag(active=False)
+                    result = handle(
+                        self.tokenizer.next_token(),
+                        NegatedFlag(active=False),
                     )
                 else:
                     result = walker.visit(
