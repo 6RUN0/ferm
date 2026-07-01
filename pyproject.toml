@@ -176,8 +176,10 @@ known-first-party = ["pyferm"]
 "tests/*" = ["D", "PLR2004", "FBT", "SLF001"]
 # The Walker is a NodeVisitor: its methods MUST be named visit_<ClassName>
 # to match the getattr dispatch, so mixed-case method names (N802) are the
-# required idiom, not a style slip.
-"src/pyferm/walker.py" = ["N802"]
+# required idiom, not a style slip. The Walker is the evaluator half of the
+# split parser, so it drives the Parser's own parse helpers (_parse_def,
+# _include_file, ...) by design -- SLF001 is that intended coupling.
+"src/pyferm/walker.py" = ["N802", "SLF001"]
 
 [tool.mypy]
 python_version = "3.11"

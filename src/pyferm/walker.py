@@ -14,15 +14,19 @@ a pure pass-through that keeps golden byte-identical. Later layers replace more
 RawShimNode kinds with typed nodes and real visit_* methods.
 """
 
+# The Walker is the evaluator half of the split parser: it drives the
+# Parser's own parse helpers (_parse_def, _include_file, ...) by design, so
+# pyright's private-usage rule is off here (mirrors the ruff SLF001 ignore).
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from collections import deque
 from typing import TYPE_CHECKING
 
 from .errors import error, internal_error
-from .scope import Frame, SourcePosition, new_level
+from .scope import Frame, new_level
 from .tokenizer import make_line_token
-from .tree import BlockNode, IfNode, NodeVisitor
+from .tree import NodeVisitor
 from .values import eval_bool
 
 if TYPE_CHECKING:
@@ -30,8 +34,14 @@ if TYPE_CHECKING:
 
     from .parser import NegatedFlag, Parser
     from .scope import Rule
-    from .tokenizer import Script
-    from .tree import Node, RawShimNode, RuleNode
+    from .tree import (
+        BlockNode,
+        DefNode,
+        IfNode,
+        RawShimNode,
+        RuleNode,
+        SetNode,
+    )
 
 
 class Walker(NodeVisitor):
@@ -66,6 +76,11 @@ class Walker(NodeVisitor):
         self.resolve: Callable[[object], tuple[object, NegatedFlag]] | None = (
             None
         )
+        #: Bound to Parser._dispatch_leading: routes a promoted non-rule
+        #: leading token to its typed node, or returns None for a rule keyword
+        #: / control token. Shared by the read loop and visit_RuleNode so an
+        #: over-captured promoted keyword never bypasses its typed path.
+        self.route: Callable[[object], object | None] | None = None
 
     def replay_shim(self, node: RawShimNode, negated: NegatedFlag) -> str:
         """
@@ -147,25 +162,20 @@ class Walker(NodeVisitor):
         old_handle = script.handle
         old_tokens.appendleft(make_line_token(script.line))
         script.handle = None
+        assert self.route is not None
         try:
             script.tokens = deque(node.span)
             while True:
-                # A { or @if reaches the span only via inline &function
-                # expansion (which unshifts a block/conditional body); route
-                # it to its typed node exactly as the streaming loop does.
+                # A promoted kind (a { or @if from inline &function expansion,
+                # or a header/@def/... over-captured by the subchain over-read)
+                # is routed to its typed node via the SAME router the read loop
+                # uses, so it never bypasses its typed path. A rule keyword or
+                # control token (route returns None) goes to the leaf dispatch.
                 lead = tokenizer.peek_token()
                 if lead is None:
                     break
-                inner: Node
-                if lead == "{":
-                    tokenizer.next_token()
-                    inner = BlockNode(source_pos=self._pos(script))
-                    result = self.visit(inner)
-                elif lead == "@if":
-                    tokenizer.next_token()
-                    inner = IfNode(source_pos=self._pos(script), cond_span=())
-                    result = self.visit(inner)
-                else:
+                result = self.route(lead)
+                if result is None:
                     keyword, negated = self.resolve(tokenizer.next_token())
                     result = self.dispatch(keyword, negated)
                     if negated.active:
@@ -180,7 +190,12 @@ class Walker(NodeVisitor):
             script.line = old_line
         return "next"
 
-    @staticmethod
-    def _pos(script: Script) -> SourcePosition:
-        """Build a source position from the live script's filename/line."""
-        return SourcePosition(script.filename, script.line)
+    def visit_DefNode(self, node: DefNode) -> str:  # noqa: ARG002
+        """Define a variable or function (@def), reading operands live."""
+        self.parser._parse_def(self.rule)
+        return "next"
+
+    def visit_SetNode(self, node: SetNode) -> str:  # noqa: ARG002
+        """Declare a named nft set (@set), reading operands live."""
+        self.parser._parse_set(self.rule)
+        return "next"

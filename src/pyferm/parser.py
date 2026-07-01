@@ -137,9 +137,6 @@ _NON_RULE_LEADING: Final = frozenset(
         "@hook",
         "include",
         "@include",
-        "def",
-        "@def",
-        "@set",
         "@preserve",
         "domain",
         "table",
@@ -949,6 +946,32 @@ class Parser:
             span.append(tok)
         return tuple(span)
 
+    def _dispatch_leading(self, walker: Walker, lead: object) -> object | None:
+        """
+        Route a promoted non-rule leading token to its typed node.
+
+        Consumes the leading keyword and returns the visit result, or None
+        when ``lead`` is a rule keyword or control token the caller must
+        handle itself. Shared by the read loop and Walker.visit_RuleNode so an
+        over-captured promoted keyword is never replayed via the raw leaf
+        dispatch (which would bypass its typed path once handle() is gone).
+        """
+        tokenizer = self.tokenizer
+        pos = SourcePosition(tokenizer.script.filename, tokenizer.script.line)
+        if lead == "{":
+            tokenizer.next_token()
+            return walker.visit(BlockNode(source_pos=pos))
+        if lead == "@if":
+            tokenizer.next_token()
+            return walker.visit(IfNode(source_pos=pos, cond_span=()))
+        if lead in ("@def", "def"):
+            tokenizer.next_token()
+            return walker.visit(DefNode(source_pos=pos, span=()))
+        if lead == "@set":
+            tokenizer.next_token()
+            return walker.visit(SetNode(source_pos=pos, span=()))
+        return None
+
     def enter(self, level: int, prev: Rule | None) -> None:
         """
         Parse a block of rules at depth ``level`` (Perl ``:2123``).
@@ -1073,17 +1096,8 @@ class Parser:
                     self._include_file(filename, level, walker.rule)
                 return "next"
 
-            # definition of a variable or function
-            if keyword in ("@def", "def"):
-                self._parse_def(walker.rule)
-                return "next"
-
-            # named set declaration -- dispatch ONLY on @set, never bareword
-            # "set", which is the live ipset match keyword
-            if keyword == "@set":
-                self._parse_set(walker.rule)
-                return "next"
-
+            # @def/@set are promoted to typed DefNode/SetNode (routed by
+            # _dispatch_leading); they never reach the leaf dispatch here.
             if keyword == "@preserve":
                 self._parse_preserve(walker.rule)
                 walker.rule = new_level(prev)
@@ -1378,41 +1392,39 @@ class Parser:
         # operands live -- a pure pass-through, byte-identical to the old call.
         walker.dispatch = handle
         walker.resolve = self._resolve_keyword
-        # Route by the RAW leading token (peeked, not consumed): a block or
-        # @if to its typed node; a non-rule statement keyword to the streaming
-        # shim per keyword; everything else starts a rule captured whole and
-        # sliced on the walk.  A rule owns its own negation handling (its
-        # leading token may be ``!``); the shim path never negates.
+        walker.route = lambda lead: self._dispatch_leading(walker, lead)
+        # Route by the RAW leading token (peeked, not consumed): a promoted
+        # kind to its typed node (_dispatch_leading); an un-promoted non-rule
+        # statement keyword to the streaming shim; everything else starts a
+        # rule captured whole and sliced on the walk. A rule owns its own
+        # negation handling (its leading token may be ``!``); shim/control
+        # keywords never negate.
         while True:
             lead = self.tokenizer.peek_token()
             if lead is None:
                 break
 
-            node: Node
-            if lead == "{":
-                self.tokenizer.next_token()
-                node = BlockNode(source_pos=script_position())
-                result = walker.visit(node)
-            elif lead == "@if":
-                self.tokenizer.next_token()
-                node = IfNode(source_pos=script_position(), cond_span=())
-                result = walker.visit(node)
-            elif isinstance(lead, str) and lead in _NON_RULE_LEADING:
-                token = self.tokenizer.next_token()
-                walker.shown_keyword = token
-                node = RawShimNode(
-                    source_pos=script_position(),
-                    keyword=token,
-                    negated=False,
-                    span=(),
-                )
-                result = walker.replay_shim(node, NegatedFlag(active=False))
-            else:
-                node = RuleNode(
-                    source_pos=script_position(),
-                    span=self._capture_rule_span(),
-                )
-                result = walker.visit(node)
+            result = self._dispatch_leading(walker, lead)
+            if result is None:
+                if isinstance(lead, str) and lead in _NON_RULE_LEADING:
+                    token = self.tokenizer.next_token()
+                    walker.shown_keyword = token
+                    shim = RawShimNode(
+                        source_pos=script_position(),
+                        keyword=token,
+                        negated=False,
+                        span=(),
+                    )
+                    result = walker.replay_shim(
+                        shim, NegatedFlag(active=False)
+                    )
+                else:
+                    result = walker.visit(
+                        RuleNode(
+                            source_pos=script_position(),
+                            span=self._capture_rule_span(),
+                        )
+                    )
             if result == "return":
                 return
 
