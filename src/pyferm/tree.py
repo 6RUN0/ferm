@@ -34,15 +34,6 @@ class Block(Node):
 
 
 @dataclass(frozen=True)
-class KeywordArg(Node):
-    """One keyword plus its raw value span; filled on walk."""
-
-    keyword: str
-    negated: bool
-    value_span: tuple[Token, ...]
-
-
-@dataclass(frozen=True)
 class RuleNode(Node):
     """A rule statement captured as a raw span up to ';' (sliced on walk)."""
 
@@ -121,18 +112,6 @@ class HeaderNode(Node):
 
 
 @dataclass(frozen=True)
-class FunctionCallNode(Node):
-    """
-    A block-form function call: &name(...) { ... };.
-
-    BLOCK form only (a standalone statement waiting on ';'). An inline
-    &name is NOT a node -- it preps into the current rule's span.
-    """
-
-    span: tuple[Token, ...]
-
-
-@dataclass(frozen=True)
 class SubchainNode(Node):
     """
     @subchain/@gotosubchain: chain declaration plus jump/goto.
@@ -144,15 +123,6 @@ class SubchainNode(Node):
 
     span: tuple[Token, ...]
     keyword: str = ""
-
-
-@dataclass(frozen=True)
-class ArrayReplayNode(Node):
-    """A domain/table/chain (a b) { ... } block replayed per array item."""
-
-    header_keyword: str
-    value_span: tuple[Token, ...]
-    body_span: tuple[Token, ...]
 
 
 @dataclass(frozen=True)

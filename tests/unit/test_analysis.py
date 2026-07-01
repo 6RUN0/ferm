@@ -117,3 +117,49 @@ def test_var_jump_target_is_known_limitation() -> None:
     # is NOT reported as undefined (pinned limitation).
     cfg = "@def $t = FOO;\ntable filter chain INPUT { jump $t; }\n"
     assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_jump_to_chain_named_like_a_keyword_not_flagged() -> None:
+    # A user chain may be named after a header keyword (table/domain/policy/
+    # priority/chain) -- the oracle accepts such names. `chain` takes exactly
+    # ONE name (or a parenthesised array), so the keyword must be harvested as
+    # the chain name, not treated as a name-run terminator (else a valid jump
+    # false-flags as undefined).
+    for name in ("table", "domain", "policy", "priority", "chain"):
+        cfg = (
+            "table filter {\n"
+            f"  chain {name} {{ ACCEPT; }}\n"
+            f"  chain INPUT {{ jump {name}; }}\n"
+            "}\n"
+        )
+        assert find_undefined_chain_jumps(_tree(cfg)) == [], name
+
+
+def test_function_parameter_not_flagged_as_unused_def() -> None:
+    # `@def &f($p1, $p2) = ...` -- $p1/$p2 are function parameters (locals),
+    # NOT @def variable declarations. They must not be reported as unused defs
+    # (this exact shape ships in reference/test/misc/stringex.ferm).
+    cfg = '@def &myfunc($p1, $p2) = LOG log-prefix "$p1:$p2";\n'
+    assert find_unused_defs(_tree(cfg)) == []
+
+
+def test_function_first_param_with_used_second_not_flagged() -> None:
+    # The first parameter must not be mis-registered as the declared name.
+    cfg = "@def &f($a, $b) = saddr $b ACCEPT;\n"
+    assert find_unused_defs(_tree(cfg)) == []
+
+
+def test_deeply_nested_input_does_not_crash_analyzers() -> None:
+    # parse_to_block must not RecursionError on pathological nesting the
+    # product rejects; it caps depth like Parser.enter (error-tolerant).
+    depth = 600  # past Python's default recursion headroom (~500 frames)
+    cfg = (
+        "table filter "
+        + "chain X { " * depth
+        + "ACCEPT; "
+        + "} " * depth
+        + "\n"
+    )
+    tree = Parser.parse_to_block(cfg)  # must not raise
+    find_unused_defs(tree)  # must not raise
+    find_undefined_chain_jumps(tree)  # must not raise

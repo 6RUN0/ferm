@@ -151,10 +151,16 @@ class Walker(NodeVisitor):
         shared self.rule carries any unfinished state (a missing ';') to the
         enclosing block's '}' handler.
         """
-        assert self.dispatch is not None
-        assert self.resolve is not None
-        assert self.route is not None
-        assert self.route_resolved is not None
+        if (
+            self.dispatch is None
+            or self.resolve is None
+            or self.route is None
+            or self.route_resolved is None
+        ):
+            # Bound before any RuleNode is visited; a None is a wiring bug,
+            # not user input. An explicit raise survives ``python -O``
+            # (Nuitka), where a bare assert is stripped to a NoneType call.
+            raise internal_error()
         tokenizer = self.parser.tokenizer
         script = tokenizer.script
         old_tokens = script.tokens

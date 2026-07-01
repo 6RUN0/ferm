@@ -360,6 +360,7 @@ class _StructuralParser:
         self._filename = filename
         self._i = 0
         self._line = 0
+        self._depth = 0
 
     def _pos(self) -> SourcePosition:
         return SourcePosition(self._filename, self._line)
@@ -385,15 +386,41 @@ class _StructuralParser:
         """Parse statements until a top-level ``}`` (consumed) or EOF."""
         pos = self._pos()
         statements: list[Node] = []
-        while True:
-            tok = self._peek()
-            if tok is None:
-                break
-            if tok == "}":
-                self._i += 1
-                break
-            statements.append(self._parse_statement())
+        self._depth += 1
+        try:
+            if self._depth > MAX_BLOCK_DEPTH:
+                # Error-tolerant depth cap mirroring Parser.enter's
+                # MAX_BLOCK_DEPTH: the analyzers are advisory, so on
+                # pathological nesting (which the product path rejects) stop
+                # structuring and skip past this subtree rather than recursing
+                # into a Python RecursionError.
+                self._skip_to_block_end()
+                return Block(source_pos=pos, statements=())
+            while True:
+                tok = self._peek()
+                if tok is None:
+                    break
+                if tok == "}":
+                    self._i += 1
+                    break
+                statements.append(self._parse_statement())
+        finally:
+            self._depth -= 1
         return Block(source_pos=pos, statements=tuple(statements))
+
+    def _skip_to_block_end(self) -> None:
+        """Consume tokens through the matching ``}`` of the current block."""
+        tokens = self._tokens
+        depth = 1
+        while self._i < len(tokens) and depth > 0:
+            tok = tokens[self._i]
+            if isinstance(tok, Line):
+                self._line = tok.number
+            elif tok == "{":
+                depth += 1
+            elif tok == "}":
+                depth -= 1
+            self._i += 1
 
     def _parse_statement(self) -> Node:
         pos = self._pos()

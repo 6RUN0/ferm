@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from .parser import MAX_BLOCK_DEPTH
 from .tree import Block, NodeVisitor
 
 if TYPE_CHECKING:
@@ -28,6 +29,14 @@ if TYPE_CHECKING:
     )
 
 _NAME_RE = re.compile(r"\w+")
+
+
+def _index_of(span: Sequence[object], token: str) -> int | None:
+    """Return the index of the first ``token`` in a span, or None if absent."""
+    for i, tok in enumerate(span):
+        if tok == token:
+            return i
+    return None
 
 
 def _iter_var_refs(span: Sequence[object]) -> Iterator[str]:
@@ -62,11 +71,28 @@ class _DefCollector(NodeVisitor):
         self.mentioned: set[str] = set()
 
     def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
-        """Record the declared @def name (LHS) and RHS var mentions."""
-        refs = list(_iter_var_refs(node.span))
+        """
+        Record the declared @def name (LHS) and RHS var mentions.
+
+        A function def ``@def &f($p) = ...`` declares no *variable*: the ``$p``
+        before ``=`` are parameters (locals), so they are neither declared nor
+        counted as global mentions; only the body (after ``=``) contributes
+        mentions. The function name ``&f`` itself is not tracked (a pinned
+        limitation). A variable def ``@def $x = ...`` declares its first pair.
+        """
+        span = node.span
+        eq_index = _index_of(span, "=")
+        # a '&' left of '=' (or anywhere, when there is no '=') marks a
+        # function def; span[:None] is the whole span, so this covers both.
+        is_function_def = "&" in span[:eq_index]
+        if is_function_def:
+            body = span[eq_index + 1 :] if eq_index is not None else ()
+            self.mentioned.update(_iter_var_refs(body))
+            return
+        # the first $-pair is the declared name (LHS of @def); the rest are
+        # mentions of other vars on the RHS.
+        refs = list(_iter_var_refs(span))
         if refs:
-            # the first $-pair is the declared name (LHS of @def); the rest
-            # are mentions of other vars on the RHS.
             self.declared.setdefault(refs[0], node)
             self.mentioned.update(refs[1:])
 
@@ -97,12 +123,19 @@ def _child_blocks(node: Node) -> Iterator[Block]:
             yield child
 
 
-def _walk_all(block: Block, visitor: NodeVisitor) -> None:
-    """Visit every statement of a block and recurse into its sub-Blocks."""
+def _walk_all(block: Block, visitor: NodeVisitor, depth: int = 0) -> None:
+    """
+    Visit every statement of a block and recurse into its sub-Blocks.
+
+    ``depth`` caps recursion at MAX_BLOCK_DEPTH (defence in depth: the
+    parse_to_block tree is already depth-bounded by _StructuralParser).
+    """
+    if depth > MAX_BLOCK_DEPTH:
+        return
     for node in block.statements:
         visitor.visit(node)
         for child in _child_blocks(node):
-            _walk_all(child, visitor)
+            _walk_all(child, visitor, depth + 1)
 
 
 def find_unused_defs(root: Block) -> list[str]:
@@ -112,7 +145,10 @@ def find_unused_defs(root: Block) -> list[str]:
     Consumes a Parser.parse_to_block tree. The contract is narrowed to
     SYNTACTIC references; a name used only through string interpolation
     ("prefix $x", one double-quoted token) yields a false unused -- a known
-    limitation pinned by a test.
+    limitation pinned by a test. Function names (``@def &f``) are not tracked,
+    so an unused function is never reported; a function parameter shares the
+    global ``mentioned`` namespace, so a same-named unused global def can be
+    masked (both pinned limitations of the literal-syntactic contract).
     """
     collector = _DefCollector()
     _walk_all(root, collector)
@@ -127,12 +163,12 @@ _SUBCHAIN_KW = frozenset({"@subchain", "subchain", "@gotosubchain"})
 #: A quoted token needs at least an opening and a closing quote.
 _QUOTE_PAIR_MIN_LEN = 2
 
-#: Tokens that end a run of chain names after a ``chain`` keyword: a block or
-#: statement boundary, or the start of a new header context. Parens are NOT
-#: here -- they wrap a ``chain (A B)`` array whose names are still collected.
-_CHAIN_NAME_STOP = frozenset(
-    {"{", "}", ";", "policy", "priority", "chain", "table", "domain"}
-)
+#: Structural boundaries that stand where a ``chain`` name would be, i.e. a
+#: bare ``chain`` with no name (malformed input). NOT a name-run terminator:
+#: ``chain`` takes exactly ONE value (a single name or a parenthesised array),
+#: so a name colliding with a header keyword (``chain table {}``) is still the
+#: chain name, not a stop word.
+_CHAIN_VALUE_BOUNDARY = frozenset({"{", "}", ";"})
 
 
 def _str_tokens(span: Sequence[object]) -> Iterator[str]:
@@ -164,8 +200,10 @@ def _declared_chains(span: Sequence[object]) -> Iterator[str]:
     leading token -- so both the nested ``chain FOO {}`` and the dominant
     one-line ``table filter chain FOO {}`` forms (one collapsed HeaderNode)
     are harvested, plus a ``chain (A B)`` array and a ``... chain X policy``
-    header. Also yields a quoted ``@subchain "NAME"`` declaration. $var names
-    are skipped (the literal-only contract).
+    header. ``chain`` takes exactly ONE value (a single name or a
+    parenthesised array), matching the oracle's getvalues -- so a name
+    colliding with a header keyword is still harvested. Also yields a quoted
+    ``@subchain "NAME"`` declaration. $var names are skipped (literal-only).
     """
     toks = list(_str_tokens(span))
     i = 0
@@ -173,12 +211,22 @@ def _declared_chains(span: Sequence[object]) -> Iterator[str]:
         tok = toks[i]
         if tok == "chain":
             i += 1
-            while i < len(toks) and toks[i] not in _CHAIN_NAME_STOP:
+            if i < len(toks) and toks[i] == "(":
+                # array form ``chain (A B ...)``: collect names up to ')'.
+                i += 1
+                while i < len(toks) and toks[i] != ")":
+                    name = toks[i]
+                    i += 1
+                    if not name.startswith("$"):
+                        yield _unquote(name)
+                if i < len(toks) and toks[i] == ")":
+                    i += 1
+            elif i < len(toks) and toks[i] not in _CHAIN_VALUE_BOUNDARY:
+                # bare form: exactly ONE name, even one spelled like a keyword.
                 name = toks[i]
                 i += 1
-                if name in ("(", ")") or name.startswith("$"):
-                    continue  # array delimiters / $var (not a literal name)
-                yield _unquote(name)
+                if not name.startswith("$"):
+                    yield _unquote(name)
             continue
         if tok in _SUBCHAIN_KW:
             i += 1
@@ -240,6 +288,10 @@ def find_undefined_chain_jumps(root: Block) -> list[str]:
     literal declaration sites (embedded ``chain <NAME>`` in a header, quoted
     @subchain). The contract is narrowed to literal (syntactic) names; $var
     targets/names and @include-file chains are pinned known limitations.
+    Further pinned false-negatives (missed undefined jumps): the deprecated
+    ``realgoto`` alias is not recognised (only ``jump``/``goto``), and the
+    chain namespace is flattened to one global set, so a jump to a chain
+    defined only in another (domain, table) is not reported.
     """
     collector = _ChainCollector()
     _walk_all(root, collector)
