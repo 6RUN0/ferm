@@ -84,6 +84,7 @@ from pyferm.scope import (
     new_level,
 )
 from pyferm.tokenizer import Token, make_line_token
+from pyferm.tree import RawShimNode
 from pyferm.values import (
     Multi,
     Params,
@@ -97,6 +98,7 @@ from pyferm.values import (
     stringify,
     to_array,
 )
+from pyferm.walker import Walker
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -1044,6 +1046,13 @@ class Parser:
 
             return error(f"Unrecognized keyword: {keyword}")
 
+        # The strangler facade: each statement is materialized as a tree node
+        # and dispatched through the Walker, which replays it via the streaming
+        # handle() below.  Build and walk are interleaved per statement (no
+        # parse pre-pass), so diagnostics stay in source order.  At this layer
+        # every statement is a RawShimNode and the dispatch reads its operands
+        # live -- a pure pass-through, byte-identical to the old direct call.
+        walker = Walker(self, handle)
         while True:
             token = self.tokenizer.next_token()
             if token is None:
@@ -1064,7 +1073,13 @@ class Parser:
                 )
                 keyword = new_keyword
 
-            if handle(keyword, negated) == "return":
+            node = RawShimNode(
+                source_pos=script_position(),
+                keyword=keyword,
+                negated=negated.active,
+                span=(),
+            )
+            if walker.replay_shim(node, negated) == "return":
                 return
 
             if negated.active:
