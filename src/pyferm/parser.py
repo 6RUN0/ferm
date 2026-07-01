@@ -123,6 +123,42 @@ if TYPE_CHECKING:
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS = {"realgoto": "goto"}
 
+#: Leading keywords the dispatch treats as their own (non-rule) statement,
+#: routed to the streaming shim per keyword.  Everything else that leads a
+#: statement (a match/target/shortcut, ``!``/``$``/``&``, a deprecated alias)
+#: starts a rule, captured whole and sliced on the walk by visit_RuleNode.
+#: These never carry a ``!`` prefix, so the shim path needs no negation.
+_NON_RULE_LEADING: Final = frozenset(
+    {
+        ";",
+        "}",
+        "@else",
+        "hook",
+        "@hook",
+        "include",
+        "@include",
+        "def",
+        "@def",
+        "@set",
+        "@preserve",
+        "domain",
+        "table",
+        "chain",
+        "policy",
+        "priority",
+        "subchain",
+        "@subchain",
+        "@gotosubchain",
+    }
+)
+
+#: Rule keywords that themselves consume a following ``{ ... }`` block, so a
+#: top-level ``{`` after one is the subchain body (part of the rule), not a
+#: nested match block that would end the rule span.
+_SUBCHAIN_KEYWORDS: Final = frozenset(
+    {"subchain", "@subchain", "@gotosubchain"}
+)
+
 #: Hard ceiling on nested-block recursion in :meth:`Parser.enter`.  Real
 #: configs nest below ten levels; 100 is an order of magnitude of headroom
 #: yet sits well below the interpreter's own RecursionError point
@@ -842,6 +878,77 @@ class Parser:
 
     # -- the core recursion (:2123) --------------------------------------
 
+    def _resolve_keyword(self, token: object) -> tuple[object, NegatedFlag]:
+        """
+        Resolve a leading token to (keyword, negated) as the read loop does.
+
+        ``!`` reads the negated keyword identity via getvar() BEFORE its arity
+        is known (the fifth runtime mechanism); a deprecated alias is remapped
+        with a warning. Shared by the streaming loop and Walker.visit_RuleNode
+        so both negation forms replay identically.
+        """
+        keyword = token
+        negated = NegatedFlag(keyword == "!")
+        if negated.active:
+            keyword = self.evaluator.getvar()
+            if keyword is None:
+                error("unexpected end of file after negation")
+        if isinstance(keyword, str) and keyword in DEPRECATED_KEYWORDS:
+            new_keyword = DEPRECATED_KEYWORDS[keyword]
+            warning(
+                f"'{keyword}' is deprecated, please use "
+                f"'{new_keyword}' instead"
+            )
+            keyword = new_keyword
+        return keyword, negated
+
+    def _capture_rule_span(self) -> tuple[Token, ...]:
+        """
+        Capture a rule statement as a raw span up to its top-level ``;``.
+
+        Reads raw tokens (Line sentinels kept, for file:line on replay),
+        tracking ``{``/``(`` nesting so only a top-level ``;`` ends the span.
+        A top-level ``}`` belongs to the enclosing block, not the rule: it is
+        pushed back and the span ends before it (a missing ``;`` is diagnosed
+        by that ``}`` handler via the shared rule). Capture is lenient --
+        bracket mismatches are diagnosed on the walk, matching the streaming
+        oracle -- and the leading token is NOT consumed beforehand.
+        """
+        script = self.tokenizer.script
+        span: list[Token] = [make_line_token(script.line)]
+        depth = 0
+        saw_subchain = False
+        while True:
+            tok = self.tokenizer.next_raw_token()
+            if tok is None:
+                break
+            if not isinstance(tok, str):
+                self.tokenizer.handle_special_token(tok)
+            elif tok == "(":
+                depth += 1
+            elif tok == "{":
+                if depth == 0 and not saw_subchain:
+                    # a top-level '{' after matches opens a nested block: the
+                    # rule ends here and the block streams separately.
+                    script.tokens.appendleft(tok)
+                    break
+                depth += 1
+            elif tok == ")":
+                if depth > 0:
+                    depth -= 1
+            elif tok == "}":
+                if depth == 0:
+                    script.tokens.appendleft(tok)
+                    break
+                depth -= 1
+            elif tok == ";" and depth == 0:
+                span.append(tok)
+                break
+            if isinstance(tok, str) and tok in _SUBCHAIN_KEYWORDS:
+                saw_subchain = True
+            span.append(tok)
+        return tuple(span)
+
     def enter(self, level: int, prev: Rule | None) -> None:
         """
         Parse a block of rules at depth ``level`` (Perl ``:2123``).
@@ -1270,53 +1377,44 @@ class Parser:
         # layer every statement is a RawShimNode and the dispatch reads its
         # operands live -- a pure pass-through, byte-identical to the old call.
         walker.dispatch = handle
+        walker.resolve = self._resolve_keyword
+        # Route by the RAW leading token (peeked, not consumed): a block or
+        # @if to its typed node; a non-rule statement keyword to the streaming
+        # shim per keyword; everything else starts a rule captured whole and
+        # sliced on the walk.  A rule owns its own negation handling (its
+        # leading token may be ``!``); the shim path never negates.
         while True:
-            token = self.tokenizer.next_token()
-            if token is None:
+            lead = self.tokenizer.peek_token()
+            if lead is None:
                 break
 
-            keyword: object = token
-            negated = NegatedFlag(keyword == "!")
-            if negated.active:
-                keyword = self.evaluator.getvar()
-                if keyword is None:
-                    error("unexpected end of file after negation")
-
-            if isinstance(keyword, str) and keyword in DEPRECATED_KEYWORDS:
-                new_keyword = DEPRECATED_KEYWORDS[keyword]
-                warning(
-                    f"'{keyword}' is deprecated, please use "
-                    f"'{new_keyword}' instead"
-                )
-                keyword = new_keyword
-
-            # Promoted kinds go to their typed visit_* method; everything
-            # else stays a RawShimNode replayed through the streaming handle.
-            # { and @if cannot be negated, so the negation check below is a
-            # no-op for them (parity with the old per-keyword dispatch).  Set
-            # shown_keyword here as handle() did on its first line, so a
-            # leftover-negation diagnostic names the promoted keyword too.
-            walker.shown_keyword = keyword
             node: Node
-            if keyword == "{":
+            if lead == "{":
+                self.tokenizer.next_token()
                 node = BlockNode(source_pos=script_position())
                 result = walker.visit(node)
-            elif keyword == "@if":
+            elif lead == "@if":
+                self.tokenizer.next_token()
                 node = IfNode(source_pos=script_position(), cond_span=())
                 result = walker.visit(node)
-            else:
+            elif isinstance(lead, str) and lead in _NON_RULE_LEADING:
+                token = self.tokenizer.next_token()
+                walker.shown_keyword = token
                 node = RawShimNode(
                     source_pos=script_position(),
-                    keyword=keyword,
-                    negated=negated.active,
+                    keyword=token,
+                    negated=False,
                     span=(),
                 )
-                result = walker.replay_shim(node, negated)
+                result = walker.replay_shim(node, NegatedFlag(active=False))
+            else:
+                node = RuleNode(
+                    source_pos=script_position(),
+                    span=self._capture_rule_span(),
+                )
+                result = walker.visit(node)
             if result == "return":
                 return
-
-            if negated.active:
-                error(f"Doesn't support negation: {walker.shown_keyword}")
 
         if level > base_level:
             error('Missing "}" at end of file')
