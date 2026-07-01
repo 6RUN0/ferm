@@ -34,6 +34,7 @@ field -- they exist for the Phase 2 nft translator.
 
 from __future__ import annotations
 
+import io
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -83,8 +84,22 @@ from pyferm.scope import (
     merge_keywords,
     new_level,
 )
-from pyferm.tokenizer import Token, make_line_token
-from pyferm.tree import BlockNode, IfNode, Node, RawShimNode
+from pyferm.tokenizer import Line, Script, Token, Tokenizer, make_line_token
+from pyferm.tree import (
+    Block,
+    BlockNode,
+    DefNode,
+    HeaderNode,
+    HookNode,
+    IfNode,
+    IncludeNode,
+    Node,
+    PreserveNode,
+    RawShimNode,
+    RuleNode,
+    SetNode,
+    SubchainNode,
+)
 from pyferm.values import (
     Multi,
     Params,
@@ -104,7 +119,6 @@ if TYPE_CHECKING:
 
     from pyferm.config import Options
     from pyferm.scope import Scope
-    from pyferm.tokenizer import Tokenizer
 
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS = {"realgoto": "goto"}
@@ -258,8 +272,219 @@ class NegatedFlag:
     active: bool
 
 
+#: Block-header keywords whose value runs up to a top-level ``{`` or ``;``.
+_HEADER_KEYWORDS: Final = frozenset(
+    {"domain", "table", "chain", "policy", "priority"}
+)
+
+#: Leading keywords of ``;``-terminated directive statements and the node
+#: each becomes; every other leading keyword is a plain rule.
+_STMT_NODES: Final[
+    dict[str, Callable[[SourcePosition, tuple[Token, ...]], Node]]
+] = {
+    "@def": DefNode,
+    "def": DefNode,
+    "@set": SetNode,
+    "@include": IncludeNode,
+    "include": IncludeNode,
+    "@preserve": PreserveNode,
+    "@hook": HookNode,
+    "hook": HookNode,
+    "@subchain": SubchainNode,
+    "subchain": SubchainNode,
+    "@gotosubchain": SubchainNode,
+}
+
+
+class _StructuralParser:
+    """
+    Eager, eval-free structural pass over a flat token list.
+
+    Builds the retained tree the structural analyzers consume: BOTH @if
+    branches, headers and blocks, and statements as raw spans -- WITHOUT
+    evaluating conditions, substituting variables, loading modules or resolving
+    @include. Boundaries come from a bracket-aware scan (the eval-free
+    mechanics of collect_tokens), never from eval. Error-tolerant: truncated or
+    unbalanced input yields the structure captured so far, not a diagnostic.
+
+    Known limitations (pinned): @include content is invisible (resolving it is
+    file I/O); ``$var`` is not substituted, so ``mod $var`` is not sliced and
+    ``domain $d`` / ``jump $t`` stay literal; and a multi-keyword header line
+    such as ``table filter chain INPUT { ... }`` is one HeaderNode, not nested
+    ones. Line sentinels are kept in the spans (for file:line); the analyzers
+    skip them.
+    """
+
+    def __init__(self, tokens: list[Token], filename: str) -> None:
+        self._tokens = tokens
+        self._filename = filename
+        self._i = 0
+        self._line = 0
+
+    def _pos(self) -> SourcePosition:
+        return SourcePosition(self._filename, self._line)
+
+    def _skip_sentinels(self) -> None:
+        """Advance past leading non-string tokens, tracking the line."""
+        tokens = self._tokens
+        while self._i < len(tokens) and not isinstance(tokens[self._i], str):
+            tok = tokens[self._i]
+            if isinstance(tok, Line):
+                self._line = tok.number
+            self._i += 1
+
+    def _peek(self) -> str | None:
+        """Return the next string token (sentinels skipped), or None."""
+        self._skip_sentinels()
+        if self._i < len(self._tokens):
+            tok = self._tokens[self._i]
+            return tok if isinstance(tok, str) else None
+        return None
+
+    def parse_block(self) -> Block:
+        """Parse statements until a top-level ``}`` (consumed) or EOF."""
+        pos = self._pos()
+        statements: list[Node] = []
+        while True:
+            tok = self._peek()
+            if tok is None:
+                break
+            if tok == "}":
+                self._i += 1
+                break
+            statements.append(self._parse_statement())
+        return Block(source_pos=pos, statements=tuple(statements))
+
+    def _parse_statement(self) -> Node:
+        pos = self._pos()
+        tok = self._tokens[self._i]  # a string: _peek skipped the sentinels
+        assert isinstance(tok, str)
+        if tok == "@if":
+            return self._parse_if(pos)
+        if tok == "{":
+            self._i += 1
+            return BlockNode(source_pos=pos, body=self.parse_block())
+        if tok in _HEADER_KEYWORDS:
+            return self._parse_header(pos)
+        span = self._capture_statement_span()
+        node_type = _STMT_NODES.get(tok)
+        if node_type is not None:
+            return node_type(pos, span)
+        return RuleNode(pos, span)
+
+    def _capture_statement_span(self) -> tuple[Token, ...]:
+        """Raw span from here to and including the next top-level ``;``."""
+        tokens = self._tokens
+        start = self._i
+        depth = 0
+        while self._i < len(tokens):
+            tok = tokens[self._i]
+            if isinstance(tok, Line):
+                self._line = tok.number
+            elif tok in ("{", "("):
+                depth += 1
+            elif tok in ("}", ")"):
+                if depth == 0:
+                    break  # unbalanced top-level close: stop before it
+                depth -= 1
+            elif tok == ";" and depth == 0:
+                self._i += 1
+                return tuple(tokens[start : self._i])
+            self._i += 1
+        return tuple(tokens[start : self._i])
+
+    def _scan_header_value(self) -> str | None:
+        """
+        Advance over a header/condition value, tracking parens and the line.
+
+        Stops before (without consuming) the first top-level ``{``, ``;`` or
+        ``}`` and returns it, or None at end of input.
+        """
+        tokens = self._tokens
+        depth = 0
+        while self._i < len(tokens):
+            tok = tokens[self._i]
+            if isinstance(tok, Line):
+                self._line = tok.number
+            elif isinstance(tok, str):
+                if tok == "(":
+                    depth += 1
+                elif tok == ")":
+                    depth = max(0, depth - 1)
+                elif depth == 0 and tok in ("{", ";", "}"):
+                    return tok
+            self._i += 1
+        return None
+
+    def _parse_header(self, pos: SourcePosition) -> HeaderNode:
+        tokens = self._tokens
+        keyword = tokens[self._i]
+        assert isinstance(keyword, str)
+        self._i += 1
+        value_start = self._i
+        terminator = self._scan_header_value()
+        value_span = tuple(tokens[value_start : self._i])
+        if terminator == "{":
+            self._i += 1
+            return HeaderNode(pos, keyword, value_span, self.parse_block())
+        if terminator == ";":
+            self._i += 1
+        # ``}`` or EOF: no block; leave a top-level ``}`` for the caller.
+        return HeaderNode(pos, keyword, value_span, None)
+
+    def _parse_if(self, pos: SourcePosition) -> IfNode:
+        tokens = self._tokens
+        self._i += 1  # consume '@if'
+        cond_start = self._i
+        self._scan_header_value()  # stop before the top-level '{'
+        cond_span = tuple(tokens[cond_start : self._i])
+        then_body = self._parse_branch_block(pos)
+        else_body: Block | None = None
+        if self._peek() == "@else":
+            self._i += 1  # consume '@else'
+            if self._peek() == "@if":
+                inner_pos = self._pos()
+                else_body = Block(
+                    source_pos=inner_pos,
+                    statements=(self._parse_if(inner_pos),),
+                )
+            else:
+                else_body = self._parse_branch_block(pos)
+        return IfNode(pos, cond_span, then_body, else_body)
+
+    def _parse_branch_block(self, pos: SourcePosition) -> Block:
+        """Parse a ``{ ... }`` branch block, or empty Block if malformed."""
+        if self._peek() == "{":
+            self._i += 1
+            return self.parse_block()
+        return Block(source_pos=pos, statements=())
+
+
 class Parser:
     """The ferm parser: drives ``enter`` over the injected evaluator/scope."""
+
+    @staticmethod
+    def parse_to_block(config: str) -> Block:
+        """
+        Build an eager, eval-free structural tree over a config string.
+
+        Test-facing entry point for the structural analyzers: it tokenizes the
+        config and structures BOTH @if branches, headers and blocks WITHOUT
+        evaluating conditions, substituting variables, loading modules or
+        resolving @include. Off the golden/parity path; see _StructuralParser
+        for the pinned limitations.
+        """
+        filename = "<parse_to_block>"
+        script = Script(filename=filename, handle=io.StringIO(config))
+        tokenizer = Tokenizer(script)
+        tokens: list[Token] = []
+        while True:
+            tok = tokenizer.next_raw_token()
+            if tok is None:
+                break
+            tokens.append(tok)
+        script.close()
+        return _StructuralParser(tokens, filename).parse_block()
 
     def __init__(
         self,
