@@ -53,6 +53,7 @@ repos:
             e2e/etckeeper/driver\.py$|
             e2e/datapath/(driver|netns|oracle|scenarios)\.py$|
             property/oracle\.py$|
+            property/differential_cli\.py$|
             conformance/nft/tdotparser\.py$
           )
 

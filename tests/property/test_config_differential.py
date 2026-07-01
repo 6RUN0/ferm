@@ -16,8 +16,12 @@ error: ...`` (see :func:`pyferm.errors.internal_error`) -- the two
 lines are normalized to a common marker before comparing.
 
 Generated text is side-effect-free by construction: no backticks (ferm
-executes them even under ``--noexec``), no ``@include``, ``@hook`` or
-``@resolve``; the mutation alphabet cannot introduce them either.
+executes them even under ``--noexec``) and no ``@resolve`` (needs a mock
+resolver).  ``@include`` and ``@hook`` *are* generated: the include
+targets a real in-tree fixture file, and a hook command is only printed
+(never run) under ``--noexec --lines``.  The mutation alphabet carries
+neither a backtick nor a ``|``, so a mutation can never turn an
+``@include`` into its command-pipe form or otherwise introduce execution.
 Deliberately *invalid* fragments are part of the grammar (the
 ``$nodef`` variable, the undefined ``orphan`` jump target, out-of-range
 ports): a config that fails is as good a differential probe as one
@@ -214,6 +218,25 @@ def _domain_block(draw: st.DrawFn) -> str:
     return f"{wrapper}{{ {block} }}"
 
 
+# The @include target: a real fixture file seeded by the fuzz_dir fixture
+# next to every generated config.  Its body is valid at top level and
+# emits no rules, so including it never perturbs the canonicalized stdout;
+# the point is to exercise the @include statement path differentially.
+_INCLUDE_NAME = "included.ferm"
+_INCLUDE_BODY = "@def $included = 1;\n"
+
+# @hook commands are printed (pre/post) or registered (flush) under
+# --noexec --lines, never executed; both implementations emit them
+# identically.  echo keeps the printed line trivially deterministic.
+_HOOK = st.sampled_from(
+    [
+        '@hook pre "echo pre";',
+        '@hook post "echo post";',
+        '@hook flush "echo flush";',
+    ]
+)
+
+
 @st.composite
 def _config(draw: st.DrawFn) -> str:
     """A whole configuration: variable/function preamble plus blocks."""
@@ -224,6 +247,10 @@ def _config(draw: st.DrawFn) -> str:
         f"@def $one = {draw(st.sampled_from(['0', '1', chr(39) * 2]))};",
         "@def &svc($p) = { proto tcp dport $p ACCEPT; }",
     ]
+    if draw(st.booleans()):
+        lines.append(draw(_HOOK))
+    if draw(st.booleans()):
+        lines.append(f'@include "{_INCLUDE_NAME}";')
     lines.extend(draw(st.lists(_domain_block(), min_size=1, max_size=2)))
     return "\n".join(lines) + "\n"
 
@@ -271,8 +298,15 @@ def _normalize_stderr(text: str) -> str:
 
 @pytest.fixture(scope="module")
 def fuzz_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One temp directory per module; each example overwrites its file."""
-    return tmp_path_factory.mktemp("configfuzz")
+    """One temp directory per module; each example overwrites its file.
+
+    Also seeds the ``@include`` target next to the fuzzed configs so a
+    generated ``@include`` resolves (relative to the including file's dir)
+    to a real, side-effect-free snippet in both implementations.
+    """
+    root = tmp_path_factory.mktemp("configfuzz")
+    (root / _INCLUDE_NAME).write_text(_INCLUDE_BODY, encoding="utf-8")
+    return root
 
 
 def _compile_oracle(args: Sequence[str]) -> tuple[bool, str, str]:
