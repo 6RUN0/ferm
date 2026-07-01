@@ -406,14 +406,26 @@ class _StructuralParser:
             return BlockNode(source_pos=pos, body=self.parse_block())
         if tok in _HEADER_KEYWORDS:
             return self._parse_header(pos)
-        span = self._capture_statement_span()
         node_type = _STMT_NODES.get(tok)
         if node_type is not None:
-            return node_type(pos, span)
-        return RuleNode(pos, span)
+            # directive (@def/@set/@include/...): its own { } body stays in the
+            # span, so do NOT stop at a brace.
+            return node_type(pos, self._capture_statement_span())
+        # a rule: stop at its top-level match-block '{' so the block is
+        # structured as a nested BlockNode the analyzers descend into.
+        return RuleNode(pos, self._capture_statement_span(stop_at_brace=True))
 
-    def _capture_statement_span(self) -> tuple[Token, ...]:
-        """Raw span from here to and including the next top-level ``;``."""
+    def _capture_statement_span(
+        self, *, stop_at_brace: bool = False
+    ) -> tuple[Token, ...]:
+        """
+        Raw span from here to the next top-level ``;``.
+
+        With ``stop_at_brace`` (a rule statement) a top-level ``{`` also ends
+        the span, LEFT unconsumed so parse_block structures the match block as
+        its own BlockNode rather than lumping it into the rule span. Directives
+        keep it off so their ``{ }`` body stays in the span.
+        """
         tokens = self._tokens
         start = self._i
         depth = 0
@@ -421,7 +433,11 @@ class _StructuralParser:
             tok = tokens[self._i]
             if isinstance(tok, Line):
                 self._line = tok.number
-            elif tok in ("{", "("):
+            elif tok == "(":
+                depth += 1
+            elif tok == "{":
+                if stop_at_brace and depth == 0:
+                    break  # a rule's match block: structured separately
                 depth += 1
             elif tok in ("}", ")"):
                 if depth == 0:
