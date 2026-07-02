@@ -7,12 +7,14 @@ flag validation) is pinned separately in tests/unit/test_lint.py.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import pytest
 
 from pyferm.analysis import (
     Finding,
     Severity,
     _ChainCollector,
+    _declared_chains,
+    _is_quoted,
     _walk_all,
     find_deprecated_keywords,
     find_duplicate_definitions,
@@ -22,10 +24,8 @@ from pyferm.analysis import (
     find_unused_defs,
     run_analysis,
 )
-from pyferm.parser import Parser
-
-if TYPE_CHECKING:
-    from pyferm.tree import Block
+from pyferm.parser import MAX_BLOCK_DEPTH, Parser
+from pyferm.tree import Block, BlockNode
 
 
 def _tree(config: str) -> Block:
@@ -662,3 +662,162 @@ def test_triple_definition_reported_once() -> None:
 def test_duplicate_function_def_reported_with_sigil() -> None:
     cfg = "@def &f($a) = saddr $a ACCEPT;\n@def &f($a) = daddr $a ACCEPT;\n"
     assert _duplicates(cfg) == ["duplicate definition: &f"]
+
+
+def test_cycle_through_non_last_edge_of_a_branching_chain() -> None:
+    # A has TWO outgoing jumps; the cycle runs through B, the edge that
+    # sorts FIRST, so the adjacency fold must keep every edge per
+    # source, not just the last one appended.
+    cfg = (
+        "table filter {\n"
+        "  chain A { jump B; jump C; }\n"
+        "  chain B { jump A; }\n"
+        "  chain C { ACCEPT; }\n"
+        "}\n"
+    )
+    assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
+
+
+def test_duplicate_var_def_with_function_call_rhs() -> None:
+    # The '&' in the RHS call must not re-classify the $-var def as a
+    # function def: the declared name is decided LEFT of '=' only.
+    cfg = (
+        "@def &f($a) = saddr $a ACCEPT;\n"
+        "@def $x = 1;\n"
+        "@def $x = &f(2);\n"
+        "table filter chain INPUT { &f(3); saddr $x ACCEPT; }\n"
+    )
+    assert _duplicates(cfg) == ["duplicate definition: $x"]
+
+
+def test_var_def_rhs_mentions_count_every_ref() -> None:
+    # $a and $b are BOTH mentioned by $x's RHS; only $x itself is
+    # unused (a mention registry that drops all but the first RHS ref
+    # would false-flag $b).
+    cfg = "@def $a = 1;\n@def $b = 2;\n@def $x = $a $b;\n"
+    assert find_unused_defs(_tree(cfg)) == ["$x"]
+
+
+@pytest.mark.parametrize(
+    ("tok", "expected"),
+    [
+        ('""', True),  # empty pair is exactly the minimum length
+        ("''", True),
+        ("'A'", True),
+        ('"A"', True),
+        ('"', False),  # a lone quote is not a pair
+        ("'", False),
+        ("A", False),
+        ("", False),
+        ("'A\"", False),  # mismatched pair
+    ],
+)
+def test_is_quoted_boundaries(tok: str, expected: bool) -> None:
+    assert _is_quoted(tok) is expected
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"),
+    [
+        (["chain", "FOO", "{"], ["FOO"]),
+        # dominant one-line header form: chain sits mid-span.
+        (["table", "filter", "chain", "FOO", "{"], ["FOO"]),
+        (["chain", "(", "A", "B", ")", "{"], ["A", "B"]),
+        # $vars are literal-only, skipped in both forms.
+        (["chain", "(", "$v", "B", ")", "{"], ["B"]),
+        (["chain", "$v", "{"], []),
+        (["chain", "'Q'", "{"], ["Q"]),
+        (["chain", '"Q"', "policy", "DROP", ";"], ["Q"]),
+        # bare 'chain' with no name: boundary tokens are not names.
+        (["chain", ";"], []),
+        (["chain", "{"], []),
+        (["chain"], []),
+        # unterminated array at span end must not scan past the end.
+        (["chain", "(", "A", "B"], ["A", "B"]),
+        # a second declaration after a closed array is still seen.
+        (["chain", "(", "A", ")", "chain", "B", "{"], ["A", "B"]),
+        # an EMBEDDED declaration is found at ANY offset, odd included.
+        (["x", "chain", "FOO", "{"], ["FOO"]),
+        # @subchain declares only when the name is quoted.
+        (["@subchain", "'S'", "{"], ["S"]),
+        (["@subchain", "S", "{"], []),
+        (["@subchain"], []),
+        # an unquoted @subchain must not stop the scan for later ones.
+        (["@subchain", "$v", "@subchain", "'S'", "{"], ["S"]),
+    ],
+)
+def test_declared_chains_token_scan(
+    span: list[str], expected: list[str]
+) -> None:
+    assert list(_declared_chains(span)) == expected
+
+
+def _nested_if(depth: int, payload: str) -> str:
+    return "@if $c { " * depth + payload + "} " * depth
+
+
+def test_duplicate_scan_ignores_nesting_past_the_parser_cap() -> None:
+    # End-to-end contract on hostile nesting: the STRUCTURAL PARSER
+    # stops descending at its own MAX_BLOCK_DEPTH cap, so content one
+    # level past it is silently invisible to the analyzers (advisory
+    # lint stays total instead of raising).
+    payload = "@def $x = 1; @def $x = 2; "
+    seen = _nested_if(MAX_BLOCK_DEPTH - 1, payload)
+    ignored = _nested_if(MAX_BLOCK_DEPTH, payload)
+    assert _duplicates(seen) == ["duplicate definition: $x"]
+    assert _duplicates(ignored) == []
+
+
+def test_unused_def_scan_ignores_nesting_past_the_parser_cap() -> None:
+    # Same end-to-end boundary for the NodeVisitor walk.
+    seen = _nested_if(MAX_BLOCK_DEPTH - 1, "@def $x = 1; ")
+    ignored = _nested_if(MAX_BLOCK_DEPTH, "@def $x = 1; ")
+    assert find_unused_defs(_tree(seen)) == ["$x"]
+    assert find_unused_defs(_tree(ignored)) == []
+
+
+def test_jump_cycle_scan_ignores_nesting_past_the_parser_cap() -> None:
+    # Same end-to-end boundary for the edge collector; the enclosing
+    # chain block itself consumes one nesting level, hence MAX-2/MAX-1.
+    def cfg(depth: int) -> str:
+        inner = _nested_if(depth, "jump FOO; ")
+        return "table filter chain FOO { " + inner + "}"
+
+    assert _cycles(cfg(MAX_BLOCK_DEPTH - 2)) == ["jump cycle: FOO -> FOO"]
+    assert _cycles(cfg(MAX_BLOCK_DEPTH - 1)) == []
+
+
+def _bury(block: Block, depth: int) -> Block:
+    # Wrap a parsed Block under ``depth`` synthetic BlockNode levels --
+    # deeper than parse_to_block can ever build, so the analyzers' OWN
+    # depth guard (their second line of defense behind the parser cap)
+    # is what decides visibility.
+    pos = block.source_pos
+    for _ in range(depth):
+        block = Block(pos, statements=(BlockNode(pos, body=block),))
+    return block
+
+
+def test_duplicate_guard_trips_exactly_past_max_block_depth() -> None:
+    # A block AT depth MAX_BLOCK_DEPTH is still scanned; one PAST it is
+    # ignored.
+    inner = _tree("@def $x = 1; @def $x = 2; ")
+    at_cap = find_duplicate_definitions(_bury(inner, MAX_BLOCK_DEPTH))
+    past_cap = find_duplicate_definitions(_bury(inner, MAX_BLOCK_DEPTH + 1))
+    assert [f.message for f in at_cap] == ["duplicate definition: $x"]
+    assert past_cap == []
+
+
+def test_walk_guard_trips_exactly_past_max_block_depth() -> None:
+    inner = _tree("@def $x = 1; ")
+    assert find_unused_defs(_bury(inner, MAX_BLOCK_DEPTH)) == ["$x"]
+    assert find_unused_defs(_bury(inner, MAX_BLOCK_DEPTH + 1)) == []
+
+
+def test_edge_guard_trips_exactly_past_max_block_depth() -> None:
+    # The chain BODY sits one level below the buried root, hence MAX-1.
+    inner = _tree("table filter chain FOO { jump FOO; }")
+    at_cap = find_jump_cycles(_bury(inner, MAX_BLOCK_DEPTH - 1))
+    past_cap = find_jump_cycles(_bury(inner, MAX_BLOCK_DEPTH))
+    assert [f.message for f in at_cap] == ["jump cycle: FOO -> FOO"]
+    assert past_cap == []
