@@ -17,6 +17,7 @@ from pyferm.analysis import (
     _walk_all,
     find_deprecated_keywords,
     find_undefined_chain_jumps,
+    find_unreachable_chains,
     find_unused_defs,
     run_analysis,
 )
@@ -430,3 +431,83 @@ def test_chain_named_realgoto_is_pinned_false_positive() -> None:
         "}\n"
     )
     assert len(find_deprecated_keywords(_tree(cfg))) == 1
+
+
+def _unreachable(cfg: str) -> list[str]:
+    return [f.message for f in find_unreachable_chains(_tree(cfg))]
+
+
+def test_never_jumped_user_chain_is_unreachable() -> None:
+    # INPUT is a built-in entry point -> excluded; FOO is flagged. The
+    # exact list pins both directions at once.
+    cfg = (
+        "table filter {\n"
+        "  chain INPUT { ACCEPT; }\n"
+        "  chain FOO { ACCEPT; }\n"
+        "}\n"
+    )
+    assert _unreachable(cfg) == ["unreachable chain: FOO"]
+
+
+def test_jumped_chain_is_reachable() -> None:
+    cfg = (
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { jump FOO; }\n"
+        "}\n"
+    )
+    assert _unreachable(cfg) == []
+
+
+def test_realgoto_counts_as_reaching() -> None:
+    # BAR keeps the test non-vacuous: only the realgoto'd chain clears.
+    cfg = (
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain BAR { ACCEPT; }\n"
+        "  chain INPUT { realgoto FOO; }\n"
+        "}\n"
+    )
+    assert _unreachable(cfg) == ["unreachable chain: BAR"]
+
+
+def test_brouting_is_builtin_but_sibling_user_chain_is_flagged() -> None:
+    # BROUTING is the ebtables broute entry chain -- the sixth allowlist
+    # name; a hand-written five-name list would false-flag it.
+    cfg = (
+        "domain eb table broute {\n"
+        "  chain BROUTING { ACCEPT; }\n"
+        "  chain XX { ACCEPT; }\n"
+        "}\n"
+    )
+    assert _unreachable(cfg) == ["unreachable chain: XX"]
+
+
+def test_named_subchain_is_implicitly_reached() -> None:
+    # @subchain "SC" carries its own implicit jump: no literal jump
+    # token exists, yet SC must not be flagged (ferm's own antiddos
+    # example uses exactly this shape).
+    cfg = (
+        "table filter chain INPUT {\n"
+        '  proto tcp @subchain "SC" { ACCEPT; }\n'
+        "}\n"
+    )
+    assert _unreachable(cfg) == []
+
+
+def test_chain_reached_only_from_function_body_not_flagged() -> None:
+    cfg = "@def &f() = jump FOO;\ntable filter chain FOO { ACCEPT; }\n"
+    assert _unreachable(cfg) == []
+
+
+def test_chain_reached_only_via_var_jump_is_pinned_false_positive() -> None:
+    # `jump $t` targets are invisible (literal-name contract), so FOO
+    # IS flagged -- a documented false positive of this analyzer.
+    cfg = (
+        "@def $t = FOO;\n"
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { jump $t; }\n"
+        "}\n"
+    )
+    assert _unreachable(cfg) == ["unreachable chain: FOO"]

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from .parser import DEPRECATED_KEYWORDS, MAX_BLOCK_DEPTH
+from .rules import is_netfilter_builtin_chain
 from .tree import Block, NodeVisitor
 
 if TYPE_CHECKING:
@@ -491,6 +492,35 @@ def _undefined_jump_findings(root: Block) -> list[Finding]:
     ]
 
 
+def find_unreachable_chains(root: Block) -> list[Finding]:
+    """
+    Report declared user chains with no incoming jump edge (warning).
+
+    A chain is "reached" by a literal jump/goto/realgoto target or by
+    an @subchain declaration (whose jump is implicit in the carrying
+    rule). Built-in chains are entry points, not targets: filtered via
+    rules.is_netfilter_builtin_chain (all six names, incl. ebtables
+    BROUTING). The check is in-degree, not reachability from entry
+    points, so a dead A<->B island or a self-looping chain has an
+    incoming edge and is NOT reported (jump-cycle covers the island,
+    unless its edges route through a function call -- see
+    find_jump_cycles); a chain reached only through ``jump $var`` is a
+    documented false positive (literal-name contract).
+    """
+    collector = _ChainCollector()
+    _walk_all(root, collector)
+    reached = set(collector.jumps) | collector.subchains
+    return [
+        Finding(
+            Severity.WARNING,
+            "unreachable-chain",
+            f"unreachable chain: {name}",
+        )
+        for name in sorted(collector.declared)
+        if name not in reached and not is_netfilter_builtin_chain("", name)
+    ]
+
+
 #: Ordered analyzer registry: (code, severity, callable). Registration
 #: order is the secondary output sort key (after severity), so the two
 #: legacy analyzers keep their relative block order from the first slice.
@@ -499,6 +529,7 @@ ANALYZERS: Final[
 ] = (
     ("unused-definition", Severity.WARNING, _unused_definition_findings),
     ("undefined-jump", Severity.WARNING, _undefined_jump_findings),
+    ("unreachable-chain", Severity.WARNING, find_unreachable_chains),
     ("deprecated-keyword", Severity.INFO, find_deprecated_keywords),
 )
 
