@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 from pyferm.analysis import (
     Finding,
     Severity,
+    _ChainCollector,
+    _walk_all,
     find_undefined_chain_jumps,
     find_unused_defs,
     run_analysis,
@@ -350,3 +352,43 @@ def test_unused_vars_and_functions_sort_together() -> None:
     # "$" (0x24) sorts before "&" (0x26): vars first, then functions.
     cfg = "@def $b = 1;\n@def &a($x) = saddr $x ACCEPT;\n"
     assert find_unused_defs(_tree(cfg)) == ["$b", "&a"]
+
+
+def test_realgoto_to_missing_chain_is_flagged() -> None:
+    # realgoto is a deprecated alias of goto and a real jump edge; the
+    # structural tree keeps it verbatim (the remap is eval-path-only).
+    cfg = "table filter chain INPUT { realgoto MISSING; }\n"
+    assert "MISSING" in find_undefined_chain_jumps(_tree(cfg))
+
+
+def test_realgoto_to_declared_chain_not_flagged() -> None:
+    # The second realgoto keeps the test non-vacuous (as in the goto
+    # twin above).
+    cfg = (
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { realgoto FOO; realgoto MISSING; }\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == ["MISSING"]
+
+
+def test_jump_inside_function_def_body_is_flagged_when_undefined() -> None:
+    # A function body is a flat span on its DefNode; the chain harvest
+    # must scan it, so a jump to a missing chain inside a body IS found.
+    cfg = "@def &f() = jump MISSING;\n"
+    assert "MISSING" in find_undefined_chain_jumps(_tree(cfg))
+
+
+def test_subchain_names_populate_collector_registry() -> None:
+    # The new subchains field has no public consumer until the
+    # unreachable-chain analyzer lands (a later task); pin its
+    # population directly so this commit ships no untested lines.
+    cfg = (
+        "table filter chain INPUT {\n"
+        '  proto tcp @subchain "SC" { ACCEPT; }\n'
+        "}\n"
+    )
+    collector = _ChainCollector()
+    _walk_all(_tree(cfg), collector)
+    assert collector.subchains == {"SC"}

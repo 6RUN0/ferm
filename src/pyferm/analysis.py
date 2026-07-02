@@ -221,6 +221,11 @@ def find_unused_defs(root: Block) -> list[str]:
 #: Subchain declaration keywords -- each names a chain.
 _SUBCHAIN_KW = frozenset({"@subchain", "subchain", "@gotosubchain"})
 
+#: Rule keywords that create an explicit jump edge to a chain. realgoto
+#: is the deprecated alias of goto: the eval path remaps it, but the
+#: structural tree keeps the original token.
+_JUMP_KW = ("jump", "goto", "realgoto")
+
 #: A quoted token needs at least an opening and a closing quote.
 _QUOTE_PAIR_MIN_LEN = 2
 
@@ -297,11 +302,28 @@ def _declared_chains(span: Sequence[object]) -> Iterator[str]:
         i += 1
 
 
-def _jump_targets(span: Sequence[object]) -> Iterator[str]:
-    """Yield the literal jump/goto targets in a token span ($var skipped)."""
+def _subchain_names(span: Sequence[object]) -> Iterator[str]:
+    """
+    Yield the chain names a quoted @subchain declares in a span.
+
+    Unlike _declared_chains (declaration sites of ANY kind), this
+    yields ONLY subchain names: an @subchain carries an implicit jump
+    from its enclosing rule, so these names are reached without any
+    literal jump/goto/realgoto token.
+    """
     toks = list(_str_tokens(span))
     for i, tok in enumerate(toks):
-        if tok in ("jump", "goto") and i + 1 < len(toks):
+        if tok in _SUBCHAIN_KW and i + 1 < len(toks):
+            candidate = toks[i + 1]
+            if _is_quoted(candidate):
+                yield _unquote(candidate)
+
+
+def _jump_targets(span: Sequence[object]) -> Iterator[str]:
+    """Yield literal jump/goto/realgoto targets in a span ($var skipped)."""
+    toks = list(_str_tokens(span))
+    for i, tok in enumerate(toks):
+        if tok in _JUMP_KW and i + 1 < len(toks):
             target = toks[i + 1]
             if not target.startswith("$"):
                 yield _unquote(target)
@@ -321,9 +343,10 @@ class _ChainCollector(NodeVisitor):
     """
 
     def __init__(self) -> None:
-        """Start with empty chain and jump registries."""
+        """Start with empty chain, jump and subchain registries."""
         self.declared: set[str] = set()
         self.jumps: list[str] = []
+        self.subchains: set[str] = set()
 
     def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
         """Harvest chain names embedded in a header's keyword + value span."""
@@ -335,10 +358,26 @@ class _ChainCollector(NodeVisitor):
         """Collect jumps, plus a mid-rule @subchain chain declaration."""
         self.declared.update(_declared_chains(node.span))
         self.jumps.extend(_jump_targets(node.span))
+        self.subchains.update(_subchain_names(node.span))
 
     def visit_SubchainNode(self, node: SubchainNode) -> None:  # noqa: N802
         """Harvest a leading @subchain chain declaration."""
         self.declared.update(_declared_chains(node.span))
+        self.subchains.update(_subchain_names(node.span))
+
+    def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
+        """
+        Harvest chain declarations and jumps from a @def span.
+
+        Function bodies are stored as flat spans on the DefNode, so a
+        ``jump FOO`` (or an @subchain) inside ``@def &f = ...`` is
+        visible only here -- without this visit a chain reached solely
+        from a function body would look unreachable and a broken jump
+        inside a body would go unreported.
+        """
+        self.declared.update(_declared_chains(node.span))
+        self.jumps.extend(_jump_targets(node.span))
+        self.subchains.update(_subchain_names(node.span))
 
 
 def find_undefined_chain_jumps(root: Block) -> list[str]:
@@ -349,10 +388,9 @@ def find_undefined_chain_jumps(root: Block) -> list[str]:
     literal declaration sites (embedded ``chain <NAME>`` in a header, quoted
     @subchain). The contract is narrowed to literal (syntactic) names; $var
     targets/names and @include-file chains are pinned known limitations.
-    Further pinned false-negatives (missed undefined jumps): the deprecated
-    ``realgoto`` alias is not recognised (only ``jump``/``goto``), and the
-    chain namespace is flattened to one global set, so a jump to a chain
-    defined only in another (domain, table) is not reported.
+    A further pinned false-negative (a missed undefined jump): the chain
+    namespace is flattened to one global set, so a jump to a chain defined
+    only in another (domain, table) is not reported.
     """
     collector = _ChainCollector()
     _walk_all(root, collector)
