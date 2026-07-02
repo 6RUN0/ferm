@@ -160,18 +160,19 @@ def test_jump_to_chain_named_like_a_keyword_not_flagged() -> None:
         assert find_undefined_chain_jumps(_tree(cfg)) == [], name
 
 
-def test_function_parameter_not_flagged_as_unused_def() -> None:
-    # `@def &f($p1, $p2) = ...` -- $p1/$p2 are function parameters (locals),
-    # NOT @def variable declarations. They must not be reported as unused defs
-    # (this exact shape ships in reference/test/misc/stringex.ferm).
+def test_uncalled_function_reported_with_sigil() -> None:
+    # `@def &myfunc(...)` with no call site: the function ITSELF is the
+    # unused definition. The exact-list assert simultaneously pins that
+    # its $-parameters are locals and stay unreported.
     cfg = '@def &myfunc($p1, $p2) = LOG log-prefix "$p1:$p2";\n'
-    assert find_unused_defs(_tree(cfg)) == []
+    assert find_unused_defs(_tree(cfg)) == ["&myfunc"]
 
 
-def test_function_first_param_with_used_second_not_flagged() -> None:
-    # The first parameter must not be mis-registered as the declared name.
+def test_uncalled_function_first_param_not_misregistered() -> None:
+    # The first parameter must not be mis-registered as the declared
+    # name: the finding is &f, never $a.
     cfg = "@def &f($a, $b) = saddr $b ACCEPT;\n"
-    assert find_unused_defs(_tree(cfg)) == []
+    assert find_unused_defs(_tree(cfg)) == ["&f"]
 
 
 def test_subchain_declaration_harvested_not_flagged_as_undefined() -> None:
@@ -321,3 +322,31 @@ def test_run_analysis_keeps_unused_block_before_undefined_block() -> None:
 def test_run_analysis_clean_config_is_empty() -> None:
     cfg = "@def $x = 1;\ntable filter chain INPUT { saddr $x ACCEPT; }\n"
     assert run_analysis(_tree(cfg)) == []
+
+
+def test_called_function_not_flagged() -> None:
+    cfg = (
+        "@def &f($a) = saddr $a ACCEPT;\n"
+        "table filter chain INPUT { &f(1.2.3.4); }\n"
+    )
+    assert find_unused_defs(_tree(cfg)) == []
+
+
+def test_function_called_only_from_unused_function_counts_as_used() -> None:
+    # No transitive liveness (documented safe-direction limitation):
+    # &g is unused, but its body calls &f, so &f counts as used.
+    cfg = "@def &f($a) = saddr $a ACCEPT;\n@def &g($a) = &f($a);\n"
+    assert find_unused_defs(_tree(cfg)) == ["&g"]
+
+
+def test_function_def_does_not_count_as_its_own_use() -> None:
+    # The definition head ('&', 'f') must be excluded from mentions --
+    # otherwise every function would mark itself used.
+    cfg = "@def &f($a) = saddr $a ACCEPT;\n"
+    assert find_unused_defs(_tree(cfg)) == ["&f"]
+
+
+def test_unused_vars_and_functions_sort_together() -> None:
+    # "$" (0x24) sorts before "&" (0x26): vars first, then functions.
+    cfg = "@def $b = 1;\n@def &a($x) = saddr $x ACCEPT;\n"
+    assert find_unused_defs(_tree(cfg)) == ["$b", "&a"]

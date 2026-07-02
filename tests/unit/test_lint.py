@@ -340,3 +340,12 @@ def test_invalid_fail_level_literal_dies_in_argparse(
         )
     assert excinfo.value.code == 2
     assert "invalid choice" in capsys.readouterr().err
+
+
+def test_unused_function_prints_with_sigil(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The & sigil disambiguates a function finding from a $var one."""
+    conf = _write(tmp_path, "@def &noop($a) = ACCEPT;\n")
+    assert main(["--lint", str(conf)]) == 0
+    assert capsys.readouterr().out == "warning: unused definition: &noop\n"

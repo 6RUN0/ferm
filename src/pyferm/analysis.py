@@ -77,6 +77,32 @@ def _iter_var_refs(span: Sequence[object]) -> Iterator[str]:
                 yield "$" + match.group(1)
 
 
+def _iter_func_refs(span: Sequence[object]) -> Iterator[str]:
+    """
+    Yield the &-function names (&name) mentioned in a raw token span.
+
+    Like "$", the tokenizer lexes "&" as its own token, so a function
+    reference is always the pair ("&", name). Callers must exclude a
+    definition's own head, or the name would count as a self-mention.
+    """
+    for i, tok in enumerate(span):
+        if tok == "&" and i + 1 < len(span):
+            nxt = span[i + 1]
+            if isinstance(nxt, str) and _NAME_RE.fullmatch(nxt):
+                yield "&" + nxt
+
+
+def _function_def_name(span: Sequence[object]) -> str | None:
+    """
+    Return the '&name' a function @def declares, or None if absent.
+
+    The first &-pair LEFT of '=' is the declared name (parameters are
+    $-vars, so they cannot shadow it).
+    """
+    eq_index = _index_of(span, "=")
+    return next(_iter_func_refs(span[:eq_index]), None)
+
+
 class _DefCollector(NodeVisitor):
     """
     Collect declared @def names and every name mentioned in leaf spans.
@@ -93,41 +119,52 @@ class _DefCollector(NodeVisitor):
 
     def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
         """
-        Record the declared @def name (LHS) and RHS var mentions.
+        Record the declared @def name (LHS) and the RHS mentions.
 
-        A function def ``@def &f($p) = ...`` declares no *variable*: the ``$p``
-        before ``=`` are parameters (locals), so they are neither declared nor
-        counted as global mentions; only the body (after ``=``) contributes
-        mentions. The function name ``&f`` itself is not tracked (a pinned
-        limitation). A variable def ``@def $x = ...`` declares its first pair.
+        A function def ``@def &f($p) = ...`` declares the function name
+        (kept WITH its ``&`` sigil in the same registry as $-vars); the
+        ``$p`` before ``=`` are parameters (locals), so they are neither
+        declared nor counted as global mentions -- only the body (after
+        ``=``) contributes mentions, of $-vars and of &-calls alike, so
+        a call inside another function's body marks the callee used
+        (transitive liveness is NOT computed). A variable def
+        ``@def $x = ...`` declares its first $-pair and mentions the
+        rest.
         """
         span = node.span
         eq_index = _index_of(span, "=")
         # a '&' left of '=' (or anywhere, when there is no '=') marks a
-        # function def; span[:None] is the whole span, so this covers both.
+        # function def; span[:None] is the whole span, covering both.
         is_function_def = "&" in span[:eq_index]
+        body = span[eq_index + 1 :] if eq_index is not None else ()
         if is_function_def:
-            body = span[eq_index + 1 :] if eq_index is not None else ()
+            name = _function_def_name(span)
+            if name is not None:
+                self.declared.setdefault(name, node)
             self.mentioned.update(_iter_var_refs(body))
+            self.mentioned.update(_iter_func_refs(body))
             return
-        # the first $-pair is the declared name (LHS of @def); the rest are
-        # mentions of other vars on the RHS.
         refs = list(_iter_var_refs(span))
         if refs:
             self.declared.setdefault(refs[0], node)
             self.mentioned.update(refs[1:])
+        # a var-def RHS may call a function; the head has no '&'.
+        self.mentioned.update(_iter_func_refs(span))
 
     def visit_SetNode(self, node: SetNode) -> None:  # noqa: N802
         """Record var mentions in an @set span."""
         self.mentioned.update(_iter_var_refs(node.span))
+        self.mentioned.update(_iter_func_refs(node.span))
 
     def visit_RuleNode(self, node: RuleNode) -> None:  # noqa: N802
         """Record var mentions in a rule span."""
         self.mentioned.update(_iter_var_refs(node.span))
+        self.mentioned.update(_iter_func_refs(node.span))
 
     def visit_IfNode(self, node: IfNode) -> None:  # noqa: N802
         """Record var mentions in an @if condition; branches via _walk_all."""
         self.mentioned.update(_iter_var_refs(node.cond_span))
+        self.mentioned.update(_iter_func_refs(node.cond_span))
 
 
 def _child_blocks(node: Node) -> Iterator[Block]:
@@ -164,10 +201,15 @@ def find_unused_defs(root: Block) -> list[str]:
     Return declared @def names never mentioned in any leaf span.
 
     Consumes a Parser.parse_to_block tree. The contract is narrowed to
-    SYNTACTIC references. Function names (``@def &f``) are not tracked,
-    so an unused function is never reported; a function parameter shares the
-    global ``mentioned`` namespace, so a same-named unused global def can be
-    masked (both pinned limitations of the literal-syntactic contract).
+    SYNTACTIC references.
+
+    Function names (``@def &f``) are tracked with their ``&`` sigil: an
+    uncalled function is reported as ``&foo``; a call from any span --
+    including another function's body -- counts as a use (transitive
+    liveness is not computed, a safe-direction limitation). A function
+    parameter shares the global ``mentioned`` namespace, so a same-named
+    unused global def can be masked (a pinned limitation of the
+    literal-syntactic contract).
     """
     collector = _DefCollector()
     _walk_all(root, collector)
