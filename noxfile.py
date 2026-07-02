@@ -241,6 +241,25 @@ def mutation(session: nox.Session) -> None:
     _uv(session, "--group", "mutation", "mutmut", "results")
 
 
+@nox.session
+def mutation_report(session: nox.Session) -> None:
+    """
+    Summarize mutmut results from ``mutants/**/*.meta`` (read-only).
+
+    Companion to ``mutation``: rolls the recorded per-mutant exit codes
+    up into kill statistics per module and per function, and prints
+    unified diffs of the surviving mutants for triage::
+
+        uv run nox -s mutation_report
+        uv run nox -s mutation_report -- --module pyferm.analysis
+        uv run nox -s mutation_report -- --module pyferm.analysis --diffs
+
+    Reads only what a previous ``mutation`` run left behind; it never
+    generates or checks mutants itself.
+    """
+    _uv(session, "python", "tools/mutation_report.py", *session.posargs)
+
+
 #: atheris ships cp311-cp313 wheels only; the crashfuzz session pins this
 #: interpreter so the run never lands on an unsupported one (e.g. 3.14).
 _CRASHFUZZ_PYTHON = "3.13"
