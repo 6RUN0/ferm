@@ -13,6 +13,23 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **Lint severity tiers and gating threshold.** `ferm --lint` now runs
+  six checks through a severity-ordered registry: `jump-cycle` (error),
+  `unused-definition`, `undefined-jump`, `unreachable-chain`,
+  `duplicate-definition` (warnings) and `deprecated-keyword` (info),
+  printed as `<severity>: <message>` lines sorted by severity, check
+  and message. Three first-slice false positives/negatives are closed:
+  double-quoted `"$x"` interpolation now counts as a use, `realgoto` is
+  recognized as a jump edge, and `@def &f` functions are tracked (an
+  uncalled function reports as `unused definition: &foo`). The new
+  `--lint-fail-level={error,warning,info}` sets the CI gating
+  threshold; bare `--lint-strict` still gates at the warning level and
+  the default exit stays `0`. Known limits are documented and
+  test-pinned: the cycle graph flattens `(domain, table)` and both
+  `@if` branches and credits nested `@def` bodies to their enclosing
+  chain (phantom cycles possible), a cycle routed through a function
+  call stays invisible, reachability is in-degree only, and
+  `jump $var` targets stay invisible.
 - **Static analysis mode (`--lint`).** `ferm --lint` reads a single config
   file and structurally parses it — no variable substitution, no module
   loading, `@include` is not expanded — then reports two classes of

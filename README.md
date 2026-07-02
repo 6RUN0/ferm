@@ -373,41 +373,62 @@ inherits the flag automatically.
 
 `ferm --lint` runs a terminal, read-only static-analysis pass over a single
 config file. It is **eval-free**: the file is only structurally parsed — no
-variable substitution, no module loading, `@include` is not expanded — and
-two checks run over the resulting tree, printing findings to stdout one per
-line:
+variable substitution, no module loading, `@include` is not expanded.
 
-- `warning: unused definition: $foo` — a `@def` variable that is declared
-  but never referenced.
-- `warning: jump to undefined chain: BAR` — a `jump`/`goto` target chain
-  that is declared nowhere.
+Six checks run over the resulting tree, each finding printed to stdout
+as one `<severity>: <message>` line:
+
+| Check | Severity | Example |
+|-------|----------|---------|
+| `jump-cycle` | error | `error: jump cycle: A -> B -> A` |
+| `unused-definition` | warning | `warning: unused definition: $foo` / `&foo` |
+| `undefined-jump` | warning | `warning: jump to undefined chain: BAR` |
+| `unreachable-chain` | warning | `warning: unreachable chain: FOO` |
+| `duplicate-definition` | warning | `warning: duplicate definition: $foo` |
+| `deprecated-keyword` | info | `info: deprecated keyword: realgoto (use goto)` |
 
 ```sh
-ferm --lint /etc/ferm/ferm.conf                 # print findings, exit 0
-ferm --lint --lint-strict /etc/ferm/ferm.conf   # exit 2 if anything found
+ferm --lint /etc/ferm/ferm.conf                    # print findings, exit 0
+ferm --lint --lint-strict /etc/ferm/ferm.conf      # exit 2 on any warning+
+ferm --lint --lint-fail-level=error ferm.conf      # exit 2 only on errors
+ferm --lint --lint-fail-level=info ferm.conf       # exit 2 on any finding
 ```
 
-Findings are sorted, with all `unused definition` warnings printed before
-all `jump to undefined chain` warnings. By default findings do not affect
-the exit code (`0`), so `--lint` is safe to drop into someone else's CI;
-`--lint-strict` escalates any finding to exit `2` for opt-in gating. Exit
-`1` covers a file-read error (missing file, I/O error), an internal bug, or
-a usage error — an incompatible flag combination, or anything other than
-exactly one input file (which prints the usage text and exits `1`).
+Findings are ordered by severity (errors, then warnings, then info),
+then by check, then by message. By default findings never change the
+exit code (`0`); `--lint-strict` gates at the warning level, and
+`--lint-fail-level={error,warning,info}` sets an explicit threshold
+(it wins when both flags are given). Exit `1` covers a file-read
+error, an internal bug, or a usage error; note that an invalid
+`--lint-fail-level` literal dies inside argparse with exit `2` before
+ferm's own usage-error contract (the same pre-existing pattern as
+`--plan-format`) — distinguish it by the usage message on stderr.
 
 Notes and boundaries:
 
 - **No syntax validation.** The structural parser is error-tolerant, so a
   malformed config (unbalanced braces, truncated input) is analyzed
   best-effort on the parsed portion rather than producing a syntax error —
-  `--lint` catches the two checks above, not "broken file".
-- **Known false positives/negatives**, inherited from the eval-free,
-  literal-name analysis: a variable used only through string interpolation
-  (`"prefix $x"`) is reported as unused; function names (`@def &f`) and
-  `$var` chain targets are not tracked; the chain namespace is flattened
-  across domains/tables, so a jump to a chain declared only in another
-  `(domain, table)` may be falsely flagged. This is why the default mode
-  only warns; strict gating is an explicit opt-in.
+  `--lint` catches the checks above, not "broken file".
+- **Phantom jump cycles.** The cycle graph flattens `(domain, table)`
+  and includes BOTH `@if` branches, so opposite edges from two tables
+  or two branches report a cycle no single ruleset contains; a `@def`
+  nested in a chain block adds its body's edges to that chain even if
+  the function is never called. The highest-severity check is thus the
+  least precise one — mind this before wiring `--lint-fail-level=error`
+  into CI.
+- **Function-call cycles are invisible.** A real loop routed through a
+  function call (`@def &f() = jump A;` called from chain `A`) is NOT
+  reported: a call site is not a jump edge — `jump-cycle`'s one
+  false-negative gap.
+- A chain reached only via `jump $var` or declared behind a braceless
+  `@if $c ...;` guard is invisible (literal, structural analysis);
+  `unreachable-chain` checks in-degree, not reachability, so a dead
+  `A<->B` island or self-loop is not flagged (the island shows up as a
+  `jump-cycle`); a chain literally named `realgoto` false-fires
+  `deprecated-keyword`; duplicate definitions of one name in two scopes
+  print as one line (messages carry no positions); `@include`/`@hook`
+  spans are not scanned.
 - `--lint` is incompatible with the apply/plan flags (`--plan`, `--nft`,
   `--fast`, `--slow`, `--shell`, `--interactive`, `--flush`, `--noflush`,
   `--full-reload`), with a non-default `--plan-format`, and with

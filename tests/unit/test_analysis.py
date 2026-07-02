@@ -1,9 +1,8 @@
-"""The two internal AST proofs over the eval-free parse_to_block tree.
+"""Unit tests for the eval-free analyzers behind ``ferm --lint``.
 
-These exercise the tree's name- and graph-analysis capabilities (the layer-6
-acceptance criterion): they are NOT a linter -- no CLI, no severity, no user
-output -- only proofs that the structural tree is fit for analysis. Both
-consume Parser.parse_to_block (both @if branches), not the walk tree.
+Every analyzer consumes Parser.parse_to_block (both @if branches, never
+the walk tree). The CLI wrapper contract (output format, exit codes,
+flag validation) is pinned separately in tests/unit/test_lint.py.
 """
 
 from __future__ import annotations

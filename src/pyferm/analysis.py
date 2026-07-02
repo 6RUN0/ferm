@@ -1,19 +1,32 @@
 """
 The eval-free static-analysis engine behind ``ferm --lint``.
 
-Two structural analyzers over the ``Parser.parse_to_block`` tree (both @if
-branches structured, never the ephemeral walk tree): they run without
-evaluating the config, so no kernel, resolver, or previous-ruleset I/O is
-touched.  ``ferm --lint`` imports them, formats their findings as
-``warning:`` lines on stdout, and (with ``--lint-strict``) escalates to a
-non-zero exit for CI gating.
+Six structural analyzers over the ``Parser.parse_to_block`` tree (both
+@if branches structured, never the ephemeral walk tree), run through an
+ordered registry (ANALYZERS) yielding Severity-tiered Finding records:
+jump-cycle (error); unused-definition, undefined-jump,
+unreachable-chain, duplicate-definition (warnings); deprecated-keyword
+(info). Nothing evaluates the config: no kernel, resolver, or
+previous-ruleset I/O is touched.
 
-The analysis is literal-syntactic by design: names reached only through
-string interpolation are invisible (false "unused"), ``@def &f`` function
-names are not tracked, ``$var`` targets and the ``realgoto`` alias are not
-recognised, and the chain namespace is flattened to one global set (a jump
-into a chain from a different ``(domain, table)`` may false-positive).  These
-limits are pinned by tests and inherited -- and documented -- by ``--lint``.
+The analysis is literal-syntactic by design. Closed since the first
+slice: double-quoted "$x" interpolation counts as a use, the realgoto
+alias is a jump edge, and @def &f functions are tracked (an uncalled
+function is an unused definition). Still pinned as limitations: $var
+jump targets are invisible; the chain namespace flattens (domain,
+table) and both @if branches feed ONE graph, so jump-cycle can
+over-report a phantom loop (the conservatism direction flips there);
+jump-cycle also credits a nested @def body to its lexically enclosing
+chain (phantom edges from uncalled functions) yet cannot see a loop
+routed through a function CALL (its one false-negative gap); a chain
+literally named after a deprecated keyword false-fires
+deprecated-keyword; a braceless ``@if $c @def $x = 2;`` hides the
+guarded statement inside the condition span; unreachable-chain is
+in-degree only (a dead A<->B island or a self-loop is not reported --
+jump-cycle covers the island, unless its edges route through a
+function call); @include and @hook spans are not scanned. These
+limits are pinned by tests and inherited -- and documented -- by
+``--lint``.
 """
 
 from __future__ import annotations
