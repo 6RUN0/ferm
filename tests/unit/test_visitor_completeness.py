@@ -78,14 +78,14 @@ _DEF_COLLECTOR_IGNORED: Final = frozenset(
     }
 )
 
-#: _ChainCollector only cares about chain-declaration sites (a header, a
-#: subchain) and jump/goto targets (a rule); the other node kinds declare no
-#: chain and issue no jump.
+#: _ChainCollector cares about chain-declaration sites (a header, a
+#: subchain), jump/goto/realgoto targets (a rule), and a @def span's own
+#: chain declarations/jumps/subchains (a function body); the other node
+#: kinds declare no chain and issue no jump.
 _CHAIN_COLLECTOR_IGNORED: Final = frozenset(
     {
         "Block",
         "BlockNode",
-        "DefNode",
         "HookNode",
         "IfNode",
         "IncludeNode",
