@@ -450,3 +450,38 @@ def test_needs_full_reload_contract() -> None:
     assert needs_full_reload(None) is True
     assert needs_full_reload("") is True
     assert needs_full_reload("table ip ferm {\n}\n") is False
+
+
+def test_build_desired_index_resets_on_delete_table() -> None:
+    # A 'delete table' line signals a whole-table replace: anything indexed
+    # before it belongs to a stale render pass and must be discarded.  Only
+    # chains declared after the reset are valid desired state.
+    save = (
+        "add chain ip ferm pre_chain\n"
+        "delete table ip ferm\n"
+        "add chain ip ferm post_chain\n"
+    )
+    index = _build_desired_index(save)
+    assert "post_chain" in index.chain_decl
+    assert "pre_chain" not in index.chain_decl
+
+
+def test_emit_set_modify_pure_add() -> None:
+    # A set modify where nothing is removed (only new elements added) must
+    # still emit an 'add element' line.  The 'if added:' branch is distinct
+    # from the 'if removed:' branch; a test that removes AND adds masks the
+    # pure-add path.
+    current = _table_with_set("h", ParsedSet("h", ["10.0.0.1"], "ipv4_addr"))
+    desired = _table_with_set(
+        "h", ParsedSet("h", ["10.0.0.1", "10.0.0.2"], "ipv4_addr")
+    )
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add set ip ferm h { type ipv4_addr; }\n"
+        "add element ip ferm h { 10.0.0.1, 10.0.0.2 }\n"
+    )
+    lines = _emit_set_changes(diff, current, index, family="ip")
+    assert any(
+        "add element ip ferm h" in ln and "10.0.0.2" in ln for ln in lines
+    )
+    assert not any("delete element" in ln for ln in lines)

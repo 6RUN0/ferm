@@ -114,3 +114,33 @@ def test_current_empty_flag() -> None:
     diff = diff_tables({}, des, noflush=False)
     assert diff.current_empty
     assert [r.rule for r in diff.rules_added] == ["-j A"]
+
+
+def test_noflush_suppresses_undeclared_user_chain() -> None:
+    # Under --noflush, a user chain present in the kernel but absent from
+    # config is NOT reported as foreign and does not trigger has_changes().
+    cur = _tbl(
+        {
+            "INPUT": ParsedChain("ACCEPT", []),
+            "orphan": ParsedChain("-", ["-j RETURN"]),
+        }
+    )
+    des = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
+    diff = diff_tables(cur, des, noflush=True)
+    assert [f.chain for f in diff.foreign_chains] == []
+    assert not diff.has_changes()
+
+
+def test_noflush_false_reports_undeclared_user_chain_as_foreign() -> None:
+    # Without --noflush, the same undeclared user chain IS reported as foreign
+    # and causes has_changes() to return True.
+    cur = _tbl(
+        {
+            "INPUT": ParsedChain("ACCEPT", []),
+            "orphan": ParsedChain("-", ["-j RETURN"]),
+        }
+    )
+    des = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
+    diff = diff_tables(cur, des, noflush=False)
+    assert [f.chain for f in diff.foreign_chains] == ["orphan"]
+    assert diff.has_changes()

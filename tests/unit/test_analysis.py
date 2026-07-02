@@ -149,6 +149,101 @@ def test_function_first_param_with_used_second_not_flagged() -> None:
     assert find_unused_defs(_tree(cfg)) == []
 
 
+def test_subchain_declaration_harvested_not_flagged_as_undefined() -> None:
+    # A mid-rule `proto tcp @subchain "SC" { ... }` places "@subchain" inside
+    # the RuleNode span (the structural parser stops the span at the "{" match
+    # block, so "@subchain" is in the span not leading it). _declared_chains
+    # must recognise the _SUBCHAIN_KW branch and yield "SC" as a declared chain
+    # so the subsequent `jump SC` is NOT flagged as undefined.
+    cfg = (
+        "table filter chain INPUT {\n"
+        '  proto tcp @subchain "SC" { dport 22 ACCEPT; }\n'
+        "  jump SC;\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_dangling_goto_detected() -> None:
+    # `goto` is the second target keyword in _jump_targets; only `jump` is
+    # tested by the existing suite. A goto to a non-existent chain IS flagged.
+    cfg = "table filter chain INPUT { goto MISSING; }\n"
+    assert "MISSING" in find_undefined_chain_jumps(_tree(cfg))
+
+
+def test_goto_to_declared_chain_not_flagged() -> None:
+    # A goto to a declared chain must not produce a false positive.
+    # The second goto (MISSING) makes the test non-vacuous: if goto were
+    # ignored entirely the result would be [] instead of ["MISSING"], failing
+    # the assertion and proving goto targets ARE collected.
+    cfg = (
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { goto FOO; goto MISSING; }\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == ["MISSING"]
+
+
+def test_jump_to_chain_in_array_declaration_not_flagged() -> None:
+    # `chain (FOO BAR) { ... }` declares both FOO and BAR via the array-form
+    # branch in _declared_chains. A jump to FOO (or BAR) must NOT be flagged.
+    cfg = (
+        "table filter {\n"
+        "  chain (FOO BAR) { ACCEPT; }\n"
+        "  chain INPUT { jump FOO; }\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_jump_to_name_absent_from_array_declaration_is_flagged() -> None:
+    # Only names IN the array are declared; a jump to a name outside it IS
+    # an undefined chain jump.
+    cfg = (
+        "table filter {\n"
+        "  chain (FOO BAR) { ACCEPT; }\n"
+        "  chain INPUT { jump MISSING; }\n"
+        "}\n"
+    )
+    assert "MISSING" in find_undefined_chain_jumps(_tree(cfg))
+
+
+def test_def_used_only_in_set_not_flagged_as_unused() -> None:
+    # $x appears ONLY inside `@set $s = ($x)` -- visit_SetNode must harvest
+    # the $x mention from the span so it is NOT reported as an unused @def.
+    cfg = "@def $x = 22;\n@set $s = ($x);\n"
+    assert "$x" not in find_unused_defs(_tree(cfg))
+
+
+def test_def_used_only_in_if_condition_not_flagged_as_unused() -> None:
+    # $x appears ONLY in the @if condition span, not in the branch body.
+    # visit_IfNode must harvest cond_span so $x is NOT reported as unused.
+    cfg = "@def $x = 1;\n@if $x { ACCEPT; }\n"
+    assert "$x" not in find_unused_defs(_tree(cfg))
+
+
+def test_multiple_unused_defs_sorted_exactly() -> None:
+    # Two unused defs given in reverse-alphabetical source order must come back
+    # in sorted order, pinning the sort contract that `in`-only asserts leave
+    # unpinned.
+    cfg = "@def $beta = 2;\n@def $alpha = 1;\n"
+    assert find_unused_defs(_tree(cfg)) == ["$alpha", "$beta"]
+
+
+def test_multiple_dangling_jumps_sorted_and_deduped() -> None:
+    # FOO is jumped to twice; result must contain it exactly ONCE (set dedup)
+    # and the full list must be sorted, pinning both contracts.
+    cfg = (
+        "table filter chain INPUT {\n"
+        "  jump FOO;\n"
+        "  jump BAR;\n"
+        "  jump FOO;\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == ["BAR", "FOO"]
+
+
 def test_deeply_nested_input_does_not_crash_analyzers() -> None:
     # parse_to_block must not RecursionError on pathological nesting the
     # product rejects; it caps depth like Parser.enter (error-tolerant).

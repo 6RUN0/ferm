@@ -469,3 +469,12 @@ def test_vmap_key_canonicalized_to_kernel_form() -> None:
         "ip6 daddr vmap { 2001:db8::1 : accept }", family="ip6"
     )
     assert desired == current
+
+
+def test_vmap_malformed_member_returned_verbatim() -> None:
+    # A vmap member with no ' : ' separator (key and verdict not separated by
+    # the expected token) triggers the safe-bias fallback: the whole run is
+    # returned verbatim rather than silently corrupting it into a false diff.
+    body = "tcp dport vmap { malformed } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "tcp dport vmap { malformed } accept"

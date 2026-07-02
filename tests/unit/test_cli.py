@@ -1503,6 +1503,111 @@ def test_apply_success_path_reaches_commit(
     assert len(commit_calls) == 1
 
 
+# --- F1: interactive confirm/rollback composition ---------------------------
+
+
+def test_interactive_decline_triggers_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When the admin declines confirmation _rollback_all fires and raises
+    # SystemExit.  The commit hook must not be reached (the safety invariant).
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+
+    commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
+    monkeypatch.setattr(cli_mod, "_confirm_rules", lambda _opts: False)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _apply_config(
+            str(conf), Options(interactive=True), sys.stdout, defs=[]
+        )
+    assert commit_calls == []
+
+
+def test_interactive_confirm_skips_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Counterpart: confirming keeps the rules; no SystemExit, commit hook
+    # reached exactly once (proving the decline test's assertion is real).
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+
+    commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
+    monkeypatch.setattr(cli_mod, "_confirm_rules", lambda _opts: True)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert (
+        _apply_config(
+            str(conf), Options(interactive=True), sys.stdout, defs=[]
+        )
+        == 0
+    )
+    assert len(commit_calls) == 1
+
+
+# --- F3: --flush clears pre/post hooks; normal apply clears flush hooks -----
+
+
+class _SeededParser(_FakeParser):
+    """Like _FakeParser but pre-loads sentinel values into every hook list."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.pre_hooks = ["echo pre"]
+        self.post_hooks = ["echo post"]
+        self.flush_hooks = ["echo flush"]
+
+
+def test_flush_clears_pre_and_post_hooks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --flush clears pre_hooks and post_hooks so they are not executed;
+    # flush_hooks are retained and run instead.
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+
+    _patch_apply_seam(monkeypatch, commit_result=None)
+    monkeypatch.setattr(cli_mod, "Parser", _SeededParser)
+    executed: list[str] = []
+    monkeypatch.setattr(
+        cli_mod, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
+    )
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert (
+        _apply_config(str(conf), Options(flush=True), sys.stdout, defs=[]) == 0
+    )
+    assert "echo pre" not in executed
+    assert "echo post" not in executed
+    assert "echo flush" in executed
+
+
+def test_no_flush_retains_pre_and_post_hooks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without --flush, pre_hooks and post_hooks are executed; flush_hooks are
+    # cleared and never run.
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+
+    _patch_apply_seam(monkeypatch, commit_result=None)
+    monkeypatch.setattr(cli_mod, "Parser", _SeededParser)
+    executed: list[str] = []
+    monkeypatch.setattr(
+        cli_mod, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
+    )
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert (
+        _apply_config(str(conf), Options(flush=False), sys.stdout, defs=[])
+        == 0
+    )
+    assert "echo pre" in executed
+    assert "echo post" in executed
+    assert "echo flush" not in executed
+
+
 # --- ferm rollback subcommand ----------------------------------------------
 
 
