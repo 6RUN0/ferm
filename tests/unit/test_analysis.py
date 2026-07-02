@@ -11,8 +11,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pyferm.analysis import (
+    Finding,
+    Severity,
     find_undefined_chain_jumps,
     find_unused_defs,
+    run_analysis,
 )
 from pyferm.parser import Parser
 
@@ -258,3 +261,41 @@ def test_deeply_nested_input_does_not_crash_analyzers() -> None:
     tree = Parser.parse_to_block(cfg)  # must not raise
     find_unused_defs(tree)  # must not raise
     find_undefined_chain_jumps(tree)  # must not raise
+
+
+def test_severity_order_is_error_warning_info() -> None:
+    # The IntEnum order IS the output and gating order.
+    assert Severity.ERROR < Severity.WARNING < Severity.INFO
+
+
+def test_run_analysis_wraps_legacy_analyzers_in_findings() -> None:
+    cfg = "@def $foo = 1;\ntable filter chain INPUT { jump MISSING; }\n"
+    assert run_analysis(_tree(cfg)) == [
+        Finding(
+            Severity.WARNING,
+            "unused-definition",
+            "unused definition: $foo",
+        ),
+        Finding(
+            Severity.WARNING,
+            "undefined-jump",
+            "jump to undefined chain: MISSING",
+        ),
+    ]
+
+
+def test_run_analysis_keeps_unused_block_before_undefined_block() -> None:
+    # Registration order dominates message text within one severity tier:
+    # "unused definition: $z" > "jump to undefined chain: A" as strings,
+    # yet the unused block still prints first (never interleaved).
+    cfg = "@def $z = 1;\ntable filter chain INPUT { jump A; }\n"
+    messages = [f.message for f in run_analysis(_tree(cfg))]
+    assert messages == [
+        "unused definition: $z",
+        "jump to undefined chain: A",
+    ]
+
+
+def test_run_analysis_clean_config_is_empty() -> None:
+    cfg = "@def $x = 1;\ntable filter chain INPUT { saddr $x ACCEPT; }\n"
+    assert run_analysis(_tree(cfg)) == []

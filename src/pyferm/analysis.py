@@ -18,14 +18,16 @@ limits are pinned by tests and inherited -- and documented -- by ``--lint``.
 
 from __future__ import annotations
 
+import enum
 import re
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final
 
 from .parser import MAX_BLOCK_DEPTH
 from .tree import Block, NodeVisitor
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from .tree import (
         DefNode,
@@ -305,3 +307,87 @@ def find_undefined_chain_jumps(root: Block) -> list[str]:
     collector = _ChainCollector()
     _walk_all(root, collector)
     return sorted({t for t in collector.jumps if t not in collector.declared})
+
+
+class Severity(enum.IntEnum):
+    """Finding importance; the IntEnum order is the output/gating order."""
+
+    ERROR = 0
+    WARNING = 1
+    INFO = 2
+
+
+@dataclass(frozen=True)
+class Finding:
+    """
+    One lint finding: a severity tier, a stable code, and the message.
+
+    ``message`` is the raw (unescaped) text after ``<severity>: ``; it is
+    also the dedup/sort key -- control-char escaping happens at print
+    time in the CLI, which is byte-equivalent (the substitution is
+    position-independent) and keeps slice-1 ordering exact.
+    """
+
+    severity: Severity
+    code: str
+    message: str
+
+
+def _unused_definition_findings(root: Block) -> list[Finding]:
+    """Adapt find_unused_defs to the Finding model (message text pinned)."""
+    return [
+        Finding(
+            Severity.WARNING,
+            "unused-definition",
+            f"unused definition: {name}",
+        )
+        for name in find_unused_defs(root)
+    ]
+
+
+def _undefined_jump_findings(root: Block) -> list[Finding]:
+    """Adapt find_undefined_chain_jumps to the Finding model."""
+    return [
+        Finding(
+            Severity.WARNING,
+            "undefined-jump",
+            f"jump to undefined chain: {name}",
+        )
+        for name in find_undefined_chain_jumps(root)
+    ]
+
+
+#: Ordered analyzer registry: (code, severity, callable). Registration
+#: order is the secondary output sort key (after severity), so the two
+#: legacy analyzers keep their relative block order from the first slice.
+ANALYZERS: Final[
+    tuple[tuple[str, Severity, Callable[[Block], list[Finding]]], ...]
+] = (
+    ("unused-definition", Severity.WARNING, _unused_definition_findings),
+    ("undefined-jump", Severity.WARNING, _undefined_jump_findings),
+)
+
+
+def run_analysis(root: Block) -> list[Finding]:
+    """
+    Run every registered analyzer; return deduplicated, ordered findings.
+
+    Order: ``(severity, registration index, message)`` -- errors first,
+    then warnings, then info; within a tier each analyzer's block stays
+    contiguous, and messages sort lexicographically inside a block.
+    Identical (severity, code, message) triples collapse to one finding:
+    messages carry no positions, so two real same-name findings from
+    different scopes print once (a documented trade-off).
+    """
+    registration_index = {
+        code: index for index, (code, _, _) in enumerate(ANALYZERS)
+    }
+    findings: set[Finding] = set()
+    for _code, _severity, analyzer in ANALYZERS:
+        findings.update(analyzer(root))
+    # A KeyError on a foreign f.code is intentional: every emitted code
+    # must be a registered analyzer code.
+    return sorted(
+        findings,
+        key=lambda f: (f.severity, registration_index[f.code], f.message),
+    )
