@@ -1,10 +1,19 @@
 """
-Two internal AST proofs over the eval-free parse_to_block tree.
+The eval-free static-analysis engine behind ``ferm --lint``.
 
-NOT a linter: no CLI, no severity, no user output -- these are called only
-from tests, as the layer-6 acceptance criterion that the structural tree is
-fit for name- and graph-analysis. They consume the Parser.parse_to_block tree
-(both @if branches structured), never the ephemeral walk tree.
+Two structural analyzers over the ``Parser.parse_to_block`` tree (both @if
+branches structured, never the ephemeral walk tree): they run without
+evaluating the config, so no kernel, resolver, or previous-ruleset I/O is
+touched.  ``ferm --lint`` imports them, formats their findings as
+``warning:`` lines on stdout, and (with ``--lint-strict``) escalates to a
+non-zero exit for CI gating.
+
+The analysis is literal-syntactic by design: names reached only through
+string interpolation are invisible (false "unused"), ``@def &f`` function
+names are not tracked, ``$var`` targets and the ``realgoto`` alias are not
+recognised, and the chain namespace is flattened to one global set (a jump
+into a chain from a different ``(domain, table)`` may false-positive).  These
+limits are pinned by tests and inherited -- and documented -- by ``--lint``.
 """
 
 from __future__ import annotations

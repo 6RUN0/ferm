@@ -37,6 +37,7 @@ import sys
 from typing import TYPE_CHECKING, Final, TextIO
 
 from pyferm import __version__, etckeeper
+from pyferm.analysis import find_undefined_chain_jumps, find_unused_defs
 from pyferm.backend.iptables import (
     IptablesBackend,
     restore_domain,
@@ -111,6 +112,8 @@ Options:
      --shell           Generate a shell script which calls iptables-restore
      --domain {ip|ip6} Handle only the specified domain
      --def '$name=v'   Override a variable
+     --lint            Static-analysis mode: report warnings, apply nothing
+     --lint-strict     With --lint: exit non-zero if any warning is found
 
 """
 
@@ -177,6 +180,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--plan-format", choices=("structured", "diff"), default="structured"
     )
+    # Port-only: eval-free static analysis (see _run_lint).
+    parser.add_argument("--lint", action="store_true")
+    parser.add_argument("--lint-strict", action="store_true")
     parser.add_argument("files", nargs="*")
     return parser
 
@@ -192,6 +198,47 @@ def _resolve_options(args: argparse.Namespace) -> Options:
     interactive-mode tty requirements, raising :class:`FermError` for each
     ``die`` (``:691-698``).
     """
+    # --lint is a self-contained terminal mode (dispatched on ``args.lint`` in
+    # _main, before _setup_streams, so it never consumes the returned
+    # Options).  Validate its conflicts FIRST -- before the apply-path timeout
+    # and interactive-tty guards below -- so a combination like
+    # ``--lint --interactive`` (in a non-tty) or ``--lint --timeout`` surfaces
+    # the lint message rather than an apply-path die, and the accepted-but-
+    # ignored switches (--noexec/--lines/--timeout/--test/--nolegacy/
+    # --no-etckeeper/--test-mock-previous) stay genuinely ignored.  A benign
+    # placeholder Options is returned; the lint path discards it.
+    if args.lint_strict and not args.lint:
+        raise FermError("ferm --lint-strict has no sense without --lint")
+    if args.lint:
+        # apply/plan modes: --lint applies and plans nothing.
+        for flag, switch in (
+            ("--plan", args.plan),
+            ("--nft", args.nft),
+            ("--fast", args.fast),
+            ("--slow", args.slow),
+            ("--shell", args.shell),
+            ("--interactive", args.interactive),
+            ("--flush", args.flush),
+            ("--noflush", args.noflush),
+            ("--full-reload", args.full_reload),
+        ):
+            if switch:
+                raise FermError(f"ferm --lint cannot be combined with {flag}")
+        # --plan-format is plan-only; caught here (before the generic
+        # "no sense without --plan" check below) so the message names --lint.
+        if args.plan_format != "structured":
+            raise FermError(
+                "ferm --lint cannot be combined with --plan-format"
+            )
+        # eval-dependent flags: --def binds on the eval scope frame and
+        # --domain filters during eval, so neither reaches parse_to_block --
+        # accepting them silently would be a no-op.
+        if args.defs:
+            raise FermError("ferm --lint cannot be combined with --def")
+        if args.domain is not None:
+            raise FermError("ferm --lint cannot be combined with --domain")
+        return Options()
+
     noexec = args.noexec or args.test
     lines = args.lines or args.test or args.shell
     # The oracle derives interactive from the RAW --noexec switch (:679),
@@ -617,6 +664,80 @@ def _confirm_rules(options: Options) -> bool:
     return line == "yes"
 
 
+_CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _escape_control_chars(name: str) -> str:
+    r"""
+    Escape C0/C1 control bytes in a lint finding name (``\xNN``).
+
+    Def/chain names come verbatim from the config, and the latin-1 byte model
+    admits any byte including ESC/CR; escaping them keeps a crafted name from
+    injecting terminal-control sequences into a ``warning:`` line on stdout.
+    """
+    return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
+
+
+def _run_lint(config_path: str, *, strict: bool) -> int:
+    """
+    Run the eval-free static analysis for ``ferm --lint`` (port-only).
+
+    Read-only like ``--plan`` but, unlike it, eval-free: the config is parsed
+    into a structural tree with :meth:`Parser.parse_to_block` and handed to the
+    analysers in :mod:`pyferm.analysis`, so no evaluation runs and no kernel,
+    resolver, or previous-ruleset I/O is touched.  ``open_script`` supplies the
+    input through the same boundary as apply/``--plan`` -- preserving ``-``
+    (stdin), the single ``FermError`` on a missing file, and the latin-1 byte
+    model -- so the analysis sees the exact config bytes.
+
+    Unlike apply/``--plan``, a trailing-``|`` path is rejected rather than run
+    through the shell: apply reads a root-owned config where Perl's two-arg
+    ``open`` pipe-include is intended, but ``--lint`` advertises a read-only,
+    subprocess-free contract meant to be pointed at untrusted files (e.g. a CI
+    linting repository paths), so honouring the pipe here would be arbitrary
+    command execution driven by a filename.
+
+    Findings print to stdout in a fixed, deterministic order: every
+    ``unused definition`` (already sorted by the analyser), then every
+    ``jump to undefined chain`` (likewise).  The default mode exits ``0`` even
+    with findings (warnings must not break another project's CI on a
+    heuristic); ``--lint-strict`` escalates to ``2`` for opt-in CI gating.
+    """
+    if config_path.endswith("|"):
+        raise FermError("ferm --lint cannot read from a pipe command")
+    script = open_script(config_path, None)
+    try:
+        handle = script.handle
+        if handle is None:  # open_script always sets it; guard for the type
+            raise internal_error("open_script returned no handle")
+        config = handle.read()
+    finally:
+        script.close()
+
+    block = Parser.parse_to_block(config)
+
+    # Fixed order: the unused-definition block first, then the undefined-jump
+    # block; each analyser already returns a sorted list, so concatenation is
+    # the whole ordering.  Names from find_unused_defs already carry the
+    # leading "$", so it is not re-added here.  Control bytes are escaped: a
+    # quoted def/chain name may carry ESC/CR (latin-1 lets any byte through),
+    # which would otherwise inject ANSI/carriage-return sequences into a CI
+    # log line printed verbatim below.
+    findings = [
+        f"warning: unused definition: {_escape_control_chars(name)}"
+        for name in find_unused_defs(block)
+    ]
+    findings += [
+        f"warning: jump to undefined chain: {_escape_control_chars(name)}"
+        for name in find_undefined_chain_jumps(block)
+    ]
+
+    for line in findings:
+        sys.stdout.write(f"{line}\n")
+
+    return 2 if (strict and findings) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the ferm CLI (Perl's top-level program, ``:620-819``)."""
     # before any write: argparse renders usage/errors through these streams
@@ -656,6 +777,11 @@ def _main(argv: list[str] | None = None) -> int:
     if len(args.files) != 1:
         sys.stdout.write(HELP_TEXT)
         return 1
+
+    # Eval-free lint must dispatch before any eval/kernel/previous-ruleset
+    # I/O -- unlike --plan, which runs post-eval inside _apply_config.
+    if args.lint:
+        return _run_lint(args.files[0], strict=args.lint_strict)
 
     lines_stream, restore_streams = _setup_streams(options)
     try:

@@ -369,6 +369,51 @@ On Alpine (**OpenRC**), add `--nft` to the `ferm` invocations in `start()` and
 `stop()` in `/etc/init.d/ferm`; `reload()` delegates to `start()`, so it
 inherits the flag automatically.
 
+### Static analysis (`--lint`)
+
+`ferm --lint` runs a terminal, read-only static-analysis pass over a single
+config file. It is **eval-free**: the file is only structurally parsed — no
+variable substitution, no module loading, `@include` is not expanded — and
+two checks run over the resulting tree, printing findings to stdout one per
+line:
+
+- `warning: unused definition: $foo` — a `@def` variable that is declared
+  but never referenced.
+- `warning: jump to undefined chain: BAR` — a `jump`/`goto` target chain
+  that is declared nowhere.
+
+```sh
+ferm --lint /etc/ferm/ferm.conf                 # print findings, exit 0
+ferm --lint --lint-strict /etc/ferm/ferm.conf   # exit 2 if anything found
+```
+
+Findings are sorted, with all `unused definition` warnings printed before
+all `jump to undefined chain` warnings. By default findings do not affect
+the exit code (`0`), so `--lint` is safe to drop into someone else's CI;
+`--lint-strict` escalates any finding to exit `2` for opt-in gating. Exit
+`1` covers a file-read error (missing file, I/O error), an internal bug, or
+a usage error — an incompatible flag combination, or anything other than
+exactly one input file (which prints the usage text and exits `1`).
+
+Notes and boundaries:
+
+- **No syntax validation.** The structural parser is error-tolerant, so a
+  malformed config (unbalanced braces, truncated input) is analyzed
+  best-effort on the parsed portion rather than producing a syntax error —
+  `--lint` catches the two checks above, not "broken file".
+- **Known false positives/negatives**, inherited from the eval-free,
+  literal-name analysis: a variable used only through string interpolation
+  (`"prefix $x"`) is reported as unused; function names (`@def &f`) and
+  `$var` chain targets are not tracked; the chain namespace is flattened
+  across domains/tables, so a jump to a chain declared only in another
+  `(domain, table)` may be falsely flagged. This is why the default mode
+  only warns; strict gating is an explicit opt-in.
+- `--lint` is incompatible with the apply/plan flags (`--plan`, `--nft`,
+  `--fast`, `--slow`, `--shell`, `--interactive`, `--flush`, `--noflush`,
+  `--full-reload`), with a non-default `--plan-format`, and with
+  `--def`/`--domain` (both eval-only, so they would silently do nothing under
+  an eval-free analysis); combining them is a clean error.
+
 ## Development
 
 The project is managed entirely with `uv` and orchestrated with `nox`:

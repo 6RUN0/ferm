@@ -11,6 +11,26 @@ For the history of the original Perl implementation, see
 
 ## [Unreleased]
 
+### Added
+
+- **Static analysis mode (`--lint`).** `ferm --lint` reads a single config
+  file and structurally parses it — no variable substitution, no module
+  loading, `@include` is not expanded — then reports two classes of
+  findings, one per line on stdout: `warning: unused definition: $foo` for
+  a declared `@def` never referenced, and `warning: jump to undefined
+  chain: BAR` for a `jump`/`goto` whose target chain is declared nowhere.
+  Findings are sorted, with all `unused definition` warnings printed before
+  all `jump to undefined chain` warnings. By default findings do not change
+  the exit code (`0`), so `--lint` is safe to run against someone else's
+  CI; `--lint-strict` escalates any finding to exit `2` for opt-in gating.
+  Exit `1` covers a file-read error, an internal bug, or a usage error (an
+  incompatible flag combination, or other than exactly one input file) —
+  `--lint` does not validate syntax (the structural parser is error-tolerant)
+  and
+  inherits the analyzers' known false positives/negatives (for example a
+  variable used only through string interpolation, or a chain declared
+  only in another domain/table).
+
 ## [0.1.0a6] - 2026-06-30
 
 ### Added

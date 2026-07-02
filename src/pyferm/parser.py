@@ -565,11 +565,11 @@ class Parser:
         """
         Build an eager, eval-free structural tree over a config string.
 
-        Test-facing entry point for the structural analyzers: it tokenizes the
-        config and structures BOTH @if branches, headers and blocks WITHOUT
-        evaluating conditions, substituting variables, loading modules or
-        resolving @include. Off the golden/parity path; see _StructuralParser
-        for the pinned limitations.
+        Entry point for the structural analyzers behind ``ferm --lint``: it
+        tokenizes the config and structures BOTH @if branches, headers and
+        blocks WITHOUT evaluating conditions, substituting variables, loading
+        modules or resolving @include. Off the golden/parity path (it never
+        emits rules); see _StructuralParser for the pinned limitations.
         """
         filename = "<parse_to_block>"
         script = Script(filename=filename, handle=io.StringIO(config))
