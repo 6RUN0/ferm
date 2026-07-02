@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from .parser import MAX_BLOCK_DEPTH
+from .parser import DEPRECATED_KEYWORDS, MAX_BLOCK_DEPTH
 from .tree import Block, NodeVisitor
 
 if TYPE_CHECKING:
@@ -397,6 +397,52 @@ def find_undefined_chain_jumps(root: Block) -> list[str]:
     return sorted({t for t in collector.jumps if t not in collector.declared})
 
 
+class _DeprecatedKeywordCollector(NodeVisitor):
+    """Collect DEPRECATED_KEYWORDS tokens from rule-position spans."""
+
+    def __init__(self) -> None:
+        """Start with an empty hit registry."""
+        self.hits: set[str] = set()
+
+    def _scan(self, span: Sequence[object]) -> None:
+        for tok in _str_tokens(span):
+            if tok in DEPRECATED_KEYWORDS:
+                self.hits.add(tok)
+
+    def visit_RuleNode(self, node: RuleNode) -> None:  # noqa: N802
+        """Scan a rule span (the position realgoto occupies)."""
+        self._scan(node.span)
+
+    def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
+        """Scan a @def span (a function body may hold rule keywords)."""
+        self._scan(node.span)
+
+
+def find_deprecated_keywords(root: Block) -> list[Finding]:
+    """
+    Report every deprecated keyword the config uses (info tier).
+
+    Coverage is exactly the keys of parser.DEPRECATED_KEYWORDS (today a
+    single entry, realgoto -> goto); the bare ``hook`` deprecation lives
+    inline in the parser outside the mapping and is not detected. The
+    replacement hint comes from the mapping value. One finding per
+    keyword, however many times it occurs. The scan is token-membership
+    over rule/def spans, not keyword-position dispatch, so a chain
+    literally NAMED after a deprecated keyword (``jump realgoto``)
+    false-fires -- a pinned false positive.
+    """
+    collector = _DeprecatedKeywordCollector()
+    _walk_all(root, collector)
+    return [
+        Finding(
+            Severity.INFO,
+            "deprecated-keyword",
+            f"deprecated keyword: {kw} (use {DEPRECATED_KEYWORDS[kw]})",
+        )
+        for kw in sorted(collector.hits)
+    ]
+
+
 class Severity(enum.IntEnum):
     """Finding importance; the IntEnum order is the output/gating order."""
 
@@ -453,6 +499,7 @@ ANALYZERS: Final[
 ] = (
     ("unused-definition", Severity.WARNING, _unused_definition_findings),
     ("undefined-jump", Severity.WARNING, _undefined_jump_findings),
+    ("deprecated-keyword", Severity.INFO, find_deprecated_keywords),
 )
 
 

@@ -15,6 +15,7 @@ from pyferm.analysis import (
     Severity,
     _ChainCollector,
     _walk_all,
+    find_deprecated_keywords,
     find_undefined_chain_jumps,
     find_unused_defs,
     run_analysis,
@@ -392,3 +393,40 @@ def test_subchain_names_populate_collector_registry() -> None:
     collector = _ChainCollector()
     _walk_all(_tree(cfg), collector)
     assert collector.subchains == {"SC"}
+
+
+def test_realgoto_reported_as_deprecated_with_hint() -> None:
+    cfg = "table filter chain INPUT { realgoto FOO; }\n"
+    assert find_deprecated_keywords(_tree(cfg)) == [
+        Finding(
+            Severity.INFO,
+            "deprecated-keyword",
+            "deprecated keyword: realgoto (use goto)",
+        )
+    ]
+
+
+def test_goto_is_not_deprecated() -> None:
+    cfg = "table filter chain INPUT { goto FOO; }\n"
+    assert find_deprecated_keywords(_tree(cfg)) == []
+
+
+def test_repeated_realgoto_reported_once() -> None:
+    cfg = (
+        "table filter chain INPUT { realgoto A; }\n"
+        "table filter chain OUTPUT { realgoto B; }\n"
+    )
+    assert len(find_deprecated_keywords(_tree(cfg))) == 1
+
+
+def test_chain_named_realgoto_is_pinned_false_positive() -> None:
+    # The scan is token-membership, not keyword-position dispatch: a
+    # chain literally NAMED realgoto false-fires via its jump-target
+    # token -- a documented false positive of this analyzer.
+    cfg = (
+        "table filter {\n"
+        "  chain realgoto { ACCEPT; }\n"
+        "  chain INPUT { jump realgoto; }\n"
+        "}\n"
+    )
+    assert len(find_deprecated_keywords(_tree(cfg))) == 1

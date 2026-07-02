@@ -349,3 +349,43 @@ def test_unused_function_prints_with_sigil(
     conf = _write(tmp_path, "@def &noop($a) = ACCEPT;\n")
     assert main(["--lint", str(conf)]) == 0
     assert capsys.readouterr().out == "warning: unused definition: &noop\n"
+
+
+def test_info_finding_prints_with_info_prefix(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """FOO is declared and reached via realgoto, so the deprecated info
+    line is the ONLY output -- pinned exactly."""
+    conf = _write(
+        tmp_path,
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { realgoto FOO; }\n"
+        "}\n",
+    )
+    assert main(["--lint", str(conf)]) == 0
+    out = capsys.readouterr().out
+    assert out == "info: deprecated keyword: realgoto (use goto)\n"
+
+
+def test_info_does_not_gate_under_bare_strict(tmp_path: Path) -> None:
+    """--lint-strict thresholds at warning; an info finding passes."""
+    conf = _write(
+        tmp_path,
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { realgoto FOO; }\n"
+        "}\n",
+    )
+    assert main(["--lint", "--lint-strict", str(conf)]) == 0
+
+
+def test_info_gates_under_fail_level_info(tmp_path: Path) -> None:
+    conf = _write(
+        tmp_path,
+        "table filter {\n"
+        "  chain FOO { ACCEPT; }\n"
+        "  chain INPUT { realgoto FOO; }\n"
+        "}\n",
+    )
+    assert main(["--lint", "--lint-fail-level=info", str(conf)]) == 2
