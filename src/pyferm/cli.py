@@ -37,7 +37,7 @@ import sys
 from typing import TYPE_CHECKING, Final, TextIO
 
 from pyferm import __version__, etckeeper
-from pyferm.analysis import find_undefined_chain_jumps, find_unused_defs
+from pyferm.analysis import Severity, run_analysis
 from pyferm.backend.iptables import (
     IptablesBackend,
     restore_domain,
@@ -114,6 +114,7 @@ Options:
      --def '$name=v'   Override a variable
      --lint            Static-analysis mode: report warnings, apply nothing
      --lint-strict     With --lint: exit non-zero if any warning is found
+     --lint-fail-level Set the --lint gating threshold (error|warning|info)
 
 """
 
@@ -183,6 +184,11 @@ def _build_parser() -> argparse.ArgumentParser:
     # Port-only: eval-free static analysis (see _run_lint).
     parser.add_argument("--lint", action="store_true")
     parser.add_argument("--lint-strict", action="store_true")
+    parser.add_argument(
+        "--lint-fail-level",
+        choices=("error", "warning", "info"),
+        default=None,
+    )
     parser.add_argument("files", nargs="*")
     return parser
 
@@ -209,6 +215,8 @@ def _resolve_options(args: argparse.Namespace) -> Options:
     # placeholder Options is returned; the lint path discards it.
     if args.lint_strict and not args.lint:
         raise FermError("ferm --lint-strict has no sense without --lint")
+    if args.lint_fail_level is not None and not args.lint:
+        raise FermError("ferm --lint-fail-level has no sense without --lint")
     if args.lint:
         # apply/plan modes: --lint applies and plans nothing.
         for flag, switch in (
@@ -678,7 +686,7 @@ def _escape_control_chars(name: str) -> str:
     return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
 
 
-def _run_lint(config_path: str, *, strict: bool) -> int:
+def _run_lint(config_path: str, *, fail_level: Severity | None) -> int:
     """
     Run the eval-free static analysis for ``ferm --lint`` (port-only).
 
@@ -697,11 +705,14 @@ def _run_lint(config_path: str, *, strict: bool) -> int:
     linting repository paths), so honouring the pipe here would be arbitrary
     command execution driven by a filename.
 
-    Findings print to stdout in a fixed, deterministic order: every
-    ``unused definition`` (already sorted by the analyser), then every
-    ``jump to undefined chain`` (likewise).  The default mode exits ``0`` even
-    with findings (warnings must not break another project's CI on a
-    heuristic); ``--lint-strict`` escalates to ``2`` for opt-in CI gating.
+    Findings print to stdout as ``<severity>: <message>`` lines in a
+    fixed, deterministic order (severity tier, then analyzer
+    registration order, then message; see analysis.run_analysis); the
+    whole line passes through _escape_control_chars.  Without a
+    ``fail_level`` the exit code stays ``0`` even with findings
+    (warnings must not break another project's CI on a heuristic); with
+    one, any finding at or above the threshold exits ``2`` for opt-in
+    CI gating.
     """
     if config_path.endswith("|"):
         raise FermError("ferm --lint cannot read from a pipe command")
@@ -716,26 +727,18 @@ def _run_lint(config_path: str, *, strict: bool) -> int:
 
     block = Parser.parse_to_block(config)
 
-    # Fixed order: the unused-definition block first, then the undefined-jump
-    # block; each analyser already returns a sorted list, so concatenation is
-    # the whole ordering.  Names from find_unused_defs already carry the
-    # leading "$", so it is not re-added here.  Control bytes are escaped: a
-    # quoted def/chain name may carry ESC/CR (latin-1 lets any byte through),
-    # which would otherwise inject ANSI/carriage-return sequences into a CI
-    # log line printed verbatim below.
-    findings = [
-        f"warning: unused definition: {_escape_control_chars(name)}"
-        for name in find_unused_defs(block)
-    ]
-    findings += [
-        f"warning: jump to undefined chain: {_escape_control_chars(name)}"
-        for name in find_undefined_chain_jumps(block)
-    ]
+    findings = run_analysis(block)
+    # The raw message is the sort key; escaping at print time is
+    # byte-equivalent (the substitution is position-independent) and a
+    # crafted name still cannot inject terminal-control bytes into CI
+    # logs.
+    for finding in findings:
+        line = f"{finding.severity.name.lower()}: {finding.message}"
+        sys.stdout.write(f"{_escape_control_chars(line)}\n")
 
-    for line in findings:
-        sys.stdout.write(f"{line}\n")
-
-    return 2 if (strict and findings) else 0
+    if fail_level is None:
+        return 0
+    return 2 if any(f.severity <= fail_level for f in findings) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -781,7 +784,15 @@ def _main(argv: list[str] | None = None) -> int:
     # Eval-free lint must dispatch before any eval/kernel/previous-ruleset
     # I/O -- unlike --plan, which runs post-eval inside _apply_config.
     if args.lint:
-        return _run_lint(args.files[0], strict=args.lint_strict)
+        if args.lint_fail_level is not None:
+            fail_level: Severity | None = Severity[
+                args.lint_fail_level.upper()
+            ]
+        elif args.lint_strict:
+            fail_level = Severity.WARNING
+        else:
+            fail_level = None
+        return _run_lint(args.files[0], fail_level=fail_level)
 
     lines_stream, restore_streams = _setup_streams(options)
     try:

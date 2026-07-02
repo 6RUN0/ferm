@@ -287,3 +287,56 @@ def test_lint_with_wrong_file_count_prints_usage_and_exits_one(
     ``args.files[0]``."""
     assert main(["--lint", *files]) == 1
     assert capsys.readouterr().out.startswith("Usage:")
+
+
+# --- --lint-fail-level: настраиваемый порог гейтинга -------------------------
+
+
+def test_fail_level_error_does_not_gate_warnings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A warning finding under ``--lint-fail-level=error`` stays exit 0."""
+    conf = _write(tmp_path, "@def $foo = 1;\n")
+    assert main(["--lint", "--lint-fail-level=error", str(conf)]) == 0
+    assert capsys.readouterr().out == "warning: unused definition: $foo\n"
+
+
+def test_fail_level_warning_gates_warnings(tmp_path: Path) -> None:
+    """``--lint-fail-level=warning`` is the bare ``--lint-strict``."""
+    conf = _write(tmp_path, "@def $foo = 1;\n")
+    assert main(["--lint", "--lint-fail-level=warning", str(conf)]) == 2
+
+
+def test_fail_level_info_gates_any_finding(tmp_path: Path) -> None:
+    """The lowest threshold gates a warning finding too."""
+    conf = _write(tmp_path, "@def $foo = 1;\n")
+    assert main(["--lint", "--lint-fail-level=info", str(conf)]) == 2
+
+
+def test_fail_level_wins_over_bare_strict(tmp_path: Path) -> None:
+    """Both flags together: the explicit level overrides the shorthand."""
+    conf = _write(tmp_path, "@def $foo = 1;\n")
+    argv = ["--lint", "--lint-strict", "--lint-fail-level=error", str(conf)]
+    assert main(argv) == 0
+
+
+def test_fail_level_without_lint_is_rejected() -> None:
+    """Same guard family as ``--lint-strict`` without ``--lint``."""
+    with pytest.raises(FermError, match="has no sense without --lint"):
+        _parse_and_resolve(["--lint-fail-level=warning", "f.ferm"])
+
+
+def test_invalid_fail_level_literal_dies_in_argparse(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Pinned, documented behaviour: a bogus level dies inside argparse
+    (SystemExit 2) BEFORE the FermError exit-1 contract -- the same
+    pre-existing pattern as ``--plan-format=bogus``. The stderr assert
+    distinguishes the real cause (invalid choice) from the vacuous
+    pre-implementation exit ("unrecognized arguments" is ALSO code 2)."""
+    with pytest.raises(SystemExit) as excinfo:
+        _build_parser().parse_args(
+            ["--lint", "--lint-fail-level=bogus", "f.ferm"]
+        )
+    assert excinfo.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
