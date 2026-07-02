@@ -41,6 +41,10 @@ if TYPE_CHECKING:
 
 _NAME_RE = re.compile(r"\w+")
 
+#: The oracle's double-quote interpolation form: "$" immediately
+#: followed by word chars. There is no ${name} form in ferm.
+_INTERPOLATION_RE = re.compile(r"\$(\w+)")
+
 
 def _index_of(span: Sequence[object], token: str) -> int | None:
     """Return the index of the first ``token`` in a span, or None if absent."""
@@ -54,17 +58,23 @@ def _iter_var_refs(span: Sequence[object]) -> Iterator[str]:
     """
     Yield the $-variable names ($name) mentioned in a raw token span.
 
-    The tokenizer lexes "$" as its own single-char token, so a variable
-    reference is ALWAYS the token pair ("$", name) -- never a glued "$name".
-    Line sentinels and other non-str tokens are skipped. A "$x" inside a
-    double-quoted token is a single quoted token, so it is NOT matched here
-    (the pinned interpolation limitation).
+    The tokenizer lexes "$" as its own single-char token, so a bare
+    variable reference is ALWAYS the token pair ("$", name) -- never a
+    glued "$name". A double-quoted token is additionally scanned for
+    the oracle's interpolation form ("prefix $x" mentions $x); a
+    single-quoted token stays literal (ferm never interpolates it) and
+    the ${name} spelling does not exist in ferm (the oracle passes it
+    through verbatim), so neither counts as a use. Line sentinels and
+    other non-str tokens are skipped.
     """
     for i, tok in enumerate(span):
         if tok == "$" and i + 1 < len(span):
             nxt = span[i + 1]
             if isinstance(nxt, str) and _NAME_RE.fullmatch(nxt):
                 yield "$" + nxt
+        elif isinstance(tok, str) and _is_quoted(tok) and tok[0] == '"':
+            for match in _INTERPOLATION_RE.finditer(_unquote(tok)):
+                yield "$" + match.group(1)
 
 
 class _DefCollector(NodeVisitor):
@@ -154,9 +164,7 @@ def find_unused_defs(root: Block) -> list[str]:
     Return declared @def names never mentioned in any leaf span.
 
     Consumes a Parser.parse_to_block tree. The contract is narrowed to
-    SYNTACTIC references; a name used only through string interpolation
-    ("prefix $x", one double-quoted token) yields a false unused -- a known
-    limitation pinned by a test. Function names (``@def &f``) are not tracked,
+    SYNTACTIC references. Function names (``@def &f``) are not tracked,
     so an unused function is never reported; a function parameter shares the
     global ``mentioned`` namespace, so a same-named unused global def can be
     masked (both pinned limitations of the literal-syntactic contract).

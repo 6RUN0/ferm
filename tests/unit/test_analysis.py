@@ -56,14 +56,36 @@ def test_def_used_only_inside_match_block_counts_as_used() -> None:
     assert "$x" not in find_unused_defs(_tree(cfg))
 
 
-def test_interpolation_is_known_limitation() -> None:
-    # $x only inside "prefix $x" (one double-quoted token) -> false unused,
-    # pinned as a known limitation (syntactic-references contract).
+def test_interpolation_in_double_quotes_counts_as_use() -> None:
+    # "$x" inside one double-quoted token is interpolated by ferm (the
+    # oracle regex is \$(\w+)), so it IS a use -- the former pinned
+    # false positive is closed by design in this slice.
     cfg = (
         "@def $x = 1;\n"
         'table filter chain OUTPUT { mod comment comment "$x" ACCEPT; }\n'
     )
-    assert "$x" in find_unused_defs(_tree(cfg))  # documents the blind spot
+    assert find_unused_defs(_tree(cfg)) == []
+
+
+def test_single_quoted_var_is_not_a_use() -> None:
+    # ferm never interpolates single quotes: '$x' stays literal, so the
+    # def remains unused (proves the quote KIND is checked, not just
+    # quotedness).
+    cfg = (
+        "@def $x = 1;\n"
+        "table filter chain OUTPUT { mod comment comment '$x' ACCEPT; }\n"
+    )
+    assert find_unused_defs(_tree(cfg)) == ["$x"]
+
+
+def test_curly_dollar_form_is_not_a_use() -> None:
+    # ferm has no ${name} interpolation (the oracle passes "${x}"
+    # through verbatim), so it must NOT count as a use.
+    cfg = (
+        "@def $x = 1;\n"
+        'table filter chain OUTPUT { mod comment comment "${x}" ACCEPT; }\n'
+    )
+    assert find_unused_defs(_tree(cfg)) == ["$x"]
 
 
 def test_dangling_jump_detected() -> None:
