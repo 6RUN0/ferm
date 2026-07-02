@@ -405,3 +405,42 @@ def test_error_finding_still_exits_zero_by_default(tmp_path: Path) -> None:
     """No gating flag -> exit 0 even for the error tier."""
     conf = _write(tmp_path, "table filter chain FOO { jump FOO; }\n")
     assert main(["--lint", str(conf)]) == 0
+
+
+def test_cross_scope_duplicates_print_one_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Messages carry no positions, so two REAL same-name duplicates in
+    two different scopes collapse into one printed line -- the accepted,
+    documented dedup collision."""
+    conf = _write(
+        tmp_path,
+        "table filter {\n"
+        "  chain A { @def $x = 1; @def $x = 2; ACCEPT; }\n"
+        "  chain B { @def $x = 3; @def $x = 4; ACCEPT; }\n"
+        "}\n",
+    )
+    assert main(["--lint", str(conf)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines.count("warning: duplicate definition: $x") == 1
+
+
+def test_severity_order_error_then_warning_then_info(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One finding of each tier on one config: the output order is the
+    severity order, regardless of source order."""
+    conf = _write(
+        tmp_path,
+        "@def $unused = 1;\n"
+        "table filter {\n"
+        "  chain A { jump B; }\n"
+        "  chain B { realgoto A; }\n"
+        "}\n",
+    )
+    assert main(["--lint", str(conf)]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "error: jump cycle: A -> B -> A",
+        "warning: unused definition: $unused",
+        "info: deprecated keyword: realgoto (use goto)",
+    ]

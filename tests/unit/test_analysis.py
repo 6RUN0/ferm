@@ -16,6 +16,7 @@ from pyferm.analysis import (
     _ChainCollector,
     _walk_all,
     find_deprecated_keywords,
+    find_duplicate_definitions,
     find_jump_cycles,
     find_undefined_chain_jumps,
     find_unreachable_chains,
@@ -613,3 +614,52 @@ def test_uncalled_nested_def_contributes_phantom_edge() -> None:
     # documented over-reporting class (with cross-@if and cross-table).
     cfg = "table filter chain B { @def &f() = jump B; ACCEPT; }\n"
     assert _cycles(cfg) == ["jump cycle: B -> B"]
+
+
+def _duplicates(cfg: str) -> list[str]:
+    return [f.message for f in find_duplicate_definitions(_tree(cfg))]
+
+
+def test_same_scope_duplicate_def_reported() -> None:
+    # ferm semantics (oracle-verified): a same-frame re-@def silently
+    # last-wins -- legal but pointless, hence a style warning.
+    cfg = "@def $x = 1;\n@def $x = 2;\n"
+    assert _duplicates(cfg) == ["duplicate definition: $x"]
+
+
+def test_nested_redefinition_is_shadowing_not_duplicate() -> None:
+    # Every '{' pushes a fresh oracle stack frame; the inner value does
+    # not survive the '}' -- genuine shadowing, never reported.
+    cfg = (
+        "@def $x = 1;\n"
+        "table filter chain INPUT { @def $x = 2; saddr $x ACCEPT; }\n"
+    )
+    assert _duplicates(cfg) == []
+
+
+def test_braced_if_redefinition_is_shadowing() -> None:
+    # A braced @if branch is a real Block (frame) too.
+    cfg = "@def $x = 1;\n@if $c { @def $x = 2; }\n"
+    assert _duplicates(cfg) == []
+
+
+def test_braceless_if_guarded_redef_is_pinned_blind_spot() -> None:
+    # The structural parser swallows a braceless guarded statement into
+    # the IfNode condition span (then_body stays empty), so this @def
+    # is invisible to the analyzer -- a documented blind spot.
+    cfg = "@def $x = 1;\n@if $c @def $x = 2;\n"
+    assert _duplicates(cfg) == []
+
+
+def test_single_definition_is_clean() -> None:
+    assert _duplicates("@def $x = 1;\n") == []
+
+
+def test_triple_definition_reported_once() -> None:
+    cfg = "@def $x = 1;\n@def $x = 2;\n@def $x = 3;\n"
+    assert _duplicates(cfg) == ["duplicate definition: $x"]
+
+
+def test_duplicate_function_def_reported_with_sigil() -> None:
+    cfg = "@def &f($a) = saddr $a ACCEPT;\n@def &f($a) = daddr $a ACCEPT;\n"
+    assert _duplicates(cfg) == ["duplicate definition: &f"]

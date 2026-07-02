@@ -647,6 +647,66 @@ def find_jump_cycles(root: Block) -> list[Finding]:
     ]
 
 
+def _declared_def_name(span: Sequence[object]) -> str | None:
+    """Return the name a @def span declares ($var or &function)."""
+    eq_index = _index_of(span, "=")
+    if "&" in span[:eq_index]:
+        return _function_def_name(span)
+    return next(_iter_var_refs(span), None)
+
+
+def _collect_duplicate_defs(
+    block: Block, duplicates: set[str], depth: int = 0
+) -> None:
+    """
+    Record @def names declared twice within ONE immediate parent Block.
+
+    Each Block gets its own ``seen`` registry, so a redefinition in a
+    NESTED block is genuine shadowing (a fresh oracle stack frame per
+    "{"; the value does not survive the "}") and never counts. A
+    braceless ``@if $c @def $x = 2;`` is swallowed into the IfNode
+    condition span by the structural parser (then_body stays empty), so
+    such a guarded def is invisible here -- a documented blind spot.
+    """
+    if depth > MAX_BLOCK_DEPTH:
+        return
+    seen: set[str] = set()
+    for node in block.statements:
+        if isinstance(node, DefNode):
+            name = _declared_def_name(node.span)
+            if name is not None:
+                if name in seen:
+                    duplicates.add(name)
+                seen.add(name)
+        for child in _child_blocks(node):
+            _collect_duplicate_defs(child, duplicates, depth + 1)
+
+
+def find_duplicate_definitions(root: Block) -> list[Finding]:
+    """
+    Report a @def name declared twice in one scope (warning tier).
+
+    "One scope" is one immediate parent Block of the parse_to_block
+    tree. In ferm a same-frame re-@def silently last-wins (legal but
+    pointless), so this is a style warning, not a language error. One
+    finding per name however many repeats or scopes: messages carry no
+    positions, so duplicates of one name in two different scopes
+    collapse into one line (documented trade-off). A CLI ``--def``
+    override is a separate axis (it wins over any script @def) and is
+    not considered here.
+    """
+    duplicates: set[str] = set()
+    _collect_duplicate_defs(root, duplicates)
+    return [
+        Finding(
+            Severity.WARNING,
+            "duplicate-definition",
+            f"duplicate definition: {name}",
+        )
+        for name in sorted(duplicates)
+    ]
+
+
 #: Ordered analyzer registry: (code, severity, callable). Registration
 #: order is the secondary output sort key (after severity), so the two
 #: legacy analyzers keep their relative block order from the first slice.
@@ -657,6 +717,7 @@ ANALYZERS: Final[
     ("unused-definition", Severity.WARNING, _unused_definition_findings),
     ("undefined-jump", Severity.WARNING, _undefined_jump_findings),
     ("unreachable-chain", Severity.WARNING, find_unreachable_chains),
+    ("duplicate-definition", Severity.WARNING, find_duplicate_definitions),
     ("deprecated-keyword", Severity.INFO, find_deprecated_keywords),
 )
 
