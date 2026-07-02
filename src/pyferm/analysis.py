@@ -25,20 +25,19 @@ from typing import TYPE_CHECKING, Final
 
 from .parser import DEPRECATED_KEYWORDS, MAX_BLOCK_DEPTH
 from .rules import is_netfilter_builtin_chain
-from .tree import Block, NodeVisitor
+from .tree import (
+    Block,
+    DefNode,
+    HeaderNode,
+    NodeVisitor,
+    RuleNode,
+    SubchainNode,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
-    from .tree import (
-        DefNode,
-        HeaderNode,
-        IfNode,
-        Node,
-        RuleNode,
-        SetNode,
-        SubchainNode,
-    )
+    from .tree import IfNode, Node, SetNode
 
 _NAME_RE = re.compile(r"\w+")
 
@@ -521,12 +520,140 @@ def find_unreachable_chains(root: Block) -> list[Finding]:
     ]
 
 
+def _collect_edges(
+    block: Block,
+    sources: tuple[str, ...],
+    edges: set[tuple[str, str]],
+    depth: int = 0,
+) -> None:
+    """
+    Collect directed jump edges attributed to the enclosing chain(s).
+
+    ``sources`` is the chain-name context: the names the nearest
+    enclosing chain header declares (several for a ``chain (A B)``
+    array). Explicit jump/goto/realgoto targets and implicit @subchain
+    jumps in rule/def/subchain spans become (source, target) edges;
+    statements outside any chain contribute none (a TOP-LEVEL @def body
+    therefore adds no edges), while a @def nested inside a chain block
+    is attributed to that chain even if the function is never called --
+    a lexical, not call-graph, attribution. An @subchain BODY is
+    attributed to the OUTER chain (the structural tree keeps the body a
+    sibling block) -- a reachability-preserving approximation: it can
+    SHORTEN a reported cycle's printed path (the subchain hop is
+    elided) but never fabricates an edge to an unreachable target.
+    """
+    if depth > MAX_BLOCK_DEPTH:
+        return
+    for node in block.statements:
+        node_sources = sources
+        if isinstance(node, HeaderNode):
+            declared = tuple(
+                _declared_chains((node.keyword, *node.value_span))
+            )
+            if declared:
+                node_sources = declared
+        if isinstance(node, (RuleNode, SubchainNode, DefNode)):
+            targets = list(_jump_targets(node.span))
+            targets.extend(_subchain_names(node.span))
+            edges.update(
+                (source, target)
+                for source in node_sources
+                for target in targets
+            )
+        for child in _child_blocks(node):
+            _collect_edges(child, node_sources, edges, depth + 1)
+
+
+def _canonical_cycle(cycle: tuple[str, ...]) -> tuple[str, ...]:
+    """
+    Rotate a cycle to start at its lexicographically-least node.
+
+    So the same loop discovered from different DFS starts dedups to one.
+    """
+    pivot = cycle.index(min(cycle))
+    return cycle[pivot:] + cycle[:pivot]
+
+
+def _find_cycles(
+    adjacency: dict[str, tuple[str, ...]],
+) -> set[tuple[str, ...]]:
+    """
+    Find cycles in the jump graph with an ITERATIVE depth-first search.
+
+    Iterative on purpose: the recursion axis is the LENGTH of a jump
+    path (the number of chains), which MAX_BLOCK_DEPTH does not bound,
+    and --lint is advertised for untrusted input. One DFS per start
+    node with a per-start visited set keeps the walk polynomial --
+    O(V*(V+E)), i.e. quadratic on a linear jump chain (about two
+    seconds at 3000 chains), an accepted bound for config-file input;
+    overlapping cycles sharing visited nodes may be summarized rather
+    than enumerated exhaustively -- at least one cycle per loop is
+    always found.
+    """
+    cycles: set[tuple[str, ...]] = set()
+    for start in adjacency:
+        path = [start]
+        on_path = {start}
+        visited = {start}
+        pending = [iter(adjacency.get(start, ()))]
+        while pending:
+            successor = next(pending[-1], None)
+            if successor is None:
+                pending.pop()
+                on_path.discard(path.pop())
+                continue
+            if successor in on_path:
+                cycles.add(
+                    _canonical_cycle(tuple(path[path.index(successor) :]))
+                )
+                continue
+            if successor in visited:
+                continue
+            visited.add(successor)
+            path.append(successor)
+            on_path.add(successor)
+            pending.append(iter(adjacency.get(successor, ())))
+    return cycles
+
+
+def find_jump_cycles(root: Block) -> list[Finding]:
+    """
+    Report each cycle in the jump/goto/realgoto graph (error tier).
+
+    A real chain loop is rejected by the kernel at load time, hence the
+    error tier. KNOWN FALSE-POSITIVE CLASSES (test-pinned): the graph
+    flattens (domain, table) namespaces and walks BOTH @if branches, so
+    an A->B edge in one table or branch plus a B->A edge in another
+    reports a cycle no single generated ruleset contains; a @def nested
+    in a chain block contributes its body's edges to that chain even
+    when the function is never called. The conservatism direction FLIPS
+    here versus the other analyzers: extra edges over-report instead of
+    under-reporting -- with ONE pinned false-negative gap: a loop
+    routed through a function CALL is invisible (a top-level @def body
+    has no chain context and a call site is not a jump edge).
+    """
+    edges: set[tuple[str, str]] = set()
+    _collect_edges(root, (), edges)
+    adjacency: dict[str, tuple[str, ...]] = {}
+    for source, target in sorted(edges):
+        adjacency[source] = (*adjacency.get(source, ()), target)
+    return [
+        Finding(
+            Severity.ERROR,
+            "jump-cycle",
+            "jump cycle: " + " -> ".join((*cycle, cycle[0])),
+        )
+        for cycle in sorted(_find_cycles(adjacency))
+    ]
+
+
 #: Ordered analyzer registry: (code, severity, callable). Registration
 #: order is the secondary output sort key (after severity), so the two
 #: legacy analyzers keep their relative block order from the first slice.
 ANALYZERS: Final[
     tuple[tuple[str, Severity, Callable[[Block], list[Finding]]], ...]
 ] = (
+    ("jump-cycle", Severity.ERROR, find_jump_cycles),
     ("unused-definition", Severity.WARNING, _unused_definition_findings),
     ("undefined-jump", Severity.WARNING, _undefined_jump_findings),
     ("unreachable-chain", Severity.WARNING, find_unreachable_chains),

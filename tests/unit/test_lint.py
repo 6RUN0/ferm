@@ -389,3 +389,19 @@ def test_info_gates_under_fail_level_info(tmp_path: Path) -> None:
         "}\n",
     )
     assert main(["--lint", "--lint-fail-level=info", str(conf)]) == 2
+
+
+def test_error_finding_prints_error_prefix_and_gates_on_error_level(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A self-loop is the minimal error finding: FOO is declared and
+    self-reached, so the cycle line is the only output."""
+    conf = _write(tmp_path, "table filter chain FOO { jump FOO; }\n")
+    assert main(["--lint", "--lint-fail-level=error", str(conf)]) == 2
+    assert capsys.readouterr().out == "error: jump cycle: FOO -> FOO\n"
+
+
+def test_error_finding_still_exits_zero_by_default(tmp_path: Path) -> None:
+    """No gating flag -> exit 0 even for the error tier."""
+    conf = _write(tmp_path, "table filter chain FOO { jump FOO; }\n")
+    assert main(["--lint", str(conf)]) == 0

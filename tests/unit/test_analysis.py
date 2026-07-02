@@ -16,6 +16,7 @@ from pyferm.analysis import (
     _ChainCollector,
     _walk_all,
     find_deprecated_keywords,
+    find_jump_cycles,
     find_undefined_chain_jumps,
     find_unreachable_chains,
     find_unused_defs,
@@ -511,3 +512,104 @@ def test_chain_reached_only_via_var_jump_is_pinned_false_positive() -> None:
         "}\n"
     )
     assert _unreachable(cfg) == ["unreachable chain: FOO"]
+
+
+def _cycles(cfg: str) -> list[str]:
+    return [f.message for f in find_jump_cycles(_tree(cfg))]
+
+
+def test_self_loop_reported() -> None:
+    cfg = "table filter chain FOO { jump FOO; }\n"
+    assert _cycles(cfg) == ["jump cycle: FOO -> FOO"]
+
+
+def test_two_cycle_reported_once_with_canonical_start() -> None:
+    # Declared B-first so discovery order differs from the canonical
+    # rotation; the single finding must still start at A.
+    cfg = "table filter {\n  chain B { jump A; }\n  chain A { jump B; }\n}\n"
+    assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
+
+
+def test_three_cycle_reported_once() -> None:
+    cfg = (
+        "table filter {\n"
+        "  chain A { jump B; }\n"
+        "  chain B { jump C; }\n"
+        "  chain C { jump A; }\n"
+        "}\n"
+    )
+    assert _cycles(cfg) == ["jump cycle: A -> B -> C -> A"]
+
+
+def test_dag_diamond_is_clean() -> None:
+    # A->B, A->C, B->D, C->D: revisiting D via two paths is NOT a cycle.
+    cfg = (
+        "table filter {\n"
+        "  chain A { jump B; jump C; }\n"
+        "  chain B { jump D; }\n"
+        "  chain C { jump D; }\n"
+        "  chain D { ACCEPT; }\n"
+        "}\n"
+    )
+    assert _cycles(cfg) == []
+
+
+def test_goto_and_realgoto_edges_participate() -> None:
+    cfg = (
+        "table filter {\n  chain A { goto B; }\n  chain B { realgoto A; }\n}\n"
+    )
+    assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
+
+
+def test_long_linear_chain_does_not_recurse() -> None:
+    # The DFS axis is the NUMBER of chains, which MAX_BLOCK_DEPTH does
+    # not bound; the iterative search must survive a path far past the
+    # interpreter's recursion limit.
+    n = 3000
+    body = "\n".join(
+        f"  chain C{i:04d} {{ jump C{i + 1:04d}; }}" for i in range(n)
+    )
+    cfg = f"table filter {{\n{body}\n  chain C{n:04d} {{ ACCEPT; }}\n}}\n"
+    assert find_jump_cycles(_tree(cfg)) == []
+
+
+def test_cross_branch_if_cycle_is_pinned_false_positive() -> None:
+    # Both @if branches feed ONE graph: A->B (then) plus B->A (else) is
+    # reported although no single generated ruleset contains both --
+    # the documented phantom-cycle class.
+    cfg = (
+        "@if $c {\n"
+        "  table filter chain A { jump B; }\n"
+        "} @else {\n"
+        "  table filter chain B { jump A; }\n"
+        "}\n"
+    )
+    assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
+
+
+def test_cross_table_cycle_is_pinned_false_positive() -> None:
+    # The chain namespace flattens (domain, table): filter's A->B plus
+    # nat's B->A is reported as one cycle -- same documented class.
+    cfg = (
+        "table filter { chain A { jump B; } chain B { ACCEPT; } }\n"
+        "table nat { chain B { jump A; } chain A { ACCEPT; } }\n"
+    )
+    assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
+
+
+def test_cycle_via_function_call_is_pinned_false_negative() -> None:
+    # A real runtime loop routed through a function CALL is invisible:
+    # a top-level @def body has no chain context (empty edge sources)
+    # and a call site (&f()) is not a jump token. The error tier
+    # under-reports here -- the one safe-direction gap of this analyzer.
+    cfg = "@def &f() = jump A;\ntable filter chain A { &f(); }\n"
+    assert _cycles(cfg) == []
+
+
+def test_uncalled_nested_def_contributes_phantom_edge() -> None:
+    # The dual of the gap above: a @def nested in a chain block is
+    # attributed to that chain even when the function is NEVER called,
+    # so its body's jump manufactures a phantom edge -- the third
+    # documented over-reporting class (with cross-@if and cross-table).
+    cfg = "table filter chain B { @def &f() = jump B; ACCEPT; }\n"
+    assert _cycles(cfg) == ["jump cycle: B -> B"]
