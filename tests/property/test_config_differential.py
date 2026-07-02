@@ -49,7 +49,14 @@ from tests.corpus.canon import canonicalize
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+_repo_root = Path(__file__).resolve().parents[2]
+# Under a mutmut sweep this module is imported (via differential_cli) by the
+# copy in <repo>/mutants/tests, so parents[2] is <repo>/mutants, which has no
+# reference/ corpus (mutmut copies only src + tests).  Fall back to the real
+# repo root one level up so the Perl oracle stays reachable.
+if not (_repo_root / "reference").is_dir() and _repo_root.name == "mutants":
+    _repo_root = _repo_root.parent
+REPO_ROOT = _repo_root
 _ORACLE = ("perl", str(REPO_ROOT / "reference" / "src" / "ferm"))
 _ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
