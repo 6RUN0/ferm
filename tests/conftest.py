@@ -17,7 +17,10 @@ from pathlib import Path
 import pytest
 from hypothesis import settings
 
-_UNDER_MUTMUT = "mutants" in Path(__file__).resolve().parts
+# Match only the sweep's copy root (<repo>/mutants/tests/conftest.py), not any
+# ancestor directory that merely happens to be named "mutants" -- a checkout
+# under such a path must keep the stock recursion limit.
+_UNDER_MUTMUT = Path(__file__).resolve().parents[1].name == "mutants"
 
 # Under a mutmut sweep the suite runs from the <repo>/mutants copy, where the
 # trampoline wraps every call in extra frames.  Legal deep-nesting inputs that
