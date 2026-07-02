@@ -66,3 +66,32 @@ def test_untaken_branch_is_structured_without_eval() -> None:
     assert isinstance(then_body, Block)
     # non-empty: the untaken body is present
     assert then_body.statements
+
+
+def test_long_else_if_chain_does_not_recursion_error() -> None:
+    # @else @if used to recurse directly, bypassing the depth guard
+    # parse_block enforces for ordinary nesting -- a long else-if chain blew
+    # the Python recursion limit instead of being handled like any other
+    # input.
+    link_count = 2000
+    cfg = "@if 1 {} @else " * link_count + "{}\n"
+
+    root = _block(cfg)  # must not raise RecursionError
+
+    node = root.statements[0]
+    assert isinstance(node, IfNode)
+    seen = 0
+    while True:
+        seen += 1
+        else_body = node.else_body
+        assert isinstance(else_body, Block)
+        if len(else_body.statements) == 1 and isinstance(
+            else_body.statements[0], IfNode
+        ):
+            node = else_body.statements[0]
+            continue
+        # the final plain @else block: the chain is fully represented, not
+        # truncated by an early depth cutoff.
+        assert else_body.statements == ()
+        break
+    assert seen == link_count

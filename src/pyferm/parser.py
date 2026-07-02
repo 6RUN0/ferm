@@ -516,24 +516,38 @@ class _StructuralParser:
         return HeaderNode(pos, keyword, value_span, None)
 
     def _parse_if(self, pos: SourcePosition) -> IfNode:
+        # An `@else @if` chain is parsed iteratively rather than by
+        # recursing into this method: a long chain (thousands of links) is
+        # ordinary input on this error-tolerant path and must not risk a
+        # Python RecursionError the way unbounded nesting would.
         tokens = self._tokens
-        self._i += 1  # consume '@if'
-        cond_start = self._i
-        self._scan_header_value()  # stop before the top-level '{'
-        cond_span = tuple(tokens[cond_start : self._i])
-        then_body = self._parse_branch_block(pos)
-        else_body: Block | None = None
-        if self._peek() == "@else":
+        links: list[tuple[SourcePosition, tuple[Token, ...], Block]] = []
+        final_else: Block | None = None
+        current_pos = pos
+        while True:
+            self._i += 1  # consume '@if'
+            cond_start = self._i
+            self._scan_header_value()  # stop before the top-level '{'
+            cond_span = tuple(tokens[cond_start : self._i])
+            then_body = self._parse_branch_block(current_pos)
+            links.append((current_pos, cond_span, then_body))
+            if self._peek() != "@else":
+                break
             self._i += 1  # consume '@else'
-            if self._peek() == "@if":
-                inner_pos = self._pos()
-                else_body = Block(
-                    source_pos=inner_pos,
-                    statements=(self._parse_if(inner_pos),),
-                )
-            else:
-                else_body = self._parse_branch_block(pos)
-        return IfNode(pos, cond_span, then_body, else_body)
+            if self._peek() != "@if":
+                final_else = self._parse_branch_block(current_pos)
+                break
+            current_pos = self._pos()
+        node: IfNode | None = None
+        for link_pos, link_cond, link_then in reversed(links):
+            else_body = (
+                final_else
+                if node is None
+                else Block(source_pos=node.source_pos, statements=(node,))
+            )
+            node = IfNode(link_pos, link_cond, link_then, else_body)
+        assert node is not None
+        return node
 
     def _parse_branch_block(self, pos: SourcePosition) -> Block:
         """Parse a ``{ ... }`` branch block, or empty Block if malformed."""
