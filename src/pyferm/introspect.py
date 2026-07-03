@@ -442,3 +442,50 @@ def describe(name: str) -> str:
     if not blocks:
         raise FermError(f"ferm --describe: unknown name '{name}'")
     return "\n\n".join(blocks) + "\n"
+
+
+def _fold_columns(names: list[str], indent: int) -> list[str]:
+    """Row-major column fold: column = longest name + 2, cap MAX_WIDTH."""
+    if not names:  # e.g. arp/eb match families: only the implicit "" module
+        return []
+    column = max(len(name) for name in names) + 2
+    count = max(1, (MAX_WIDTH - indent) // column)
+    pad = " " * indent
+    return [
+        (
+            pad + "".join(name.ljust(column) for name in names[i : i + count])
+        ).rstrip()
+        for i in range(0, len(names), count)
+    ]
+
+
+def list_modules() -> str:
+    """Render the full ``--list-modules`` catalogue (deterministic)."""
+    lines: list[str] = []
+    for kind, registry in _REGISTRIES:
+        for family in _FAMILY_ORDER:
+            modules = registry.get(family)
+            if not modules:
+                continue
+            names = sorted(name for name in modules if name)
+            lines.append(
+                f"{_KIND_LABELS[kind]} modules ({_FAMILY_LABELS[family]}):"
+            )
+            lines.extend(_fold_columns(names, 2))
+            implicit = modules.get("") if kind == "match" else None
+            if implicit is not None:
+                lines.append("  implicit base options:")
+                canonical = sorted(
+                    key
+                    for key, keyword in implicit.keywords.items()
+                    if key == keyword.name
+                )
+                lines.extend(_fold_columns(canonical, 4))
+            lines.append("")
+    lines.append("built-in keywords:")
+    lines.extend(_fold_columns(sorted(BUILTINS), 2))
+    lines.append("")
+    lines.append(
+        "Use --describe NAME for details on a module, option or keyword."
+    )
+    return "\n".join(lines) + "\n"

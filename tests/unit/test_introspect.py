@@ -130,3 +130,52 @@ def test_describe_option_fallback_alias() -> None:
 def test_describe_unknown_raises(name: str) -> None:
     with pytest.raises(FermError, match="unknown name"):
         describe(name)
+
+
+def test_list_modules_sections_and_width() -> None:
+    from pyferm.introspect import MAX_WIDTH, list_modules
+
+    text = list_modules()
+    for header in (
+        "protocol modules (ip/ip6):",
+        "protocol modules (eb):",
+        "match modules (ip/ip6):",
+        "match modules (arp):",
+        "match modules (eb):",
+        "target modules (ip/ip6):",
+        "target modules (eb):",
+        "built-in keywords:",
+    ):
+        assert header in text, header
+    assert "match module ''" not in text
+    assert text.count("implicit base options:") == 3  # ip, arp, eb
+    assert text.rstrip().endswith(
+        "Use --describe NAME for details on a module, option or keyword."
+    )
+    for line in text.splitlines():
+        assert len(line) <= MAX_WIDTH, line
+
+
+def test_list_modules_first_section_golden() -> None:
+    from pyferm.introspect import list_modules
+
+    text = list_modules()
+    assert text.startswith(
+        "protocol modules (ip/ip6):\n"
+        "  dccp  icmp  mh    sctp  tcp   udp\n"
+        "\n"
+        "protocol modules (eb):\n"
+        "  802_1Q  ARP     IPv4    IPv6    RARP\n"
+    )
+
+
+def test_describe_connlimit_golden() -> None:
+    assert describe("connlimit") == (
+        "match module 'connlimit' (ip/ip6):\n"
+        "  connlimit-upto   <value>        negatable (! before keyword)\n"
+        "  connlimit-above  <value>        negatable (! before keyword)\n"
+        "  connlimit-mask   <value>\n"
+        "  connlimit-saddr  (no argument)\n"
+        "  connlimit-daddr  (no argument)\n"
+        "  see iptables-extensions(8) and ferm(1)\n"
+    )
