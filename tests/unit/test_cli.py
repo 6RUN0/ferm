@@ -412,6 +412,70 @@ def test_version_prints_perl_banner(
     )
 
 
+def test_list_modules_exits_zero_without_file(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--list-modules"]) == 0
+    out = capsys.readouterr().out
+    assert "protocol modules (ip/ip6):" in out
+
+
+def test_describe_unknown_name_exits_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--describe", "no-such-xyzzy"]) == 1
+    assert "unknown name" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--list-modules", "--describe", "tcp"],
+        ["--list-modules", "--lint"],
+        ["--describe", "tcp", "--noexec"],
+        ["--describe", "tcp", "--lines"],
+        ["--describe", "tcp", "--remote"],
+        ["--describe", "tcp", "--def", "$x=1"],
+        ["--describe", "tcp", "--domain", "ip"],
+        ["--describe", "tcp", "--slow"],
+    ],
+)
+def test_introspection_rejects_other_switches(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(argv) == 1
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_introspection_rejects_input_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "f.ferm"
+    conf.write_text("")
+    assert main(["--list-modules", str(conf)]) == 1
+    assert "takes no input file" in capsys.readouterr().err
+
+
+def test_help_wins_over_introspection(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--help", "--list-modules"]) == 0
+    assert "Usage:" in capsys.readouterr().out
+
+
+def test_rollback_wins_over_introspection(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The rollback subcommand is matched before argparse, so it never
+    # reaches introspection dispatch; its own subparser has no
+    # --list-modules, so argparse rejects it as an unrecognized
+    # argument and exits 2 -- it must not print the module catalogue.
+    with pytest.raises(SystemExit) as excinfo:
+        main(["rollback", "--list-modules"])
+    assert excinfo.value.code != 0
+    assert "protocol modules" not in capsys.readouterr().out
+
+
 def test_rollback_all_restores_enabled_domains_and_exits(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

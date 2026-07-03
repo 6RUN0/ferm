@@ -48,6 +48,7 @@ from pyferm.backend.nft import TOOL_NFT, NftBackend, nft_family
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
+from pyferm.introspect import describe, list_modules
 from pyferm.parser import Parser
 from pyferm.plan import (
     Plan,
@@ -115,6 +116,8 @@ Options:
      --lint            Static-analysis mode: report warnings, apply nothing
      --lint-strict     With --lint: exit non-zero if any warning is found
      --lint-fail-level Set the --lint gating threshold (error|warning|info)
+     --list-modules    List supported netfilter modules and keywords
+     --describe NAME   Show the options of one module, option or keyword
 
 """
 
@@ -189,6 +192,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("error", "warning", "info"),
         default=None,
     )
+    # Port-only: registry/keyword introspection (see _run_introspection).
+    parser.add_argument("--list-modules", action="store_true")
+    parser.add_argument("--describe", default=None)
     parser.add_argument("files", nargs="*")
     return parser
 
@@ -741,6 +747,58 @@ def _run_lint(config_path: str, *, fail_level: Severity | None) -> int:
     return 2 if any(f.severity <= fail_level for f in findings) else 0
 
 
+#: Namespace attrs the introspection guard must not reject: its own two
+#: flags, the earlier-dispatched help/version, and files (own guard).
+_INTROSPECTION_EXEMPT: Final = frozenset(
+    {"list_modules", "describe", "help", "version", "files"}
+)
+
+#: dest -> user-facing flag, where the mechanical "--" + dest.replace()
+#: derivation would lie (--remote/--test share dest="test").
+_INTROSPECTION_FLAG_NAMES: Final = {
+    "defs": "--def",
+    "test": "--test/--remote",
+}
+
+
+def _run_introspection(args: argparse.Namespace) -> int:
+    """
+    Run ``--list-modules`` / ``--describe`` (port-only, eval-free).
+
+    Guard order is contractual: mode-XOR, then the no-input-file guard,
+    then the default-Namespace diff -- the diff cannot see --describe
+    (exempt) and would mislabel a stray input file, so the specific
+    guards must fire first.  The diff (not a hand-kept flag list) is
+    what keeps future flags auto-rejected instead of silently ignored.
+    """
+    mode = "--list-modules" if args.list_modules else "--describe"
+    if args.list_modules and args.describe is not None:
+        raise FermError(
+            "ferm --list-modules cannot be combined with --describe"
+        )
+    if args.files:
+        raise FermError(f"ferm {mode} takes no input file")
+    defaults = vars(_build_parser().parse_args([]))
+    for attr, default in defaults.items():
+        if attr in _INTROSPECTION_EXEMPT:
+            continue
+        if getattr(args, attr) != default:
+            flag = _INTROSPECTION_FLAG_NAMES.get(
+                attr, "--" + attr.replace("_", "-")
+            )
+            raise FermError(f"ferm {mode} cannot be combined with {flag}")
+    if args.list_modules:
+        text = list_modules()
+    else:
+        # _main only calls _run_introspection when list_modules or describe
+        # is set, and the mode-XOR check above already ruled out
+        # list_modules here, so describe is not None.
+        assert args.describe is not None
+        text = describe(args.describe)
+    sys.stdout.write(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the ferm CLI (Perl's top-level program, ``:620-819``)."""
     # before any write: argparse renders usage/errors through these streams
@@ -774,6 +832,11 @@ def _main(argv: list[str] | None = None) -> int:
     if args.version:
         printversion()
         return 0
+
+    # Introspection is a terminal read-only mode: dispatch before
+    # _resolve_options so no apply-path validation (tty, timeout) runs.
+    if args.list_modules or args.describe is not None:
+        return _run_introspection(args)
 
     options = _resolve_options(args)
 
