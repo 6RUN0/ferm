@@ -484,6 +484,29 @@ golden-guarded simplifications, a richer linter / `--check`,
 `--list-modules` / `--describe`, and visualisation. Cheap seeds were
 pulled into Phase 1.
 
+Status: the AST refactor, the linter (`--lint`, `--lint-strict`,
+`--lint-fail-level`; six analyzers) and the introspection modes
+(`--list-modules`, `--describe`) shipped. Remaining: visualisation and
+the golden-guarded simplification pass.
+
+Deferred debts, recorded when the lint and introspection slices were
+scoped (YAGNI at the time, still on the table):
+
+- **Lint:** stable diagnostic codes (`FERM-L001`-style) with line
+  numbers — needs source positions carried on `parse_to_block` nodes;
+  machine-readable findings (`--format=json`); chain names scoped per
+  `(domain, table)` instead of the current flat namespace; transitive
+  liveness for `@def &f` functions (a function called only from a dead
+  function currently counts as used); routing the bare-`hook`
+  deprecation through `DEPRECATED_KEYWORDS` so the `deprecated-keyword`
+  analyzer covers it (today it is inlined in the parser).
+- **Introspection:** `--format=json`; one-line prose for modules (POD
+  extraction or hand-written); a dedicated `--list-keywords` flag;
+  shell completion generated from the registries.
+- **Simplification pass:** table-driven keyword dispatch in the parser,
+  letting the parser and introspection share one source of truth —
+  golden-guarded, high parity risk, a slice of its own.
+
 ### Phase 8 — Ecosystem & alternative front end
 
 Depends on the clean model from Phase 1 (and Phase 2 for import). A
