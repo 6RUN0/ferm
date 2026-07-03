@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from pyferm.introspect import _render_module, render_params
+from pyferm.errors import FermError
+from pyferm.introspect import _render_module, describe, render_params
 from pyferm.modules import MATCH_DEFS, PROTO_DEFS, KeywordParams, ParamFunction
 
 
@@ -65,3 +66,67 @@ def test_render_module_lines_fit_width() -> None:
                 "match", name, family, module
             ).splitlines():
                 assert len(line) <= MAX_WIDTH, (family, name, line)
+
+
+def test_describe_multi_hit_mark_target_both_families() -> None:
+    text = describe("MARK")
+    assert "target module 'MARK' (ip/ip6):" in text
+    assert "target module 'MARK' (eb):" in text
+    assert text.count("target module 'MARK'") == 2
+
+
+def test_describe_tcp_single_protocol_block() -> None:
+    text = describe("tcp")
+    assert "protocol module 'tcp' (ip/ip6):" in text
+    assert text.count("module 'tcp'") == 1
+
+
+def test_describe_comment_module_and_shortcut() -> None:
+    text = describe("comment")
+    assert "match module 'comment' (ip/ip6):" in text
+    assert "shortcut 'comment'" in text
+
+
+def test_describe_builtin_function() -> None:
+    text = describe("@cat")
+    assert "built-in function '@cat':" in text
+    assert "@cat(a, b, ...)" in text
+
+
+def test_describe_bare_form_def() -> None:
+    assert "deprecated spelling of '@def'" in describe("def")
+
+
+def test_describe_deprecated_realgoto() -> None:
+    assert describe("realgoto").startswith(
+        "deprecated keyword 'realgoto': use 'goto'"
+    )
+
+
+def test_describe_shortcut_dports() -> None:
+    text = describe("dports")
+    assert (
+        "shortcut 'dports' (ip/ip6) = match module 'multiport', "
+        "option 'destination-ports'" in text
+    )
+
+
+def test_describe_option_fallback_source_implicit() -> None:
+    text = describe("source")
+    assert "option 'source' of the implicit base match (ip/ip6)" in text
+
+
+def test_describe_option_fallback_module_option() -> None:
+    text = describe("connlimit-mask")
+    assert "option 'connlimit-mask' of match module 'connlimit'" in text
+
+
+def test_describe_option_fallback_alias() -> None:
+    text = describe("saddr")
+    assert "alias of 'source'" in text
+
+
+@pytest.mark.parametrize("name", ["", "no-such-name-xyzzy"])
+def test_describe_unknown_raises(name: str) -> None:
+    with pytest.raises(FermError, match="unknown name"):
+        describe(name)

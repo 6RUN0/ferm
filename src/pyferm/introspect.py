@@ -19,7 +19,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from pyferm.modules import Keyword, KeywordParams, ModuleDef, ParamFunction
+from pyferm.errors import FermError
+from pyferm.modules import (
+    MATCH_DEFS,
+    PROTO_DEFS,
+    SHORTCUTS,
+    TARGET_DEFS,
+    Keyword,
+    KeywordParams,
+    ModuleDef,
+    ParamFunction,
+)
+from pyferm.parser import DEPRECATED_KEYWORDS
 
 #: Hard cap for every ``--list-modules`` output line.  A literal so the
 #: golden tests are environment-independent (never COLUMNS/tty-derived).
@@ -95,14 +106,8 @@ def _render_rows(rows: list[tuple[str, str, str]]) -> list[str]:
     ]
 
 
-def _render_module(  # pyright: ignore[reportUnusedFunction]
-    # Only test_introspect.py calls this until Task 4's describe() wires
-    # it into production code (slice-3 plan, worker split T1-T3/T4-T5);
-    # remove this ignore once that caller lands.
-    kind: str,
-    name: str,
-    family: str,
-    module: ModuleDef,
+def _render_module(
+    kind: str, name: str, family: str, module: ModuleDef
 ) -> str:
     """Render one registry hit as a titled option table."""
     rows = [
@@ -359,14 +364,81 @@ _CATEGORY_LABELS: Final[dict[str, str]] = {
 }
 
 
-def _render_builtin(  # pyright: ignore[reportUnusedFunction]
-    # Only tests call this until Task 4's describe() wires it into
-    # production code (slice-3 plan, worker split T1-T3/T4-T5); remove
-    # this ignore once that caller lands.
-    builtin: Builtin,
-) -> str:
+def _render_builtin(builtin: Builtin) -> str:
     """Render one BUILTINS hit: signature plus curated one-liner."""
     return (
         f"built-in {_CATEGORY_LABELS[builtin.category]} '{builtin.name}':\n"
         f"  {builtin.signature} -- {builtin.summary}"
     )
+
+
+_REGISTRIES: Final = (
+    ("proto", PROTO_DEFS),
+    ("match", MATCH_DEFS),
+    ("target", TARGET_DEFS),
+)
+
+
+def _implicit_base_label(family: str) -> str:
+    return f"the implicit base match ({_FAMILY_LABELS[family]})"
+
+
+def _option_fallback_blocks(name: str) -> list[str]:
+    """Reverse lookup: which module's option table contains ``name``."""
+    blocks: list[str] = []
+    for kind, registry in _REGISTRIES:
+        for family in _FAMILY_ORDER:
+            for module_name, module in registry.get(family, {}).items():
+                keyword = module.keywords.get(name)
+                if keyword is None:
+                    continue
+                owner = (
+                    _implicit_base_label(family)
+                    if module_name == ""
+                    else (
+                        f"{_KIND_LABELS[kind]} module '{module_name}' "
+                        f"({_FAMILY_LABELS[family]})"
+                    )
+                )
+                row = _option_row(keyword.name, keyword, module)
+                tail = row[2]
+                if name != keyword.name:
+                    tail = f"{tail} alias of '{keyword.name}'".strip()
+                lines = [f"option '{name}' of {owner}:"]
+                lines.extend(_render_rows([(row[0], row[1], tail)]))
+                blocks.append("\n".join(lines))
+    return blocks
+
+
+def describe(name: str) -> str:
+    """
+    Render every hit for ``name``, blocks separated by blank lines.
+
+    Raises :class:`FermError` when nothing matches (exit 1 via main's
+    standard error contract).
+    """
+    blocks: list[str] = []
+    if name:  # the implicit "" module is reachable via options only
+        for kind, registry in _REGISTRIES:
+            for family in _FAMILY_ORDER:
+                module = registry.get(family, {}).get(name)
+                if module is not None:
+                    blocks.append(_render_module(kind, name, family, module))
+    builtin = BUILTINS.get(name)
+    if builtin is not None:
+        blocks.append(_render_builtin(builtin))
+    for family, shortcuts in SHORTCUTS.items():
+        target = shortcuts.get(name)
+        if target is not None:
+            blocks.append(
+                f"shortcut '{name}' ({_FAMILY_LABELS[family]}) = "
+                f"match module '{target[0]}', option '{target[1]}'"
+            )
+    replacement = DEPRECATED_KEYWORDS.get(name)
+    if replacement is not None:
+        blocks.append(f"deprecated keyword '{name}': use '{replacement}'")
+    if not blocks:
+        blocks = _option_fallback_blocks(name)
+    if not blocks:
+        raise FermError(f"ferm --describe: unknown name '{name}'")
+    return "\n\n".join(blocks) + "\n"
