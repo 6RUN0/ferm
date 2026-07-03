@@ -435,6 +435,35 @@ Notes and boundaries:
   `--def`/`--domain` (both eval-only, so they would silently do nothing under
   an eval-free analysis); combining them is a clean error.
 
+### Introspection (`--list-modules`, `--describe`)
+
+`ferm --list-modules` prints every supported netfilter module (protocol,
+match and target, per family) plus the built-in configuration keywords.
+`ferm --describe NAME` shows what a single name means: the option table
+of a module, the signature of a built-in keyword or `@`-function, a
+shortcut expansion, or which module provides an option of that name.
+Both are read-only terminal modes: they take no input file, touch
+neither the kernel nor any configuration, and combine with no other
+switch.
+
+```console
+$ ferm --list-modules
+protocol modules (ip/ip6):
+  dccp  icmp  mh    sctp  tcp   udp
+...
+$ ferm --describe connlimit
+match module 'connlimit' (ip/ip6):
+  connlimit-upto   <value>        negatable (! before keyword)
+  connlimit-above  <value>        negatable (! before keyword)
+  connlimit-mask   <value>
+  connlimit-saddr  (no argument)
+  connlimit-daddr  (no argument)
+  see iptables-extensions(8) and ferm(1)
+```
+
+Exit codes: `0` on success, `1` for an unknown name or a rejected
+switch combination.
+
 ## Development
 
 The project is managed entirely with `uv` and orchestrated with `nox`:

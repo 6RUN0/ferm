@@ -13,6 +13,14 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **Introspection modes (`--list-modules`, `--describe`).** `ferm
+  --list-modules` lists every supported netfilter module (protocol,
+  match, target) plus the built-in configuration keywords; `ferm
+  --describe NAME` shows the option table of a module, the signature
+  of a built-in keyword or `@`-function, a shortcut expansion, or
+  which module provides an option of that name. Port-only, read-only
+  terminal modes: no input file, no kernel or config access, and no
+  other switch combines with them.
 - **Lint severity tiers and gating threshold.** `ferm --lint` now runs
   six checks through a severity-ordered registry: `jump-cycle` (error),
   `unused-definition`, `undefined-jump`, `unreachable-chain`,

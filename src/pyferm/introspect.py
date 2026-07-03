@@ -7,9 +7,12 @@ Renders ``--list-modules`` / ``--describe NAME`` text from
 table.  Text-only and prose-free for modules by design (no JSON, no POD
 extraction); built-in keywords carry curated one-line summaries.  A name
 that is both a module/builtin/shortcut and an option of another module
-shows only the former facet (the option fallback runs last; cross-module
-collisions like ``set`` being also an option of ``connlabel``/``recent``
-are an accepted limitation).
+shows only the former facet (the option fallback runs last); there are
+23 such collisions across the registries, almost all a module's option
+sharing its own module's name (e.g. ``comment``, ``mark``) where the
+suppression is harmless -- the module block already shows that option.
+Cross-module collisions like ``set`` being also an option of
+``connlabel``/``recent`` are an accepted limitation.
 
 Read-only: never touches the kernel, the eval path or any config file.
 """

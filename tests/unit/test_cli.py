@@ -451,7 +451,7 @@ def test_introspection_rejects_input_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     conf = tmp_path / "f.ferm"
-    conf.write_text("")
+    conf.write_text("", encoding="utf-8")
     assert main(["--list-modules", str(conf)]) == 1
     assert "takes no input file" in capsys.readouterr().err
 
