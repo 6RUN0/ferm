@@ -16,9 +16,14 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ._treescan import _CHAIN_VALUE_BOUNDARY, _str_tokens, _unquote
+from .modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
 from .rules import _CORE_TARGETS
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _ID_SAFE = frozenset(
@@ -151,3 +156,54 @@ def _header_context(
             continue
         prev, i = tok, i + 1
     return new_domains, new_tables, new_chains, policy_target
+
+
+_KIND_BY_JUMP_KW = {
+    "jump": EdgeKind.JUMP,
+    "goto": EdgeKind.GOTO,
+    "realgoto": EdgeKind.GOTO,  # deprecated alias -> goto (spec §3)
+}
+
+
+def _jump_edges(span: object) -> Iterator[tuple[EdgeKind, str]]:
+    """Yield (kind, literal target) for each jump/goto/realgoto in a span."""
+    toks = list(_str_tokens(span))  # type: ignore[arg-type]
+    for i, tok in enumerate(toks):
+        if tok in _KIND_BY_JUMP_KW and i + 1 < len(toks):
+            target = toks[i + 1]
+            if not target.startswith("$"):
+                yield _KIND_BY_JUMP_KW[tok], _unquote(target)
+
+
+def _fold_family(domain: str) -> str:
+    """Map a domain to its defs family (ip6 folds to ip; parser.py:657)."""
+    return "ip" if domain == "ip6" else domain
+
+
+def _family_targets(family: str) -> frozenset[str]:
+    """Recognised verdict tokens of a family: core targets + module targets."""
+    return frozenset(_CORE_TARGETS) | frozenset(TARGET_DEFS.get(family, {}))
+
+
+def _build_kw_has_params() -> dict[str, frozenset[str]]:
+    """
+    Per-family set of registry keywords that take an argument.
+
+    Union over the three registries: a flat keyword->params map does not
+    exist (registry is family->module->keywords), and the eval-free scan
+    needs to know, without an active module, whether the previous token is
+    an option key whose value must be skipped. has-params if ANY module of
+    the family gives the keyword non-None params (conservative: over-skips).
+    """
+    index: dict[str, set[str]] = {}
+    for registry in (PROTO_DEFS, MATCH_DEFS, TARGET_DEFS):
+        for family, modules in registry.items():
+            fam = index.setdefault(family, set())
+            for module in modules.values():
+                for kw, keyword in module.keywords.items():
+                    if keyword.params is not None:
+                        fam.add(kw)
+    return {family: frozenset(kws) for family, kws in index.items()}
+
+
+_KW_HAS_PARAMS = _build_kw_has_params()

@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 from pyferm.graph import (
+    _KW_HAS_PARAMS,
     EdgeKind,
     NodeKind,
     _cluster_id,
     _escape_ident,
+    _family_targets,
+    _fold_family,
     _header_context,
+    _jump_edges,
 )
 
 
@@ -92,3 +96,28 @@ def test_header_context_skips_nonliteral_domain_table() -> None:
     # $var lexes as two tokens '$','t'; skip -> no phantom cluster (F4)
     assert _header_context(("domain", "$", "t")) == (None, None, None, None)
     assert _header_context(("table", "$", "t")) == (None, None, None, None)
+
+
+def test_jump_edges_carry_kind_and_normalize_realgoto() -> None:
+    span = ("jump", "a", "goto", "b", "realgoto", "c", "goto", "$v")
+    assert list(_jump_edges(span)) == [
+        (EdgeKind.JUMP, "a"),
+        (EdgeKind.GOTO, "b"),
+        (EdgeKind.GOTO, "c"),
+    ]  # realgoto -> GOTO; $v skipped
+
+
+def test_family_fold_and_targets() -> None:
+    assert _fold_family("ip6") == "ip"
+    assert _fold_family("eb") == "eb"
+    ip = _family_targets("ip")
+    assert {"ACCEPT", "DROP", "RETURN", "QUEUE"} <= ip  # core
+    assert "REJECT" in ip  # module targets
+    assert "LOG" in ip
+    assert "arpreply" not in ip  # eb-only, not ip
+    assert "arpreply" in _family_targets("eb")
+
+
+def test_kw_has_params_union_includes_target_keys() -> None:
+    assert "ctstate" in _KW_HAS_PARAMS["ip"]  # conntrack match
+    assert "redirect-target" in _KW_HAS_PARAMS["eb"]  # target-module keyword
