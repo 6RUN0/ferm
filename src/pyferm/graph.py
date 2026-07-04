@@ -18,9 +18,25 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ._treescan import _CHAIN_VALUE_BOUNDARY, _str_tokens, _unquote
+from ._treescan import (
+    _CHAIN_VALUE_BOUNDARY,
+    _child_blocks,
+    _declared_chains,
+    _str_tokens,
+    _subchain_names,
+    _unquote,
+)
 from .modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
-from .rules import _CORE_TARGETS
+from .parser import MAX_BLOCK_DEPTH
+from .rules import _CORE_TARGETS, is_netfilter_builtin_chain
+from .tree import (
+    Block,
+    BlockNode,
+    DefNode,
+    HeaderNode,
+    RuleNode,
+    SubchainNode,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -207,3 +223,199 @@ def _build_kw_has_params() -> dict[str, frozenset[str]]:
 
 
 _KW_HAS_PARAMS = _build_kw_has_params()
+
+
+@dataclass
+class _ClusterAcc:
+    """Mutable per-(domain, table) accumulator; frozen into a Cluster later."""
+
+    declared: set[str]
+    edges: set[tuple[str, str, EdgeKind]]
+    names: set[str]
+
+
+def _acc_for(
+    acc: dict[tuple[str, str], _ClusterAcc], domain: str, table: str
+) -> _ClusterAcc:
+    return acc.setdefault(
+        (domain, table), _ClusterAcc(declared=set(), edges=set(), names=set())
+    )
+
+
+def _scan_verdicts(span: object, family: str) -> list[str]:  # noqa: ARG001
+    """Recognised verdict target tokens in a span (Task 6 fills this in)."""
+    return []
+
+
+def _scan_span(
+    node: RuleNode | DefNode | SubchainNode,
+) -> tuple[object, ...] | None:
+    """
+    Tokens of a leaf node to scan for the enclosing chain; None = skip.
+
+    A scalar ``@def $x = ...`` RHS is a stored VALUE, not a rule: scanning
+    it fabricates phantom edges (``@def $x = jump foo;`` -> a bogus
+    caller->foo jump), so scalar defs are skipped whole. A function
+    ``@def &f() = { ... }`` body lives INSIDE the DefNode span and IS
+    replayed in the caller's chain, so it keeps the lexical attribution
+    (spec section 4 pin). A braced ``@subchain "sc" { ... }`` carries its
+    body INSIDE the span; only the pre-``{`` head (the subchain edge and
+    name) is attributed to the outer chain -- the body is elided
+    (documented blind spot), never leaked to the parent. The split
+    compares STRUCTURAL tokens, so a quoted name containing ``{``
+    survives intact.
+    """
+    if isinstance(node, DefNode):
+        toks = list(_str_tokens(node.span))
+        return node.span if len(toks) > 1 and toks[1] == "&" else None
+    if isinstance(node, SubchainNode):
+        head: list[object] = []
+        for tok in node.span:
+            if tok == "{":
+                break
+            head.append(tok)
+        return tuple(head)
+    return node.span
+
+
+def _declare(
+    acc: dict[tuple[str, str], _ClusterAcc],
+    domains: tuple[str, ...],
+    tables: tuple[str, ...],
+    names: tuple[str, ...],
+) -> None:
+    for domain in domains:
+        for table in tables:
+            ca = _acc_for(acc, domain, table)
+            for name in names:
+                ca.declared.add(name)
+                ca.names.add(name)
+
+
+def _emit_span(
+    acc: dict[tuple[str, str], _ClusterAcc],
+    domains: tuple[str, ...],
+    tables: tuple[str, ...],
+    chains: tuple[str, ...],
+    span: object,
+) -> None:
+    """Emit jump/goto/subchain/verdict edges from a rule/def/subchain span."""
+    jumps = list(_jump_edges(span))
+    subs = list(_subchain_names(span))  # type: ignore[arg-type]
+    declared_here = list(_declared_chains(span))  # type: ignore[arg-type]
+    for domain in domains:
+        family = _fold_family(domain)
+        verdicts = _scan_verdicts(span, family)
+        for table in tables:
+            ca = _acc_for(acc, domain, table)
+            for name in declared_here:
+                ca.declared.add(name)
+                ca.names.add(name)
+            for src in chains:
+                ca.names.add(src)
+                for kind, dst in jumps:
+                    ca.edges.add((src, dst, kind))
+                    ca.names.add(dst)
+                for name in subs:
+                    ca.edges.add((src, name, EdgeKind.SUBCHAIN))
+                    ca.declared.add(name)
+                    ca.names.add(name)
+                for dst in verdicts:
+                    ca.edges.add((src, dst, EdgeKind.VERDICT))
+                    ca.names.add(dst)
+
+
+def _walk(
+    block: Block,
+    domains: tuple[str, ...],
+    tables: tuple[str, ...],
+    chains: tuple[str, ...],
+    acc: dict[tuple[str, str], _ClusterAcc],
+    depth: int,
+) -> None:
+    if depth > MAX_BLOCK_DEPTH:
+        return
+    # A rule-prefixed @subchain body is a SIBLING BlockNode immediately
+    # after the RuleNode that names the subchain; attribute it to the
+    # subchain, not the outer chain. Keyed on _subchain_names, so a plain
+    # rule-group block (proto tcp { ... }) is NOT re-attributed. The
+    # pending marker is a per-call local: it cannot leak across block
+    # boundaries.
+    pending_subchain: tuple[str, ...] | None = None
+    for node in block.statements:
+        d, t, c = domains, tables, chains
+        if isinstance(node, BlockNode) and pending_subchain is not None:
+            body_chains, pending_subchain = pending_subchain, None
+            for child in _child_blocks(node):
+                _walk(child, d, t, body_chains, acc, depth + 1)
+            continue
+        pending_subchain = None
+        if isinstance(node, HeaderNode):
+            nd, nt, nc, policy_target = _header_context(
+                (node.keyword, *node.value_span)
+            )
+            if nd is not None:
+                d = nd
+            if nt is not None:
+                t = nt
+            if nc is not None:
+                # entering a chain context defaults the table to filter
+                if not t:
+                    t = ("filter",)
+                c = nc
+                _declare(acc, d, t, nc)
+            if policy_target is not None and c:
+                eff_tables = t or ("filter",)
+                for domain in d:
+                    for table in eff_tables:
+                        ca = _acc_for(acc, domain, table)
+                        for src in c:
+                            ca.edges.add((src, policy_target, EdgeKind.POLICY))
+                            ca.names.add(src)
+                            ca.names.add(policy_target)
+        elif isinstance(node, (RuleNode, DefNode, SubchainNode)) and c:
+            eff_tables = t or ("filter",)
+            scan = _scan_span(node)
+            if scan is not None:
+                _emit_span(acc, d, eff_tables, c, scan)
+            if isinstance(node, RuleNode):
+                subs = tuple(_subchain_names(node.span))
+                if subs:
+                    pending_subchain = subs
+        for child in _child_blocks(node):
+            _walk(child, d, t, c, acc, depth + 1)
+
+
+def _classify(name: str, declared: set[str], family: str) -> NodeKind:
+    """Priority BUILTIN > USER > VERDICT > UNDEFINED (spec §3)."""
+    if is_netfilter_builtin_chain("", name):
+        return NodeKind.BUILTIN
+    if name in declared:
+        return NodeKind.USER
+    if name in _family_targets(family):
+        return NodeKind.VERDICT
+    return NodeKind.UNDEFINED
+
+
+def _freeze(acc: dict[tuple[str, str], _ClusterAcc]) -> ChainGraph:
+    clusters: list[Cluster] = []
+    for (domain, table), ca in acc.items():
+        family = _fold_family(domain)
+        nodes = tuple(
+            sorted(
+                (name, _classify(name, ca.declared, family))
+                for name in ca.names
+            )
+        )
+        edges = tuple(sorted(ca.edges))
+        clusters.append(Cluster(domain, table, nodes, edges))
+    return ChainGraph(
+        tuple(sorted(clusters, key=lambda c: (c.domain, c.table)))
+    )
+
+
+def collect_graph(root: Block) -> ChainGraph:
+    """Build the chain control-flow graph from a parse_to_block tree."""
+    acc: dict[tuple[str, str], _ClusterAcc] = {}
+    _walk(root, ("ip",), (), (), acc, 0)
+    return _freeze(acc)

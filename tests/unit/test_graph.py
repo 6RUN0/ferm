@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pyferm.graph import (
     _KW_HAS_PARAMS,
+    ChainGraph,
+    Cluster,
     EdgeKind,
     NodeKind,
     _cluster_id,
@@ -13,7 +15,9 @@ from pyferm.graph import (
     _fold_family,
     _header_context,
     _jump_edges,
+    collect_graph,
 )
+from pyferm.parser import Parser
 
 
 def test_edge_and_node_kinds_sort_as_strings() -> None:
@@ -121,3 +125,47 @@ def test_family_fold_and_targets() -> None:
 def test_kw_has_params_union_includes_target_keys() -> None:
     assert "ctstate" in _KW_HAS_PARAMS["ip"]  # conntrack match
     assert "redirect-target" in _KW_HAS_PARAMS["eb"]  # target-module keyword
+
+
+def _cluster(graph: ChainGraph, domain: str, table: str) -> Cluster:
+    return next(
+        c for c in graph.clusters if c.domain == domain and c.table == table
+    )
+
+
+def test_collect_graph_defaults_cluster_and_classifies_nodes() -> None:
+    g = collect_graph(
+        Parser.parse_to_block(
+            "chain INPUT { jump ssh_guard; jump nowhere; }chain ssh_guard { }"
+        )
+    )
+    c = _cluster(g, "ip", "filter")  # oracle defaults
+    nodes = dict(c.nodes)
+    assert nodes["INPUT"] == NodeKind.BUILTIN
+    assert nodes["ssh_guard"] == NodeKind.USER
+    assert nodes["nowhere"] == NodeKind.UNDEFINED
+    assert ("INPUT", "ssh_guard", EdgeKind.JUMP) in c.edges
+    assert ("INPUT", "nowhere", EdgeKind.JUMP) in c.edges
+
+
+def test_collect_graph_policy_inblock_and_array() -> None:
+    g = collect_graph(
+        Parser.parse_to_block("chain (INPUT OUTPUT) { policy DROP; }")
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "DROP", EdgeKind.POLICY) in c.edges
+    assert ("OUTPUT", "DROP", EdgeKind.POLICY) in c.edges
+    assert dict(c.nodes)["DROP"] == NodeKind.VERDICT
+
+
+def test_collect_graph_no_cross_table_edges() -> None:
+    g = collect_graph(
+        Parser.parse_to_block(
+            "table filter { chain INPUT { jump a; } chain a {} }"
+            "table nat { chain PREROUTING { jump b; } chain b {} }"
+        )
+    )
+    filt = _cluster(g, "ip", "filter")
+    nat = _cluster(g, "ip", "nat")
+    assert all(dst != "b" for _, dst, _ in filt.edges)  # no leak across tables
+    assert dict(nat.nodes)["b"] == NodeKind.USER
