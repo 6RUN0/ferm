@@ -67,10 +67,19 @@ def _demangle(mangled: str) -> str:
 
 
 def _load_exit_codes(meta_path: Path) -> dict[str, int]:
-    """Read ``exit_code_by_key`` from one ``.meta`` file."""
+    """
+    Read ``exit_code_by_key`` from one ``.meta`` file.
+
+    A ``null`` code marks a mutant mutmut has not run yet -- e.g. after a
+    stats rebuild reset the results DB. Such entries belong to no triage
+    bucket, so they are skipped rather than counted (and never reach the
+    ``int(...)`` cast that would otherwise raise on ``None``).
+    """
     data = json.loads(meta_path.read_text(encoding="utf-8"))
     codes = data.get("exit_code_by_key", {})
-    return {str(key): int(code) for key, code in codes.items()}
+    return {
+        str(key): int(code) for key, code in codes.items() if code is not None
+    }
 
 
 def _iter_meta_files(mutants_dir: Path) -> list[Path]:
