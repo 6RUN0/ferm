@@ -17,6 +17,7 @@ from pyferm.graph import (
     _jump_edges,
     _scan_verdicts,
     collect_graph,
+    render_d2,
     render_dot,
 )
 from pyferm.parser import Parser
@@ -231,5 +232,26 @@ def test_render_dot_golden() -> None:
         '    "INPUT" -> "block" [label="jump"];\n'
         '    "INPUT" -> "ssh_guard" [label="jump"];\n'
         "  }\n"
+        "}\n"
+    )
+
+
+def test_render_d2_golden() -> None:
+    g = collect_graph(
+        Parser.parse_to_block(
+            "chain INPUT { jump ssh_guard; jump block; DROP; policy DROP; }"
+            "chain ssh_guard { }"
+        )
+    )
+    assert render_d2(g) == (
+        'ip__filter: "ip/filter" {\n'
+        '  "DROP": { shape: oval }\n'
+        '  "INPUT": { shape: hexagon }\n'
+        '  "block": { style.stroke-dash: 3 }\n'
+        '  "ssh_guard"\n'
+        '  "INPUT" -> "DROP"\n'
+        '  "INPUT" -> "DROP": policy\n'
+        '  "INPUT" -> "block": jump\n'
+        '  "INPUT" -> "ssh_guard": jump\n'
         "}\n"
     )

@@ -487,3 +487,42 @@ def render_dot(graph: ChainGraph) -> str:
         lines.append("  }")
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+_D2_NODE_STYLE = {
+    NodeKind.BUILTIN: "shape: hexagon",
+    NodeKind.UNDEFINED: "style.stroke-dash: 3",
+    NodeKind.VERDICT: "shape: oval",
+}
+
+
+def _d2_quote(name: str) -> str:
+    return f'"{_escape_ident(name)}"'
+
+
+def render_d2(graph: ChainGraph) -> str:
+    """
+    Render the graph as d2 (deterministic; spec section 5).
+
+    Every node gets its own line (USER nodes bare, others styled) so the
+    two renderers' node sets never diverge. Ids are quoted unconditionally
+    to dodge d2 reserved keys (label/shape/style/...).
+    """
+    lines: list[str] = []
+    for cluster in graph.clusters:
+        cid = _cluster_id(cluster.domain, cluster.table)
+        label = (
+            f"{_escape_ident(cluster.domain)}/{_escape_ident(cluster.table)}"
+        )
+        lines.append(f'{cid}: "{label}" {{')
+        for name, kind in cluster.nodes:
+            style = _D2_NODE_STYLE.get(kind)
+            if style:
+                lines.append(f"  {_d2_quote(name)}: {{ {style} }}")
+            else:
+                lines.append(f"  {_d2_quote(name)}")
+        for src, dst, edge_kind in cluster.edges:
+            label = f": {edge_kind}" if edge_kind else ""
+            lines.append(f"  {_d2_quote(src)} -> {_d2_quote(dst)}{label}")
+        lines.append("}")
+    return "\n".join(lines) + "\n"
