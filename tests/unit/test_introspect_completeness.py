@@ -13,8 +13,12 @@ invisible and live in the documented manual/ignore lists.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import pyferm.functions
 import pyferm.parser
@@ -86,11 +90,29 @@ def _module_constants(tree: ast.Module) -> dict[str, set[str]]:
     return consts
 
 
+#: mutmut mutant bodies (x_<name>__mutmut_<N>); the original survives
+#: as x_<name>__mutmut_orig, so pruning these keeps the harvest equal
+#: to the unmutated source when the suite runs from <repo>/mutants/.
+_MUTANT_DEF_RE: Final = re.compile(r"__mutmut_\d+$")
+
+
+def _walk_skipping_mutants(tree: ast.Module) -> Iterator[ast.AST]:
+    stack: list[ast.AST] = [tree]
+    while stack:
+        node = stack.pop()
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and _MUTANT_DEF_RE.search(node.name):
+            continue
+        yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
 def _collect_keywords(source_path: Path) -> set[str]:
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     consts = _module_constants(tree)
     words: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _walk_skipping_mutants(tree):
         if not isinstance(node, ast.Compare):
             continue
         left = node.left
