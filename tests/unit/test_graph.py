@@ -17,6 +17,7 @@ from pyferm.graph import (
     _jump_edges,
     _scan_verdicts,
     collect_graph,
+    render_dot,
 )
 from pyferm.parser import Parser
 
@@ -208,3 +209,27 @@ def test_collect_graph_pinned_nonregistry_boundary() -> None:
     g = collect_graph(Parser.parse_to_block("chain INPUT { dport DROP; }"))
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "DROP", EdgeKind.VERDICT) in c.edges  # accepted boundary
+
+
+def test_render_dot_golden() -> None:
+    g = collect_graph(
+        Parser.parse_to_block(
+            "chain INPUT { jump ssh_guard; jump block; DROP; policy DROP; }"
+            "chain ssh_guard { }"
+        )
+    )
+    assert render_dot(g) == (
+        "digraph ferm {\n"
+        "  subgraph cluster_ip__filter {\n"
+        '    label="ip/filter";\n'
+        '    "DROP" [shape=plaintext];\n'
+        '    "INPUT" [shape=box];\n'
+        '    "block" [style=dashed];\n'
+        '    "ssh_guard";\n'
+        '    "INPUT" -> "DROP";\n'
+        '    "INPUT" -> "DROP" [label="policy"];\n'
+        '    "INPUT" -> "block" [label="jump"];\n'
+        '    "INPUT" -> "ssh_guard" [label="jump"];\n'
+        "  }\n"
+        "}\n"
+    )

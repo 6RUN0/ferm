@@ -455,3 +455,35 @@ def collect_graph(root: Block) -> ChainGraph:
     acc: dict[tuple[str, str], _ClusterAcc] = {}
     _walk(root, ("ip",), (), (), acc, 0)
     return _freeze(acc)
+
+
+_DOT_NODE_ATTR = {
+    NodeKind.BUILTIN: " [shape=box]",
+    NodeKind.UNDEFINED: " [style=dashed]",
+    NodeKind.VERDICT: " [shape=plaintext]",
+}
+
+
+def _dot_quote(name: str) -> str:
+    return f'"{_escape_ident(name)}"'
+
+
+def render_dot(graph: ChainGraph) -> str:
+    """Render the graph as Graphviz DOT (deterministic; spec §5)."""
+    lines = ["digraph ferm {"]
+    for cluster in graph.clusters:
+        cid = _cluster_id(cluster.domain, cluster.table)
+        lines.append(f"  subgraph cluster_{cid} {{")
+        label = (
+            f"{_escape_ident(cluster.domain)}/{_escape_ident(cluster.table)}"
+        )
+        lines.append(f'    label="{label}";')
+        for name, kind in cluster.nodes:
+            attr = _DOT_NODE_ATTR.get(kind, "")
+            lines.append(f"    {_dot_quote(name)}{attr};")
+        for src, dst, edge_kind in cluster.edges:
+            label = f' [label="{edge_kind}"]' if edge_kind else ""
+            lines.append(f"    {_dot_quote(src)} -> {_dot_quote(dst)}{label};")
+        lines.append("  }")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
