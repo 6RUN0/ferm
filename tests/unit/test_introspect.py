@@ -19,6 +19,7 @@ from pyferm.modules import MATCH_DEFS, PROTO_DEFS, KeywordParams, ParamFunction
         ("c", "<comma-separated list>"),
         ("cc", "<comma-separated list> <comma-separated list>"),
         ("sc", "<value> <comma-separated list>"),
+        ("sz", "<value> <value>"),  # defensive: unknown letters fall back
         ("m", "<value>... (repeatable)"),
         (ParamFunction("address_magic"), "<address[/mask]>"),
         (ParamFunction("cgroup_classid"), "<special: cgroup_classid>"),
@@ -179,3 +180,138 @@ def test_describe_connlimit_golden() -> None:
         "  connlimit-daddr  (no argument)\n"
         "  see iptables-extensions(8) and ferm(1)\n"
     )
+
+
+_LIST_MODULES_GOLDEN = """\
+protocol modules (ip/ip6):
+  dccp  icmp  mh    sctp  tcp   udp
+
+protocol modules (eb):
+  802_1Q  ARP     IPv4    IPv6    RARP
+
+match modules (ip/ip6):
+  account      addrtype     ah           bpf          cgroup
+  comment      condition    connbytes    connlabel    connlimit
+  connmark     conntrack    cpu          devgroup     dscp
+  dst          ecn          esp          eui64        fuzzy
+  geoip        hashlimit    hbh          helper       hl
+  iprange      ipv4options  ipv6header   ipvs         length
+  length2      limit        mac          mark         multiport
+  nfacct       nth          osf          owner        physdev
+  pkttype      policy       psd          quota        random
+  realm        recent       rpfilter     rt           set
+  socket       state        statistic    string       tcpmss
+  time         tos          ttl          u32
+  implicit base options:
+    destination    fragment       in-interface   out-interface  source
+
+match modules (arp):
+  implicit base options:
+    destination-ip   destination-mac  h-length         h-type
+    in-interface     mangle-ip-d      mangle-ip-s      mangle-mac-d
+    mangle-mac-s     mangle-target    opcode           out-interface
+    proto-type       source-ip        source-mac
+
+match modules (eb):
+  implicit base options:
+    802_3-sap          802_3-type         among-dst
+    among-dst-file     among-src          among-src-file
+    destination        in-interface       limit
+    limit-burst        log                log-arp
+    log-ip             log-level          log-prefix
+    logical-in         logical-out        mark
+    out-interface      pkttype-type       source
+    stp-flags          stp-forward-delay  stp-hello-time
+    stp-max-age        stp-msg-age        stp-port
+    stp-root-addr      stp-root-cost      stp-root-prio
+    stp-sender-addr    stp-sender-prio    stp-type
+
+target modules (ip/ip6):
+  AUDIT          BALANCE        CHECKSUM       CLASSIFY       CLUSTERIP
+  CONNMARK       CONNSECMARK    CT             DNAT           DNPT
+  DSCP           ECN            HL             HMARK          IDLETIMER
+  IPV4OPTSSTRIP  JOOL           JOOL_SIIT      LED            LOG
+  MARK           MASQUERADE     MIRROR         NETMAP         NFLOG
+  NFQUEUE        NOTRACK        RATEEST        REDIRECT       REJECT
+  ROUTE          RTPENGINE      SAME           SECMARK        SET
+  SNAT           SNPT           SYNPROXY       TARPIT         TCPMSS
+  TCPOPTSTRIP    TEE            TOS            TPROXY         TRACE
+  TTL            ULOG
+
+target modules (eb):
+  MARK      arpreply  dnat      redirect  snat
+
+built-in keywords:
+  @basename      @cat           @def           @defined       @dirname
+  @else          @eq            @glob          @gotosubchain  @hook
+  @if            @include       @ipfilter      @join          @length
+  @ne            @not           @preserve      @resolve       @set
+  @subchain      @substr        ACCEPT         DROP           NOP
+  QUEUE          RETURN         chain          def            domain
+  goto           hook           include        jump           mod
+  module         policy         priority       proto          protocol
+  subchain       table
+
+Use --describe NAME for details on a module, option or keyword.
+"""
+
+_DESCRIBE_SADDR_GOLDEN = """\
+option 'saddr' of the implicit base match (ip/ip6):
+  source  <address[/mask]>  negatable (aliases: saddr) alias of 'source'
+
+option 'saddr' of the implicit base match (arp):
+  source-ip  <value>  negatable (aliases: saddr) alias of 'source-ip'
+
+option 'saddr' of the implicit base match (eb):
+  source  <value>  negatable (aliases: saddr) alias of 'source'
+"""
+
+
+def test_list_modules_full_golden() -> None:
+    """Pin the complete catalogue text, not just the first section.
+
+    The shape test above cannot notice a whole name list silently
+    dropping out (e.g. the built-in keywords fold or an implicit
+    base-options fold rendering empty); only full-text equality can.
+    """
+    from pyferm.introspect import list_modules
+
+    assert list_modules() == _LIST_MODULES_GOLDEN
+
+
+def test_describe_saddr_fallback_golden() -> None:
+    # Exact text: pins the row layout (name/arg/notes columns), the bare
+    # "negatable" note and the "alias of" tail of the option fallback.
+    assert describe("saddr") == _DESCRIBE_SADDR_GOLDEN
+
+
+def test_describe_comment_two_block_golden() -> None:
+    # Exact text of a two-hit describe: pins the blank-line separator
+    # between blocks, which substring checks cannot.
+    assert describe("comment") == (
+        "match module 'comment' (ip/ip6):\n"
+        "  comment  <value>\n"
+        "  see iptables-extensions(8) and ferm(1)\n"
+        "\n"
+        "shortcut 'comment' (ip/ip6) = match module 'comment', "
+        "option 'comment'\n"
+    )
+
+
+def test_fold_columns_floors_at_one_name_per_row() -> None:
+    from pyferm.introspect import _fold_columns
+
+    # column (52) exceeds half the width budget: the fold must floor at
+    # ONE name per row rather than widen past MAX_WIDTH
+    names = ["a" * 50, "b" * 50]
+    assert _fold_columns(names, 2) == ["  " + names[0], "  " + names[1]]
+
+
+def test_fold_columns_budget_shrinks_with_indent() -> None:
+    from pyferm.introspect import MAX_WIDTH, _fold_columns
+
+    # 4 names of width 18 fold at column 20: (79 - 4) // 20 = 3 per row,
+    # so the fourth name wraps instead of stretching the row to 82
+    rows = _fold_columns(["n" * 18] * 4, 4)
+    assert len(rows) == 2
+    assert all(len(row) <= MAX_WIDTH for row in rows)
