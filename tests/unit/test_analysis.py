@@ -15,6 +15,10 @@ from pyferm.analysis import (
     _ChainCollector,
     _declared_chains,
     _is_quoted,
+    _iter_func_refs,
+    _iter_var_refs,
+    _jump_targets,
+    _subchain_names,
     _walk_all,
     find_deprecated_keywords,
     find_duplicate_definitions,
@@ -750,6 +754,75 @@ def test_declared_chains_token_scan(
     span: list[str], expected: list[str]
 ) -> None:
     assert list(_declared_chains(span)) == expected
+
+
+# The four token-scan iterators below all share the shape
+# ``if <keyword> and i + 1 < len(span): look at span[i + 1]``. The
+# ``i + 1 < len`` guard is what keeps the trailing-keyword case (a bare
+# ``&``/``$``/``jump``/``@subchain`` at the very end of a span) from
+# reading past the end, and the conjunction is what keeps a keyword from
+# admitting a non-name follower. Each table drives exactly those two
+# boundaries: a name that is the LAST token (the window must not widen),
+# a keyword that is the LAST token (the read must be suppressed), and a
+# keyword trailed by a non-name string (the match must stay strict).
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"),
+    [
+        (["&", "foo", "x"], ["&foo"]),  # well-formed pair mid-span
+        (["&", "foo"], ["&foo"]),  # name is the LAST token
+        (["&"], []),  # bare '&' at span end reads nothing
+        (["&", "foo", "&"], ["&foo"]),  # trailing '&' after a real ref
+        (["&", "x y"], []),  # non-name follower is not a reference
+    ],
+)
+def test_iter_func_refs_boundaries(
+    span: list[str], expected: list[str]
+) -> None:
+    assert list(_iter_func_refs(span)) == expected
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"),
+    [
+        (["$", "foo", "x"], ["$foo"]),  # well-formed pair mid-span
+        (["$", "foo"], ["$foo"]),  # name is the LAST token
+        (["$"], []),  # bare '$' at span end reads nothing
+        (["$", "x y"], []),  # non-name follower is not a reference
+    ],
+)
+def test_iter_var_refs_boundaries(
+    span: list[str], expected: list[str]
+) -> None:
+    assert list(_iter_var_refs(span)) == expected
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"),
+    [
+        (["jump", "FOO", "x"], ["FOO"]),  # target mid-span
+        (["jump", "FOO"], ["FOO"]),  # target is the LAST token
+        (["jump"], []),  # bare 'jump' at span end yields nothing
+        (["goto", "BAR"], ["BAR"]),  # a later keyword is still scanned
+    ],
+)
+def test_jump_targets_boundaries(span: list[str], expected: list[str]) -> None:
+    assert list(_jump_targets(span)) == expected
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"),
+    [
+        (["@subchain", "'S'", "x"], ["S"]),  # quoted name mid-span
+        (["@subchain", "'S'"], ["S"]),  # quoted name is the LAST token
+        (["@subchain"], []),  # bare '@subchain' at span end yields nothing
+    ],
+)
+def test_subchain_names_boundaries(
+    span: list[str], expected: list[str]
+) -> None:
+    assert list(_subchain_names(span)) == expected
 
 
 def _nested_if(depth: int, payload: str) -> str:
