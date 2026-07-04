@@ -13,6 +13,9 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **Chain-graph visualisation (`--graph`).** Print the chain control-flow
+  graph as a d2 (default) or Graphviz DOT diagram; choose the renderer
+  with `--graph-format {d2,dot}`. Read-only and eval-free.
 - **Introspection modes (`--list-modules`, `--describe`).** `ferm
   --list-modules` lists every supported netfilter module (protocol,
   match, target) plus the built-in configuration keywords; `ferm

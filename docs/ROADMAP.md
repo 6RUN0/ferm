@@ -485,9 +485,10 @@ golden-guarded simplifications, a richer linter / `--check`,
 pulled into Phase 1.
 
 Status: the AST refactor, the linter (`--lint`, `--lint-strict`,
-`--lint-fail-level`; six analyzers) and the introspection modes
-(`--list-modules`, `--describe`) shipped. Remaining: visualisation and
-the golden-guarded simplification pass.
+`--lint-fail-level`; six analyzers), the introspection modes
+(`--list-modules`, `--describe`) and the visualisation mode (`--graph`,
+`--graph-format {d2,dot}`) shipped. Remaining: the golden-guarded
+simplification pass.
 
 Deferred debts, recorded when the lint and introspection slices were
 scoped (YAGNI at the time, still on the table):

@@ -435,6 +435,25 @@ Notes and boundaries:
   `--def`/`--domain` (both eval-only, so they would silently do nothing under
   an eval-free analysis); combining them is a clean error.
 
+### Visualising the chain graph
+
+`ferm --graph config.ferm` prints the chain control-flow graph to stdout —
+nodes are chains and terminal verdicts, edges are jump/goto/@subchain,
+verdict actions, and the default `policy`. It is read-only and eval-free
+(like `--lint`): nothing touches the kernel. Choose the renderer with
+`--graph-format {d2,dot}` (default `d2`), then pipe to the tool:
+
+```sh
+ferm --graph config.ferm | d2 - graph.svg
+ferm --graph --graph-format dot config.ferm | dot -Tpng -o graph.png
+```
+
+Blind spots by design: non-literal `jump $var` targets are invisible,
+non-terminal targets (`LOG`, `MARK`) are drawn as leaves, and the body of a
+bare `@subchain "name" { ... }` (one written without a leading match rule)
+is elided — the subchain edge is drawn, its inner rules are not. Do not
+read the graph as a guarantee that a chain has no escape hatch.
+
 ### Introspection (`--list-modules`, `--describe`)
 
 `ferm --list-modules` prints every supported netfilter module (protocol,
