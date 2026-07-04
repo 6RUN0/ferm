@@ -55,12 +55,19 @@ def test_escape_ident_orders_backslash_before_quote() -> None:
 
 
 def test_header_context_scalar_and_array_and_collapsed() -> None:
-    assert _header_context(("domain", "ip6")) == (("ip6",), None, None, None)
+    assert _header_context(("domain", "ip6")) == (
+        ("ip6",),
+        None,
+        None,
+        None,
+        (),
+    )
     assert _header_context(("domain", "(", "ip", "ip6", ")")) == (
         ("ip", "ip6"),
         None,
         None,
         None,
+        (),
     )
     # collapsed one-line header: table + chain from one value_span
     assert _header_context(("table", "filter", "chain", "INPUT")) == (
@@ -68,6 +75,7 @@ def test_header_context_scalar_and_array_and_collapsed() -> None:
         ("filter",),
         ("INPUT",),
         None,
+        (),
     )
 
 
@@ -78,10 +86,18 @@ def test_header_context_policy_two_forms_and_guards() -> None:
         None,
         ("INPUT",),
         "DROP",
+        (),
     )
     # standalone in-block form: only the policy target, no chain here (M1)
-    assert _header_context(("policy", "DROP")) == (None, None, None, "DROP")
-    # mod policy is the match module, not a policy edge (M2)
+    assert _header_context(("policy", "DROP")) == (
+        None,
+        None,
+        None,
+        "DROP",
+        (),
+    )
+    # mod policy is the match module, not a policy edge (M2); the run stops
+    # at `mod`, so `mod policy dir in` is the inline rule tail.
     assert _header_context(
         ("chain", "INPUT", "mod", "policy", "dir", "in")
     ) == (
@@ -89,6 +105,7 @@ def test_header_context_policy_two_forms_and_guards() -> None:
         None,
         ("INPUT",),
         None,
+        ("mod", "policy", "dir", "in"),
     )
     # non-core policy target is not a policy edge (oracle errors on it)
     assert _header_context(("chain", "INPUT", "policy", "myuserchain")) == (
@@ -96,13 +113,28 @@ def test_header_context_policy_two_forms_and_guards() -> None:
         None,
         ("INPUT",),
         None,
+        (),
     )
 
 
 def test_header_context_skips_nonliteral_domain_table() -> None:
-    # $var lexes as two tokens '$','t'; skip -> no phantom cluster (F4)
-    assert _header_context(("domain", "$", "t")) == (None, None, None, None)
-    assert _header_context(("table", "$", "t")) == (None, None, None, None)
+    # $var lexes as two tokens '$','t'; the '$' name is skipped (no phantom
+    # cluster, F4) and the run stops at the trailing 't' (it is not a header
+    # keyword), leaving it as the inline tail.
+    assert _header_context(("domain", "$", "t")) == (
+        None,
+        None,
+        None,
+        None,
+        ("t",),
+    )
+    assert _header_context(("table", "$", "t")) == (
+        None,
+        None,
+        None,
+        None,
+        ("t",),
+    )
 
 
 def test_jump_edges_carry_kind_and_normalize_realgoto() -> None:
@@ -453,3 +485,119 @@ def test_function_def_body_attributed_to_chain() -> None:
     )
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "g", EdgeKind.JUMP) in c.edges
+
+
+def test_header_context_returns_inline_rule_tail() -> None:
+    # flat inline rule: the header prefix is the location run, the rest is
+    # the rule tail returned for edge emission. `mod policy` stops the run
+    # (mod is a rule keyword), so `policy` here is the match module.
+    assert _header_context(
+        ("chain", "INPUT", "proto", "udp", "dport", "domain", "ACCEPT")
+    ) == (
+        None,
+        None,
+        ("INPUT",),
+        None,
+        ("proto", "udp", "dport", "domain", "ACCEPT"),
+    )
+    assert _header_context(
+        ("chain", "INPUT", "mod", "policy", "dir", "in")
+    ) == (
+        None,
+        None,
+        ("INPUT",),
+        None,
+        ("mod", "policy", "dir", "in"),
+    )
+    # pure header (no tail) still yields an empty tail
+    assert _header_context(("table", "filter", "chain", "INPUT")) == (
+        None,
+        ("filter",),
+        ("INPUT",),
+        None,
+        (),
+    )
+
+
+def test_flat_inline_dport_domain_no_phantom_cluster() -> None:
+    # bug #1: `dport domain` (domain is /etc/services for DNS) must not be
+    # misread as a header keyword and fabricate a `domain=)`/`ACCEPT` cluster.
+    g = collect_graph(
+        Parser.parse_to_block("chain INPUT proto udp dport domain ACCEPT;")
+    )
+    keys = {(c.domain, c.table) for c in g.clusters}
+    assert keys == {("ip", "filter")}  # no phantom cluster
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "ACCEPT", EdgeKind.VERDICT) in c.edges
+
+
+def test_flat_inline_table_chain_verdict_edge() -> None:
+    # bug #2: the fused rule's verdict edge must not be dropped.
+    g = collect_graph(
+        Parser.parse_to_block(
+            "table filter chain INPUT proto tcp dport 22 ACCEPT;"
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "ACCEPT", EdgeKind.VERDICT) in c.edges
+
+
+def test_flat_inline_jump_edge_and_user_node() -> None:
+    g = collect_graph(
+        Parser.parse_to_block("chain INPUT jump foo; chain foo {}")
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "foo", EdgeKind.JUMP) in c.edges
+    assert dict(c.nodes)["foo"] == NodeKind.USER
+
+
+def test_flat_inline_quoted_jump_target() -> None:
+    # token-representation pin: the flat tail keeps its quoting, so the
+    # quoted target `"a\b"` names chain `a\b` and the renderer doubles the
+    # backslash (mirrors test_backslash_and_quote_escaping for braced form).
+    g = collect_graph(Parser.parse_to_block('chain INPUT jump "a\\b";'))
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "a\\b", EdgeKind.JUMP) in c.edges
+    assert '"a\\\\b"' in render_dot(g)
+
+
+def test_flat_inline_array_header_all_clusters() -> None:
+    g = collect_graph(
+        Parser.parse_to_block(
+            "domain (ip ip6) table (filter nat) chain OUTPUT jump x;chain x {}"
+        )
+    )
+    for domain in ("ip", "ip6"):
+        for table in ("filter", "nat"):
+            c = _cluster(g, domain, table)
+            assert ("OUTPUT", "x", EdgeKind.JUMP) in c.edges
+
+
+def test_flat_inline_no_body_stays_out_of_outer_chain() -> None:
+    # a flat rule ends in `;` with no sibling block, so the pending-subchain
+    # lookbehind must not fire on it: the following braced chain's body is
+    # its own, not re-attributed.
+    g = collect_graph(
+        Parser.parse_to_block(
+            "chain INPUT jump foo; chain foo { jump bar; } chain bar {}"
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("foo", "bar", EdgeKind.JUMP) in c.edges
+    assert ("INPUT", "bar", EdgeKind.JUMP) not in c.edges
+
+
+def test_corpus_stuart_has_no_garbage_clusters() -> None:
+    # regression for the `dport (domain)` line: no cluster may have a domain
+    # or table that is not a real family/table name.
+    from pathlib import Path
+
+    src = Path("tests/corpus/configs/stuart-ha-server.ferm").read_text(
+        encoding="utf-8"
+    )
+    g = collect_graph(Parser.parse_to_block(src))
+    valid_domains = {"ip", "ip6", "arp", "eb"}
+    for c in g.clusters:
+        assert c.domain in valid_domains, f"garbage domain {c.domain!r}"
+        assert ")" not in c.table, f"garbage table {c.table!r}"
+        assert c.table != "ACCEPT", f"garbage table {c.table!r}"

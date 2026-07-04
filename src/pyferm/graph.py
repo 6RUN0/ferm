@@ -132,25 +132,36 @@ def _header_context(
     tuple[str, ...] | None,
     tuple[str, ...] | None,
     str | None,
+    tuple[str, ...],
 ]:
     """
-    Extract header-context updates and the policy target.
+    Extract header-context updates, the policy target, and the rule tail.
 
-    Returns (new_domains, new_tables, new_chains, policy_target). Reads
-    every embedded ``domain``/``table``/``chain`` value and the policy
-    tail from one HeaderNode's ``(keyword, *value_span)``. A ``policy`` token
-    yields a target only when it is a header keyword (not preceded by ``mod``,
-    which introduces the policy *match module*) and the next token is a core
-    target (the oracle rejects any other policy, ferm:2647-2648). Non-literal
-    ``$var`` values are skipped (no phantom cluster). ``None`` fields keep the
-    inherited context.
+    Returns (new_domains, new_tables, new_chains, policy_target, tail). The
+    header prefix is a contiguous run of location specifiers -- the
+    ``domain``/``table``/``chain`` keywords (each + a scalar or ``(...)``
+    array value) and the ``policy`` fold -- taken from one HeaderNode's
+    ``(keyword, *value_span)``. Scanning STOPS at the first token that is
+    not a header keyword: in the flat inline form
+    (``chain INPUT proto tcp ... ACCEPT;``) the parser fuses the whole rule
+    into the header span, and everything after the location run is the
+    inline rule ``tail`` returned for edge emission. Stopping there also
+    stops an option value spelled like a header keyword (``dport domain``)
+    from being misread as a location, and it structurally excludes the
+    policy *match module*: ``mod`` is not a header keyword, so ``mod policy
+    dir in`` stops at ``mod`` and never treats ``policy`` as the fold. A
+    reached ``policy`` token yields a target only when the next token is a
+    core target (the oracle rejects any other policy, ferm:2647-2648).
+    Non-literal ``$var`` values are skipped (no phantom cluster). ``None``
+    context fields keep the inherited context. The tail is a slice of the
+    flattened string tokens, so it preserves quoting (``_str_tokens`` is
+    idempotent on plain strings) for the downstream ``_emit_span`` scanners.
     """
     toks = list(_str_tokens(span))  # type: ignore[arg-type]
     new_domains: tuple[str, ...] | None = None
     new_tables: tuple[str, ...] | None = None
     new_chains: tuple[str, ...] | None = None
     policy_target: str | None = None
-    prev: str | None = None
     i = 0
     while i < len(toks):
         tok = toks[i]
@@ -163,16 +174,16 @@ def _header_context(
                     new_tables = values
                 else:
                     new_chains = values
-            prev, i = tok, j
+            i = j
             continue
-        if tok == "policy" and prev != "mod":
+        if tok == "policy":
             nxt = toks[i + 1] if i + 1 < len(toks) else None
             if nxt in _CORE_TARGETS:
                 policy_target = nxt
-            prev, i = tok, i + 2
+            i += 2
             continue
-        prev, i = tok, i + 1
-    return new_domains, new_tables, new_chains, policy_target
+        break  # first non-header token: the inline rule tail starts here
+    return new_domains, new_tables, new_chains, policy_target, tuple(toks[i:])
 
 
 _KIND_BY_JUMP_KW = {
@@ -387,7 +398,7 @@ def _walk(
             continue
         pending_subchain = None
         if isinstance(node, HeaderNode):
-            nd, nt, nc, policy_target = _header_context(
+            nd, nt, nc, policy_target, tail = _header_context(
                 (node.keyword, *node.value_span)
             )
             if nd is not None:
@@ -409,6 +420,11 @@ def _walk(
                             ca.edges.add((src, policy_target, EdgeKind.POLICY))
                             ca.names.add(src)
                             ca.names.add(policy_target)
+            if tail and c:
+                # flat inline form: the fused rule tail is a rule in the
+                # current chain, routed through the same edge/verdict path
+                # as a braced rule (context updates already applied above).
+                _emit_span(acc, d, t or ("filter",), c, tail)
         elif isinstance(node, (RuleNode, DefNode, SubchainNode)) and c:
             eff_tables = t or ("filter",)
             scan = _scan_span(node)
