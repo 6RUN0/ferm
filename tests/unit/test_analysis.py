@@ -682,6 +682,75 @@ def test_cycle_through_non_last_edge_of_a_branching_chain() -> None:
     assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
 
 
+def test_cycle_dfs_backtracks_past_a_dead_end() -> None:
+    # B jumps to a dead-end A (sorts first) AND self-loops. Exhausting A's
+    # edges must backtrack (pop + continue), not abort the whole DFS, or the
+    # B -> B loop on the next edge is missed.
+    assert _cycles("table filter chain B { jump A; jump B; }") == [
+        "jump cycle: B -> B"
+    ]
+
+
+def test_cycle_dfs_finds_second_cycle_from_same_start() -> None:
+    # A has a self-loop AND a two-cycle through B. Finding the first cycle
+    # must not stop the DFS from the same start; both must be reported.
+    cfg = "table filter { chain A { jump A; jump B; } chain B { jump A; } }"
+    assert _cycles(cfg) == [
+        "jump cycle: A -> A",
+        "jump cycle: A -> B -> A",
+    ]
+
+
+def test_cycle_dfs_continues_past_an_already_visited_node() -> None:
+    # C's later self-loop edge is only reached if hitting an already-visited
+    # node (B) skips that one edge rather than aborting the DFS.
+    cfg = (
+        "table filter {"
+        " chain C { jump A; jump B; jump C; } chain A { jump B; } }"
+    )
+    assert _cycles(cfg) == ["jump cycle: C -> C"]
+
+
+def test_cycle_through_an_intermediate_on_path_node() -> None:
+    # a full 3-node digraph: cycles that close on a non-start node (e.g.
+    # B -> C -> B) are only found when on_path tracks every node on the
+    # walk, not just the start.
+    cfg = (
+        "table filter {"
+        " chain A { jump B; jump C; }"
+        " chain B { jump A; jump C; }"
+        " chain C { jump A; jump B; } }"
+    )
+    assert "jump cycle: B -> C -> B" in _cycles(cfg)
+
+
+def test_overlapping_cycles_are_summarized_not_multiplied() -> None:
+    # the per-start visited set summarizes overlapping cycles: this graph
+    # yields exactly three, not one per distinct path (pins the documented
+    # summarization contract).
+    cfg = (
+        "table filter {"
+        " chain A { jump B; jump C; }"
+        " chain B { jump A; jump D; }"
+        " chain C { jump B; }"
+        " chain D { jump A; } }"
+    )
+    assert _cycles(cfg) == [
+        "jump cycle: A -> B -> A",
+        "jump cycle: A -> B -> D -> A",
+        "jump cycle: A -> C -> B -> A",
+    ]
+
+
+def test_malformed_def_headers_do_not_raise() -> None:
+    # a @def with a '&' but no valid &name, or a bareword/empty @def, has no
+    # declarable name; the analyzers must return cleanly (the name helpers
+    # fall back to None), not raise StopIteration.
+    for cfg in ("@def foo = 1;", "@def & = 1;", "@def &;", "@def = 1;"):
+        assert find_unused_defs(_tree(cfg)) == []
+        assert find_duplicate_definitions(_tree(cfg)) == []
+
+
 def test_duplicate_var_def_with_function_call_rhs() -> None:
     # The '&' in the RHS call must not re-classify the $-var def as a
     # function def: the declared name is decided LEFT of '=' only.

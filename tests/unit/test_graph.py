@@ -587,6 +587,161 @@ def test_flat_inline_no_body_stays_out_of_outer_chain() -> None:
     assert ("INPUT", "bar", EdgeKind.JUMP) not in c.edges
 
 
+def test_bare_subchain_without_rule_prefix() -> None:
+    # A bare `@subchain "sc" { ... }` (no rule prefix) parses to a
+    # SubchainNode, exercising the _scan_span SubchainNode branch that the
+    # rule-prefixed form never reaches: only the pre-`{` head (the subchain
+    # edge + name) is attributed to the outer chain; the body is elided.
+    g = collect_graph(
+        Parser.parse_to_block('chain INPUT { @subchain "sc" { ACCEPT; } }')
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "sc", EdgeKind.SUBCHAIN) in c.edges
+    assert dict(c.nodes)["sc"] == NodeKind.USER
+    assert ("INPUT", "ACCEPT", EdgeKind.VERDICT) not in c.edges  # body elided
+
+
+def test_scan_verdicts_verdict_after_param_group() -> None:
+    # The depth-tracked skip of a `(...)` option value must stop exactly at
+    # the matching `)` and still surface a trailing verdict.
+    assert _scan_verdicts(("ctstate", "(", "NEW", ")", "ACCEPT"), "ip") == [
+        "ACCEPT"
+    ]
+
+
+def test_scan_verdicts_nested_empty_and_unclosed_groups() -> None:
+    # Nested groups: the inner ACCEPT is inside the skipped value, the outer
+    # `)` closes depth; a value after a balanced nest is a real verdict.
+    assert (
+        _scan_verdicts(("ctstate", "(", "(", "NEW", ")", "ACCEPT", ")"), "ip")
+        == []
+    )
+    assert _scan_verdicts(
+        ("ctstate", "(", "(", "NEW", ")", ")", "ACCEPT"), "ip"
+    ) == ["ACCEPT"]
+    # empty group, then a verdict
+    assert _scan_verdicts(("ctstate", "(", ")", "ACCEPT"), "ip") == ["ACCEPT"]
+    # unclosed group must not IndexError, and swallows the rest
+    assert _scan_verdicts(("ctstate", "(", "NEW", "ACCEPT"), "ip") == []
+
+
+def test_scan_verdicts_jump_target_and_scalar_value_skips() -> None:
+    # jump target skipped, trailing verdict kept (rule 1 advances by two)
+    assert _scan_verdicts(("jump", "foo", "ACCEPT"), "ip") == ["ACCEPT"]
+    # i>0 guard: a verdict at index 0 has no previous token to misread
+    assert _scan_verdicts(("ACCEPT", "ctstate"), "ip") == ["ACCEPT"]
+    # scalar option value after a params keyword is skipped by exactly one
+    assert _scan_verdicts(("saddr", "1.2.3.4", "ACCEPT"), "ip") == ["ACCEPT"]
+
+
+def test_family_targets_family_absent_from_target_defs() -> None:
+    # arp has no key in TARGET_DEFS; the default must be an empty mapping,
+    # not None (frozenset(None) would raise).
+    assert "ACCEPT" in _family_targets("arp")
+    g = collect_graph(
+        Parser.parse_to_block("domain arp chain INPUT { ACCEPT; }")
+    )
+    c = _cluster(g, "arp", "filter")
+    assert ("INPUT", "ACCEPT", EdgeKind.VERDICT) in c.edges
+
+
+def test_walk_bare_block_is_not_a_subchain_body() -> None:
+    # pending_subchain starts as None; a leading bare `{ ... }` block must be
+    # walked in the outer chain, not mistaken for a subchain body.
+    g = collect_graph(
+        Parser.parse_to_block("chain INPUT { { jump foo; } } chain foo {}")
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "foo", EdgeKind.JUMP) in c.edges
+
+
+def test_walk_subchain_body_keeps_inherited_table() -> None:
+    # a rule-prefixed subchain body in a non-filter table must recurse with
+    # the inherited table, not fall back to filter.
+    g = collect_graph(
+        Parser.parse_to_block(
+            "table nat { chain PREROUTING {"
+            ' proto tcp @subchain "sc" { jump foo; } } chain foo {} }'
+        )
+    )
+    nat = _cluster(g, "ip", "nat")
+    assert ("sc", "foo", EdgeKind.JUMP) in nat.edges
+    filt = [c for c in g.clusters if c.table == "filter"]
+    assert not any(("sc", "foo", EdgeKind.JUMP) in c.edges for c in filt)
+
+
+def test_walk_statement_after_rule_subchain_is_kept() -> None:
+    # the subchain-body branch must `continue`, not `break`: a statement
+    # after the rule-prefixed subchain block still belongs to the chain.
+    g = collect_graph(
+        Parser.parse_to_block(
+            'chain INPUT { proto tcp @subchain "sc" { ACCEPT; } jump after; }'
+            "chain after {}"
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "after", EdgeKind.JUMP) in c.edges
+
+
+def test_walk_policy_in_non_filter_table() -> None:
+    # a policy edge in a nat chain must land in the nat cluster: the
+    # effective-table fallback is `t or (filter,)`, so a set `t` wins.
+    g = collect_graph(
+        Parser.parse_to_block("table nat chain POSTROUTING { policy ACCEPT; }")
+    )
+    nat = _cluster(g, "ip", "nat")
+    assert ("POSTROUTING", "ACCEPT", EdgeKind.POLICY) in nat.edges
+
+
+def test_walk_chainless_flat_rule_makes_no_cluster() -> None:
+    # a flat inline rule with no chain context emits nothing (`tail and c`);
+    # it must not fabricate an empty cluster.
+    g = collect_graph(Parser.parse_to_block("table filter proto tcp ACCEPT;"))
+    assert g.clusters == ()
+
+
+def test_header_context_truncated_spans_do_not_index_error() -> None:
+    # degenerate/truncated header spans must return cleanly, never IndexError
+    # past the token list end (bound guards on every toks[i] access).
+    assert _header_context(("policy",)) == (None, None, None, None, ())
+    assert _header_context(("chain",)) == (None, None, None, None, ())
+    assert _header_context(("domain", "(", "ip")) == (
+        ("ip",),
+        None,
+        None,
+        None,
+        (),
+    )
+    assert list(_jump_edges(("jump",))) == []
+
+
+def test_header_context_array_var_member_is_dropped() -> None:
+    # a `$var` member inside a `(...)` array value is non-literal and must be
+    # dropped, leaving only the literal member (no phantom `$` cluster).
+    assert _header_context(("domain", "(", "$", "t", ")")) == (
+        ("t",),
+        None,
+        None,
+        None,
+        (),
+    )
+
+
+def test_header_context_open_brace_is_not_a_chain_name() -> None:
+    # `chain {` (no name) must leave new_chains None; the `{` boundary token
+    # is not captured as a chain name.
+    _, _, chains, _, _ = _header_context(("chain", "{"))
+    assert chains is None
+
+
+def test_header_context_policy_then_header_keyword() -> None:
+    # after `policy TARGET` the scan advances by exactly two and resumes, so
+    # a following `chain FOO` redeclares the chain and empties the tail.
+    assert _header_context(
+        ("chain", "INPUT", "policy", "DROP", "chain", "FOO")
+    ) == (None, None, ("FOO",), "DROP", ())
+
+
 def test_corpus_stuart_has_no_garbage_clusters() -> None:
     # regression for the `dport (domain)` line: no cluster may have a domain
     # or table that is not a real family/table name.
