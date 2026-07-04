@@ -48,6 +48,7 @@ from pyferm.backend.nft import TOOL_NFT, NftBackend, nft_family
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
+from pyferm.graph import collect_graph, render_d2, render_dot
 from pyferm.introspect import describe, list_modules
 from pyferm.parser import Parser
 from pyferm.plan import (
@@ -118,6 +119,8 @@ Options:
      --lint-fail-level Set the --lint gating threshold (error|warning|info)
      --list-modules    List supported netfilter modules and keywords
      --describe NAME   Show the options of one module, option or keyword
+     --graph           Print the chain control-flow graph (d2 or DOT)
+     --graph-format F  Graph renderer: dot or d2 (default d2)
 
 """
 
@@ -195,6 +198,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Port-only: registry/keyword introspection (see _run_introspection).
     parser.add_argument("--list-modules", action="store_true")
     parser.add_argument("--describe", default=None)
+    # Port-only: read-only chain control-flow graph (see _run_graph).
+    parser.add_argument("--graph", action="store_true")
+    parser.add_argument("--graph-format", choices=("dot", "d2"), default=None)
     parser.add_argument("files", nargs="*")
     return parser
 
@@ -799,6 +805,53 @@ def _run_introspection(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Namespace attrs the --graph guard must not reject (its own flags,
+#: earlier-dispatched help/version, and files -- guarded separately).
+_GRAPH_EXEMPT: Final = frozenset(
+    {"graph", "graph_format", "help", "version", "files"}
+)
+
+
+def _run_graph(args: argparse.Namespace) -> int:
+    """
+    Run ``--graph`` (port-only, eval-free, read-only).
+
+    Rejects any other flag via the default-Namespace diff (so future flags
+    auto-reject), carries its own single-file guard -- it dispatches before
+    _resolve_options and cannot inherit the generic len(files) check -- and
+    refuses a trailing-``|`` pipe path like --lint. Parses one config with
+    parse_to_block, builds the graph, and renders d2 (default) or DOT.
+    """
+    defaults = vars(_build_parser().parse_args([]))
+    for attr, default in defaults.items():
+        if attr in _GRAPH_EXEMPT:
+            continue
+        if getattr(args, attr) != default:
+            flag = _INTROSPECTION_FLAG_NAMES.get(
+                attr, "--" + attr.replace("_", "-")
+            )
+            raise FermError(f"ferm --graph cannot be combined with {flag}")
+    if len(args.files) != 1:
+        raise FermError("ferm --graph requires exactly one input file")
+    config_path = args.files[0]
+    if config_path.endswith("|"):
+        raise FermError("ferm --graph cannot read from a pipe command")
+    script = open_script(config_path, None)
+    try:
+        handle = script.handle
+        if handle is None:  # open_script always sets it; guard for the type
+            raise internal_error("open_script returned no handle")
+        config = handle.read()
+    finally:
+        script.close()
+    block = Parser.parse_to_block(config)
+    graph = collect_graph(block)
+    fmt = args.graph_format or "d2"
+    text = render_dot(graph) if fmt == "dot" else render_d2(graph)
+    sys.stdout.write(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the ferm CLI (Perl's top-level program, ``:620-819``)."""
     # before any write: argparse renders usage/errors through these streams
@@ -837,6 +890,12 @@ def _main(argv: list[str] | None = None) -> int:
     # _resolve_options so no apply-path validation (tty, timeout) runs.
     if args.list_modules or args.describe is not None:
         return _run_introspection(args)
+
+    # --graph is a terminal read-only mode at the same seam as introspection.
+    if args.graph_format is not None and not args.graph:
+        raise FermError("ferm --graph-format requires --graph")
+    if args.graph:
+        return _run_graph(args)
 
     options = _resolve_options(args)
 

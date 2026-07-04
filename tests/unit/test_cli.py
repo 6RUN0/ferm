@@ -14,6 +14,7 @@ from pyferm import etckeeper
 from pyferm.backend.iptables import IptablesBackend
 from pyferm.cli import (
     _build_parser,
+    _main,
     _make_io,
     _resolve_options,
     _setup_streams,
@@ -1930,3 +1931,47 @@ def test_commit_hook_swallows_failure_and_warns(
     # Must not raise.
     _commit_history("f.conf", {}, Options(), IptablesBackend(), None)
     assert "etckeeper commit skipped: git exploded" in capsys.readouterr().err
+
+
+def test_graph_default_format_is_d2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = tmp_path / "f.ferm"
+    cfg.write_text("chain INPUT { policy DROP; }\n", encoding="latin-1")
+    assert _main(["--graph", str(cfg)]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith('ip__filter: "ip/filter" {')
+    assert out.endswith("}\n")
+
+
+def test_graph_dot_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = tmp_path / "f.ferm"
+    cfg.write_text("chain INPUT { policy DROP; }\n", encoding="latin-1")
+    assert _main(["--graph", "--graph-format", "dot", str(cfg)]) == 0
+    assert capsys.readouterr().out.startswith("digraph ferm {")
+
+
+def test_graph_format_requires_graph(tmp_path: Path) -> None:
+    with pytest.raises(FermError, match="requires --graph"):
+        _main(["--graph-format", "dot", str(tmp_path / "f.ferm")])
+
+
+def test_graph_rejects_extra_mode_and_pipe_and_filecount(
+    tmp_path: Path,
+) -> None:
+    cfg = tmp_path / "f.ferm"
+    cfg.write_text("chain INPUT {}\n", encoding="latin-1")
+    with pytest.raises(FermError, match="cannot be combined with --lint"):
+        _main(["--graph", "--lint", str(cfg)])
+    with pytest.raises(FermError, match="requires exactly one input file"):
+        _main(["--graph"])
+    with pytest.raises(FermError, match="pipe command"):
+        _main(["--graph", "cat foo |"])
+
+
+def test_list_modules_wins_over_graph_format() -> None:
+    # guard order: introspection dispatches first (spec §7)
+    with pytest.raises(FermError, match="--list-modules cannot be combined"):
+        _main(["--list-modules", "--graph-format", "dot"])
