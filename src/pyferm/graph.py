@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from ._treescan import (
     _CHAIN_VALUE_BOUNDARY,
+    _JUMP_KW,
     _child_blocks,
     _declared_chains,
     _str_tokens,
@@ -242,9 +243,44 @@ def _acc_for(
     )
 
 
-def _scan_verdicts(span: object, family: str) -> list[str]:  # noqa: ARG001
-    """Recognised verdict target tokens in a span (Task 6 fills this in)."""
-    return []
+def _scan_verdicts(span: object, family: str) -> list[str]:
+    """
+    Recognised verdict target tokens in a span, with FP suppression.
+
+    Emits any token in the family's target set as a verdict leaf, except:
+    (1) the token right after a jump/goto/realgoto keyword (that is the
+    jump target); (2) an option value whose previous significant token is
+    a registry keyword with params -- for the ``(...)`` array form the whole
+    group is skipped; (3) quoted candidates never match a bare target name.
+    """
+    targets = _family_targets(family)
+    params_keys = _KW_HAS_PARAMS.get(family, frozenset())
+    toks = list(_str_tokens(span))  # type: ignore[arg-type]
+    out: list[str] = []
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok in _JUMP_KW:  # rule 1: skip the jump keyword and its target
+            i += 2
+            continue
+        prev = toks[i - 1] if i > 0 else None
+        if prev in params_keys:  # rule 2: option value
+            if tok == "(":
+                depth = 1
+                i += 1
+                while i < len(toks) and depth:
+                    if toks[i] == "(":
+                        depth += 1
+                    elif toks[i] == ")":
+                        depth -= 1
+                    i += 1
+                continue
+            i += 1
+            continue
+        if tok in targets:  # rule 3: a quoted token is not a bare target
+            out.append(tok)
+        i += 1
+    return out
 
 
 def _scan_span(

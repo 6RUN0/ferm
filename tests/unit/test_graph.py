@@ -15,6 +15,7 @@ from pyferm.graph import (
     _fold_family,
     _header_context,
     _jump_edges,
+    _scan_verdicts,
     collect_graph,
 )
 from pyferm.parser import Parser
@@ -169,3 +170,41 @@ def test_collect_graph_no_cross_table_edges() -> None:
     nat = _cluster(g, "ip", "nat")
     assert all(dst != "b" for _, dst, _ in filt.edges)  # no leak across tables
     assert dict(nat.nodes)["b"] == NodeKind.USER
+
+
+def test_scan_verdicts_basic_and_suppressions() -> None:
+    assert _scan_verdicts(("LOG", ";"), "ip") == ["LOG"]
+    assert _scan_verdicts(("ACCEPT", ";"), "ip") == ["ACCEPT"]
+    # rule 1: token after a jump keyword is the jump target, not a verdict
+    assert _scan_verdicts(("goto", "LOG", ";"), "ip") == []
+    # rule 2: option value after a params keyword is skipped (whole group)
+    assert (
+        _scan_verdicts(
+            ("mod", "conntrack", "ctstate", "(", "DNAT", "SNAT", ")"), "ip"
+        )
+        == []
+    )
+    # rule 2 (eb): redirect-target ACCEPT -> ACCEPT is the value, suppressed
+    assert _scan_verdicts(("redirect-target", "ACCEPT"), "eb") == []
+    # rule 3: a quoted candidate is not a bare target token
+    assert _scan_verdicts(("log-prefix", '"DROP"'), "ip") == []
+    # non-verdict conntrack states never match
+    assert _scan_verdicts(("mod", "conntrack", "ctstate", "NEW"), "ip") == []
+
+
+def test_collect_graph_verdict_leaf_and_nonterminal() -> None:
+    g = collect_graph(Parser.parse_to_block("chain INPUT { LOG; DROP; }"))
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "LOG", EdgeKind.VERDICT) in c.edges
+    assert ("INPUT", "DROP", EdgeKind.VERDICT) in c.edges
+    assert (
+        dict(c.nodes)["LOG"] == NodeKind.VERDICT
+    )  # nonterminal drawn as leaf
+
+
+def test_collect_graph_pinned_nonregistry_boundary() -> None:
+    # spec §4 pinned boundary: value after a NON-registry key is NOT
+    # suppressed, so a value spelled like a target false-fires a leaf.
+    g = collect_graph(Parser.parse_to_block("chain INPUT { dport DROP; }"))
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "DROP", EdgeKind.VERDICT) in c.edges  # accepted boundary
