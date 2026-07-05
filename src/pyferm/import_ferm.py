@@ -161,6 +161,9 @@ def format_array(value: object) -> str:
     if isinstance(value, Multi):
         items: list[Value] = value.values
     elif isinstance(value, list):
+        # Perl "deref any ref as an array": the input is deliberately typed
+        # object, so isinstance narrows only to list[Unknown]; the cast
+        # asserts the element type the walker cannot recover.  Load-bearing.
         items = cast("list[Value]", value)
     else:
         return ferm_escape(value)
@@ -243,6 +246,10 @@ def _canon(value: object) -> object:
         )
     if isinstance(value, Rule):
         return _canon_rule(value, value.match)
+    # _canon walks heterogeneous Perl-shaped data (Data::Dumper-style); the
+    # input is genuinely object, so these casts merely name the element types
+    # isinstance cannot recover.  A structured input type would only relocate
+    # them to the data boundary, not remove them -- kept by design.
     if isinstance(value, list):
         return (
             "array",

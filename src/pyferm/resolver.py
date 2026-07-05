@@ -43,6 +43,13 @@ _IPV6_RE: Final[re.Pattern[str]] = re.compile(
     r"[0-9a-fA-F]*:[0-9a-fA-F:]*:[0-9a-fA-F:]*"
 )
 
+#: Net::DNS ``errorstring`` values the resolver contract hinges on: a silent
+#: miss (NXDOMAIN / NOERROR-with-no-answer -> empty result) versus a loud
+#: failure (SERVFAIL) that must not silently drop a rule.
+_DNS_NXDOMAIN: Final[str] = "NXDOMAIN"
+_DNS_NOERROR: Final[str] = "NOERROR"
+_DNS_SERVFAIL: Final[str] = "SERVFAIL"
+
 
 def identify_numeric_address(value: str) -> str | None:
     """
@@ -156,13 +163,15 @@ class ZonefileResolver:
         name = _canonical_name(hostname)
         all_records = self.records.get(name)
         if all_records is None:
-            return SearchResult(found=False, answer=[], errorstring="NXDOMAIN")
+            return SearchResult(
+                found=False, answer=[], errorstring=_DNS_NXDOMAIN
+            )
         matching = [rr for rr in all_records if rr.type == rrtype]
         if matching:
             return SearchResult(
-                found=True, answer=matching, errorstring="NOERROR"
+                found=True, answer=matching, errorstring=_DNS_NOERROR
             )
-        return SearchResult(found=False, answer=[], errorstring="NOERROR")
+        return SearchResult(found=False, answer=[], errorstring=_DNS_NOERROR)
 
 
 class SystemResolver:
@@ -176,12 +185,16 @@ class SystemResolver:
         try:
             answer = dns.resolver.resolve(hostname, rrtype, search=True)
         except dns.resolver.NXDOMAIN:
-            return SearchResult(found=False, answer=[], errorstring="NXDOMAIN")
+            return SearchResult(
+                found=False, answer=[], errorstring=_DNS_NXDOMAIN
+            )
         except dns.resolver.NoAnswer:
-            return SearchResult(found=False, answer=[], errorstring="NOERROR")
+            return SearchResult(
+                found=False, answer=[], errorstring=_DNS_NOERROR
+            )
         except dns.exception.DNSException as exc:
             return SearchResult(
-                found=False, answer=[], errorstring=str(exc) or "SERVFAIL"
+                found=False, answer=[], errorstring=str(exc) or _DNS_SERVFAIL
             )
 
         records: list[ResourceRecord] = []
@@ -189,7 +202,7 @@ class SystemResolver:
             record = _make_record(rrtype, str(rr).split())
             if record is not None:
                 records.append(record)
-        return SearchResult(bool(records), records, "NOERROR")
+        return SearchResult(bool(records), records, _DNS_NOERROR)
 
 
 class StubResolver:
@@ -236,7 +249,7 @@ class StubResolver:
             seen.add(address)
             records.append(ResourceRecord(rrtype, address))
         return SearchResult(
-            found=bool(records), answer=records, errorstring="NOERROR"
+            found=bool(records), answer=records, errorstring=_DNS_NOERROR
         )
 
 
@@ -260,10 +273,10 @@ _NOERROR_EAI: Final[set[int]] = {
 def _gaierror_result(exc: socket.gaierror) -> SearchResult:
     """Map a getaddrinfo failure onto SearchResult's silent/loud contract."""
     if exc.errno in _NXDOMAIN_EAI:
-        return SearchResult(found=False, answer=[], errorstring="NXDOMAIN")
+        return SearchResult(found=False, answer=[], errorstring=_DNS_NXDOMAIN)
     if exc.errno in _NOERROR_EAI:
-        return SearchResult(found=False, answer=[], errorstring="NOERROR")
-    return SearchResult(found=False, answer=[], errorstring="SERVFAIL")
+        return SearchResult(found=False, answer=[], errorstring=_DNS_NOERROR)
+    return SearchResult(found=False, answer=[], errorstring=_DNS_SERVFAIL)
 
 
 def _canonical_name(name: str) -> str:
@@ -408,7 +421,7 @@ def resolve(
         outcome = resolver.search(host, rrtype)
         if not outcome.found:
             errorstring = outcome.errorstring
-            if not errorstring or errorstring in ("NOERROR", "NXDOMAIN"):
+            if not errorstring or errorstring in (_DNS_NOERROR, _DNS_NXDOMAIN):
                 continue
             error(f"DNS query for '{host}' failed: {errorstring}")
         for record in outcome.answer:

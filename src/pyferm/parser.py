@@ -1762,6 +1762,10 @@ class Parser:
                 and isinstance(following, str)
                 and following in variables
             ):
+                # deliberate Value->Token bridge (Perl list-context splice):
+                # an argument value is spliced back into the token stream.
+                # Value is wider than Token (SetRef/nested lists), so no
+                # upstream type makes this safe -- the cast is load-bearing.
                 expanded = cast(
                     "list[Token]", list(to_array(variables[following]))
                 )
