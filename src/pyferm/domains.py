@@ -233,11 +233,11 @@ _LEGACY_RE: Final[re.Pattern[str]] = re.compile(r"^(.*tables)(.*)$")
 #: Captures a family's previous ruleset once its tools are resolved --
 #: the cli's closure over :meth:`pyferm.backend.base.Backend.capture_previous`
 #: (backend + options + execute + read_save folded at the wiring point).
-CapturePrevious = Callable[[str, "DomainInfo"], None]
+CapturePrevious = Callable[[Family, "DomainInfo"], None]
 #: Builds a family's ``--shell`` anti-lockout snapshot -- the cli's closure
 #: over :meth:`pyferm.backend.base.Backend.shell_snapshot`.  Injected (not
 #: imported) so this module keeps no backend symbol (finding C2).
-ShellSnapshotBuilder = Callable[[str, "DomainInfo"], "ShellSnapshot | None"]
+ShellSnapshotBuilder = Callable[[Family, "DomainInfo"], "ShellSnapshot | None"]
 #: Writes *raw* text to the ``--lines``/``--shell`` sink (Perl ``print
 #: LINES``).  The caller supplies any trailing newline, mirroring Perl's
 #: ``print`` -- ``execute_fast`` prints a multi-line save blob verbatim
@@ -411,11 +411,11 @@ class ShellSnapshot:
 
 
 def initialize_domain(
-    domain: str,
-    domains: dict[str, DomainInfo],
+    domain: Family,
+    domains: dict[Family, DomainInfo],
     options: Options,
     *,
-    resolve_tools: Callable[[str], dict[str, str]] | None = None,
+    resolve_tools: Callable[[Family], dict[str, str]] | None = None,
     capture_previous: CapturePrevious | None = None,
     emit_line: LineEmitter | None = None,
     shell_snapshot: ShellSnapshotBuilder | None = None,
@@ -435,8 +435,6 @@ def initialize_domain(
     domain_info = domains.setdefault(domain, DomainInfo())
     if domain_info.initialized:
         return
-
-    domain = parse_family(domain)
 
     if resolve_tools is not None:
         names = resolve_tools(domain)

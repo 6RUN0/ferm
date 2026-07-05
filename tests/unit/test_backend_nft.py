@@ -1,7 +1,7 @@
 # tests/unit/test_backend_nft.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -134,29 +134,30 @@ def test_render_comment_rejects_over_limit() -> None:
 # nft_family + map_base_chain
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import map_base_chain, nft_family  # noqa: E402
+from pyferm.domains import Family  # noqa: E402
 
 
 def test_nft_family_maps_1to1() -> None:
-    assert nft_family("ip") == "ip"
-    assert nft_family("ip6") == "ip6"
-    assert nft_family("arp") == "arp"
-    assert nft_family("eb") == "bridge"
+    assert nft_family(Family.IP) == "ip"
+    assert nft_family(Family.IP6) == "ip6"
+    assert nft_family(Family.ARP) == "arp"
+    assert nft_family(Family.EB) == "bridge"
 
 
 def test_nft_family_unknown_is_error() -> None:
     with pytest.raises(FermError, match="not yet supported"):
-        nft_family("bogus")
+        nft_family(cast("Family", "bogus"))
 
 
 def test_map_base_chain_known_pairs() -> None:
-    spec = map_base_chain("ip", "filter", "INPUT")
+    spec = map_base_chain(Family.IP, "filter", "INPUT")
     assert spec == ("filter", "input", 0)
-    assert map_base_chain("ip", "nat", "POSTROUTING") == (
+    assert map_base_chain(Family.IP, "nat", "POSTROUTING") == (
         "nat",
         "postrouting",
         100,
     )
-    assert map_base_chain("ip", "mangle", "OUTPUT") == (
+    assert map_base_chain(Family.IP, "mangle", "OUTPUT") == (
         "route",
         "output",
         -150,
@@ -165,9 +166,9 @@ def test_map_base_chain_known_pairs() -> None:
 
 def test_map_base_chain_unmappable_is_error() -> None:
     with pytest.raises(FermError, match="not yet supported"):
-        map_base_chain("eb", "broute", "BROUTING")
+        map_base_chain(Family.EB, "broute", "BROUTING")
     with pytest.raises(FermError, match="not yet supported"):
-        map_base_chain("arp", "nat", "PREROUTING")
+        map_base_chain(Family.ARP, "nat", "PREROUTING")
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +185,7 @@ def test_build_chains_splits_builtin_and_user() -> None:
             "mychain": ChainInfo(),
         }
     )
-    chains = build_chains("ip", "filter", table)
+    chains = build_chains(Family.IP, "filter", table)
     by_name = {c.name: c for c in chains}
     assert isinstance(by_name["INPUT"], NftBaseChain)
     assert by_name["INPUT"].policy == "drop"
@@ -195,7 +196,7 @@ def test_build_chains_splits_builtin_and_user() -> None:
 
 def test_build_chains_sorted_for_determinism() -> None:
     table = TableInfo(chains={"zeta": ChainInfo(), "alpha": ChainInfo()})
-    names = [c.name for c in build_chains("ip", "filter", table)]
+    names = [c.name for c in build_chains(Family.IP, "filter", table)]
     assert names == ["alpha", "zeta"]
 
 
@@ -206,10 +207,10 @@ def test_nft_chain_name_disambiguates_non_filter() -> None:
     assert nft_chain_name("mangle", "INPUT") == "mangle_INPUT"
     # mangle/INPUT becomes a distinct base chain, not a collision with filter.
     table = TableInfo(chains={"INPUT": ChainInfo()})
-    chain = build_chains("ip", "mangle", table)[0]
+    chain = build_chains(Family.IP, "mangle", table)[0]
     # mangle/OUTPUT -> route hook (the most error-prone mapping).
     table_out = TableInfo(chains={"OUTPUT": ChainInfo()})
-    chain_out = build_chains("ip", "mangle", table_out)[0]
+    chain_out = build_chains(Family.IP, "mangle", table_out)[0]
     assert isinstance(chain_out, NftBaseChain)
     assert chain_out.type == "route"
 
@@ -298,40 +299,46 @@ def _opt(
 
 def test_translate_match_addresses_and_ifaces() -> None:
     assert (
-        translate_match("ip", _opt("source", "10.0.0.1"), None)
+        translate_match(Family.IP, _opt("source", "10.0.0.1"), None)
         == "ip saddr 10.0.0.1"
     )
     assert (
-        translate_match("ip6", _opt("destination", "fe80::1"), None)
+        translate_match(Family.IP6, _opt("destination", "fe80::1"), None)
         == "ip6 daddr fe80::1"
     )
     assert (
-        translate_match("ip", _opt("in-interface", "eth0"), None)
+        translate_match(Family.IP, _opt("in-interface", "eth0"), None)
         == 'iifname "eth0"'
     )
     assert (
-        translate_match("ip", _opt("out-interface", "eth1"), None)
+        translate_match(Family.IP, _opt("out-interface", "eth1"), None)
         == 'oifname "eth1"'
     )
 
 
 def test_translate_match_ports_use_rule_protocol() -> None:
-    assert translate_match("ip", _opt("dport", "22"), "tcp") == "tcp dport 22"
-    assert translate_match("ip", _opt("sport", "53"), "udp") == "udp sport 53"
+    assert (
+        translate_match(Family.IP, _opt("dport", "22"), "tcp")
+        == "tcp dport 22"
+    )
+    assert (
+        translate_match(Family.IP, _opt("sport", "53"), "udp")
+        == "udp sport 53"
+    )
 
 
 def test_translate_match_port_without_protocol_errors() -> None:
     with pytest.raises(FermError, match="needs a tcp/udp protocol"):
-        translate_match("ip", _opt("dport", "22"), None)
+        translate_match(Family.IP, _opt("dport", "22"), None)
 
 
 def test_translate_match_negation() -> None:
     assert (
-        translate_match("ip", _opt("source", Negated("10.0.0.1")), None)
+        translate_match(Family.IP, _opt("source", Negated("10.0.0.1")), None)
         == "ip saddr != 10.0.0.1"
     )
     assert (
-        translate_match("ip", _opt("dport", Negated("23")), "tcp")
+        translate_match(Family.IP, _opt("dport", Negated("23")), "tcp")
         == "tcp dport != 23"
     )
 
@@ -339,19 +346,23 @@ def test_translate_match_negation() -> None:
 def test_translate_match_state_and_limit() -> None:
     assert (
         translate_match(
-            "ip", _opt("state", "ESTABLISHED,RELATED", module="state"), None
+            Family.IP,
+            _opt("state", "ESTABLISHED,RELATED", module="state"),
+            None,
         )
         == "ct state established,related"
     )
     assert (
-        translate_match("ip", _opt("limit", "3/second", module="limit"), None)
+        translate_match(
+            Family.IP, _opt("limit", "3/second", module="limit"), None
+        )
         == "limit rate 3/second"
     )
 
 
 def test_translate_match_uncovered_is_error() -> None:
     with pytest.raises(FermError, match="not yet supported"):
-        translate_match("ip", _opt("totally-unknown", "x"), None)
+        translate_match(Family.IP, _opt("totally-unknown", "x"), None)
 
 
 # ---------------------------------------------------------------------------
@@ -365,14 +376,14 @@ from pyferm.backend.nft import (  # noqa: E402
 
 def test_match_parts_port_is_eligible() -> None:
     expr, key, element = _translate_match_parts(
-        "ip", _opt("dport", "22"), "tcp"
+        Family.IP, _opt("dport", "22"), "tcp"
     )
     assert (expr, key, element) == ("tcp dport 22", "tcp dport", "22")
 
 
 def test_match_parts_address_is_eligible() -> None:
     expr, key, element = _translate_match_parts(
-        "ip", _opt("source", "10.0.0.1"), None
+        Family.IP, _opt("source", "10.0.0.1"), None
     )
     assert (expr, key, element) == (
         "ip saddr 10.0.0.1",
@@ -383,7 +394,7 @@ def test_match_parts_address_is_eligible() -> None:
 
 def test_match_parts_negated_is_not_eligible() -> None:
     expr, key, element = _translate_match_parts(
-        "ip", _opt("dport", Negated("23")), "tcp"
+        Family.IP, _opt("dport", Negated("23")), "tcp"
     )
     assert (key, element) == (None, None)
     assert expr == "tcp dport != 23"
@@ -391,7 +402,7 @@ def test_match_parts_negated_is_not_eligible() -> None:
 
 def test_match_parts_state_is_not_eligible() -> None:
     _expr, key, element = _translate_match_parts(
-        "ip", _opt("state", "NEW", module="state"), None
+        Family.IP, _opt("state", "NEW", module="state"), None
     )
     assert (key, element) == (None, None)
 
@@ -399,8 +410,8 @@ def test_match_parts_state_is_not_eligible() -> None:
 def test_match_parts_expr_matches_translate_match_wrapper() -> None:
     # The wrapper must never drift from the parts' expr.
     opt = _opt("dport", "1024-2048")
-    assert _translate_match_parts("ip", opt, "tcp")[0] == translate_match(
-        "ip", opt, "tcp"
+    assert _translate_match_parts(Family.IP, opt, "tcp")[0] == translate_match(
+        Family.IP, opt, "tcp"
     )
 
 
@@ -419,7 +430,7 @@ from pyferm.backend.nft import build_verdict  # noqa: E402
 
 def test_build_verdict_core_targets() -> None:
     def _v(target: str) -> str:
-        return build_verdict("ip", "filter", "jump", target, {}).to_text()
+        return build_verdict(Family.IP, "filter", "jump", target, {}).to_text()
 
     assert _v("ACCEPT") == "accept"
     assert _v("DROP") == "drop"
@@ -430,11 +441,11 @@ def test_build_verdict_core_targets() -> None:
 
 def test_build_verdict_jump_goto_to_chain() -> None:
     assert (
-        build_verdict("ip", "filter", "jump", "mychain", {}).to_text()
+        build_verdict(Family.IP, "filter", "jump", "mychain", {}).to_text()
         == "jump mychain"
     )
     assert (
-        build_verdict("ip", "nat", "goto", "mychain", {}).to_text()
+        build_verdict(Family.IP, "nat", "goto", "mychain", {}).to_text()
         == "goto nat_mychain"
     )
 
@@ -446,7 +457,7 @@ def test_build_verdict_reject_with_companion() -> None:
         )
     }
     result = build_verdict(
-        "ip", "filter", "jump", "REJECT", companions
+        Family.IP, "filter", "jump", "REJECT", companions
     ).to_text()
     assert result == "reject with icmp type port-unreachable"
     companions6 = {
@@ -455,11 +466,11 @@ def test_build_verdict_reject_with_companion() -> None:
         )
     }
     result6 = build_verdict(
-        "ip6", "filter", "jump", "REJECT", companions6
+        Family.IP6, "filter", "jump", "REJECT", companions6
     ).to_text()
     assert result6 == "reject with icmpv6 type port-unreachable"
     assert (
-        build_verdict("ip", "filter", "jump", "REJECT", {}).to_text()
+        build_verdict(Family.IP, "filter", "jump", "REJECT", {}).to_text()
         == "reject"
     )
 
@@ -471,7 +482,7 @@ def test_build_verdict_nat_and_log() -> None:
         )
     }
     assert (
-        build_verdict("ip", "nat", "jump", "SNAT", snat).to_text()
+        build_verdict(Family.IP, "nat", "jump", "SNAT", snat).to_text()
         == "snat to 1.2.3.4"
     )
     dnat = {
@@ -480,26 +491,29 @@ def test_build_verdict_nat_and_log() -> None:
         )
     }
     assert (
-        build_verdict("ip", "nat", "jump", "DNAT", dnat).to_text()
+        build_verdict(Family.IP, "nat", "jump", "DNAT", dnat).to_text()
         == "dnat to 10.0.0.5"
     )
     log = {"log-prefix": _opt("log-prefix", "DROP: ", module="LOG")}
     assert (
-        build_verdict("ip", "filter", "jump", "LOG", log).to_text()
+        build_verdict(Family.IP, "filter", "jump", "LOG", log).to_text()
         == 'log prefix "DROP: "'
     )
-    assert build_verdict("ip", "filter", "jump", "LOG", {}).to_text() == "log"
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "LOG", {}).to_text()
+        == "log"
+    )
 
 
 def test_build_verdict_uncovered_target_is_error() -> None:
     with pytest.raises(
         FermError, match=r"^SNAT target not yet supported by nft backend$"
     ):
-        build_verdict("ip", "nat", "jump", "SNAT", {})
+        build_verdict(Family.IP, "nat", "jump", "SNAT", {})
     with pytest.raises(
         FermError, match=r"^DNAT target not yet supported by nft backend$"
     ):
-        build_verdict("ip", "nat", "jump", "DNAT", {})
+        build_verdict(Family.IP, "nat", "jump", "DNAT", {})
 
 
 def test_build_verdict_unsupported_reject_with_is_error() -> None:
@@ -511,7 +525,7 @@ def test_build_verdict_unsupported_reject_with_is_error() -> None:
         match=r"^reject-with 'bogus-reject' not yet supported by nft "
         r"backend$",
     ):
-        build_verdict("ip", "filter", "jump", "REJECT", comp)
+        build_verdict(Family.IP, "filter", "jump", "REJECT", comp)
 
 
 from pyferm.backend.nft import _reject_for  # noqa: E402
@@ -613,14 +627,14 @@ from pyferm.backend.nft import _reject_for  # noqa: E402
     ],
 )
 def test_reject_for_covers_the_full_mapping(
-    domain: str, scalar: str, expected: str
+    domain: Family, scalar: str, expected: str
 ) -> None:
     assert _reject_for(domain, scalar) == expected
 
 
 def test_build_verdict_jump_to_builtin_is_error() -> None:
     with pytest.raises(FermError, match="built-in chain 'INPUT'"):
-        build_verdict("ip", "filter", "jump", "INPUT", {})
+        build_verdict(Family.IP, "filter", "jump", "INPUT", {})
 
 
 def test_build_verdict_masquerade_to_ports() -> None:
@@ -631,7 +645,7 @@ def test_build_verdict_masquerade_to_ports() -> None:
     }
     assert (
         build_verdict(
-            "ip", "nat", "jump", "MASQUERADE", comp, has_transport=True
+            Family.IP, "nat", "jump", "MASQUERADE", comp, has_transport=True
         ).to_text()
         == "masquerade to :1024-2048"
     )
@@ -647,26 +661,26 @@ def test_build_verdict_port_nat_without_transport_is_error() -> None:
         )
     }
     with pytest.raises(FermError, match="needs a tcp/udp protocol"):
-        build_verdict("ip", "nat", "jump", "MASQUERADE", masq)
+        build_verdict(Family.IP, "nat", "jump", "MASQUERADE", masq)
     redir = {
         "to-ports": _opt("to-ports", Multi(values=["8080"]), module="REDIRECT")
     }
     with pytest.raises(FermError, match="needs a tcp/udp protocol"):
-        build_verdict("ip", "nat", "jump", "REDIRECT", redir)
+        build_verdict(Family.IP, "nat", "jump", "REDIRECT", redir)
     snat = {
         "to-source": _opt(
             "to-source", Multi(values=["1.2.3.4:1024"]), module="SNAT"
         )
     }
     with pytest.raises(FermError, match="needs a tcp/udp protocol"):
-        build_verdict("ip", "nat", "jump", "SNAT", snat)
+        build_verdict(Family.IP, "nat", "jump", "SNAT", snat)
     dnat = {
         "to-destination": _opt(
             "to-destination", Multi(values=["10.0.0.1:8080"]), module="DNAT"
         )
     }
     with pytest.raises(FermError, match="needs a tcp/udp protocol"):
-        build_verdict("ip", "nat", "jump", "DNAT", dnat)
+        build_verdict(Family.IP, "nat", "jump", "DNAT", dnat)
 
 
 def test_build_verdict_port_nat_with_transport_renders() -> None:
@@ -676,7 +690,7 @@ def test_build_verdict_port_nat_with_transport_renders() -> None:
     }
     assert (
         build_verdict(
-            "ip", "nat", "jump", "REDIRECT", redir, has_transport=True
+            Family.IP, "nat", "jump", "REDIRECT", redir, has_transport=True
         ).to_text()
         == "redirect to :8080"
     )
@@ -687,7 +701,7 @@ def test_build_verdict_port_nat_with_transport_renders() -> None:
     }
     assert (
         build_verdict(
-            "ip", "nat", "jump", "DNAT", dnat, has_transport=True
+            Family.IP, "nat", "jump", "DNAT", dnat, has_transport=True
         ).to_text()
         == "dnat to 10.0.0.1:8080"
     )
@@ -702,7 +716,7 @@ def test_build_verdict_portless_nat_needs_no_transport() -> None:
         )
     }
     assert (
-        build_verdict("ip", "nat", "jump", "SNAT", snat).to_text()
+        build_verdict(Family.IP, "nat", "jump", "SNAT", snat).to_text()
         == "snat to 1.2.3.4"
     )
 
@@ -717,7 +731,7 @@ def test_build_verdict_ip6_portless_nat_renders_without_transport() -> None:
         )
     }
     assert (
-        build_verdict("ip6", "nat", "jump", "DNAT", plain).to_text()
+        build_verdict(Family.IP6, "nat", "jump", "DNAT", plain).to_text()
         == "dnat to fe80::1"
     )
 
@@ -733,7 +747,7 @@ def test_build_verdict_ip6_portless_snat_renders_without_transport() -> None:
         )
     }
     assert (
-        build_verdict("ip6", "nat", "jump", "SNAT", plain).to_text()
+        build_verdict(Family.IP6, "nat", "jump", "SNAT", plain).to_text()
         == "snat to fe80::1"
     )
 
@@ -745,10 +759,10 @@ def test_nat_has_port_is_family_aware() -> None:
     # address validation first), so this pins the discriminator directly.
     from pyferm.backend.nft import _nat_has_port
 
-    assert _nat_has_port("ip", "1.2.3.4:1024") is True
-    assert _nat_has_port("ip", "1.2.3.4") is False
-    assert _nat_has_port("ip6", "fe80::1") is False
-    assert _nat_has_port("ip6", "[fe80::1]:80") is True
+    assert _nat_has_port(Family.IP, "1.2.3.4:1024") is True
+    assert _nat_has_port(Family.IP, "1.2.3.4") is False
+    assert _nat_has_port(Family.IP6, "fe80::1") is False
+    assert _nat_has_port(Family.IP6, "[fe80::1]:80") is True
 
 
 def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
@@ -758,7 +772,7 @@ def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
         )
     }
     assert (
-        build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text()
+        build_verdict(Family.IP6, "filter", "jump", "REJECT", comp).to_text()
         == "reject with icmpv6 type port-unreachable"
     )
 
@@ -774,19 +788,19 @@ def test_build_verdict_log_prefix_bare_keyword_is_quoted() -> None:
     # Bare keyword "drop" -- previously emitted as unquoted `log prefix drop`.
     log_drop = {"log-prefix": _opt("log-prefix", "drop", module="LOG")}
     assert (
-        build_verdict("ip", "filter", "jump", "LOG", log_drop).to_text()
+        build_verdict(Family.IP, "filter", "jump", "LOG", log_drop).to_text()
         == 'log prefix "drop"'
     )
     # Bare number "22" -- also matches the bare-word regex.
     log_num = {"log-prefix": _opt("log-prefix", "22", module="LOG")}
     assert (
-        build_verdict("ip", "filter", "jump", "LOG", log_num).to_text()
+        build_verdict(Family.IP, "filter", "jump", "LOG", log_num).to_text()
         == 'log prefix "22"'
     )
     # Space-containing prefix was already quoted; confirm it still is.
     log_space = {"log-prefix": _opt("log-prefix", "drop: ", module="LOG")}
     assert (
-        build_verdict("ip", "filter", "jump", "LOG", log_space).to_text()
+        build_verdict(Family.IP, "filter", "jump", "LOG", log_space).to_text()
         == 'log prefix "drop: "'
     )
 
@@ -808,7 +822,7 @@ def _target(value: str) -> RenderedOption:
 
 def test_translate_rule_skips_match_module_marker() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("match", "state", kind="match_module"),
@@ -824,7 +838,7 @@ def test_translate_rule_skips_match_module_marker() -> None:
 
 def test_translate_rule_port_suppresses_redundant_proto() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("protocol", "tcp", kind="proto"),
@@ -842,7 +856,7 @@ def test_translate_rule_port_suppresses_redundant_proto() -> None:
 
 def test_translate_rule_bare_proto_emits_l4proto() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("protocol", "icmp", kind="proto"),
@@ -857,7 +871,7 @@ def test_translate_rule_bare_proto_emits_l4proto() -> None:
 
 def test_translate_rule_ip6_icmp_normalized() -> None:
     nft = translate_rule(
-        "ip6",
+        Family.IP6,
         "filter",
         _rule(
             _opt("protocol", "icmp", kind="proto"),
@@ -876,9 +890,9 @@ def test_nft_l4proto_ip6_icmp_spellings_normalize() -> None:
     # asserted so dropping one from the membership tuple is caught.
     from pyferm.backend.nft import _nft_l4proto
 
-    assert _nft_l4proto("ip6", "icmp") == "ipv6-icmp"
-    assert _nft_l4proto("ip6", "icmpv6") == "ipv6-icmp"
-    assert _nft_l4proto("ip6", "ipv6-icmp") == "ipv6-icmp"
+    assert _nft_l4proto(Family.IP6, "icmp") == "ipv6-icmp"
+    assert _nft_l4proto(Family.IP6, "icmpv6") == "ipv6-icmp"
+    assert _nft_l4proto(Family.IP6, "ipv6-icmp") == "ipv6-icmp"
 
 
 def test_nft_l4proto_ip4_and_other_protos_pass_through() -> None:
@@ -886,8 +900,8 @@ def test_nft_l4proto_ip4_and_other_protos_pass_through() -> None:
     # protocol is returned verbatim regardless of family.
     from pyferm.backend.nft import _nft_l4proto
 
-    assert _nft_l4proto("ip", "icmp") == "icmp"
-    assert _nft_l4proto("ip6", "tcp") == "tcp"
+    assert _nft_l4proto(Family.IP, "icmp") == "icmp"
+    assert _nft_l4proto(Family.IP6, "tcp") == "tcp"
 
 
 def test_translate_rule_protocol_injection_is_error() -> None:
@@ -896,7 +910,7 @@ def test_translate_rule_protocol_injection_is_error() -> None:
     # `nft -c` does not catch the `;#` form, so the ferm side must reject it.
     with pytest.raises(FermError, match="invalid protocol"):
         translate_rule(
-            "ip",
+            Family.IP,
             "filter",
             _rule(
                 _opt("protocol", "tcp accept;#", kind="proto"),
@@ -907,7 +921,7 @@ def test_translate_rule_protocol_injection_is_error() -> None:
     # pins the protocol scalar too), not only the `meta l4proto` emission.
     with pytest.raises(FermError, match="invalid protocol"):
         translate_rule(
-            "ip",
+            Family.IP,
             "filter",
             _rule(
                 _opt("protocol", "tcp accept", kind="proto"),
@@ -924,7 +938,7 @@ def test_translate_rule_legit_protocols_render() -> None:
     # gre) so
     # --plan does not show a phantom diff against the readback.
     numeric = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("protocol", "47", kind="proto"),
@@ -936,7 +950,7 @@ def test_translate_rule_legit_protocols_render() -> None:
         "accept",
     ]
     named = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("protocol", "ipv6-icmp", kind="proto"),
@@ -951,7 +965,7 @@ def test_translate_rule_legit_protocols_render() -> None:
 
 def test_translate_rule_reject_with_companion_order() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("protocol", "tcp", kind="proto"),
@@ -968,7 +982,7 @@ def test_translate_rule_reject_with_companion_order() -> None:
 
 def test_translate_rule_comment_attaches() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _target("ACCEPT"),
@@ -981,7 +995,7 @@ def test_translate_rule_comment_attaches() -> None:
 
 def test_translate_rule_snat_multi_value() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "nat",
         _rule(
             _opt("source", "10.0.0.0/8"),
@@ -998,7 +1012,7 @@ def test_translate_rule_snat_multi_value() -> None:
 def test_translate_rule_port_before_proto_is_order_independent() -> None:
     # A port option textually preceding `protocol` must still resolve.
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("dport", "22"),
@@ -1011,7 +1025,7 @@ def test_translate_rule_port_before_proto_is_order_independent() -> None:
 
 def test_translate_rule_goto_user_chain() -> None:
     nft = translate_rule(
-        "ip",
+        Family.IP,
         "filter",
         _rule(
             _opt("goto", "mychain", kind="target"),
@@ -1042,12 +1056,12 @@ def test_build_verdict_redirect_to_ports() -> None:
     }
     assert (
         build_verdict(
-            "ip", "nat", "jump", "REDIRECT", comp, has_transport=True
+            Family.IP, "nat", "jump", "REDIRECT", comp, has_transport=True
         ).to_text()
         == "redirect to :8080"
     )
     assert (
-        build_verdict("ip", "nat", "jump", "REDIRECT", {}).to_text()
+        build_verdict(Family.IP, "nat", "jump", "REDIRECT", {}).to_text()
         == "redirect"
     )
 
@@ -1055,7 +1069,7 @@ def test_build_verdict_redirect_to_ports() -> None:
 def test_build_verdict_tcp_reset_reject() -> None:
     comp = {"reject-with": _opt("reject-with", "tcp-reset", module="REJECT")}
     assert (
-        build_verdict("ip", "filter", "jump", "REJECT", comp).to_text()
+        build_verdict(Family.IP, "filter", "jump", "REJECT", comp).to_text()
         == "reject with tcp reset"
     )
 
@@ -1065,7 +1079,7 @@ def test_build_verdict_tcp_reset_reject_ip6() -> None:
     # `reject with tcp reset` just like ip4 (closes the _REJECT_WITH_IP6 gap).
     comp = {"reject-with": _opt("reject-with", "tcp-reset", module="REJECT")}
     assert (
-        build_verdict("ip6", "filter", "jump", "REJECT", comp).to_text()
+        build_verdict(Family.IP6, "filter", "jump", "REJECT", comp).to_text()
         == "reject with tcp reset"
     )
 
@@ -1084,7 +1098,7 @@ def test_render_emits_save_text_for_one_family() -> None:
     table = info.tables.setdefault("filter", TableInfo())
     chain = table.chains.setdefault("INPUT", ChainInfo(policy="DROP"))
     chain.rules.append(_rule(_target("ACCEPT")))
-    rendered = NftBackend().render("ip", info, Options(test=True))
+    rendered = NftBackend().render(Family.IP, info, Options(test=True))
     assert rendered.commands == []
     save = rendered.save
     assert save is not None
@@ -1107,7 +1121,7 @@ def test_render_merges_tables_without_chain_collision() -> None:
     m.chains.setdefault("INPUT", ChainInfo()).rules.append(
         _rule(_target("DROP"))
     )
-    save = NftBackend().render("ip", info, Options(test=True)).save
+    save = NftBackend().render(Family.IP, info, Options(test=True)).save
     assert save is not None
     assert "add rule ip ferm INPUT accept\n" in save
     assert "add rule ip ferm mangle_INPUT drop\n" in save
@@ -1118,7 +1132,7 @@ def test_render_preserve_is_error() -> None:
     table = info.tables.setdefault("filter", TableInfo())
     table.preserve_regexes.append(re.compile("foo"))
     with pytest.raises(FermError, match="@preserve not yet supported"):
-        NftBackend().render("ip", info, Options(test=True))
+        NftBackend().render(Family.IP, info, Options(test=True))
 
 
 # --- commit / capture_previous / rollback ---------------------------------
@@ -1133,7 +1147,7 @@ def test_commit_emits_lines_and_pipes_save() -> None:
     applied: list[str] = []
     rendered = Rendered(save="add table ip ferm\n")
     NftBackend().commit(
-        "ip",
+        Family.IP,
         info,
         rendered,
         Options(lines=True, noexec=False),
@@ -1150,7 +1164,7 @@ def test_commit_noexec_does_not_apply() -> None:
     info.tools = {"nft": "nft"}
     applied: list[str] = []
     NftBackend().commit(
-        "ip",
+        Family.IP,
         info,
         Rendered(save="x\n"),
         Options(noexec=True),
@@ -1166,7 +1180,7 @@ def test_commit_shell_wraps_heredoc() -> None:
     info.tools = {"nft": "nft"}
     emitted: list[str] = []
     NftBackend().commit(
-        "ip",
+        Family.IP,
         info,
         Rendered(save="x\n"),
         Options(shell=True, lines=True, noexec=True),
@@ -1198,7 +1212,7 @@ def test_capture_previous_stores_own_table_snapshot() -> None:
         return "table ip ferm {\n}\n"
 
     NftBackend().capture_previous(
-        "ip",
+        Family.IP,
         info,
         Options(),
         execute=lambda _c: None,
@@ -1213,7 +1227,7 @@ def test_capture_previous_first_run_is_no_table() -> None:
     info = DomainInfo()
     info.tools = {"nft": "nft"}
     NftBackend().capture_previous(
-        "ip",
+        Family.IP,
         info,
         Options(),
         execute=lambda _c: None,
@@ -1230,7 +1244,7 @@ def test_rollback_restores_captured_snapshot() -> None:
     info.previous = "table ip ferm {\n}\n"
     applied: list[str] = []
     NftBackend().rollback(
-        "ip",
+        Family.IP,
         info,
         Options(),
         execute=lambda _c: None,
@@ -1246,7 +1260,7 @@ def test_rollback_first_run_deletes_table() -> None:
     info.previous = None
     calls: list[str] = []
     NftBackend().rollback(
-        "ip",
+        Family.IP,
         info,
         Options(),
         execute=calls.append,
@@ -1268,7 +1282,7 @@ def test_commit_restore_failure_returns_one(
         raise FermError("nft rejected")
 
     rc = NftBackend().commit(
-        "ip",
+        Family.IP,
         info,
         Rendered(save="x\n"),
         Options(noexec=False),
@@ -1285,7 +1299,7 @@ def test_commit_none_save_is_internal_error() -> None:
     info.tools = {"nft": "nft"}
     with pytest.raises(FermError):
         NftBackend().commit(
-            "ip",
+            Family.IP,
             info,
             Rendered(save=None),
             Options(noexec=False),
@@ -1303,7 +1317,7 @@ def test_rollback_disabled_is_noop() -> None:
     calls: list[str] = []
     applied: list[str] = []
     NftBackend().rollback(
-        "ip",
+        Family.IP,
         info,
         Options(),
         execute=calls.append,
@@ -1332,7 +1346,7 @@ def test_shell_snapshot_emits_nft_save_and_delete_restore() -> None:
     # from aborting the generated script.
     info = DomainInfo()
     info.tools = {"nft": "nft"}
-    snapshot = NftBackend().shell_snapshot("ip", info)
+    snapshot = NftBackend().shell_snapshot(Family.IP, info)
     assert snapshot is not None
     assert snapshot.setup == (
         "ip_tmp=$(mktemp ferm.XXXXXXXXXX)\n",
@@ -1348,7 +1362,7 @@ def test_shell_snapshot_maps_eb_family_to_bridge() -> None:
     # name (eb -> bridge), so it targets the table the backend actually built.
     info = DomainInfo()
     info.tools = {"nft": "nft"}
-    snapshot = NftBackend().shell_snapshot("eb", info)
+    snapshot = NftBackend().shell_snapshot(Family.EB, info)
     assert snapshot is not None
     assert "list table bridge ferm" in snapshot.setup[1]
     assert "delete table bridge ferm" in snapshot.restore
@@ -1365,7 +1379,7 @@ def test_render_user_chain_collision_is_error() -> None:
     m = info.tables.setdefault("mangle", TableInfo())
     m.chains.setdefault("INPUT", ChainInfo())
     with pytest.raises(FermError, match="collision"):
-        NftBackend().render("ip", info, Options(test=True))
+        NftBackend().render(Family.IP, info, Options(test=True))
 
 
 # --- Fix 1: capture_previous --test reads the mock FILE (not the path string)
@@ -1377,7 +1391,7 @@ def test_capture_previous_test_mode_reads_mock_file(tmp_path: Path) -> None:
     info = DomainInfo()
     info.tools = {"nft": "nft"}
     NftBackend().capture_previous(
-        "ip",
+        Family.IP,
         info,
         Options(test=True, mock_previous={"ip": str(snap)}),
         execute=lambda _c: None,
@@ -1404,7 +1418,7 @@ def test_capture_previous_mock_reads_high_bytes_verbatim(
     info = DomainInfo()
     info.tools = {"nft": "nft"}
     NftBackend().capture_previous(
-        "ip",
+        Family.IP,
         info,
         Options(test=True, mock_previous={"ip": str(snap)}),
         execute=lambda _c: None,
@@ -1425,7 +1439,7 @@ def test_capture_previous_mock_open_failure_reports_os_reason(
     info.tools = {"nft": "nft"}
     with pytest.raises(FermError) as excinfo:
         NftBackend().capture_previous(
-            "ip",
+            Family.IP,
             info,
             Options(test=True, mock_previous={"ip": str(missing)}),
             execute=lambda _c: None,
@@ -1465,7 +1479,7 @@ def test_nft_chain_name_rejects_whitespace_in_non_filter() -> None:
 
 def test_build_verdict_jump_to_injected_chain_is_error() -> None:
     with pytest.raises(FermError, match="valid nft identifier"):
-        build_verdict("ip", "filter", "jump", "FOO accept;#", {})
+        build_verdict(Family.IP, "filter", "jump", "FOO accept;#", {})
 
 
 def test_nft_chain_name_accepts_disambiguated_names() -> None:
@@ -1479,7 +1493,7 @@ def test_nft_chain_name_accepts_disambiguated_names() -> None:
 
 def test_translate_match_address_rejects_injection() -> None:
     with pytest.raises(FermError, match="invalid address"):
-        translate_match("ip", _opt("source", INJECT), None)
+        translate_match(Family.IP, _opt("source", INJECT), None)
 
 
 def test_build_verdict_snat_rejects_injection() -> None:
@@ -1487,7 +1501,7 @@ def test_build_verdict_snat_rejects_injection() -> None:
         "to-source": _opt("to-source", Multi(values=[INJECT]), module="SNAT")
     }
     with pytest.raises(FermError, match="invalid address"):
-        build_verdict("ip", "nat", "jump", "SNAT", snat)
+        build_verdict(Family.IP, "nat", "jump", "SNAT", snat)
 
 
 def test_build_verdict_dnat_rejects_injection() -> None:
@@ -1497,17 +1511,17 @@ def test_build_verdict_dnat_rejects_injection() -> None:
         )
     }
     with pytest.raises(FermError, match="invalid address"):
-        build_verdict("ip", "nat", "jump", "DNAT", dnat)
+        build_verdict(Family.IP, "nat", "jump", "DNAT", dnat)
 
 
 def test_translate_match_address_accepts_cidr_and_ipv6() -> None:
     # positive control: CIDR / IPv6 / range must not over-reject.
     assert (
-        translate_match("ip", _opt("source", "10.0.0.0/24"), None)
+        translate_match(Family.IP, _opt("source", "10.0.0.0/24"), None)
         == "ip saddr 10.0.0.0/24"
     )
     assert (
-        translate_match("ip6", _opt("destination", "fe80::/64"), None)
+        translate_match(Family.IP6, _opt("destination", "fe80::/64"), None)
         == "ip6 daddr fe80::/64"
     )
 
@@ -1517,7 +1531,7 @@ def test_translate_match_address_accepts_cidr_and_ipv6() -> None:
 
 def test_translate_match_port_rejects_injection() -> None:
     with pytest.raises(FermError, match="invalid port"):
-        translate_match("ip", _opt("dport", "22 accept;#"), "tcp")
+        translate_match(Family.IP, _opt("dport", "22 accept;#"), "tcp")
 
 
 def test_build_verdict_masquerade_to_ports_rejects_injection() -> None:
@@ -1530,14 +1544,14 @@ def test_build_verdict_masquerade_to_ports_rejects_injection() -> None:
     }
     with pytest.raises(FermError, match="invalid port"):
         build_verdict(
-            "ip", "nat", "jump", "MASQUERADE", comp, has_transport=True
+            Family.IP, "nat", "jump", "MASQUERADE", comp, has_transport=True
         )
 
 
 def test_translate_match_port_accepts_range() -> None:
     # positive control: a port range must still translate.
     assert (
-        translate_match("ip", _opt("dport", "1024-2048"), "tcp")
+        translate_match(Family.IP, _opt("dport", "1024-2048"), "tcp")
         == "tcp dport 1024-2048"
     )
 
@@ -1551,13 +1565,13 @@ def test_translate_match_iface_rejects_embedded_quote() -> None:
     # must now be rejected, not emitted (review 2026-06-14).
     opt = _opt("in-interface", 'eth0" accept;#')
     with pytest.raises(FermError, match="cannot quote"):
-        translate_match("ip", opt, None)
+        translate_match(Family.IP, opt, None)
 
 
 def test_translate_match_iface_preserves_wildcard() -> None:
     # positive control: nft string wildcard `*` must still pass.
     assert (
-        translate_match("ip", _opt("in-interface", "eth*"), None)
+        translate_match(Family.IP, _opt("in-interface", "eth*"), None)
         == 'iifname "eth*"'
     )
 
@@ -1567,14 +1581,16 @@ def test_translate_match_iface_preserves_wildcard() -> None:
 
 def test_translate_match_state_rejects_unknown_keyword() -> None:
     with pytest.raises(FermError, match="state"):
-        translate_match("ip", _opt("state", "BOGUS", module="state"), None)
+        translate_match(
+            Family.IP, _opt("state", "BOGUS", module="state"), None
+        )
 
 
 def test_translate_match_state_negated_multivalue_is_valid() -> None:
     # COR-2: negated comma-state is valid nft (anonymous-set negation).
     assert (
         translate_match(
-            "ip",
+            Family.IP,
             _opt("state", Negated("ESTABLISHED,RELATED"), module="state"),
             None,
         )
@@ -1585,7 +1601,7 @@ def test_translate_match_state_negated_multivalue_is_valid() -> None:
 def test_translate_match_limit_rejects_injection() -> None:
     with pytest.raises(FermError, match="invalid rate"):
         translate_match(
-            "ip", _opt("limit", "3/second;drop", module="limit"), None
+            Family.IP, _opt("limit", "3/second;drop", module="limit"), None
         )
 
 
@@ -1668,14 +1684,14 @@ def test_validate_port_rejects_malformed_shape(given: str) -> None:
 
 def test_translate_match_dport_colon_range() -> None:
     assert (
-        translate_match("ip", _opt("dport", "60000:61000"), "tcp")
+        translate_match(Family.IP, _opt("dport", "60000:61000"), "tcp")
         == "tcp dport 60000-61000"
     )
 
 
 def test_translate_match_dport_negated_colon_range() -> None:
     assert (
-        translate_match("ip", _opt("dport", Negated("1000:2000")), "tcp")
+        translate_match(Family.IP, _opt("dport", Negated("1000:2000")), "tcp")
         == "tcp dport != 1000-2000"
     )
 
@@ -2141,4 +2157,4 @@ def test_translate_rule_rejects_empty_named_set() -> None:
         script=None,
     )
     with pytest.raises(FermError, match="internal error"):
-        translate_rule("ip6", "filter", rule)
+        translate_rule(Family.IP6, "filter", rule)

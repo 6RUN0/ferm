@@ -87,7 +87,7 @@ if TYPE_CHECKING:
         RestoreDomain,
         SaveReader,
     )
-    from pyferm.domains import DomainInfo
+    from pyferm.domains import DomainInfo, Family
     from pyferm.tree import Block
 
 
@@ -622,7 +622,7 @@ def _run_hook(command: str, options: Options, emit_line: LineEmitter) -> None:
 
 
 def _rollback_all(
-    domains: dict[str, DomainInfo],
+    domains: dict[Family, DomainInfo],
     options: Options,
     backend: Backend,
     *,
@@ -938,7 +938,7 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def build_plan(
-    domains: dict[str, DomainInfo],
+    domains: dict[Family, DomainInfo],
     options: Options,
     backend: Backend,
     *,
@@ -1007,7 +1007,7 @@ def build_plan(
 
 
 def _run_plan(
-    domains: dict[str, DomainInfo], options: Options, backend: Backend
+    domains: dict[Family, DomainInfo], options: Options, backend: Backend
 ) -> int:
     """
     Build and print the read-only plan; return the detailed exit code.
@@ -1022,7 +1022,7 @@ def _run_plan(
 
 
 def _commit_subject(
-    filename: str, domains: dict[str, DomainInfo], options: Options
+    filename: str, domains: dict[Family, DomainInfo], options: Options
 ) -> str:
     """Build the default commit subject from the applied options."""
     verb = "flushed" if options.flush else "applied"
@@ -1048,7 +1048,7 @@ def _commit_body(plan: Plan) -> str:
 
 def _build_commit_message(
     filename: str,
-    domains: dict[str, DomainInfo],
+    domains: dict[Family, DomainInfo],
     options: Options,
     backend: Backend,
     subject: str | None,
@@ -1076,7 +1076,7 @@ def _build_commit_message(
 
 def _commit_history(
     filename: str,
-    domains: dict[str, DomainInfo],
+    domains: dict[Family, DomainInfo],
     options: Options,
     backend: Backend,
     subject: str | None,
@@ -1171,7 +1171,7 @@ def _apply_config(
 
     backend = _select_backend(options)
 
-    def capture_previous(domain: str, domain_info: DomainInfo) -> None:
+    def capture_previous(domain: Family, domain_info: DomainInfo) -> None:
         # Folds backend + options + execute + read_save into the
         # two-parameter shape initialize_domain expects.
         backend.capture_previous(

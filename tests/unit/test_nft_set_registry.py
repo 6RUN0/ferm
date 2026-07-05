@@ -19,6 +19,7 @@ from pyferm.backend.nft import (
     _collect_set_declarations,
     _set_type_and_elements,
 )
+from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.values import SetRef
 
@@ -151,7 +152,7 @@ def _match(name: str, selector: str, elements: list[str]) -> NftMatch:
 def test_set_type_and_elements_port() -> None:
     """A dport selector yields ``inet_service`` and validated ports."""
     type_, flags_interval, elements = _set_type_and_elements(
-        "ip", "tcp dport", SetRef("p", ["2222", "22"])
+        Family.IP, "tcp dport", SetRef("p", ["2222", "22"])
     )
     assert type_ == "inet_service"
     assert flags_interval is False
@@ -161,10 +162,10 @@ def test_set_type_and_elements_port() -> None:
 def test_set_type_and_elements_address_family() -> None:
     """The address type follows the family (ip -> v4, ip6 -> v6)."""
     type_v4, _, _ = _set_type_and_elements(
-        "ip", "ip saddr", SetRef("h", ["10.0.0.1"])
+        Family.IP, "ip saddr", SetRef("h", ["10.0.0.1"])
     )
     type_v6, _, _ = _set_type_and_elements(
-        "ip6", "ip6 saddr", SetRef("h", ["2001:db8::1"])
+        Family.IP6, "ip6 saddr", SetRef("h", ["2001:db8::1"])
     )
     assert type_v4 == "ipv4_addr"
     assert type_v6 == "ipv6_addr"
@@ -173,7 +174,7 @@ def test_set_type_and_elements_address_family() -> None:
 def test_set_type_and_elements_interval_flag() -> None:
     """A range element forces the interval flag on."""
     _, flags_interval, _ = _set_type_and_elements(
-        "ip", "tcp dport", SetRef("r", ["1024-2048"])
+        Family.IP, "tcp dport", SetRef("r", ["1024-2048"])
     )
     assert flags_interval is True
 
@@ -181,13 +182,13 @@ def test_set_type_and_elements_interval_flag() -> None:
 def test_set_type_and_elements_rejects_service_name() -> None:
     """A service name in a port set is rejected (fail-closed)."""
     with pytest.raises(FermError, match="numeric port or range"):
-        _set_type_and_elements("ip", "tcp dport", SetRef("s", ["ssh"]))
+        _set_type_and_elements(Family.IP, "tcp dport", SetRef("s", ["ssh"]))
 
 
 def test_set_type_and_elements_rejects_iface_selector() -> None:
     """An unsupported selector raises rather than emitting a bad type."""
     with pytest.raises(FermError, match="not supported"):
-        _set_type_and_elements("ip", "meta mark", SetRef("m", ["1"]))
+        _set_type_and_elements(Family.IP, "meta mark", SetRef("m", ["1"]))
 
 
 def test_collect_declarations_dedups_same_name() -> None:
@@ -196,7 +197,7 @@ def test_collect_declarations_dedups_same_name() -> None:
         "INPUT": [NftRule([_match("ssh", "tcp dport", ["22", "2222"])])],
         "OUTPUT": [NftRule([_match("ssh", "tcp dport", ["2222", "22"])])],
     }
-    decls = _collect_set_declarations("ip", rules)
+    decls = _collect_set_declarations(Family.IP, rules)
     assert set(decls) == {"ssh"}
     assert decls["ssh"].elements == ["22", "2222"]
 
@@ -208,7 +209,7 @@ def test_collect_declarations_conflicting_elements_raise() -> None:
         "OUTPUT": [NftRule([_match("x", "tcp dport", ["80"])])],
     }
     with pytest.raises(FermError, match="conflicting element sets"):
-        _collect_set_declarations("ip", rules)
+        _collect_set_declarations(Family.IP, rules)
 
 
 def test_collect_declarations_conflicting_selectors_raise() -> None:
@@ -218,4 +219,4 @@ def test_collect_declarations_conflicting_selectors_raise() -> None:
         "OUTPUT": [NftRule([_match("x", "ip saddr", ["22"])])],
     }
     with pytest.raises(FermError, match="conflicting selectors"):
-        _collect_set_declarations("ip", rules)
+        _collect_set_declarations(Family.IP, rules)

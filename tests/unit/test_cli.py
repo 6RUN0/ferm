@@ -486,6 +486,7 @@ def test_rollback_all_restores_enabled_domains_and_exits(
     from pyferm.backend.base import Backend
     from pyferm.cli import _rollback_all
     from pyferm.domains import DomainInfo as RealDomainInfo
+    from pyferm.domains import Family
 
     class _RecordingBackend(Backend):
         def __init__(self) -> None:
@@ -548,9 +549,9 @@ def test_rollback_all_restores_enabled_domains_and_exits(
 
     backend = _RecordingBackend()
     domains = {
-        "ip6": RealDomainInfo(enabled=True),
-        "ip": RealDomainInfo(enabled=True),
-        "arp": RealDomainInfo(enabled=False),
+        Family.IP6: RealDomainInfo(enabled=True),
+        Family.IP: RealDomainInfo(enabled=True),
+        Family.ARP: RealDomainInfo(enabled=False),
     }
     options = Options()
 
@@ -568,7 +569,12 @@ def test_rollback_all_restores_enabled_domains_and_exits(
     # Deterministic (sorted) order; the unused family is left alone.
     assert [call[0] for call in backend.calls] == ["ip", "ip6"]
     # Each family gets its own state and the caller's I/O seams verbatim.
-    assert backend.calls[0][1:] == (domains["ip"], options, execute, restore)
+    assert backend.calls[0][1:] == (
+        domains[Family.IP],
+        options,
+        execute,
+        restore,
+    )
     assert capsys.readouterr().err.endswith("Firewall rules rolled back.\n")
 
 
@@ -1265,10 +1271,10 @@ def test_run_plan_nft_render_error_propagates() -> None:
     from unittest.mock import MagicMock
 
     from pyferm.cli import _run_plan
-    from pyferm.domains import DomainInfo
+    from pyferm.domains import DomainInfo, Family
 
     domain_info = DomainInfo(enabled=True, tools={})
-    domains = {"ip": domain_info}
+    domains = {Family.IP: domain_info}
 
     backend = MagicMock()
     backend.render.side_effect = FermError("@preserve not yet supported")
@@ -1288,7 +1294,7 @@ def test_build_plan_validate_false_skips_nft_check(
     import pyferm.cli as cli_mod
     from pyferm.backend.nft import TOOL_NFT
     from pyferm.cli import build_plan
-    from pyferm.domains import DomainInfo
+    from pyferm.domains import DomainInfo, Family
 
     calls: list[object] = []
     monkeypatch.setattr(
@@ -1303,10 +1309,14 @@ def test_build_plan_validate_false_skips_nft_check(
     backend = MagicMock()
     backend.render.return_value = rendered
 
-    build_plan({"ip": domain_info}, Options(nft=True), backend, validate=False)
+    build_plan(
+        {Family.IP: domain_info}, Options(nft=True), backend, validate=False
+    )
     assert calls == []
 
-    build_plan({"ip": domain_info}, Options(nft=True), backend, validate=True)
+    build_plan(
+        {Family.IP: domain_info}, Options(nft=True), backend, validate=True
+    )
     assert len(calls) == 1
 
 

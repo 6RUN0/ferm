@@ -49,6 +49,7 @@ from pyferm.domains import (
     TOOL_TABLES,
     ChainInfo,
     DomainInfo,
+    Family,
     ShellSnapshot,
     TableInfo,
     is_ip_family,
@@ -262,7 +263,9 @@ def shell_format_option(keyword: str, value: Value, *, fast: bool) -> str:
     return cmd
 
 
-def format_option(domain: str, name: str, value: Value, *, fast: bool) -> str:
+def format_option(
+    domain: Family, name: str, value: Value, *, fast: bool
+) -> str:
     """
     Apply family-specific substitutions, then format (Perl ``:1863``).
 
@@ -283,7 +286,7 @@ def format_option(domain: str, name: str, value: Value, *, fast: bool) -> str:
     return shell_format_option(name, value, fast=fast)
 
 
-def format_rule(domain: str, rule: RenderedRule, *, fast: bool) -> str:
+def format_rule(domain: Family, rule: RenderedRule, *, fast: bool) -> str:
     """
     Join a rule's options into one command tail (Perl ``append_rule``).
 
@@ -343,7 +346,7 @@ def resolve_dynamic_preserve(
 
 
 def table_to_save(
-    domain: str,
+    domain: Family,
     chains: dict[str, ChainInfo],
     options: Options,
     preserved: dict[str, str],
@@ -375,7 +378,7 @@ def table_to_save(
 
 
 def rules_to_save(
-    domain: str,
+    domain: Family,
     domain_info: DomainInfo,
     options: Options,
     *,
@@ -488,7 +491,7 @@ def restore_domain(
 class IptablesBackend(Backend):
     """The iptables/ip6tables/arptables/ebtables backend (Phase 1)."""
 
-    def tool_names(self, domain: str) -> dict[str, str]:
+    def tool_names(self, domain: Family) -> dict[str, str]:
         """
         Resolve the x_tables tool set for one family.
 
@@ -501,7 +504,7 @@ class IptablesBackend(Backend):
         return names
 
     def render(
-        self, domain: str, domain_info: DomainInfo, options: Options
+        self, domain: Family, domain_info: DomainInfo, options: Options
     ) -> Rendered:
         """
         Build a fast save or the slow command list (``:3119``/``:2919``).
@@ -519,7 +522,7 @@ class IptablesBackend(Backend):
         return self._render_slow(domain, domain_info, options)
 
     def _render_slow(
-        self, domain: str, domain_info: DomainInfo, options: Options
+        self, domain: Family, domain_info: DomainInfo, options: Options
     ) -> Rendered:
         """
         Build the ordered ``-P/-F/-X/-N/-A`` command list (Perl ``:2919``).
@@ -635,7 +638,7 @@ class IptablesBackend(Backend):
 
     def commit(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         rendered: Rendered,
         options: Options,
@@ -724,7 +727,7 @@ class IptablesBackend(Backend):
 
     def rollback(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         options: Options,
         *,
@@ -778,7 +781,7 @@ class IptablesBackend(Backend):
 
     def capture_previous(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         options: Options,
         *,
@@ -864,7 +867,7 @@ class IptablesBackend(Backend):
         return _domains_read_previous(lines, domain_info)
 
     def shell_snapshot(
-        self, domain: str, domain_info: DomainInfo
+        self, domain: Family, domain_info: DomainInfo
     ) -> ShellSnapshot | None:
         """
         Build the ``--shell`` snapshot from the ``*-save``/``*-restore`` pair.

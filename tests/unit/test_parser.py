@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from pyferm.config import Options
+from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.functions import Evaluator
 from pyferm.parser import MAX_BLOCK_DEPTH, Parser, collect_filenames
@@ -45,7 +46,7 @@ def _parse(source: str, *, options: Options | None = None) -> Parser:
 
 
 def _rules(
-    parser: Parser, domain: str, table: str, chain: str
+    parser: Parser, domain: Family, table: str, chain: str
 ) -> list[RenderedRule]:
     """Return the unfolded rules of one chain."""
     return parser.domains[domain].tables[table].chains[chain].rules
@@ -61,14 +62,14 @@ def _options(rule: RenderedRule) -> list[tuple[str, object, str]]:
 
 def test_basic_rule_records_options_and_kinds() -> None:
     parser = _parse("chain INPUT proto tcp dport 22 ACCEPT;")
-    rules = _rules(parser, "ip", "filter", "INPUT")
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
     assert len(rules) == 1
     assert _options(rules[0]) == [
         ("protocol", "tcp", "proto"),
         ("dport", "22", "option"),
         ("jump", "ACCEPT", "target"),
     ]
-    assert parser.domains["ip"].enabled
+    assert parser.domains[Family.IP].enabled
 
 
 def test_suboptions_record_their_introducing_module() -> None:
@@ -76,7 +77,7 @@ def test_suboptions_record_their_introducing_module() -> None:
     # whose merge_keywords introduced its keyword (a sanctioned
     # deviation); the match/jump elements themselves carry no module.
     parser = _parse("chain INPUT mod state state NEW ACCEPT;")
-    options = _rules(parser, "ip", "filter", "INPUT")[0].options
+    options = _rules(parser, Family.IP, "filter", "INPUT")[0].options
     assert [(o.name, o.kind, o.module) for o in options] == [
         ("match", "match_module", None),
         ("state", "option", "state"),
@@ -86,14 +87,14 @@ def test_suboptions_record_their_introducing_module() -> None:
 
 def test_target_module_suboptions_record_module() -> None:
     parser = _parse("table nat chain PREROUTING proto tcp DNAT to '10.0.0.1';")
-    options = _rules(parser, "ip", "nat", "PREROUTING")[0].options
+    options = _rules(parser, Family.IP, "nat", "PREROUTING")[0].options
     assert ("to-destination", "DNAT") in [(o.name, o.module) for o in options]
 
 
 def test_shortcut_suboptions_record_module() -> None:
     # the 'dports' shortcut implies 'mod multiport' and then its sub-option
     parser = _parse("chain INPUT proto tcp dports (22 80) ACCEPT;")
-    options = _rules(parser, "ip", "filter", "INPUT")[0].options
+    options = _rules(parser, Family.IP, "filter", "INPUT")[0].options
     assert [(o.name, o.module) for o in options] == [
         ("protocol", None),
         ("match", None),
@@ -104,24 +105,24 @@ def test_shortcut_suboptions_record_module() -> None:
 
 def test_chain_defaults_to_ip_filter() -> None:
     parser = _parse("chain OUTPUT ACCEPT;")
-    assert "filter" in parser.domains["ip"].tables
-    assert _options(_rules(parser, "ip", "filter", "OUTPUT")[0]) == [
+    assert "filter" in parser.domains[Family.IP].tables
+    assert _options(_rules(parser, Family.IP, "filter", "OUTPUT")[0]) == [
         ("jump", "ACCEPT", "target")
     ]
 
 
 def test_explicit_table_is_used() -> None:
     parser = _parse("table nat chain POSTROUTING MASQUERADE;")
-    rules = _rules(parser, "ip", "nat", "POSTROUTING")
+    rules = _rules(parser, Family.IP, "nat", "POSTROUTING")
     assert _options(rules[0]) == [("jump", "MASQUERADE", "target")]
 
 
 def test_policy_sets_chain_policy_without_a_rule() -> None:
     parser = _parse("chain INPUT policy DROP;")
-    chain = parser.domains["ip"].tables["filter"].chains["INPUT"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
     assert chain.policy == "DROP"
     assert chain.rules == []
-    assert parser.domains["ip"].enabled
+    assert parser.domains[Family.IP].enabled
 
 
 # -- domain handling -------------------------------------------------------
@@ -129,14 +130,14 @@ def test_policy_sets_chain_policy_without_a_rule() -> None:
 
 def test_domain_block_targets_one_family() -> None:
     parser = _parse("domain ip6 { chain INPUT proto tcp ACCEPT; }")
-    assert "ip" not in parser.domains or not parser.domains["ip"].enabled
-    rules = _rules(parser, "ip6", "filter", "INPUT")
+    assert "ip" not in parser.domains or not parser.domains[Family.IP].enabled
+    rules = _rules(parser, Family.IP6, "filter", "INPUT")
     assert _options(rules[0])[0] == ("protocol", "tcp", "proto")
 
 
 def test_dual_stack_domain_replays_for_each_family() -> None:
     parser = _parse("domain (ip ip6) { chain INPUT ACCEPT; }")
-    for family in ("ip", "ip6"):
+    for family in (Family.IP, Family.IP6):
         rules = _rules(parser, family, "filter", "INPUT")
         assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
 
@@ -155,14 +156,14 @@ def test_domain_filter_skips_other_families() -> None:
 def test_chain_array_emits_into_each_chain() -> None:
     parser = _parse("table filter chain (INPUT OUTPUT) ACCEPT;")
     for chain in ("INPUT", "OUTPUT"):
-        rules = _rules(parser, "ip", "filter", chain)
+        rules = _rules(parser, Family.IP, "filter", chain)
         assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
 
 
 def test_table_array_replays_per_table() -> None:
     parser = _parse("table (filter mangle) chain FORWARD ACCEPT;")
     for table in ("filter", "mangle"):
-        rules = _rules(parser, "ip", table, "FORWARD")
+        rules = _rules(parser, Family.IP, table, "FORWARD")
         assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
 
 
@@ -182,7 +183,7 @@ def test_chain_name_at_29_chars_is_accepted() -> None:
     # wrongly reject the longest legal name.
     name = "x" * 29
     parser = _parse(f"chain {name} ACCEPT;")
-    assert len(_rules(parser, "ip", "filter", name)) == 1
+    assert len(_rules(parser, Family.IP, "filter", name)) == 1
 
 
 # -- variables and functions ----------------------------------------------
@@ -190,7 +191,7 @@ def test_chain_name_at_29_chars_is_accepted() -> None:
 
 def test_variable_expansion() -> None:
     parser = _parse("@def $p = 22; chain INPUT proto tcp dport $p ACCEPT;")
-    rules = _rules(parser, "ip", "filter", "INPUT")
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
     assert ("dport", "22", "option") in _options(rules[0])
 
 
@@ -199,7 +200,7 @@ def test_function_body_is_spliced_into_the_stream() -> None:
         "@def &allow($port) = proto tcp dport $port ACCEPT;"
         "chain INPUT &allow(22);"
     )
-    rules = _rules(parser, "ip", "filter", "INPUT")
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
     assert _options(rules[0]) == [
         ("protocol", "tcp", "proto"),
         ("dport", "22", "option"),
@@ -217,21 +218,21 @@ def test_function_wrong_arity_errors() -> None:
 
 def test_if_true_keeps_body() -> None:
     parser = _parse("@if 1 { chain INPUT ACCEPT; }")
-    assert _rules(parser, "ip", "filter", "INPUT")
+    assert _rules(parser, Family.IP, "filter", "INPUT")
 
 
 def test_if_false_with_else_takes_else() -> None:
     parser = _parse(
         "@if 0 { chain INPUT ACCEPT; } @else { chain OUTPUT DROP; }"
     )
-    chains = parser.domains["ip"].tables["filter"].chains
+    chains = parser.domains[Family.IP].tables["filter"].chains
     assert "INPUT" not in chains
     assert _options(chains["OUTPUT"].rules[0]) == [("jump", "DROP", "target")]
 
 
 def test_if_false_without_else_drops_body() -> None:
     parser = _parse("@if 0 { chain INPUT ACCEPT; }")
-    tables = parser.domains.get("ip")
+    tables = parser.domains.get(Family.IP)
     assert tables is None or "filter" not in tables.tables
 
 
@@ -240,7 +241,7 @@ def test_if_false_keeps_following_non_else_statement() -> None:
     # normal statement (not @else), that statement must stream unchanged --
     # the @else shim only consumes a literal ``@else`` token.
     parser = _parse("@if 0 { chain INPUT ACCEPT; } chain OUTPUT DROP;")
-    chains = parser.domains["ip"].tables["filter"].chains
+    chains = parser.domains[Family.IP].tables["filter"].chains
     assert "INPUT" not in chains
     assert _options(chains["OUTPUT"].rules[0]) == [("jump", "DROP", "target")]
 
@@ -253,7 +254,7 @@ def test_value_negation_wraps_the_value() -> None:
     options = {
         name: value
         for name, value, _ in _options(
-            _rules(parser, "ip", "filter", "INPUT")[0]
+            _rules(parser, Family.IP, "filter", "INPUT")[0]
         )
     }
     assert options["dport"] == Negated("22")
@@ -261,7 +262,7 @@ def test_value_negation_wraps_the_value() -> None:
 
 def test_proto_negation_is_not_a_module_merge() -> None:
     parser = _parse("chain INPUT proto ! tcp ACCEPT;")
-    rule = _rules(parser, "ip", "filter", "INPUT")[0]
+    rule = _rules(parser, Family.IP, "filter", "INPUT")[0]
     name, value, kind = _options(rule)[0]
     assert (name, kind) == ("protocol", "proto")
     assert value == Negated("tcp")
@@ -277,7 +278,7 @@ def test_negation_on_unsupported_keyword_errors() -> None:
 
 def test_subchain_creates_auto_chain_and_jump() -> None:
     parser = _parse("chain INPUT proto tcp @subchain { dport 22 ACCEPT; }")
-    chains = parser.domains["ip"].tables["filter"].chains
+    chains = parser.domains[Family.IP].tables["filter"].chains
     assert "ferm_auto_1" in chains
     parent = _options(chains["INPUT"].rules[0])
     assert ("jump", "ferm_auto_1", "target") in parent
@@ -289,7 +290,7 @@ def test_named_subchain_uses_given_name() -> None:
     parser = _parse(
         'chain INPUT proto tcp @subchain "ssh" { dport 22 ACCEPT; }'
     )
-    chains = parser.domains["ip"].tables["filter"].chains
+    chains = parser.domains[Family.IP].tables["filter"].chains
     assert "ssh" in chains
 
 
@@ -298,14 +299,14 @@ def test_named_subchain_uses_given_name() -> None:
 
 def test_comment_shortcut_loads_module() -> None:
     parser = _parse('chain INPUT comment "hi" ACCEPT;')
-    options = _options(_rules(parser, "ip", "filter", "INPUT")[0])
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert ("match", "comment", "match_module") in options
     assert ("comment", "hi", "option") in options
 
 
 def test_mod_loads_match_module() -> None:
     parser = _parse("chain INPUT mod conntrack ctstate ESTABLISHED ACCEPT;")
-    options = _options(_rules(parser, "ip", "filter", "INPUT")[0])
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert ("match", "conntrack", "match_module") in options
     assert ("ctstate", "ESTABLISHED", "option") in options
 
@@ -315,7 +316,7 @@ def test_address_magic_realizes_a_list() -> None:
     options = {
         name: value
         for name, value, _ in _options(
-            _rules(parser, "ip", "filter", "INPUT")[0]
+            _rules(parser, Family.IP, "filter", "INPUT")[0]
         )
     }
     assert options["source"] == "1.2.3.4"
@@ -326,7 +327,7 @@ def test_address_magic_internal_negation() -> None:
     options = {
         name: value
         for name, value, _ in _options(
-            _rules(parser, "ip", "filter", "INPUT")[0]
+            _rules(parser, Family.IP, "filter", "INPUT")[0]
         )
     }
     assert options["source"] == Negated(["1.2.3.4"])
@@ -338,7 +339,7 @@ def test_multiport_shortcut_chunks_ports() -> None:
     options = {
         name: value
         for name, value, _ in _options(
-            _rules(parser, "ip", "filter", "INPUT")[0]
+            _rules(parser, Family.IP, "filter", "INPUT")[0]
         )
     }
     # 19 single ports split into chunks of <= 15 -> an array (unfolds).
@@ -347,7 +348,7 @@ def test_multiport_shortcut_chunks_ports() -> None:
 
 def test_goto_action() -> None:
     parser = _parse("chain FORWARD; chain INPUT proto tcp goto FORWARD;")
-    options = _options(_rules(parser, "ip", "filter", "INPUT")[0])
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert ("goto", "FORWARD", "target") in options
 
 
@@ -356,7 +357,7 @@ def test_goto_action() -> None:
 
 def test_preserve_flags_a_chain() -> None:
     parser = _parse("chain INPUT @preserve;")
-    chain = parser.domains["ip"].tables["filter"].chains["INPUT"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
     assert chain.preserve is True
 
 
@@ -365,7 +366,7 @@ def test_preserve_regex_records_a_pattern() -> None:
     # tokenize, since ``^``/``$`` are not token characters); the oracle's
     # own preserve tests use quotes (``reference/test/preserve/regex.ferm``).
     parser = _parse('chain "/^ferm_/" @preserve;')
-    table = parser.domains["ip"].tables["filter"]
+    table = parser.domains[Family.IP].tables["filter"]
     assert len(table.preserve_regexes) == 1
     assert "/^ferm_/" not in table.chains
 
@@ -381,7 +382,7 @@ def test_preserve_requires_fast_mode() -> None:
 
 def test_deprecated_realgoto_maps_to_goto() -> None:
     parser = _parse("chain FORWARD; chain INPUT proto tcp realgoto FORWARD;")
-    options = _options(_rules(parser, "ip", "filter", "INPUT")[0])
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert ("goto", "FORWARD", "target") in options
 
 
@@ -530,7 +531,7 @@ def test_log_prefix_is_not_truncated() -> None:
     options = {
         name: value
         for name, value, _ in _options(
-            _rules(parser, "ip", "filter", "INPUT")[0]
+            _rules(parser, Family.IP, "filter", "INPUT")[0]
         )
     }
     assert options["log-prefix"] == long_prefix
@@ -575,7 +576,7 @@ def test_include_pulls_in_another_file(tmp_path: Path) -> None:
     parser.enter(0, None)
     handle.close()
 
-    rules = parser.domains["ip"].tables["filter"].chains["INPUT"].rules
+    rules = parser.domains[Family.IP].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
 
 
@@ -607,7 +608,7 @@ def test_include_pipe_parses_command_output(tmp_path: Path) -> None:
         "@include \"echo 'chain INPUT ACCEPT;'|\";\n", encoding="utf-8"
     )
     parser = _parse_file(main)
-    rules = parser.domains["ip"].tables["filter"].chains["INPUT"].rules
+    rules = parser.domains[Family.IP].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", "target")]
 
 
@@ -757,7 +758,7 @@ def test_collect_filenames_non_file_rejected(tmp_path: Path) -> None:
 def test_ipv6_base_match_keyword_recognized() -> None:
     """ip6 folds to the 'ip' family so base match keywords like saddr parse."""
     parser = _parse("domain ip6 { chain INPUT saddr ::1 ACCEPT; }")
-    rules = _rules(parser, "ip6", "filter", "INPUT")
+    rules = _rules(parser, Family.IP6, "filter", "INPUT")
     assert ("source", "::1", "option") in _options(rules[0])
 
 
@@ -778,7 +779,7 @@ def test_domain_filter_flat_form_skips_rest_of_statement() -> None:
 def test_gotosubchain_emits_goto_target() -> None:
     """@gotosubchain routes via 'goto' (keyword startswith '@go')."""
     parser = _parse('chain INPUT proto tcp @gotosubchain "foo" { ACCEPT; }')
-    rules = _rules(parser, "ip", "filter", "INPUT")
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
     assert ("goto", "foo", "target") in _options(rules[0])
 
 
@@ -814,7 +815,7 @@ def test_function_multi_token_arg_realigns_later_param() -> None:
             {o.name: o.value for o in rule.options}.get("dport"),
             {o.name: o.value for o in rule.options}.get("sport"),
         )
-        for rule in _rules(parser, "ip", "filter", "INPUT")
+        for rule in _rules(parser, Family.IP, "filter", "INPUT")
     }
     assert pairs == {("22", "53"), ("80", "53")}
 
@@ -827,7 +828,7 @@ def test_def_two_param_function_accepts_comma_separator() -> None:
     )
     options = {
         o.name: o.value
-        for o in _rules(parser, "ip", "filter", "INPUT")[0].options
+        for o in _rules(parser, Family.IP, "filter", "INPUT")[0].options
     }
     assert options["dport"] == "22"
     assert options["sport"] == "53"

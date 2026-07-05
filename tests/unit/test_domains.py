@@ -19,6 +19,7 @@ import pytest
 from pyferm.config import Options
 from pyferm.domains import (
     DomainInfo,
+    Family,
     find_tool,
     initialize_domain,
     is_ip_family,
@@ -145,20 +146,20 @@ def test_read_previous_chain_before_table_is_ignored() -> None:
 
 
 def test_initialize_domain_invokes_capture_previous_after_tools() -> None:
-    seen: list[tuple[str, dict[str, str]]] = []
-    domains: dict[str, DomainInfo] = {}
+    seen: list[tuple[Family, dict[str, str]]] = []
+    domains: dict[Family, DomainInfo] = {}
 
-    def capture(domain: str, info: DomainInfo) -> None:
+    def capture(domain: Family, info: DomainInfo) -> None:
         # the call invariant: tools are resolved BEFORE the capture
         seen.append((domain, dict(info.tools)))
 
     initialize_domain(
-        "ip", domains, Options(test=True), capture_previous=capture
+        Family.IP, domains, Options(test=True), capture_previous=capture
     )
 
     assert seen == [
         (
-            "ip",
+            Family.IP,
             {
                 "tables": "iptables",
                 "tables-save": "iptables-save",
@@ -170,21 +171,16 @@ def test_initialize_domain_invokes_capture_previous_after_tools() -> None:
 
 def test_initialize_domain_without_capture_previous_skips_capture() -> None:
     # the None seam is a unit-test/fuzz convenience: no previous state
-    domains: dict[str, DomainInfo] = {}
-    initialize_domain("ip", domains, Options(test=True))
-    assert domains["ip"].previous is None
-    assert domains["ip"].initialized is True
-
-
-def test_initialize_domain_rejects_invalid_family() -> None:
-    with pytest.raises(FermError, match="Invalid domain 'wat'"):
-        initialize_domain("wat", {}, Options(test=True))
+    domains: dict[Family, DomainInfo] = {}
+    initialize_domain(Family.IP, domains, Options(test=True))
+    assert domains[Family.IP].previous is None
+    assert domains[Family.IP].initialized is True
 
 
 def test_initialize_domain_test_mode_tools_are_bare_names() -> None:
-    domains: dict[str, DomainInfo] = {}
-    initialize_domain("ip", domains, Options(test=True))
-    info = domains["ip"]
+    domains: dict[Family, DomainInfo] = {}
+    initialize_domain(Family.IP, domains, Options(test=True))
+    info = domains[Family.IP]
     assert info.initialized is True
     # ip/ip6 get the save+restore tools; bare names under --test
     assert info.tools == {
@@ -195,17 +191,19 @@ def test_initialize_domain_test_mode_tools_are_bare_names() -> None:
 
 
 def test_initialize_domain_arp_has_only_tables_tool() -> None:
-    domains: dict[str, DomainInfo] = {}
-    initialize_domain("arp", domains, Options(test=True))
-    assert domains["arp"].tools == {"tables": "arptables"}
+    domains: dict[Family, DomainInfo] = {}
+    initialize_domain(Family.ARP, domains, Options(test=True))
+    assert domains[Family.ARP].tools == {"tables": "arptables"}
 
 
 def test_initialize_domain_is_idempotent() -> None:
-    domains: dict[str, DomainInfo] = {}
-    initialize_domain("ip", domains, Options(test=True))
-    domains["ip"].tools = {"sentinel": "kept"}  # would be clobbered on re-init
-    initialize_domain("ip", domains, Options(test=True))
-    assert domains["ip"].tools == {"sentinel": "kept"}
+    domains: dict[Family, DomainInfo] = {}
+    initialize_domain(Family.IP, domains, Options(test=True))
+    domains[Family.IP].tools = {
+        "sentinel": "kept"
+    }  # would be clobbered on re-init
+    initialize_domain(Family.IP, domains, Options(test=True))
+    assert domains[Family.IP].tools == {"sentinel": "kept"}
 
 
 # --- initialize_domain: resolve_tools seam ---------------------------------
@@ -214,12 +212,12 @@ def test_initialize_domain_is_idempotent() -> None:
 def test_initialize_domain_resolves_via_backend_tool_names() -> None:
     from pyferm.backend.iptables import IptablesBackend
 
-    domains: dict[str, DomainInfo] = {}
+    domains: dict[Family, DomainInfo] = {}
     options = Options(test=True)
     initialize_domain(
-        "ip", domains, options, resolve_tools=IptablesBackend().tool_names
+        Family.IP, domains, options, resolve_tools=IptablesBackend().tool_names
     )
-    assert domains["ip"].tools == {
+    assert domains[Family.IP].tools == {
         "tables": "iptables",
         "tables-save": "iptables-save",
         "tables-restore": "iptables-restore",
@@ -227,11 +225,11 @@ def test_initialize_domain_resolves_via_backend_tool_names() -> None:
 
 
 def test_initialize_domain_resolves_single_nft_binary() -> None:
-    domains: dict[str, DomainInfo] = {}
+    domains: dict[Family, DomainInfo] = {}
     initialize_domain(
-        "ip",
+        Family.IP,
         domains,
         Options(test=True),
         resolve_tools=lambda _domain: {"nft": "nft"},
     )
-    assert domains["ip"].tools == {"nft": "nft"}
+    assert domains[Family.IP].tools == {"nft": "nft"}

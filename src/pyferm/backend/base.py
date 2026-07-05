@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pyferm.config import Options
-    from pyferm.domains import DomainInfo, ShellSnapshot
+    from pyferm.domains import DomainInfo, Family, ShellSnapshot
 
 
 @runtime_checkable
@@ -123,7 +123,7 @@ class Backend(ABC):
     """
 
     @abstractmethod
-    def tool_names(self, domain: str) -> dict[str, str]:
+    def tool_names(self, domain: Family) -> dict[str, str]:
         """
         Map tool keys to the names ``find_tool`` should resolve.
 
@@ -135,14 +135,14 @@ class Backend(ABC):
 
     @abstractmethod
     def render(
-        self, domain: str, domain_info: DomainInfo, options: Options
+        self, domain: Family, domain_info: DomainInfo, options: Options
     ) -> Rendered:
         """Build the firewall output for one family without executing it."""
 
     @abstractmethod
     def commit(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         rendered: Rendered,
         options: Options,
@@ -156,7 +156,7 @@ class Backend(ABC):
     @abstractmethod
     def rollback(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         options: Options,
         *,
@@ -168,7 +168,7 @@ class Backend(ABC):
     @abstractmethod
     def capture_previous(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         options: Options,
         *,
@@ -197,7 +197,7 @@ class Backend(ABC):
 
     @abstractmethod
     def shell_snapshot(
-        self, domain: str, domain_info: DomainInfo
+        self, domain: Family, domain_info: DomainInfo
     ) -> ShellSnapshot | None:
         """
         Build the ``--shell`` anti-lockout snapshot lines for one family.

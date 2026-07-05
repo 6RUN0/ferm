@@ -29,6 +29,7 @@ from pyferm.domains import (
     ICMP6_REJECT_MAP,
     NFT_CT_STATES,
     NFT_TABLE_NAME,
+    Family,
     ShellSnapshot,
 )
 from pyferm.errors import FermError, internal_error
@@ -354,7 +355,7 @@ class _SetDecl:
 
 
 def _set_type_and_elements(
-    domain: str, selector: str, setref: SetRef
+    domain: Family, selector: str, setref: SetRef
 ) -> tuple[NftSetType, bool, list[str]]:
     """
     Infer (nft type, flags-interval, validated sorted elements) for a set.
@@ -399,7 +400,7 @@ def _set_type_and_elements(
 
 
 def _collect_set_declarations(
-    domain: str, rules: dict[str, list[NftRule]]
+    domain: Family, rules: dict[str, list[NftRule]]
 ) -> dict[str, _SetDecl]:
     """
     Aggregate named-set declarations over one family's rules.
@@ -518,11 +519,11 @@ def _full_reload_text(save: str, family: str) -> str:
 # ---------------------------------------------------------------------------
 
 #: ferm family -> nft family, 1:1.
-_NFT_FAMILY: Final[dict[str, str]] = {
-    "ip": "ip",
-    "ip6": "ip6",
-    "arp": "arp",
-    "eb": "bridge",
+_NFT_FAMILY: Final[dict[Family, str]] = {
+    Family.IP: "ip",
+    Family.IP6: "ip6",
+    Family.ARP: "arp",
+    Family.EB: "bridge",
 }
 
 #: (table, chain) -> (nft type, hook, priority).  Numeric priorities for
@@ -551,7 +552,7 @@ _ARP_BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
 }
 
 
-def nft_family(domain: str) -> str:
+def nft_family(domain: Family) -> str:
     """Map a ferm family to its nft family name."""
     family = _NFT_FAMILY.get(domain)
     if family is None:
@@ -560,7 +561,7 @@ def nft_family(domain: str) -> str:
 
 
 def map_base_chain(
-    domain: str,
+    domain: Family,
     table: str,
     chain: str,
 ) -> tuple[str, str, int]:
@@ -606,7 +607,7 @@ def nft_chain_name(table: str, chain: str) -> str:
 
 
 def build_chains(
-    domain: str,
+    domain: Family,
     table: str,
     table_info: TableInfo,
 ) -> list[NftBaseChain | NftRegularChain]:
@@ -752,7 +753,7 @@ def _op(neg: bool) -> str:
 
 
 def _translate_match_parts(
-    domain: str, option: RenderedOption, protocol: str | None
+    domain: Family, option: RenderedOption, protocol: str | None
 ) -> tuple[str, str | None, str | None]:
     """
     Translate one match option to (expr, set_key, element).
@@ -798,13 +799,13 @@ def _translate_match_parts(
 
 
 def translate_match(
-    domain: str, option: RenderedOption, protocol: str | None
+    domain: Family, option: RenderedOption, protocol: str | None
 ) -> str:
     """Translate one match option to an nft expression."""
     return _translate_match_parts(domain, option, protocol)[0]
 
 
-def _match_selector(domain: str, name: str, protocol: str | None) -> str:
+def _match_selector(domain: Family, name: str, protocol: str | None) -> str:
     """
     Return the nft selector text for an address/interface/port keyword.
 
@@ -828,7 +829,7 @@ def _match_selector(domain: str, name: str, protocol: str | None) -> str:
     raise internal_error()
 
 
-def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
+def _setref_selector(domain: Family, name: str, protocol: str | None) -> str:
     """
     Return the nft selector left of a set reference (@name).
 
@@ -908,7 +909,7 @@ _NAT_PORT_NEEDS_PROTO: Final[str] = (
 )
 
 
-def _nat_has_port(domain: str, operand: str) -> bool:
+def _nat_has_port(domain: Family, operand: str) -> bool:
     """
     Return whether a NAT address operand carries a ``:port``.
 
@@ -927,7 +928,7 @@ def _nat_has_port(domain: str, operand: str) -> bool:
     return ":" in operand
 
 
-def _reject_for(domain: str, scalar: str) -> str:
+def _reject_for(domain: Family, scalar: str) -> str:
     if domain == "ip6":
         # normalize an ip4 reject spelling written in an ip6 domain before
         # the ip6 lookup (shared oracle ip4->icmp6 alias set)
@@ -970,7 +971,7 @@ def _nat_to_addr(
     verb: str,
     target: str,
     comp_key: str,
-    domain: str,
+    domain: Family,
     companions: dict[str, RenderedOption],
     *,
     has_transport: bool,
@@ -991,7 +992,7 @@ def _nat_to_addr(
 
 
 def build_verdict(
-    domain: str,
+    domain: Family,
     table: str,
     target_name: str,
     target_value: str,
@@ -1079,7 +1080,7 @@ _TARGET_COMPANIONS: Final[tuple[str, ...]] = (
 )
 
 
-def _nft_l4proto(domain: str, proto: str) -> str:
+def _nft_l4proto(domain: Family, proto: str) -> str:
     """
     Normalize a protocol for nft ``meta l4proto`` (cf. ``iptables.py``).
 
@@ -1113,7 +1114,7 @@ def _references_empty_named_set(rule: RenderedRule) -> bool:
     )
 
 
-def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
+def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
     """
     Translate one RenderedRule to an NftRule (two-pass).
 
@@ -1421,13 +1422,13 @@ def _collapse_chain_rules(rules: list[NftRule]) -> list[NftRule]:
 class NftBackend(Backend):
     """The native nftables backend (Phase 2, all families via ``nft -f``)."""
 
-    def tool_names(self, domain: str) -> dict[str, str]:
+    def tool_names(self, domain: Family) -> dict[str, str]:
         """Return the single family-independent ``nft`` binary."""
         nft_family(domain)  # validates the family early
         return {"nft": "nft"}
 
     def render(
-        self, domain: str, domain_info: DomainInfo, options: Options
+        self, domain: Family, domain_info: DomainInfo, options: Options
     ) -> Rendered:
         """
         Build the atomic ``nft -f`` script for one family.
@@ -1470,7 +1471,7 @@ class NftBackend(Backend):
 
     def commit(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         rendered: Rendered,
         options: Options,
@@ -1536,7 +1537,7 @@ class NftBackend(Backend):
 
     def capture_previous(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         options: Options,
         *,
@@ -1581,7 +1582,7 @@ class NftBackend(Backend):
 
     def rollback(
         self,
-        domain: str,
+        domain: Family,
         domain_info: DomainInfo,
         options: Options,
         *,
@@ -1622,7 +1623,7 @@ class NftBackend(Backend):
         return "".join(lines)
 
     def shell_snapshot(
-        self, domain: str, domain_info: DomainInfo
+        self, domain: Family, domain_info: DomainInfo
     ) -> ShellSnapshot | None:
         """
         Build the ``--shell`` anti-lockout snapshot for a family.

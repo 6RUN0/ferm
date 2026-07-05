@@ -25,6 +25,7 @@ from pyferm.config import Options
 from pyferm.domains import (
     ChainInfo,
     DomainInfo,
+    Family,
     TableInfo,
     resolve_chain_priority,
 )
@@ -80,7 +81,7 @@ def test_parser_stores_negative_priority() -> None:
         "    policy ACCEPT;\n"
         "}\n"
     )
-    chain = parser.domains["ip"].tables["filter"].chains["FORWARD"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
     assert chain.priority == -1
     # the chain attributes coexist: priority does not eat the policy.
     assert chain.policy == "ACCEPT"
@@ -90,12 +91,13 @@ def test_parser_stores_explicit_positive_priority() -> None:
     parser = _parse(
         "domain ip table filter chain INPUT priority 10 { policy DROP; }\n"
     )
-    assert parser.domains["ip"].tables["filter"].chains["INPUT"].priority == 10
+    chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
+    assert chain.priority == 10
 
 
 def test_parser_default_priority_is_none() -> None:
     parser = _parse("domain ip table filter chain INPUT { policy DROP; }\n")
-    chain = parser.domains["ip"].tables["filter"].chains["INPUT"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
     assert chain.priority is None
 
 
@@ -111,7 +113,7 @@ def test_render_emits_overridden_priority() -> None:
     info = DomainInfo()
     table = info.tables.setdefault("filter", TableInfo())
     table.chains.setdefault("FORWARD", ChainInfo(policy="ACCEPT", priority=-1))
-    save = NftBackend().render("ip", info, Options(test=True)).save
+    save = NftBackend().render(Family.IP, info, Options(test=True)).save
     assert save is not None
     assert (
         "add chain ip ferm FORWARD "
@@ -123,7 +125,7 @@ def test_render_without_override_keeps_default_priority() -> None:
     info = DomainInfo()
     table = info.tables.setdefault("filter", TableInfo())
     table.chains.setdefault("FORWARD", ChainInfo(policy="ACCEPT"))
-    save = NftBackend().render("ip", info, Options(test=True)).save
+    save = NftBackend().render(Family.IP, info, Options(test=True)).save
     assert save is not None
     assert "hook forward priority 0;" in save
 
@@ -131,7 +133,7 @@ def test_render_without_override_keeps_default_priority() -> None:
 def test_build_chains_overrides_base_priority() -> None:
     table = TableInfo()
     table.chains["FORWARD"] = ChainInfo(priority=-1)
-    chains = build_chains("ip", "filter", table)
+    chains = build_chains(Family.IP, "filter", table)
     base = next(c for c in chains if isinstance(c, NftBaseChain))
     assert base.priority == -1
 
@@ -140,7 +142,7 @@ def test_build_chains_rejects_priority_on_user_chain() -> None:
     table = TableInfo()
     table.chains["mychain"] = ChainInfo(priority=-1)
     with pytest.raises(FermError, match="priority"):
-        build_chains("ip", "filter", table)
+        build_chains(Family.IP, "filter", table)
 
 
 # --- iptables backend: no chain priority exists; reject fail-closed --------
@@ -294,7 +296,7 @@ def test_parser_resolves_landmark_priority(syntax: str, expected: int) -> None:
         "    policy ACCEPT;\n"
         "}\n"
     )
-    chain = parser.domains["ip"].tables["filter"].chains["FORWARD"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
     assert chain.priority == expected
 
 
@@ -304,7 +306,7 @@ def test_parser_resolves_landmark_per_family() -> None:
     parser = _parse(
         "domain eb table filter chain FORWARD priority filter { }\n"
     )
-    chain = parser.domains["eb"].tables["filter"].chains["FORWARD"]
+    chain = parser.domains[Family.EB].tables["filter"].chains["FORWARD"]
     assert chain.priority == -200
 
 
@@ -322,7 +324,7 @@ def test_priority_applies_to_each_chain_in_array() -> None:
         "    policy ACCEPT;\n"
         "}\n"
     )
-    chains = parser.domains["ip"].tables["filter"].chains
+    chains = parser.domains[Family.IP].tables["filter"].chains
     assert chains["FORWARD"].priority == -1
     assert chains["OUTPUT"].priority == -1
 
@@ -333,8 +335,8 @@ def test_priority_applies_to_each_family_in_dual_stack() -> None:
         "    policy ACCEPT;\n"
         "}\n"
     )
-    ip = parser.domains["ip"].tables["filter"].chains["FORWARD"]
-    ip6 = parser.domains["ip6"].tables["filter"].chains["FORWARD"]
+    ip = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
+    ip6 = parser.domains[Family.IP6].tables["filter"].chains["FORWARD"]
     assert ip.priority == -1
     assert ip6.priority == -1
 
@@ -346,8 +348,8 @@ def test_dual_stack_landmark_resolves_per_family() -> None:
         "    policy ACCEPT;\n"
         "}\n"
     )
-    ip = parser.domains["ip"].tables["filter"].chains["FORWARD"]
-    ip6 = parser.domains["ip6"].tables["filter"].chains["FORWARD"]
+    ip = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
+    ip6 = parser.domains[Family.IP6].tables["filter"].chains["FORWARD"]
     assert ip.priority == -1
     assert ip6.priority == -1
 
@@ -465,7 +467,7 @@ def test_parser_accepts_glued_sign_after_landmark(
         "    policy ACCEPT;\n"
         "}\n"
     )
-    chain = parser.domains["ip"].tables["filter"].chains["FORWARD"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
     assert chain.priority == expected
 
 
@@ -476,7 +478,8 @@ def test_parser_accepts_filter_landmark_on_arp() -> None:
     parser = _parse(
         "domain arp table filter chain INPUT priority filter { }\n"
     )
-    assert parser.domains["arp"].tables["filter"].chains["INPUT"].priority == 0
+    chain = parser.domains[Family.ARP].tables["filter"].chains["INPUT"]
+    assert chain.priority == 0
 
 
 @pytest.mark.parametrize("landmark", ["srcnat", "dstnat", "raw", "security"])
@@ -538,7 +541,7 @@ def test_duplicate_priority_warns(
         "    policy ACCEPT;\n"
         "}\n"
     )
-    chain = parser.domains["ip"].tables["filter"].chains["FORWARD"]
+    chain = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
     assert chain.priority == -2  # last wins
     assert "priority is already specified" in capsys.readouterr().err.lower()
 

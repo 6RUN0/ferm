@@ -223,18 +223,20 @@ def _check_chain_name(name: str) -> None:
         )
 
 
-def _domain_key(value: Value) -> str:
+def _domain_key(value: Value) -> Family:
     """
-    Return a family value as a dict key, requiring a single name.
+    Return a family value as a validated :class:`Family` dict key.
 
     ``set_domain`` stores a scalar family (``ip``/``ip6``/...) for every real
-    rule, so this is always a ``str`` in practice.  Perl would stringify an
-    array ref into a (nonsensical) key for an empty ``domain ()`` carrying
-    rules; this port raises instead -- no test exercises that, and a clean
-    error beats a misleading key.
+    rule, so this is always a ``str`` in practice; it is validated to a
+    :class:`Family` here (the single conversion point for the domain seam),
+    which keys the ``domains`` dict.  Perl would stringify an array ref into
+    a (nonsensical) key for an empty ``domain ()`` carrying rules; this port
+    raises instead -- no test exercises that, and a clean error beats a
+    misleading key.
     """
     if isinstance(value, str):
-        return value
+        return Family.from_name(value)
     raise internal_error()
 
 
@@ -595,10 +597,10 @@ class Parser:
     def __init__(
         self,
         evaluator: Evaluator,
-        domains: dict[str, DomainInfo],
+        domains: dict[Family, DomainInfo],
         options: Options,
         *,
-        resolve_tools: Callable[[str], dict[str, str]] | None = None,
+        resolve_tools: Callable[[Family], dict[str, str]] | None = None,
         capture_previous: CapturePrevious | None = None,
         emit_line: LineEmitter | None = None,
         shell_snapshot: ShellSnapshotBuilder | None = None,
