@@ -526,6 +526,11 @@ def _select_backend(options: Options) -> Backend:
     return NftBackend() if options.nft else IptablesBackend()
 
 
+def _run_failed(path: str, exc: OSError) -> FermError:
+    """Build the spawn-failure error shared by both nft call sites below."""
+    return FermError(f"Failed to run {path}: {exc}")
+
+
 def _nft_check_save(path: str, save: str) -> None:
     """
     Validate a rendered nft script with ``nft -c -f -`` (installs nothing).
@@ -548,7 +553,7 @@ def _nft_check_save(path: str, save: str) -> None:
             check=False,
         )
     except OSError as exc:
-        raise FermError(f"Failed to run {path}: {exc}") from exc
+        raise _run_failed(path, exc) from exc
     if check.returncode != 0:
         # backslashreplace: nft's stderr is a human-facing diagnostic.
         detail = check.stderr.decode(
@@ -600,7 +605,7 @@ def _make_nft_restore(options: Options) -> RestoreDomain:
                 check=False,
             )
         except OSError as exc:
-            raise FermError(f"Failed to run {path}: {exc}") from exc
+            raise _run_failed(path, exc) from exc
         if completed.returncode != 0:
             raise FermError(f"Failed to run {path}")
 

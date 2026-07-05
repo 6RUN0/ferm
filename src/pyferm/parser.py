@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 from pyferm.domains import (
+    DEFAULT_TABLE,
     CapturePrevious,
     ChainInfo,
     DomainInfo,
@@ -323,10 +324,23 @@ class NegatedFlag:
     active: bool
 
 
-#: Block-header keywords whose value runs up to a top-level ``{`` or ``;``.
-_HEADER_KEYWORDS: Final = frozenset(
-    {"domain", "table", "chain", "policy", "priority"}
+#: Header keywords that name a location (domain/table/chain), as opposed to
+#: ``policy``/``priority`` which graph.py handles separately.
+_LOCATION_KEYWORDS: Final[frozenset[str]] = frozenset(
+    {"domain", "table", "chain"}
 )
+
+#: Block-header keywords whose value runs up to a top-level ``{`` or ``;``.
+_HEADER_KEYWORDS: Final = _LOCATION_KEYWORDS | frozenset(
+    {"policy", "priority"}
+)
+
+#: Raised wherever a rule/chain keyword is used before a chain is set.
+_ERR_CHAIN_REQUIRED: Final[str] = "Chain must be specified"
+
+#: Perl-verbatim wording (ungrammatical in the original, ``:2093``) --
+#: raised when a rule already has a jump/goto/verdict target.
+_ERR_ACTION_ALREADY_SET: Final[str] = "There can only one action per rule"
 
 #: Leading keywords of ``;``-terminated directive statements and the node
 #: each becomes; every other leading keyword is a plain rule.
@@ -696,7 +710,7 @@ class Parser:
     def set_target(self, rule: Rule, name: str, value: Value) -> None:
         """Record the rule's single action (Perl ``:2093``)."""
         if rule.has_action:
-            error("There can only one action per rule")
+            error(_ERR_ACTION_ALREADY_SET)
         rule.has_action = True
         append_option(rule, name, value)
 
@@ -1197,7 +1211,7 @@ class Parser:
             if rule.domain is None:
                 self.set_domain(rule, self.options.domain or "ip")
             if rule.table is None:
-                rule.table = "filter"
+                rule.table = DEFAULT_TABLE
             domain = _domain_key(rule.domain)
             for table in to_array(rule.table):
                 table_info = self.domains[domain].tables.setdefault(
@@ -1222,7 +1236,7 @@ class Parser:
             return rule
 
         if rule.chain is None:
-            error("Chain must be specified")
+            error(_ERR_CHAIN_REQUIRED)
 
         if keyword == "policy":
             if rule.has_rule:
@@ -1457,7 +1471,7 @@ class Parser:
             # (routed by _dispatch_leading); the chain-context check below
             # still guards the leaf rule keywords.
             if walker.rule.chain is None:
-                error("Chain must be specified")
+                error(_ERR_CHAIN_REQUIRED)
 
             # everything else is part of a "real" rule
             walker.rule.has_rule = True
@@ -1497,7 +1511,7 @@ class Parser:
 
             if keyword == "NOP":
                 if walker.rule.has_action:
-                    error("There can only one action per rule")
+                    error(_ERR_ACTION_ALREADY_SET)
                 walker.rule.has_action = True
                 return "next"
 
@@ -1852,7 +1866,7 @@ class Parser:
         level returned (with ``has_rule`` cleared).
         """
         if rule.chain is None:
-            error("Chain must be specified")
+            error(_ERR_CHAIN_REQUIRED)
         jumptype = "goto" if keyword.startswith("@go") else "jump"
         jumpkey = re.sub(r"^sub", "@sub", keyword)
         if not rule.has_rule:

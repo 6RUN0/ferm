@@ -589,6 +589,16 @@ _NFT_CHAIN_MIN_PARTS: Final[int] = 5
 # add rule: add rule <fam> ferm <chain> <body-token>
 _NFT_RULE_MIN_PARTS: Final[int] = 6
 
+# The verbs a render line can start with (table envelope productions).
+_NFT_VERBS: Final[frozenset[str]] = frozenset({"add", "flush", "delete"})
+
+# nft object-type words, shared between the parse-phase dispatch above and
+# the desired-side indexer's dispatch (_build_desired_index) below.
+_NFT_OBJ_CHAIN: Final[str] = "chain"
+_NFT_OBJ_SET: Final[str] = "set"
+_NFT_OBJ_ELEMENT: Final[str] = "element"
+_NFT_OBJ_RULE: Final[str] = "rule"
+
 
 def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
     """Insert an empty ``ferm`` table entry if not already present."""
@@ -687,7 +697,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         # -- table envelope / flush directive: declares (materializes) the
         # ferm table; see the _ensure_ferm_table call below for why. ---------
         # Exact 4-token match: any extra token is a parse error.
-        if parts[1:2] == ["table"] and verb in ("add", "flush", "delete"):
+        if parts[1:2] == ["table"] and verb in _NFT_VERBS:
             if len(parts) != _NFT_TABLE_PARTS or parts[3] != NFT_TABLE_NAME:
                 raise _parse_error(lineno, raw)
             family = _check_family(family, parts[2], lineno, raw)
@@ -711,7 +721,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         sub = parts[1] if len(parts) > 1 else ""
 
         # -- add chain -------------------------------------------------------
-        if sub == "chain" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
+        if sub == _NFT_OBJ_CHAIN and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, chain_name = _parse_object_head(parts, family, lineno, raw)
 
             # parts[5:] is the payload after <chain>.  Valid shapes:
@@ -743,7 +753,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             continue
 
         # -- add set ---------------------------------------------------------
-        if sub == "set" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
+        if sub == _NFT_OBJ_SET and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, set_name = _parse_object_head(parts, family, lineno, raw)
             _ensure_ferm_table(tables)
             set_obj = tables[NFT_TABLE_NAME].sets.setdefault(
@@ -757,7 +767,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             continue
 
         # -- add element -----------------------------------------------------
-        if sub == "element" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
+        if sub == _NFT_OBJ_ELEMENT and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, set_name = _parse_object_head(parts, family, lineno, raw)
             brace_open = line.find("{")
             brace_close = line.rfind("}")
@@ -777,7 +787,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             continue
 
         # -- add rule --------------------------------------------------------
-        if sub == "rule" and len(parts) >= _NFT_RULE_MIN_PARTS:
+        if sub == _NFT_OBJ_RULE and len(parts) >= _NFT_RULE_MIN_PARTS:
             family, chain_name = _parse_object_head(parts, family, lineno, raw)
 
             # Body is everything after 'add rule <fam> ferm <chain>'.
@@ -1100,13 +1110,13 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:
         if len(parts) <= _DESIRED_NAME_INDEX or parts[0] != "add":
             raise internal_error(f"unexpected render line: {stripped!r}")
         sub, name = parts[1], parts[_DESIRED_NAME_INDEX]
-        if sub == "chain":
+        if sub == _NFT_OBJ_CHAIN:
             index.chain_decl[name] = stripped
-        elif sub == "rule":
+        elif sub == _NFT_OBJ_RULE:
             index.chain_rules.setdefault(name, []).append(stripped)
-        elif sub == "set":
+        elif sub == _NFT_OBJ_SET:
             index.set_decl[name] = stripped
-        elif sub == "element":
+        elif sub == _NFT_OBJ_ELEMENT:
             index.set_elements[name] = stripped
         else:
             raise internal_error(f"unexpected render line: {stripped!r}")

@@ -47,6 +47,10 @@ from pyferm.rules import RenderedRule
 if TYPE_CHECKING:
     from pyferm.config import Options
 
+#: The table a rule/chain falls back to when none is specified (Perl's
+#: implicit ``"filter"`` default, e.g. ``:2093``/``:2123``).
+DEFAULT_TABLE: Final[str] = "filter"
+
 #: The ebtables tables in their FIXED order (``:94``).  The order is a
 #: deliberate literal, NOT sorted -- arp/eb output is byte-for-byte and not
 #: canonicalized by ``sort.pl`` (design revision 3, the ``@eb_tables`` fix).

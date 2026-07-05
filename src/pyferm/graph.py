@@ -31,8 +31,9 @@ from ._treescan import (
     _subchain_names,
     _unquote,
 )
+from .domains import DEFAULT_TABLE
 from .modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
-from .parser import MAX_BLOCK_DEPTH
+from .parser import _LOCATION_KEYWORDS, MAX_BLOCK_DEPTH
 from .rules import CORE_TARGETS, is_netfilter_builtin_chain
 from .tree import (
     Block,
@@ -180,7 +181,7 @@ def _header_context(
     i = 0
     while i < len(toks):
         tok = toks[i]
-        if tok in ("domain", "table", "chain"):
+        if tok in _LOCATION_KEYWORDS:
             values, j = _header_value(toks, i + 1)
             if values:  # empty means the value was a skipped $var
                 if tok == "domain":
@@ -428,11 +429,11 @@ def _walk(
             if nc is not None:
                 # entering a chain context defaults the table to filter
                 if not t:
-                    t = ("filter",)
+                    t = (DEFAULT_TABLE,)
                 c = nc
                 _declare(acc, d, t, nc)
             if policy_target is not None and c:
-                eff_tables = t or ("filter",)
+                eff_tables = t or (DEFAULT_TABLE,)
                 for domain in d:
                     for table in eff_tables:
                         ca = _acc_for(acc, domain, table)
@@ -444,9 +445,9 @@ def _walk(
                 # flat inline form: the fused rule tail is a rule in the
                 # current chain, routed through the same edge/verdict path
                 # as a braced rule (context updates already applied above).
-                _emit_span(acc, d, t or ("filter",), c, tail)
+                _emit_span(acc, d, t or (DEFAULT_TABLE,), c, tail)
         elif isinstance(node, (RuleNode, DefNode, SubchainNode)) and c:
-            eff_tables = t or ("filter",)
+            eff_tables = t or (DEFAULT_TABLE,)
             scan = _scan_span(node)
             if scan is not None:
                 _emit_span(acc, d, eff_tables, c, scan)

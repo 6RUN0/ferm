@@ -17,7 +17,11 @@ this module a leaf of the dependency graph (it imports nothing from
 from __future__ import annotations
 
 import sys
-from typing import NoReturn, Protocol
+from typing import Final, NoReturn, Protocol
+
+#: Shared Perl-parity message for a value that must be a plain string, not a
+#: reference (``values.py``/``resolver.py``/``functions.py`` all raise it).
+ERR_STRING_EXPECTED: Final[str] = "String expected"
 
 
 class ErrorContext(Protocol):

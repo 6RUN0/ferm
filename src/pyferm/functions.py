@@ -29,7 +29,7 @@ import subprocess
 from collections import deque
 from typing import TYPE_CHECKING, Final, TypeAlias
 
-from pyferm.errors import error, internal_error
+from pyferm.errors import ERR_STRING_EXPECTED, error, internal_error
 from pyferm.modules import PROTO_DEFS
 from pyferm.resolver import resolve
 from pyferm.scope import Rule, Scope, append_option
@@ -620,7 +620,7 @@ class Evaluator:
         if token == "@substr":
             params = self._params("@substr(string, num, num)", 3)
             if any(_is_ref(p) for p in params):
-                error("String expected")
+                error(ERR_STRING_EXPECTED)
             return _perl_substr(
                 stringify(params[0]),
                 _perl_substr_index(stringify(params[1])),
@@ -657,7 +657,7 @@ class Evaluator:
         """Read the single non-reference argument, stringified."""
         params = self._params(usage, 1)
         if _is_ref(params[0]):
-            error("String expected")
+            error(ERR_STRING_EXPECTED)
         return stringify(params[0])
 
     def _builtin_defined(self) -> Value:

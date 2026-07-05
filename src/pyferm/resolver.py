@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
-from pyferm.errors import FermError, error, warning
+from pyferm.errors import ERR_STRING_EXPECTED, FermError, error, warning
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Value, to_array
 
@@ -403,7 +403,7 @@ def resolve(
     always truthy -- leaving ``return @result`` with an empty ``@result``.
     """
     if rrtype is not None and not isinstance(rrtype, str):
-        error("String expected")
+        error(ERR_STRING_EXPECTED)
     if resolver is None:
         resolver = _current_resolver()
     if not rrtype:
