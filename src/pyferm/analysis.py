@@ -131,6 +131,11 @@ class _DefCollector(NodeVisitor):
         self.declared: dict[str, Node] = {}
         self.mentioned: set[str] = set()
 
+    def _note_refs(self, span: Sequence[object]) -> None:
+        """Record both var and func mentions found in a span."""
+        self.mentioned.update(_iter_var_refs(span))
+        self.mentioned.update(_iter_func_refs(span))
+
     def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
         """
         Record the declared @def name (LHS) and the RHS mentions.
@@ -155,8 +160,7 @@ class _DefCollector(NodeVisitor):
             name = _function_def_name(span)
             if name is not None:
                 self.declared.setdefault(name, node)
-            self.mentioned.update(_iter_var_refs(body))
-            self.mentioned.update(_iter_func_refs(body))
+            self._note_refs(body)
             return
         refs = list(_iter_var_refs(span))
         if refs:
@@ -167,18 +171,15 @@ class _DefCollector(NodeVisitor):
 
     def visit_SetNode(self, node: SetNode) -> None:  # noqa: N802
         """Record var mentions in an @set span."""
-        self.mentioned.update(_iter_var_refs(node.span))
-        self.mentioned.update(_iter_func_refs(node.span))
+        self._note_refs(node.span)
 
     def visit_RuleNode(self, node: RuleNode) -> None:  # noqa: N802
         """Record var mentions in a rule span."""
-        self.mentioned.update(_iter_var_refs(node.span))
-        self.mentioned.update(_iter_func_refs(node.span))
+        self._note_refs(node.span)
 
     def visit_IfNode(self, node: IfNode) -> None:  # noqa: N802
         """Record var mentions in an @if condition; branches via _walk_all."""
-        self.mentioned.update(_iter_var_refs(node.cond_span))
-        self.mentioned.update(_iter_func_refs(node.cond_span))
+        self._note_refs(node.cond_span)
 
     def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
         """
@@ -189,9 +190,7 @@ class _DefCollector(NodeVisitor):
         ACCEPT;``) carries $-var and &-function uses. Without this the uses
         are invisible and the defs look unused (a false positive).
         """
-        span = (node.keyword, *node.value_span)
-        self.mentioned.update(_iter_var_refs(span))
-        self.mentioned.update(_iter_func_refs(span))
+        self._note_refs((node.keyword, *node.value_span))
 
 
 def _walk_all(block: Block, visitor: NodeVisitor, depth: int = 0) -> None:
@@ -250,6 +249,15 @@ class _ChainCollector(NodeVisitor):
         self.jumps: list[str] = []
         self.subchains: set[str] = set()
 
+    def _harvest(
+        self, span: Sequence[object], *, with_jumps: bool = True
+    ) -> None:
+        """Record chain declarations, subchains, and (optionally) jumps."""
+        self.declared.update(_declared_chains(span))
+        if with_jumps:
+            self.jumps.extend(_jump_targets(span))
+        self.subchains.update(_subchain_names(span))
+
     def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
         """
         Harvest chains, jumps and subchains from a header span.
@@ -261,21 +269,15 @@ class _ChainCollector(NodeVisitor):
         location prefix carries none of those, so scanning the whole span
         never mis-harvests a location value as a jump.
         """
-        span = (node.keyword, *node.value_span)
-        self.declared.update(_declared_chains(span))
-        self.jumps.extend(_jump_targets(span))
-        self.subchains.update(_subchain_names(span))
+        self._harvest((node.keyword, *node.value_span))
 
     def visit_RuleNode(self, node: RuleNode) -> None:  # noqa: N802
         """Collect jumps, plus a mid-rule @subchain chain declaration."""
-        self.declared.update(_declared_chains(node.span))
-        self.jumps.extend(_jump_targets(node.span))
-        self.subchains.update(_subchain_names(node.span))
+        self._harvest(node.span)
 
     def visit_SubchainNode(self, node: SubchainNode) -> None:  # noqa: N802
         """Harvest a leading @subchain chain declaration."""
-        self.declared.update(_declared_chains(node.span))
-        self.subchains.update(_subchain_names(node.span))
+        self._harvest(node.span, with_jumps=False)
 
     def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
         """
@@ -287,9 +289,7 @@ class _ChainCollector(NodeVisitor):
         from a function body would look unreachable and a broken jump
         inside a body would go unreported.
         """
-        self.declared.update(_declared_chains(node.span))
-        self.jumps.extend(_jump_targets(node.span))
-        self.subchains.update(_subchain_names(node.span))
+        self._harvest(node.span)
 
 
 def find_undefined_chain_jumps(root: Block) -> list[str]:
@@ -667,6 +667,9 @@ ANALYZERS: Final[
 ] = (
     ("jump-cycle", Severity.ERROR, find_jump_cycles),
     ("unused-definition", Severity.WARNING, _unused_definition_findings),
+    # run_analysis bypasses this callable via the shared _ChainCollector
+    # pass (see `shared` below); it only fires for a direct caller of
+    # ANALYZERS that doesn't go through run_analysis.
     ("undefined-jump", Severity.WARNING, _undefined_jump_findings),
     ("unreachable-chain", Severity.WARNING, find_unreachable_chains),
     ("duplicate-definition", Severity.WARNING, find_duplicate_definitions),
