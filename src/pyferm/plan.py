@@ -36,6 +36,7 @@ from pyferm.errors import FermError, internal_error
 from pyferm.nftset import (
     canonicalize_element,
     canonicalize_set_elements,
+    set_body,
     sort_vmap_pairs,
 )
 
@@ -318,14 +319,14 @@ def _normalize_set_run(match: re.Match[str]) -> str:
         m in NFT_CT_STATES for m in members
     ):
         ordered = sorted(members, key=NFT_CT_STATES.index)
-        return "{ " + ", ".join(ordered) + " }"
+        return set_body(ordered)
     # An operator-bearing member (concat / OR, recognised by an interior space)
     # is not a plain scalar: scalar dedup/sort and element canon do not model
     # it, so leave the run verbatim with normalized spacing (safe-bias -- a
     # noisy diff beats a false 'no changes').
     if any(" " in m for m in members):
-        return "{ " + ", ".join(members) + " }"
-    return "{ " + ", ".join(canonicalize_set_elements(members)) + " }"
+        return set_body(members)
+    return set_body(canonicalize_set_elements(members))
 
 
 def _normalize_vmap_run(inner: str) -> str:
@@ -363,16 +364,30 @@ def _normalize_sets(body: str) -> str:
     canonicalize equal -- a false "no changes", the exact dishonesty the canon
     exists to prevent.  Both diff sides run this, so the quoted text stays
     byte-faithful on each side.
+
+    A quote character only opens a protected (verbatim) span at brace depth
+    zero, i.e. outside any ``{ ... }`` run; brace depth is tracked while
+    outside a quote.  This tells a real ``comment``/``log prefix`` quote apart
+    from a quoted set element (``iifname { "eth0", "wlan0" } accept``): the
+    latter's quotes sit at depth one and stay inside the run ``_NFT_SET_RE``
+    matches, so ``_normalize_set_run`` sees the whole ``{ ... }`` including its
+    quoted members.
     """
     out: list[str] = []
     start = 0
     quote: str | None = None
+    depth = 0
     for index, char in enumerate(body):
-        if quote is None and char in "\"'":
-            out.append(_NFT_SET_RE.sub(_normalize_set_run, body[start:index]))
-            start = index
-            quote = char
-        elif quote is not None and char == quote:
+        if quote is None:
+            if char in "{}":
+                depth += 1 if char == "{" else -1
+            elif char in "\"'" and depth == 0:
+                out.append(
+                    _NFT_SET_RE.sub(_normalize_set_run, body[start:index])
+                )
+                start = index
+                quote = char
+        elif char == quote:
             out.append(body[start : index + 1])  # quoted span, verbatim
             start = index + 1
             quote = None

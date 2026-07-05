@@ -17,13 +17,17 @@ Two concerns live here, both keyed off the one :func:`classify` ranking:
 from __future__ import annotations
 
 import ipaddress
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 RANK_NUMBER: Final[int] = 0
 RANK_INTERVAL: Final[int] = 1
 RANK_ADDRESS: Final[int] = 2
 RANK_PROTONAME: Final[int] = 3
-RANK_UNPARSABLE: Final[int] = 4
+RANK_QUOTED: Final[int] = 4
+RANK_UNPARSABLE: Final[int] = 5
 
 #: nft canonical L4-protocol keyword -> IP protocol number.  nft stores a
 #: ``meta l4proto`` / ``inet_proto`` set member as its *name* but orders the
@@ -81,6 +85,19 @@ def l4proto_name(proto: str) -> str:
     return proto
 
 
+_QUOTE_CHARS: Final[tuple[str, str]] = ('"', "'")
+_MIN_QUOTED_LEN: Final[int] = 2  # opening + closing quote character
+
+
+def _is_quoted_string(element: str) -> bool:
+    """Return True if *element* is wrapped in a matching pair of quotes."""
+    return (
+        len(element) >= _MIN_QUOTED_LEN
+        and element[0] == element[-1]
+        and element[0] in _QUOTE_CHARS
+    )
+
+
 def _classify_address_range(
     low: str, high: str
 ) -> tuple[int, int, int] | None:
@@ -120,6 +137,12 @@ def classify(element: str) -> tuple[int, object]:
     protocol number: nft orders a ``meta l4proto`` set by number while storing
     names, so without this a folded ``{ udp, tcp }`` would read back reordered
     and show a phantom plan change.
+
+    A quoted string (``"eth0"``, an ifname/ifgroup wildcard element) gets its
+    own rank keyed by the literal text: nft stores these as strings and reads
+    the set back in lexical order, so without this a folded quoted set would
+    read back reordered and show a phantom plan change forever (the value
+    never matches an input-order-preserving unparsable sort).
     """
     if element.isascii() and element.isdigit():
         return RANK_NUMBER, int(element)
@@ -141,6 +164,8 @@ def classify(element: str) -> tuple[int, object]:
         proto_number = _NFT_L4PROTO_NUMBER.get(element)
         if proto_number is not None:
             return RANK_PROTONAME, proto_number
+        if _is_quoted_string(element):
+            return RANK_QUOTED, element
         return RANK_UNPARSABLE, ()
     return RANK_ADDRESS, (
         net.version,
@@ -153,7 +178,9 @@ def _sort_key(index: int, element: str) -> tuple[object, ...]:
     """
     Return the canonical element sort key shared by sets and vmaps.
 
-    Unparsable elements keep their original order (stable) and sort last.
+    A quoted element sorts lexically by its literal text (see
+    :func:`classify`).  Any other unparsable element keeps its original
+    order (stable) and sorts last.
     """
     rank, natural = classify(element)
     if rank == RANK_UNPARSABLE:
@@ -327,3 +354,8 @@ def canonicalize_set_elements(
     if absorb_contained:
         canonical = _drop_contained_networks(canonical)
     return sort_set_elements(canonical)
+
+
+def set_body(elements: Iterable[str]) -> str:
+    """Render a brace-wrapped, comma-joined set body (``{ a, b, c }``)."""
+    return "{ " + ", ".join(elements) + " }"

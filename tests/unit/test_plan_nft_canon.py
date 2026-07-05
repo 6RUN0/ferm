@@ -423,6 +423,27 @@ def test_canon_unicode_in_comment_braces_does_not_crash() -> None:
     assert isinstance(result, str)
 
 
+def test_quoted_ifname_set_converges_regardless_of_config_order() -> None:
+    # nft stores a quoted ifname set element as a string and reads the set
+    # back in lexical order; both permutations must canonicalize to that one
+    # order or the plan diff never converges (see nftset.RANK_QUOTED).
+    a = canonicalize_nft_rule(
+        'iifname { "wlan0", "eth1", "eth0", "ppp1" } accept', family="ip"
+    )
+    b = canonicalize_nft_rule(
+        'iifname { "eth0", "eth1", "ppp1", "wlan0" } accept', family="ip"
+    )
+    assert a == b == 'iifname { "eth0", "eth1", "ppp1", "wlan0" } accept'
+
+
+def test_quoted_ifname_set_and_comment_braces_both_handled_correctly() -> None:
+    # The ifname set's quotes sit at brace depth one (sorted); the comment's
+    # quote sits at depth zero and its braces stay free text (untouched).
+    body = 'iifname { "wlan0", "eth0" } accept comment "x { b, a }"'
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == 'iifname { "eth0", "wlan0" } accept comment "x { b, a }"'
+
+
 def test_vmap_canon_orders_members_by_key() -> None:
     out = canonicalize_nft_rule(
         "tcp dport vmap { 80 : drop, 22 : accept }", family="ip"

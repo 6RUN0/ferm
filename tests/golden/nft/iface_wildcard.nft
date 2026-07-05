@@ -4,5 +4,5 @@ add table ip ferm
 add set ip ferm ifs { type ifname; flags interval; }
 add element ip ferm ifs { "eth*", "ppp0" }
 add chain ip ferm INPUT { type filter hook input priority 0; }
-add rule ip ferm INPUT iifname vmap { "vlan*" : accept, "a+b" : drop }
+add rule ip ferm INPUT iifname vmap { "a+b" : drop, "vlan*" : accept }
 add rule ip ferm INPUT iifname @ifs accept

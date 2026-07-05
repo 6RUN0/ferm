@@ -2,11 +2,13 @@ from pyferm.nftset import (
     RANK_ADDRESS,
     RANK_INTERVAL,
     RANK_PROTONAME,
+    RANK_QUOTED,
     RANK_UNPARSABLE,
     canonicalize_element,
     canonicalize_set_elements,
     classify,
     l4proto_name,
+    set_body,
     sort_set_elements,
 )
 
@@ -172,6 +174,39 @@ def test_bare_cidr_stays_address_not_interval() -> None:
     # A CIDR has no dash, so it remains RANK_ADDRESS; the set-level
     # flags-interval detection handles CIDR separately via the "/" check.
     assert classify("192.168.0.0/16")[0] == RANK_ADDRESS
+
+
+# -- quoted elements (ifname/ifgroup wildcards): match nft's lexical readout -
+# nft stores a quoted string set member (e.g. an ifname wildcard like
+# "eth0") and reads the set back sorted lexically by value, not by input
+# order.  Sorting a quoted element by input order (the generic "unparsable"
+# fallback) would never converge against that readback.
+
+
+def test_quoted_element_classifies_as_quoted() -> None:
+    assert classify('"eth0"')[0] == RANK_QUOTED
+    assert classify("'eth0'")[0] == RANK_QUOTED
+
+
+def test_quoted_elements_sort_lexically() -> None:
+    assert sort_set_elements(['"wlan0"', '"eth1"', '"eth0"', '"ppp1"']) == [
+        '"eth0"',
+        '"eth1"',
+        '"ppp1"',
+        '"wlan0"',
+    ]
+
+
+def test_unparsable_unquoted_element_still_sorts_by_input_order() -> None:
+    # Genuinely unparsable (unquoted) tokens are unaffected by the new quoted
+    # rank and keep the pinned input-order-preserving behavior.
+    assert sort_set_elements(["wat", "6", "huh"]) == ["6", "wat", "huh"]
+    assert classify("wat")[0] == RANK_UNPARSABLE
+
+
+def test_set_body_renders_brace_wrapped_comma_joined_list() -> None:
+    assert set_body(["a", "b", "c"]) == "{ a, b, c }"
+    assert set_body([]) == "{  }"
 
 
 # -- canonicalize_element: match nft's stored readback form -----------------

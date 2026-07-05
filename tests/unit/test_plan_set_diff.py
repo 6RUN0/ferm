@@ -169,6 +169,35 @@ def test_inline_anonymous_range_set_normalizes_to_cidr() -> None:
     assert "{ 10.0.0.0/24 }" in desired
 
 
+def test_ifname_named_set_same_membership_different_order_is_noop() -> None:
+    # A named ifname set desired in config order vs the kernel's lexical
+    # readback order must canonicalize equal, or an unchanged set shows a
+    # perpetual phantom "modify" (see nftset.RANK_QUOTED).
+    desired = parse_nft_script(
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add set ip ferm ifaces { type ifname; }\n"
+        'add element ip ferm ifaces { "wlan0", "eth1", "eth0", "ppp1" }\n'
+    )
+    current = parse_nft_list(
+        "table ip ferm {\n"
+        "\tset ifaces {\n"
+        "\t\ttype ifname\n"
+        '\t\telements = { "eth0", "eth1", "ppp1", "wlan0" }\n'
+        "\t}\n"
+        "}\n",
+        family="ip",
+    )
+    assert desired["ferm"].sets["ifaces"].elements == [
+        '"eth0"',
+        '"eth1"',
+        '"ppp1"',
+        '"wlan0"',
+    ]
+    diff = diff_tables(current=current, desired=desired, noflush=False)
+    assert diff.set_changes == []
+
+
 def test_inline_l4proto_set_orders_by_protocol_number() -> None:
     # A folded `meta l4proto { ... }` carries protocol names; nft reads the
     # set back ordered by protocol *number* while keeping the names.  Both diff

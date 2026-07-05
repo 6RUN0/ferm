@@ -39,6 +39,7 @@ from pyferm.nftset import (
     RANK_INTERVAL,
     classify,
     l4proto_name,
+    set_body,
     sort_set_elements,
     sort_vmap_pairs,
 )
@@ -236,8 +237,7 @@ class NftMatch(NftStatement):
             # A non-adjacent repeated operand can merge into one run twice;
             # dedup so the set has no duplicate member.
             unique = list(dict.fromkeys(self.elements))
-            joined = ", ".join(sort_set_elements(unique))
-            return f"{self.set_key} {{ {joined} }}"
+            return f"{self.set_key} {set_body(sort_set_elements(unique))}"
         return self.expr
 
 
@@ -490,8 +490,9 @@ def serialize_table(
             f"add set {prefix} {name} {{ type {decl.type_};{flags} }}\n"
         )
         if decl.elements:
-            joined = ", ".join(decl.elements)
-            lines.append(f"add element {prefix} {name} {{ {joined} }}\n")
+            lines.append(
+                f"add element {prefix} {name} {set_body(decl.elements)}\n"
+            )
     for chain in chains:
         header = _chain_header(chain)
         suffix = f" {header}" if header else ""
