@@ -1562,12 +1562,43 @@ def test_translate_match_iface_rejects_embedded_quote() -> None:
         translate_match(Family.IP, opt, None)
 
 
-def test_translate_match_iface_preserves_wildcard() -> None:
-    # positive control: nft string wildcard `*` must still pass.
+def test_translate_match_iface_translates_iptables_wildcard() -> None:
+    # ferm configs carry the iptables wildcard spelling `eth+`; nft's string
+    # wildcard is `*` and a literal `+` silently matches nothing, so the
+    # trailing `+` must become `*` inside the quotes.
     assert (
-        translate_match(Family.IP, _opt("in-interface", "eth*"), None)
+        translate_match(Family.IP, _opt("in-interface", "eth+"), None)
         == 'iifname "eth*"'
     )
+
+
+def test_translate_match_iface_interior_plus_stays_literal() -> None:
+    # only a TRAILING `+` is a wildcard in iptables; `a+b` is a literal name.
+    assert (
+        translate_match(Family.IP, _opt("out-interface", "a+b"), None)
+        == 'oifname "a+b"'
+    )
+
+
+def test_set_elements_translate_wildcard_and_need_interval() -> None:
+    # the named-set arm shares the wildcard translation, and nft demands
+    # `flags interval` on an ifname set holding a prefix element (a plain
+    # literal-only set needs no flag).
+    from pyferm.backend.nft import NftSetType, _set_type_and_elements
+    from pyferm.values import SetRef
+
+    type_, interval, elements = _set_type_and_elements(
+        Family.IP, "iifname", SetRef("ifs", ["eth+", "ppp0"])
+    )
+    assert type_ is NftSetType.IFNAME
+    assert interval is True
+    assert elements == sorted(['"eth*"', '"ppp0"'])
+
+    _, no_interval, literal = _set_type_and_elements(
+        Family.IP, "oifname", SetRef("ifs", ["a+b", "ppp0"])
+    )
+    assert no_interval is False
+    assert literal == sorted(['"a+b"', '"ppp0"'])
 
 
 # --- Fix 5: state vocabulary + limit-rate validation ---

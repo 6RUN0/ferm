@@ -319,6 +319,20 @@ def _nft_quote_string(text: str) -> str:
     return f'"{text}"'
 
 
+def _nft_ifname(name: str) -> str:
+    """
+    Quote an interface name, translating the iptables trailing wildcard.
+
+    ferm configs carry the iptables wildcard spelling (``eth+``); nft's
+    string wildcard is ``*`` and treats ``+`` as a literal byte, so an
+    untranslated ``eth+`` silently matches nothing -- ``nft -c`` accepts
+    the rule, the interactive rollback never fires, and the intended
+    match is a no-op.  Only a TRAILING ``+`` is a wildcard in iptables;
+    an interior ``+`` (``a+b``) stays literal.
+    """
+    return _nft_quote_string(re.sub(r"\+\Z", "*", name))
+
+
 def render_comment(comment: str) -> str:
     """
     Render a validated ``comment "<text>"`` suffix.
@@ -388,7 +402,7 @@ def _set_type_and_elements(
             NftSetType.IPV4_ADDR if domain == "ip" else NftSetType.IPV6_ADDR
         )
     elif selector.endswith(("iifname", "oifname")):
-        elements = [_nft_quote_string(element) for element in raw]
+        elements = [_nft_ifname(element) for element in raw]
         type_ = NftSetType.IFNAME
     else:
         raise FermError(f"named set selector '{selector}' not supported")
@@ -396,6 +410,12 @@ def _set_type_and_elements(
         (rank := classify(element)[0]) == RANK_INTERVAL
         or (rank == RANK_ADDRESS and "/" in element)
         for element in elements
+    ) or (
+        # nft treats a trailing `*` in a NAMED ifname set element as a
+        # prefix and rejects the declaration without `flags interval`
+        # (anonymous sets and vmaps need no flag; verified on nft v1.1.6).
+        type_ is NftSetType.IFNAME
+        and any(element.endswith('*"') for element in elements)
     )
     return type_, flags_interval, sort_set_elements(elements)
 
@@ -764,9 +784,9 @@ def _translate_match_parts(
         expr = f"{key} {_op(neg)}{addr}"
         return (expr, None, None) if neg else (expr, key, addr)
     if name in _IFACE_KEYWORD:
-        # An interface is an nft quoted string (it may carry a `*` wildcard,
-        # preserved inside the quotes), so escape rather than validate.
-        quoted = _nft_quote_string(scalar)
+        # An interface is an nft quoted string; the iptables trailing-`+`
+        # wildcard becomes nft's `*` inside the quotes.
+        quoted = _nft_ifname(scalar)
         key = _match_selector(domain, name, protocol)
         expr = f"{key} {_op(neg)}{quoted}"
         # The element is the quoted form ('"eth0"'): a folded set renders

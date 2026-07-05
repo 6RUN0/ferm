@@ -1,0 +1,8 @@
+# The iptables trailing-`+` wildcard must become nft's `*`; an interior
+# `+` is a literal byte in both dialects and must survive untouched.
+@set $ifs = (eth+ ppp0);
+domain ip table filter chain INPUT {
+    interface vlan+ ACCEPT;
+    interface a+b DROP;
+    interface $ifs ACCEPT;
+}
