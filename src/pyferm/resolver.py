@@ -67,9 +67,20 @@ def identify_numeric_address(value: str) -> str | None:
 
 
 def _expand_ipv6(address: str) -> str:
-    """Render an IPv6 address in Net::DNS form (expanded, no leading zeros)."""
-    groups = ipaddress.IPv6Address(address).exploded.split(":")
-    return ":".join(format(int(group, 16), "x") for group in groups)
+    """
+    Render an IPv6 address in Net::DNS form (expanded, no leading zeros).
+
+    A malformed AAAA rdata raises a ferm error rather than a bare
+    traceback (sanctioned divergence: the oracle's Net::DNS mangles the
+    bytes and exits 0).
+    """
+    try:
+        exploded = ipaddress.IPv6Address(address).exploded
+    except ipaddress.AddressValueError:
+        error(f"cannot parse IPv6 address from DNS answer: {address!r}")
+    return ":".join(
+        format(int(group, 16), "x") for group in exploded.split(":")
+    )
 
 
 @dataclass

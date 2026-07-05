@@ -21,6 +21,7 @@ from pyferm.resolver import (
     SystemResolver,
     ZonefileResolver,
     _dnspython_available,
+    _expand_ipv6,
     _warn_stub_backend,
     identify_numeric_address,
     pick_resolver,
@@ -76,6 +77,14 @@ def test_identify_numeric_address_ipv6() -> None:
 def test_identify_numeric_address_hostname_is_none() -> None:
     assert identify_numeric_address("v4.example.com") is None
     assert identify_numeric_address("not-an-ip") is None
+
+
+def test_expand_ipv6_rejects_unparsable_rdata() -> None:
+    # A malformed AAAA rdata surfaces as a ferm error, not a bare
+    # ipaddress traceback (sanctioned divergence: the oracle's Net::DNS
+    # mangles the bytes and exits 0).
+    with pytest.raises(FermError, match="cannot parse IPv6 address"):
+        _expand_ipv6("not-an-address")
 
 
 def test_resolve_a_record(zone: ZonefileResolver) -> None:
