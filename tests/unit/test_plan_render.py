@@ -1,3 +1,4 @@
+from pyferm.config import PlanFormat
 from pyferm.plan import (
     ChainRebuild,
     DesuetChain,
@@ -7,6 +8,7 @@ from pyferm.plan import (
     PolicyChange,
     RuleChange,
     SetChange,
+    SetChangeKind,
     render_plan,
     render_structured,
     render_unified,
@@ -62,9 +64,11 @@ def test_unsupported_family_noted() -> None:
 def test_render_plan_dispatch() -> None:
     diff = PlanDiff(rules_added=[RuleChange("filter", "INPUT", "-j A")])
     plan = Plan(families={"ip": diff})
-    assert render_plan(plan, fmt="structured") == render_structured(plan)
+    assert render_plan(plan, fmt=PlanFormat.STRUCTURED) == render_structured(
+        plan
+    )
     # diff format produces unified-diff markers
-    result = render_plan(plan, fmt="diff")
+    result = render_plan(plan, fmt=PlanFormat.DIFF)
     assert "---" in result
     assert "+++" in result
     assert "@@" in result
@@ -205,8 +209,8 @@ def test_structured_chain_rebuilds_sorted_by_chain() -> None:
 def test_structured_set_changes_sorted_by_name() -> None:
     diff = PlanDiff(
         set_changes=[
-            SetChange("filter", "zeta", "add", ["1"]),
-            SetChange("filter", "alfa", "add", ["2"]),
+            SetChange("filter", "zeta", SetChangeKind.ADD, ["1"]),
+            SetChange("filter", "alfa", SetChangeKind.ADD, ["2"]),
         ]
     )
     out = render_structured(Plan(families={"ip": diff}))
@@ -215,7 +219,9 @@ def test_structured_set_changes_sorted_by_name() -> None:
 
 def test_structured_set_add_lists_elements_joined_by_comma() -> None:
     diff = PlanDiff(
-        set_changes=[SetChange("filter", "ssh", "add", ["80", "22"])]
+        set_changes=[
+            SetChange("filter", "ssh", SetChangeKind.ADD, ["80", "22"])
+        ]
     )
     out = render_structured(Plan(families={"ip": diff}))
     assert "+ set filter/ssh { 80, 22 }" in out
@@ -223,7 +229,9 @@ def test_structured_set_add_lists_elements_joined_by_comma() -> None:
 
 def test_structured_set_modify_lists_elements_joined_by_comma() -> None:
     diff = PlanDiff(
-        set_changes=[SetChange("filter", "ssh", "modify", ["80", "22"])]
+        set_changes=[
+            SetChange("filter", "ssh", SetChangeKind.MODIFY, ["80", "22"])
+        ]
     )
     out = render_structured(Plan(families={"ip": diff}))
     assert "~ set filter/ssh { 80, 22 }" in out
@@ -232,7 +240,9 @@ def test_structured_set_modify_lists_elements_joined_by_comma() -> None:
 def test_structured_set_remove_renders_minus_line() -> None:
     # A removed set renders as a bare '- set' line, never the '~ set { ... }'
     # modify form.
-    diff = PlanDiff(set_changes=[SetChange("filter", "ssh", "remove", [])])
+    diff = PlanDiff(
+        set_changes=[SetChange("filter", "ssh", SetChangeKind.REMOVE, [])]
+    )
     out = render_structured(Plan(families={"ip": diff}))
     assert "- set filter/ssh" in out
     assert "~ set filter/ssh" not in out
@@ -248,6 +258,8 @@ def test_unified_includes_desuet_chain_in_its_table() -> None:
 
 def test_unified_includes_set_change_in_its_table() -> None:
     # A set change must be emitted under its own table in the unified diff.
-    diff = PlanDiff(set_changes=[SetChange("filter", "ssh", "add", ["22"])])
+    diff = PlanDiff(
+        set_changes=[SetChange("filter", "ssh", SetChangeKind.ADD, ["22"])]
+    )
     out = render_unified(Plan(families={"ip": diff}))
     assert "add set filter ssh" in out

@@ -30,13 +30,19 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Final
+from typing import TYPE_CHECKING, Final, Protocol
 
 # Runtime imports, not TYPE_CHECKING: the parametrized default_factory
 # expressions below (``dict[str, Keyword]`` etc.) evaluate at class-body
 # time.
 from pyferm.modules import Keyword
 from pyferm.values import Value
+
+if TYPE_CHECKING:
+    # Type-only: tokenizer sits below scope in the import layering, so this
+    # edge is allowed, but nothing here needs Token at runtime -- deferred
+    # annotations (``from __future__ import annotations``) keep it that way.
+    from pyferm.tokenizer import Token
 
 
 @dataclass(frozen=True)
@@ -235,6 +241,22 @@ def append_option(
     rule.options.append(Option(name, value, kind, module))
 
 
+class FunctionLike(Protocol):
+    """
+    The structural shape a user-defined ``@def &name`` function must have.
+
+    ``scope`` sits below ``parser`` in the import layering, so it cannot name
+    the parser's ``Function`` dataclass; this Protocol names exactly the
+    members :attr:`Frame.functions` stores and the parser reads back
+    (``params``/``tokens``/``block``, matching ``Function``'s fields),
+    letting both sides stay honestly typed without an import cycle.
+    """
+
+    params: list[str]
+    tokens: list[Token]
+    block: bool
+
+
 @dataclass
 class Frame:
     """
@@ -249,11 +271,12 @@ class Frame:
     """
 
     vars: dict[str, Value] = field(default_factory=dict[str, Value])
-    #: User-defined ``@function`` bodies (parser ``Function`` objects); typed
-    #: ``object`` because ``scope`` sits below ``parser`` in the import
-    #: layering, so it cannot name ``Function`` even under TYPE_CHECKING.
-    #: :meth:`pyferm.functions.Evaluator.lookup_function` narrows it back.
-    functions: dict[str, object] = field(default_factory=dict[str, object])
+    #: User-defined ``@function`` bodies (parser ``Function`` objects,
+    #: structurally typed here as :class:`FunctionLike`; see its docstring
+    #: for why ``scope`` cannot name ``Function`` directly).
+    functions: dict[str, FunctionLike] = field(
+        default_factory=dict[str, FunctionLike]
+    )
     auto: dict[str, Value] = field(default_factory=dict[str, Value])
 
 

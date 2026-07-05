@@ -360,12 +360,13 @@ def test_dual_stack_landmark_resolves_per_family() -> None:
 def test_diff_format_reports_priority_rebuild() -> None:
     # --plan-format=diff must show a priority change as a rebuild, with the
     # old priority removed and the new one added -- never silently dropped.
+    from pyferm.config import PlanFormat
     from pyferm.plan import Plan, render_plan
 
     current = parse_nft_list(_SNAPSHOT.format(priority="0"), family="ip")
     desired = parse_nft_script(_DESIRED.format(priority="-1"))
     diff = diff_tables(current, desired, noflush=False)
-    out = render_plan(Plan(families={"ip": diff}), fmt="diff")
+    out = render_plan(Plan(families={"ip": diff}), fmt=PlanFormat.DIFF)
     assert "-:FORWARD priority 0" in out
     assert "+:FORWARD priority -1" in out
 

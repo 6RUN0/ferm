@@ -6,6 +6,7 @@ from pyferm.plan import (
     Plan,
     PlanDiff,
     SetChange,
+    SetChangeKind,
     canonicalize_nft_rule,
     diff_tables,
     parse_nft_list,
@@ -37,7 +38,7 @@ def test_set_added_kind_is_add() -> None:
         noflush=False,
     )
     sc = next(c for c in diff.set_changes if c.name == "ssh")
-    assert sc.kind == "add"
+    assert sc.kind == SetChangeKind.ADD
     assert sc.elements == ["22"]
     assert sc.table == "ferm"
 
@@ -61,7 +62,7 @@ def test_set_removed() -> None:
     )
     assert diff.has_changes()
     sc = next(c for c in diff.set_changes if c.name == "ssh")
-    assert sc.kind == "remove"
+    assert sc.kind == SetChangeKind.REMOVE
     assert sc.elements == []
 
 
@@ -73,7 +74,7 @@ def test_set_modified() -> None:
     )
     assert diff.has_changes()
     sc = next(c for c in diff.set_changes if c.name == "ssh")
-    assert sc.kind == "modify"
+    assert sc.kind == SetChangeKind.MODIFY
     assert sc.elements == ["22", "2222"]
 
 
@@ -94,7 +95,12 @@ def test_render_structured_set_only_change_is_visible() -> None:
     # output would show no set lines.
     diff = PlanDiff(
         set_changes=[
-            SetChange(table="ferm", name="ssh", kind="add", elements=["22"])
+            SetChange(
+                table="ferm",
+                name="ssh",
+                kind=SetChangeKind.ADD,
+                elements=["22"],
+            )
         ],
     )
     plan = Plan(families={"ip": diff})

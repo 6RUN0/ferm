@@ -46,7 +46,7 @@ from pyferm.backend.iptables import (
     validate_names,
 )
 from pyferm.backend.nft import TOOL_NFT, NftBackend
-from pyferm.config import Options
+from pyferm.config import Options, PlanFormat
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
 from pyferm.graph import (
@@ -207,7 +207,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Port-only: read-only diff preview.
     parser.add_argument("--plan", action="store_true")
     parser.add_argument(
-        "--plan-format", choices=("structured", "diff"), default="structured"
+        "--plan-format",
+        choices=tuple(PlanFormat),
+        default=PlanFormat.STRUCTURED,
     )
     # Port-only: eval-free static analysis (see _run_lint).
     parser.add_argument("--lint", action="store_true")
@@ -238,6 +240,11 @@ def _resolve_options(args: argparse.Namespace) -> Options:
     interactive-mode tty requirements, raising :class:`FermError` for each
     ``die`` (``:691-698``).
     """
+    # argparse ``choices=`` only validates membership, it does not coerce a
+    # user-supplied string to the enum; normalize once so every check below
+    # (and the final Options field) sees a real PlanFormat.
+    plan_format = PlanFormat(args.plan_format)
+
     # --lint is a self-contained terminal mode (dispatched on ``args.lint`` in
     # _main, before _setup_streams, so it never consumes the returned
     # Options).  Validate its conflicts FIRST -- before the apply-path timeout
@@ -268,7 +275,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
                 raise FermError(f"ferm --lint cannot be combined with {flag}")
         # --plan-format is plan-only; caught here (before the generic
         # "no sense without --plan" check below) so the message names --lint.
-        if args.plan_format != "structured":
+        if plan_format != PlanFormat.STRUCTURED:
             raise FermError(
                 "ferm --lint cannot be combined with --plan-format"
             )
@@ -311,7 +318,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
 
     if args.full_reload and not args.nft:
         raise FermError("ferm --full-reload has no sense without --nft")
-    if args.plan_format != "structured" and not args.plan:
+    if plan_format != PlanFormat.STRUCTURED and not args.plan:
         raise FermError("ferm --plan-format has no sense without --plan")
     if args.plan and args.nft and args.noflush:
         raise FermError("--noflush is not supported with --plan --nft yet")
@@ -331,7 +338,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
         nolegacy=args.nolegacy,
         nft=args.nft,
         plan=args.plan,
-        plan_format=args.plan_format,
+        plan_format=plan_format,
         full_reload=args.full_reload,
         etckeeper=not args.no_etckeeper,
     )

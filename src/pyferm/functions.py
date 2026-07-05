@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Final, TypeAlias
 from pyferm.errors import ERR_STRING_EXPECTED, error, internal_error
 from pyferm.modules import PROTO_DEFS
 from pyferm.resolver import resolve
-from pyferm.scope import Rule, Scope, append_option
+from pyferm.scope import FunctionLike, Rule, Scope, append_option
 from pyferm.streams import BYTE_ENCODING
 from pyferm.tokenizer import Token, Tokenizer, make_line_token
 from pyferm.values import (
@@ -318,12 +318,13 @@ class Evaluator:
             error(f"variable '{name}' must be a string, but it is an array")
         return value
 
-    def lookup_function(self, name: str) -> object | None:
+    def lookup_function(self, name: str) -> FunctionLike | None:
         """
         Find a user-defined ``@function`` on the stack (Perl ``:1370``).
 
-        Returns ``object`` because ``functions`` sits below ``parser`` in the
-        import layering and cannot name ``Function``; the caller casts.
+        Returns :class:`~pyferm.scope.FunctionLike`, the structural stand-in
+        for the parser's ``Function`` -- ``functions`` sits below ``parser``
+        in the import layering and cannot name it directly.
         """
         for frame in self.scope.stack:
             if name in frame.functions:

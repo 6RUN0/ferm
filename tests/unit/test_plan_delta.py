@@ -9,6 +9,7 @@ from pyferm.plan import (
     ParsedChain,
     ParsedSet,
     ParsedTable,
+    SetChangeKind,
     _build_desired_index,
     _DesiredIndex,
     _emit_chain_changes,
@@ -96,8 +97,8 @@ def test_diff_set_type_change_is_remove_plus_add() -> None:
     )
     diff = diff_tables(current, desired, noflush=False)
     kinds = sorted(sc.kind for sc in diff.set_changes)
-    assert kinds == ["add", "remove"]
-    add = next(sc for sc in diff.set_changes if sc.kind == "add")
+    assert kinds == [SetChangeKind.ADD, SetChangeKind.REMOVE]
+    add = next(sc for sc in diff.set_changes if sc.kind == SetChangeKind.ADD)
     assert add.elements == ["10.0.0.1"]
 
 
@@ -112,7 +113,10 @@ def test_diff_set_flags_change_is_remove_plus_add() -> None:
         ),
     )
     diff = diff_tables(current, desired, noflush=False)
-    assert sorted(sc.kind for sc in diff.set_changes) == ["add", "remove"]
+    assert sorted(sc.kind for sc in diff.set_changes) == [
+        SetChangeKind.ADD,
+        SetChangeKind.REMOVE,
+    ]
 
 
 def test_diff_set_elements_only_is_modify() -> None:
@@ -123,7 +127,7 @@ def test_diff_set_elements_only_is_modify() -> None:
         "s", ParsedSet("s", ["10.0.0.1", "10.0.0.2"], type_="ipv4_addr")
     )
     diff = diff_tables(current, desired, noflush=False)
-    assert [sc.kind for sc in diff.set_changes] == ["modify"]
+    assert [sc.kind for sc in diff.set_changes] == [SetChangeKind.MODIFY]
 
 
 def test_build_desired_index_extracts_verbatim_lines() -> None:

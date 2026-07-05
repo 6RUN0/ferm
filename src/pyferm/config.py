@@ -21,8 +21,15 @@ preference), defaulting off so the oracle's behaviour is unchanged.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
-from typing import Literal
+
+
+class PlanFormat(enum.StrEnum):
+    """``--plan-format``: ``structured`` (default) or ``diff`` (unified)."""
+
+    STRUCTURED = "structured"
+    DIFF = "diff"
 
 
 @dataclass(frozen=True)
@@ -66,7 +73,7 @@ class Options:
     #: no commit/hooks/restore.  Exit 0 = no changes, 2 = changes, 1 = error.
     plan: bool = False
     #: ``--plan-format``: ``structured`` (default) or ``diff`` (unified).
-    plan_format: Literal["structured", "diff"] = "structured"
+    plan_format: PlanFormat = PlanFormat.STRUCTURED
     #: ``--full-reload`` (port-only): opt out of the default nft delta-apply
     #: and force the legacy ``flush table`` + full rebuild.  nft-only.
     full_reload: bool = False

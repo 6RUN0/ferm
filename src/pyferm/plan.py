@@ -19,11 +19,13 @@ construction: this module never runs a command -- the cli hands it text.
 from __future__ import annotations
 
 import difflib
+import enum
 import re
 import shlex
 from dataclasses import dataclass, field
-from typing import Final, Literal
+from typing import Final
 
+from pyferm.config import PlanFormat
 from pyferm.domains import (
     NFT_CT_STATES,
     NFT_PRIORITY_LANDMARKS,
@@ -1051,13 +1053,31 @@ class ChainRebuild:
     new: str
 
 
+class SetChangeKind(enum.StrEnum):
+    """The kinds a diff can record for a named set (see SetChange)."""
+
+    ADD = "add"
+    REMOVE = "remove"
+    MODIFY = "modify"
+
+    @property
+    def touches_elements(self) -> bool:
+        """True for add/modify: the change carries a desired-side set."""
+        return self in (SetChangeKind.ADD, SetChangeKind.MODIFY)
+
+    @property
+    def is_removal(self) -> bool:
+        """True for remove/modify: the change carries a current-side set."""
+        return self in (SetChangeKind.REMOVE, SetChangeKind.MODIFY)
+
+
 @dataclass
 class SetChange:
     """A named set added, removed, or with changed elements."""
 
     table: str
     name: str
-    kind: Literal["add", "remove", "modify"]
+    kind: SetChangeKind
     elements: list[str]
 
 
@@ -1147,12 +1167,12 @@ def _emit_set_changes(
     )
     out: list[str] = []
     for sc in sorted(diff.set_changes, key=lambda s: s.name):
-        if sc.kind == "remove":
+        if sc.kind == SetChangeKind.REMOVE:
             raise internal_error(
                 "set remove reached the emitter"
                 f" (should full-reload): {sc.name!r}"
             )
-        if sc.kind == "add":
+        if sc.kind == SetChangeKind.ADD:
             decl = index.set_decl.get(sc.name)
             if decl is None:
                 raise internal_error(f"no desired decl for set {sc.name!r}")
@@ -1160,7 +1180,7 @@ def _emit_set_changes(
             elements = index.set_elements.get(sc.name)
             if elements is not None:
                 out.append(elements)
-        elif sc.kind == "modify":
+        elif sc.kind == SetChangeKind.MODIFY:
             live = current_sets[sc.name].elements
             desired_elements = sc.elements
             removed = [e for e in live if e not in desired_elements]
@@ -1298,7 +1318,7 @@ def build_nft_delta(
     current = parse_nft_list(previous, family=family)
     desired = parse_nft_script(desired_save)
     diff = diff_tables(current, desired, noflush=False)
-    if any(sc.kind == "remove" for sc in diff.set_changes):
+    if any(sc.kind == SetChangeKind.REMOVE for sc in diff.set_changes):
         return None
     index = _build_desired_index(desired_save)
     return emit_delta_script(diff, current, index, family=family)
@@ -1476,7 +1496,10 @@ def diff_tables(
             if current_set is None:
                 diff.set_changes.append(
                     SetChange(
-                        table_name, set_name, "add", desired_set.elements
+                        table_name,
+                        set_name,
+                        SetChangeKind.ADD,
+                        desired_set.elements,
                     )
                 )
             elif (current_set.type_, current_set.flags) != (
@@ -1488,23 +1511,29 @@ def diff_tables(
                 # changed).  Remove precedes add so one transaction reuses
                 # the name.
                 diff.set_changes.append(
-                    SetChange(table_name, set_name, "remove", [])
+                    SetChange(table_name, set_name, SetChangeKind.REMOVE, [])
                 )
                 diff.set_changes.append(
                     SetChange(
-                        table_name, set_name, "add", desired_set.elements
+                        table_name,
+                        set_name,
+                        SetChangeKind.ADD,
+                        desired_set.elements,
                     )
                 )
             elif current_set.elements != desired_set.elements:
                 diff.set_changes.append(
                     SetChange(
-                        table_name, set_name, "modify", desired_set.elements
+                        table_name,
+                        set_name,
+                        SetChangeKind.MODIFY,
+                        desired_set.elements,
                     )
                 )
         for set_name in current_sets:
             if set_name not in desired_table.sets:
                 diff.set_changes.append(
-                    SetChange(table_name, set_name, "remove", [])
+                    SetChange(table_name, set_name, SetChangeKind.REMOVE, [])
                 )
 
         # foreign chains: user chains in the managed table absent from config
@@ -1620,10 +1649,10 @@ def render_structured(plan: Plan) -> str:
             )
         )
         for sc in sorted(diff.set_changes, key=lambda s: (s.table, s.name)):
-            if sc.kind == "add":
+            if sc.kind == SetChangeKind.ADD:
                 elems = ", ".join(sc.elements)
                 lines.append(f"  + set {sc.table}/{sc.name} {{ {elems} }}")
-            elif sc.kind == "remove":
+            elif sc.kind == SetChangeKind.REMOVE:
                 lines.append(f"  - set {sc.table}/{sc.name}")
             else:
                 elems = ", ".join(sc.elements)
@@ -1703,10 +1732,10 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
             (s for s in diff.set_changes if s.table == table),
             key=lambda s: s.name,
         ):
-            if sc.kind in ("add", "modify"):
+            if sc.kind.touches_elements:
                 elems = ", ".join(sc.elements)
                 desired.append(f"add set {table} {sc.name} {{ {elems} }}")
-            if sc.kind in ("remove", "modify"):
+            if sc.kind.is_removal:
                 current.append(f"add set {table} {sc.name}")
     return current, desired
 
@@ -1733,8 +1762,8 @@ def render_unified(plan: Plan) -> str:
     return "\n".join(out) + "\n"
 
 
-def render_plan(plan: Plan, *, fmt: str) -> str:
+def render_plan(plan: Plan, *, fmt: PlanFormat) -> str:
     """Dispatch to the structured (default) or unified renderer."""
-    if fmt == "diff":
+    if fmt == PlanFormat.DIFF:
         return render_unified(plan)
     return render_structured(plan)

@@ -13,6 +13,7 @@ from pyferm.plan import (
     ParsedChain,
     ParsedSet,
     ParsedTable,
+    SetChangeKind,
     build_nft_delta,
     diff_tables,
     parse_nft_script,
@@ -271,7 +272,7 @@ def test_envelope_only_desired_surfaces_live_foreign_set() -> None:
     }
     diff = diff_tables(current, desired, noflush=False)
     assert [(sc.name, sc.kind) for sc in diff.set_changes] == [
-        ("oldset", "remove")
+        ("oldset", SetChangeKind.REMOVE)
     ]
     assert diff.has_changes()
 

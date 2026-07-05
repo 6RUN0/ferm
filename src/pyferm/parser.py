@@ -1750,12 +1750,9 @@ class Parser:
         name = self._require_name(
             self.tokenizer.require_next_token(), "function name expected"
         )
-        found = self.evaluator.lookup_function(name)
-        if found is None:
+        function = self.evaluator.lookup_function(name)
+        if function is None:
             error(f"no such function: &{name}")
-        # lookup_function returns ``object`` (it lives below ``parser`` in the
-        # import layering); narrow it back to the local ``Function`` here.
-        function = cast("Function", found)
 
         params = self.evaluator.get_function_params(allow_negation=True)
         if len(params) != len(function.params):

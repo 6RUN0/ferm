@@ -14,7 +14,7 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from pyferm.backend.base import (
     Backend,
@@ -519,29 +519,38 @@ def _full_reload_text(save: str, family: str) -> str:
 # ferm ontology -> nft family / base-chain mapping
 # ---------------------------------------------------------------------------
 
+
+class BaseChainSpec(NamedTuple):
+    """The nft base-chain declaration a ferm built-in chain maps to."""
+
+    chain_type: str
+    hook: str
+    priority: int
+
+
 #: (table, chain) -> (nft type, hook, priority).  Numeric priorities for
 #: cross-version portability.
-_BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
-    ("filter", "INPUT"): ("filter", "input", 0),
-    ("filter", "FORWARD"): ("filter", "forward", 0),
-    ("filter", "OUTPUT"): ("filter", "output", 0),
-    ("nat", "PREROUTING"): ("nat", "prerouting", -100),
-    ("nat", "INPUT"): ("nat", "input", 100),
-    ("nat", "OUTPUT"): ("nat", "output", -100),
-    ("nat", "POSTROUTING"): ("nat", "postrouting", 100),
-    ("mangle", "PREROUTING"): ("filter", "prerouting", -150),
-    ("mangle", "INPUT"): ("filter", "input", -150),
-    ("mangle", "FORWARD"): ("filter", "forward", -150),
-    ("mangle", "OUTPUT"): ("route", "output", -150),
-    ("mangle", "POSTROUTING"): ("filter", "postrouting", -150),
-    ("raw", "PREROUTING"): ("filter", "prerouting", -300),
-    ("raw", "OUTPUT"): ("filter", "output", -300),
+_BASE_CHAIN_MAP: Final[dict[tuple[str, str], BaseChainSpec]] = {
+    ("filter", "INPUT"): BaseChainSpec("filter", "input", 0),
+    ("filter", "FORWARD"): BaseChainSpec("filter", "forward", 0),
+    ("filter", "OUTPUT"): BaseChainSpec("filter", "output", 0),
+    ("nat", "PREROUTING"): BaseChainSpec("nat", "prerouting", -100),
+    ("nat", "INPUT"): BaseChainSpec("nat", "input", 100),
+    ("nat", "OUTPUT"): BaseChainSpec("nat", "output", -100),
+    ("nat", "POSTROUTING"): BaseChainSpec("nat", "postrouting", 100),
+    ("mangle", "PREROUTING"): BaseChainSpec("filter", "prerouting", -150),
+    ("mangle", "INPUT"): BaseChainSpec("filter", "input", -150),
+    ("mangle", "FORWARD"): BaseChainSpec("filter", "forward", -150),
+    ("mangle", "OUTPUT"): BaseChainSpec("route", "output", -150),
+    ("mangle", "POSTROUTING"): BaseChainSpec("filter", "postrouting", -150),
+    ("raw", "PREROUTING"): BaseChainSpec("filter", "prerouting", -300),
+    ("raw", "OUTPUT"): BaseChainSpec("filter", "output", -300),
 }
 
 #: arp supports only filter/INPUT and filter/OUTPUT.
-_ARP_BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
-    ("filter", "INPUT"): ("filter", "input", 0),
-    ("filter", "OUTPUT"): ("filter", "output", 0),
+_ARP_BASE_CHAIN_MAP: Final[dict[tuple[str, str], BaseChainSpec]] = {
+    ("filter", "INPUT"): BaseChainSpec("filter", "input", 0),
+    ("filter", "OUTPUT"): BaseChainSpec("filter", "output", 0),
 }
 
 
@@ -549,7 +558,7 @@ def map_base_chain(
     domain: Family,
     table: str,
     chain: str,
-) -> tuple[str, str, int]:
+) -> BaseChainSpec:
     """
     Map ``(table, built-in chain)`` to ``(nft type, hook, priority)``.
 

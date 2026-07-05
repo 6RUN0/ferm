@@ -23,16 +23,31 @@ from pyferm.functions import (
     realize_protocol_keyword,
 )
 from pyferm.resolver import ZonefileResolver, set_resolver_provider
-from pyferm.scope import Frame, Rule, Scope
-from pyferm.tokenizer import Script, Tokenizer
+from pyferm.scope import Frame, FunctionLike, Rule, Scope
+from pyferm.tokenizer import Script, Token, Tokenizer
 from pyferm.values import Deferred, Negated, Value
+
+
+class _FunctionStub:
+    """
+    A minimal :class:`FunctionLike` double.
+
+    Stands in for a parser ``Function`` in tests that only exercise
+    identity/presence (:meth:`Evaluator.lookup_function`, ``@defined(&f)``)
+    and never read ``params``/``tokens``/``block``.
+    """
+
+    def __init__(self) -> None:
+        self.params: list[str] = []
+        self.tokens: list[Token] = []
+        self.block = False
 
 
 def _evaluator(
     text: str,
     *,
     variables: dict[str, Value] | None = None,
-    functions: dict[str, object] | None = None,
+    functions: dict[str, FunctionLike] | None = None,
     auto: dict[str, Value] | None = None,
 ) -> Evaluator:
     tokenizer = Tokenizer(Script(filename="t.ferm", handle=io.StringIO(text)))
@@ -153,7 +168,7 @@ def test_string_variable_value_rejects_array() -> None:
 
 
 def test_lookup_function() -> None:
-    marker = object()
+    marker = _FunctionStub()
     ev = _evaluator("", functions={"f": marker})
     assert ev.lookup_function("f") is marker
     assert ev.lookup_function("g") is None
@@ -338,7 +353,7 @@ def test_builtin_defined_variable_and_function() -> None:
     ev = _evaluator("@defined($ v)", variables={"v": "1"})
     assert ev.getvalues() == "1"
     assert _evaluator("@defined($ v)").getvalues() == ""
-    ev2 = _evaluator("@defined(& f)", functions={"f": object()})
+    ev2 = _evaluator("@defined(& f)", functions={"f": _FunctionStub()})
     assert ev2.getvalues() == "1"
 
 
