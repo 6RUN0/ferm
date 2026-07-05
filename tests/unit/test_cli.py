@@ -82,7 +82,23 @@ def test_test_does_not_suppress_interactive(
 
 
 def test_timeout_must_be_an_integer(monkeypatch: pytest.MonkeyPatch) -> None:
+    # --interactive keeps the earlier no-sense guard quiet so the shape
+    # guard itself is exercised.
     with pytest.raises(FermError, match="invalid timeout"):
+        _resolve(
+            ["--interactive", "--timeout", "abc", "f"],
+            tty=True,
+            monkeypatch=monkeypatch,
+        )
+
+
+def test_timeout_guard_order_matches_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # oracle order (ferm:691-698): the no-sense guard fires BEFORE the
+    # integer-shape guard, so a malformed timeout without --interactive
+    # reports the missing mode, not the shape.
+    with pytest.raises(FermError, match="no sense without interactive"):
         _resolve(["--timeout", "abc", "f"], tty=True, monkeypatch=monkeypatch)
 
 

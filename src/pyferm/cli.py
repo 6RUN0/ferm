@@ -294,12 +294,8 @@ def _resolve_options(args: argparse.Namespace) -> Options:
     # so --test alone does not suppress interactive mode.
     interactive = args.interactive and not args.noexec
 
-    if args.timeout is not None and not _TIMEOUT_RE.match(args.timeout):
-        raise FermError("invalid timeout. must be an integer")
-    if not args.interactive and args.timeout is not None:
-        raise FermError("ferm timeout has no sense without interactive mode")
-    timeout = int(args.timeout) if args.timeout is not None else 30
-
+    # guard order is the oracle's (ferm:691-698): tty guards first, then
+    # timeout-needs-interactive, then the integer-shape check.
     if interactive and not sys.stdin.isatty():
         raise FermError(
             "ferm interactive mode not possible: /dev/stdin is not a tty"
@@ -308,6 +304,11 @@ def _resolve_options(args: argparse.Namespace) -> Options:
         raise FermError(
             "ferm interactive mode not possible: /dev/stderr is not a tty"
         )
+    if not args.interactive and args.timeout is not None:
+        raise FermError("ferm timeout has no sense without interactive mode")
+    if args.timeout is not None and not _TIMEOUT_RE.match(args.timeout):
+        raise FermError("invalid timeout. must be an integer")
+    timeout = int(args.timeout) if args.timeout is not None else 30
 
     mock_previous: dict[str, str] = {}
     for spec in args.test_mock_previous:
