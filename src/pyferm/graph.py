@@ -62,6 +62,15 @@ class EdgeKind(enum.StrEnum):
     POLICY = "policy"
     VERDICT = ""
 
+    @classmethod
+    def from_jump_keyword(cls, keyword: str) -> EdgeKind:
+        """
+        Map a jump/goto/realgoto keyword to its edge kind.
+
+        ``realgoto`` is the deprecated alias for ``goto``.
+        """
+        return _KIND_BY_JUMP_KEYWORD[keyword]
+
 
 class NodeKind(enum.StrEnum):
     """Node role; drives the renderer's shape/style. USER is the default."""
@@ -202,17 +211,19 @@ def _header_context(
     return new_domains, new_tables, new_chains, policy_target, tuple(toks[i:])
 
 
-_KIND_BY_JUMP_KW: Final[dict[str, EdgeKind]] = {
+#: Backs :meth:`EdgeKind.from_jump_keyword`; ``realgoto`` is the deprecated
+#: alias for ``goto``.
+_KIND_BY_JUMP_KEYWORD: Final[dict[str, EdgeKind]] = {
     "jump": EdgeKind.JUMP,
     "goto": EdgeKind.GOTO,
-    "realgoto": EdgeKind.GOTO,  # deprecated alias -> goto (spec §3)
+    "realgoto": EdgeKind.GOTO,
 }
 
 
 def _jump_edges(toks: Sequence[str]) -> Iterator[tuple[EdgeKind, str]]:
     """Yield (kind, literal target) for each jump/goto/realgoto in a span."""
     for kw, target in _jump_pairs(toks):
-        yield _KIND_BY_JUMP_KW[kw], target
+        yield EdgeKind.from_jump_keyword(kw), target
 
 
 def _fold_family(domain: str) -> str:

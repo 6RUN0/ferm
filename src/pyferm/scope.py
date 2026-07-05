@@ -28,8 +28,9 @@ a ``new_level`` call, so rebuilding and reassigning is equivalent.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
-from typing import Final, Literal, TypeAlias
+from typing import Final
 
 # Runtime imports, not TYPE_CHECKING: the parametrized default_factory
 # expressions below (``dict[str, Keyword]`` etc.) evaluate at class-body
@@ -54,10 +55,18 @@ class SourcePosition:
     column: int | None = None
 
 
-#: The closed set of synthesized option kinds (see :data:`_OPTION_KINDS`).
-#: Consumed by the nft backend's rule translator, so it is a live contract,
-#: not a dead field -- keep the spellings byte-stable.
-OptionKind: TypeAlias = Literal["option", "match_module", "proto", "target"]
+class OptionKind(enum.StrEnum):
+    """
+    The closed set of synthesized option kinds (see :data:`_OPTION_KINDS`).
+
+    Consumed by the nft backend's rule translator, so it is a live contract,
+    not a dead field -- keep the spellings byte-stable.
+    """
+
+    OPTION = "option"
+    MATCH_MODULE = "match_module"
+    PROTO = "proto"
+    TARGET = "target"
 
 
 @dataclass
@@ -90,7 +99,7 @@ class Option:
 
     name: str
     value: Value
-    kind: OptionKind = "option"
+    kind: OptionKind = OptionKind.OPTION
     module: str | None = None
     chosen: Value = None
 
@@ -200,10 +209,10 @@ def merge_keywords(
 #: ``match``->``match_module``, ``protocol``->``proto``,
 #: ``jump``/``goto``->``target``, everything else->``option``.
 _OPTION_KINDS: Final[dict[str, OptionKind]] = {
-    "match": "match_module",
-    "protocol": "proto",
-    "jump": "target",
-    "goto": "target",
+    "match": OptionKind.MATCH_MODULE,
+    "protocol": OptionKind.PROTO,
+    "jump": OptionKind.TARGET,
+    "goto": OptionKind.TARGET,
 }
 
 
@@ -222,7 +231,7 @@ def append_option(
     call-site.  ``kind`` is consumed by the nft backend's rule translator (see
     :class:`Option`); ``module`` is currently unused by either backend.
     """
-    kind = _OPTION_KINDS.get(name, "option")
+    kind = _OPTION_KINDS.get(name, OptionKind.OPTION)
     rule.options.append(Option(name, value, kind, module))
 
 

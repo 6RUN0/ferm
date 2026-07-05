@@ -45,7 +45,7 @@ from pyferm.backend.iptables import (
     rules_to_save,
     validate_names,
 )
-from pyferm.backend.nft import TOOL_NFT, NftBackend, nft_family
+from pyferm.backend.nft import TOOL_NFT, NftBackend
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
@@ -978,7 +978,7 @@ def build_plan(
                 raise internal_error(
                     "build_plan: noflush set under --plan --nft"
                 )
-            family = nft_family(domain)
+            family = domain.nft_name
             current = parse_nft_list(domain_info.previous or "", family=family)
             rendered = backend.render(domain, domain_info, options)
             try:

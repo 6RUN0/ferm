@@ -49,6 +49,7 @@ from pyferm.rules import (
     RenderedRule,
     is_netfilter_builtin_chain,
 )
+from pyferm.scope import OptionKind
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Multi, Negated, Params, PreNegated, SetRef, Value
 
@@ -518,14 +519,6 @@ def _full_reload_text(save: str, family: str) -> str:
 # ferm ontology -> nft family / base-chain mapping
 # ---------------------------------------------------------------------------
 
-#: ferm family -> nft family, 1:1.
-_NFT_FAMILY: Final[dict[Family, str]] = {
-    Family.IP: "ip",
-    Family.IP6: "ip6",
-    Family.ARP: "arp",
-    Family.EB: "bridge",
-}
-
 #: (table, chain) -> (nft type, hook, priority).  Numeric priorities for
 #: cross-version portability.
 _BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
@@ -550,14 +543,6 @@ _ARP_BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
     ("filter", "INPUT"): ("filter", "input", 0),
     ("filter", "OUTPUT"): ("filter", "output", 0),
 }
-
-
-def nft_family(domain: Family) -> str:
-    """Map a ferm family to its nft family name."""
-    family = _NFT_FAMILY.get(domain)
-    if family is None:
-        raise FermError(f"domain '{domain}' not yet supported by nft backend")
-    return family
 
 
 def map_base_chain(
@@ -1136,7 +1121,7 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
     has_port = any(o.name in _PORT_KEYWORD for o in rule.options)
     protocol: str | None = None
     for option in rule.options:
-        if option.kind == "proto":
+        if option.kind is OptionKind.PROTO:
             protocol, _ = unwrap_value(option.value)
             protocol = _validate_protocol(protocol)
             break
@@ -1160,12 +1145,12 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
 
     for option in rule.options:
         name, kind = option.name, option.kind
-        if kind == "match_module":
+        if kind is OptionKind.MATCH_MODULE:
             continue  # -m marker is implicit in nft
         if name == "comment":
             comment, _ = unwrap_value(option.value)
             continue
-        if kind == "proto":
+        if kind is OptionKind.PROTO:
             scalar, neg = unwrap_value(option.value)
             scalar = _validate_protocol(scalar)
             if not has_port:  # a port match already implies l4proto
@@ -1178,7 +1163,7 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
                         NftMatch(expr, set_key="meta l4proto", element=l4)
                     )
             continue
-        if kind == "target":
+        if kind is OptionKind.TARGET:
             target_value, _ = unwrap_value(option.value)
             target_name = name
             continue
@@ -1424,7 +1409,7 @@ class NftBackend(Backend):
 
     def tool_names(self, domain: Family) -> dict[str, str]:
         """Return the single family-independent ``nft`` binary."""
-        nft_family(domain)  # validates the family early
+        del domain
         return {"nft": "nft"}
 
     def render(
@@ -1441,7 +1426,7 @@ class NftBackend(Backend):
         plain error; a residual nft-name collision is a ferm
         error, NOT silent rule loss.
         """
-        table = NftTable(family=nft_family(domain), name=NFT_TABLE_NAME)
+        table = NftTable(family=domain.nft_name, name=NFT_TABLE_NAME)
         chains: list[NftBaseChain | NftRegularChain] = []
         rules: dict[str, list[NftRule]] = {}
         for tbl in sorted(domain_info.tables):
@@ -1498,7 +1483,7 @@ class NftBackend(Backend):
         save = rendered.save
         if save is None:
             raise internal_error()
-        family = nft_family(domain)
+        family = domain.nft_name
         use_delta = not options.full_reload and not needs_full_reload(
             domain_info.previous
         )
@@ -1559,7 +1544,7 @@ class NftBackend(Backend):
         an active code path in test mode.
         """
         del read_save, execute
-        family = nft_family(domain)
+        family = domain.nft_name
         if options.test:
             mock = options.mock_previous.get(domain)
             if mock is not None:
@@ -1599,7 +1584,7 @@ class NftBackend(Backend):
         del options
         if not domain_info.enabled:
             return
-        family = nft_family(domain)
+        family = domain.nft_name
         if domain_info.previous:
             restore(domain_info, domain_info.previous)
         else:
@@ -1636,7 +1621,7 @@ class NftBackend(Backend):
         or an already-gone table (the delete) from aborting the script.
         """
         nft = domain_info.tools[TOOL_NFT]
-        family = nft_family(domain)
+        family = domain.nft_name
         tmp = f"{domain}_tmp"
         return ShellSnapshot(
             setup=(

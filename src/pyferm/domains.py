@@ -182,23 +182,36 @@ class Family(enum.StrEnum):
         except ValueError:
             raise FermError(f"Invalid domain '{name}'") from None
 
+    @property
+    def nft_name(self) -> str:
+        """
+        Return this family's nft family name.
 
-#: All valid families as a membership set; ``StrEnum`` members compare equal
-#: to their wire strings, so ``"ip" in _FAMILIES`` still holds.
-_FAMILIES: Final[frozenset[Family]] = frozenset(Family)
-#: Families that own ``*-save``/``*-restore`` tools (``:934-935``).
-_IP_FAMILIES: Final[frozenset[Family]] = frozenset({Family.IP, Family.IP6})
-assert _IP_FAMILIES <= _FAMILIES
+        1:1 for ip/ip6/arp; the bridge family is ferm's ``eb`` but nft's
+        ``bridge``.
+        """
+        return _NFT_FAMILY_NAMES[self]
+
+    @property
+    def is_ip(self) -> bool:
+        """Whether this family owns a ``*-save``/``*-restore`` tool pair."""
+        return self in (Family.IP, Family.IP6)
+
+
+#: nft's family name for each ferm domain, 1:1; shared by the nft emitter and
+#: the plan-side nft delta parser so the mapping has one home (moved off the
+#: nft backend, next to the :class:`Family` it maps).
+_NFT_FAMILY_NAMES: Final[dict[Family, str]] = {
+    Family.IP: "ip",
+    Family.IP6: "ip6",
+    Family.ARP: "arp",
+    Family.EB: "bridge",
+}
 
 
 def parse_family(name: str) -> Family:
     """Return *name* as a :class:`Family`, or raise (thin alias, the gate)."""
     return Family.from_name(name)
-
-
-def is_ip_family(family: str) -> bool:
-    """Whether *family* owns a ``*-save``/``*-restore`` tool pair."""
-    return family in _IP_FAMILIES
 
 
 #: ferm's own nft table name in every family; every ferm table merges into
@@ -444,7 +457,7 @@ def initialize_domain(
         names = resolve_tools(domain)
     else:
         names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if is_ip_family(domain):
+        if domain.is_ip:
             names[TOOL_SAVE] = domain + TOOL_SAVE
             names[TOOL_RESTORE] = domain + TOOL_RESTORE
     domain_info.tools = {

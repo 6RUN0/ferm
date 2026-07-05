@@ -23,7 +23,7 @@ from pyferm.rules import (
     netfilter_canonical_protocol,
     netfilter_protocol_module,
 )
-from pyferm.scope import Option, Rule, append_option
+from pyferm.scope import Option, OptionKind, Rule, append_option
 from pyferm.values import Deferred, Multi, Negated, Value
 
 # --- netfilter predicates --------------------------------------------------
@@ -205,10 +205,10 @@ def test_kind_and_module_carry_into_rendered_options() -> None:
 
     (only,) = chain_rules
     by_name = {o.name: o for o in only.options}
-    assert by_name["protocol"].kind == "proto"
-    assert by_name["match"].kind == "match_module"
+    assert by_name["protocol"].kind == OptionKind.PROTO
+    assert by_name["match"].kind == OptionKind.MATCH_MODULE
     assert by_name["match"].module == "state"
-    assert by_name["jump"].kind == "target"
+    assert by_name["jump"].kind == OptionKind.TARGET
     assert by_name["protocol"].module is None
 
 

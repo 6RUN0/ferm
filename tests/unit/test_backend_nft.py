@@ -1,14 +1,12 @@
 # tests/unit/test_backend_nft.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from pyferm.scope import OptionKind
 
 from pyferm.backend.nft import (
     NftBaseChain,
@@ -22,6 +20,7 @@ from pyferm.backend.nft import (
     serialize_table,
 )
 from pyferm.errors import FermError
+from pyferm.scope import OptionKind
 from pyferm.values import SetRef
 
 
@@ -131,22 +130,17 @@ def test_render_comment_rejects_over_limit() -> None:
 
 
 # ---------------------------------------------------------------------------
-# nft_family + map_base_chain
+# Family.nft_name + map_base_chain
 # ---------------------------------------------------------------------------
-from pyferm.backend.nft import map_base_chain, nft_family  # noqa: E402
+from pyferm.backend.nft import map_base_chain  # noqa: E402
 from pyferm.domains import Family  # noqa: E402
 
 
-def test_nft_family_maps_1to1() -> None:
-    assert nft_family(Family.IP) == "ip"
-    assert nft_family(Family.IP6) == "ip6"
-    assert nft_family(Family.ARP) == "arp"
-    assert nft_family(Family.EB) == "bridge"
-
-
-def test_nft_family_unknown_is_error() -> None:
-    with pytest.raises(FermError, match="not yet supported"):
-        nft_family(cast("Family", "bogus"))
+def test_family_nft_name_maps_1to1() -> None:
+    assert Family.IP.nft_name == "ip"
+    assert Family.IP6.nft_name == "ip6"
+    assert Family.ARP.nft_name == "arp"
+    assert Family.EB.nft_name == "bridge"
 
 
 def test_map_base_chain_known_pairs() -> None:
@@ -291,7 +285,7 @@ from pyferm.values import Value  # noqa: E402
 def _opt(
     name: str,
     value: Value,
-    kind: OptionKind = "option",
+    kind: OptionKind = OptionKind.OPTION,
     module: str | None = None,
 ) -> RenderedOption:
     return RenderedOption(name=name, value=value, kind=kind, module=module)
@@ -817,7 +811,7 @@ def _rule(*options: RenderedOption) -> RenderedRule:
 
 
 def _target(value: str) -> RenderedOption:
-    return _opt("jump", value, kind="target")
+    return _opt("jump", value, kind=OptionKind.TARGET)
 
 
 def test_translate_rule_skips_match_module_marker() -> None:
@@ -825,7 +819,7 @@ def test_translate_rule_skips_match_module_marker() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("match", "state", kind="match_module"),
+            _opt("match", "state", kind=OptionKind.MATCH_MODULE),
             _opt("state", "ESTABLISHED,RELATED", module="state"),
             _target("ACCEPT"),
         ),
@@ -841,7 +835,7 @@ def test_translate_rule_port_suppresses_redundant_proto() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("protocol", "tcp", kind="proto"),
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
             _opt("dport", "22"),
             _opt("source", "10.0.0.1"),
             _target("ACCEPT"),
@@ -859,7 +853,7 @@ def test_translate_rule_bare_proto_emits_l4proto() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("protocol", "icmp", kind="proto"),
+            _opt("protocol", "icmp", kind=OptionKind.PROTO),
             _target("DROP"),
         ),
     )
@@ -874,7 +868,7 @@ def test_translate_rule_ip6_icmp_normalized() -> None:
         Family.IP6,
         "filter",
         _rule(
-            _opt("protocol", "icmp", kind="proto"),
+            _opt("protocol", "icmp", kind=OptionKind.PROTO),
             _target("ACCEPT"),
         ),
     )
@@ -913,7 +907,7 @@ def test_translate_rule_protocol_injection_is_error() -> None:
             Family.IP,
             "filter",
             _rule(
-                _opt("protocol", "tcp accept;#", kind="proto"),
+                _opt("protocol", "tcp accept;#", kind=OptionKind.PROTO),
                 _target("DROP"),
             ),
         )
@@ -924,7 +918,7 @@ def test_translate_rule_protocol_injection_is_error() -> None:
             Family.IP,
             "filter",
             _rule(
-                _opt("protocol", "tcp accept", kind="proto"),
+                _opt("protocol", "tcp accept", kind=OptionKind.PROTO),
                 _opt("dport", "22"),
                 _target("DROP"),
             ),
@@ -941,7 +935,7 @@ def test_translate_rule_legit_protocols_render() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("protocol", "47", kind="proto"),
+            _opt("protocol", "47", kind=OptionKind.PROTO),
             _target("ACCEPT"),
         ),
     )
@@ -953,7 +947,7 @@ def test_translate_rule_legit_protocols_render() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("protocol", "ipv6-icmp", kind="proto"),
+            _opt("protocol", "ipv6-icmp", kind=OptionKind.PROTO),
             _target("ACCEPT"),
         ),
     )
@@ -968,7 +962,7 @@ def test_translate_rule_reject_with_companion_order() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("protocol", "tcp", kind="proto"),
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
             _opt("dport", "80"),
             _target("REJECT"),
             _opt("reject-with", "icmp-port-unreachable", module="REJECT"),
@@ -1016,7 +1010,7 @@ def test_translate_rule_port_before_proto_is_order_independent() -> None:
         "filter",
         _rule(
             _opt("dport", "22"),
-            _opt("protocol", "tcp", kind="proto"),
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
             _target("ACCEPT"),
         ),
     )
@@ -1028,7 +1022,7 @@ def test_translate_rule_goto_user_chain() -> None:
         Family.IP,
         "filter",
         _rule(
-            _opt("goto", "mychain", kind="target"),
+            _opt("goto", "mychain", kind=OptionKind.TARGET),
         ),
     )
     assert [s.to_text() for s in nft.statements] == ["goto mychain"]
@@ -2153,7 +2147,9 @@ def test_translate_rule_rejects_empty_named_set() -> None:
     # The caller drops empty-set rules (a v4-only set on the ip6 pass);
     # if one slips through, that is a broken contract, not a silent emit.
     rule = RenderedRule(
-        options=[RenderedOption("daddr", SetRef("x", []), "option", None)],
+        options=[
+            RenderedOption("daddr", SetRef("x", []), OptionKind.OPTION, None)
+        ],
         script=None,
     )
     with pytest.raises(FermError, match="internal error"):

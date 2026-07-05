@@ -14,6 +14,7 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
+from pyferm.scope import OptionKind
 from pyferm.values import (
     Deferred,
     Multi,
@@ -222,7 +223,9 @@ def test_replace_round_trip_is_stable(
 
 
 def test_rendered_option_is_frozen() -> None:
-    opt = RenderedOption(name="dport", value="80", kind="option", module=None)
+    opt = RenderedOption(
+        name="dport", value="80", kind=OptionKind.OPTION, module=None
+    )
     with pytest.raises(dataclasses.FrozenInstanceError):
         opt.value = "443"  # type: ignore[misc]
 

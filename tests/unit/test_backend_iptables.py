@@ -43,6 +43,7 @@ from pyferm.domains import (
 )
 from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
+from pyferm.scope import OptionKind
 from pyferm.values import Multi, Negated, Params, PreNegated
 
 # --- shell_escape ----------------------------------------------------------
@@ -155,9 +156,9 @@ def test_format_option_ip6_reject_with_map() -> None:
 def test_format_rule_joins_options() -> None:
     rule = RenderedRule(
         options=[
-            RenderedOption("protocol", "tcp", "proto", None),
-            RenderedOption("dport", "ssh", "option", None),
-            RenderedOption("jump", "ACCEPT", "target", None),
+            RenderedOption("protocol", "tcp", OptionKind.PROTO, None),
+            RenderedOption("dport", "ssh", OptionKind.OPTION, None),
+            RenderedOption("jump", "ACCEPT", OptionKind.TARGET, None),
         ],
         script=None,
     )
@@ -217,9 +218,9 @@ def test_resolve_dynamic_preserve_returns_matching_chains() -> None:
 def _domain_with_rule() -> DomainInfo:
     rule = RenderedRule(
         options=[
-            RenderedOption("protocol", "tcp", "proto", None),
-            RenderedOption("dport", "ssh", "option", None),
-            RenderedOption("jump", "ACCEPT", "target", None),
+            RenderedOption("protocol", "tcp", OptionKind.PROTO, None),
+            RenderedOption("dport", "ssh", OptionKind.OPTION, None),
+            RenderedOption("jump", "ACCEPT", OptionKind.TARGET, None),
         ],
         script=None,
     )
@@ -285,7 +286,7 @@ def _slow_texts(domain: Family, domain_info: DomainInfo) -> list[str]:
 
 def test_render_slow_builtin_walk_order() -> None:
     rule = RenderedRule(
-        options=[RenderedOption("jump", "ACCEPT", "target", None)],
+        options=[RenderedOption("jump", "ACCEPT", OptionKind.TARGET, None)],
         script=None,
     )
     domain_info = DomainInfo(
@@ -439,8 +440,8 @@ def test_render_falls_back_to_slow_with_fast_escaping() -> None:
     # stays fast-mode (double quotes), not slow-mode (single quotes).
     rule = RenderedRule(
         options=[
-            RenderedOption("log-prefix", "a b", "option", None),
-            RenderedOption("jump", "ACCEPT", "target", None),
+            RenderedOption("log-prefix", "a b", OptionKind.OPTION, None),
+            RenderedOption("jump", "ACCEPT", OptionKind.TARGET, None),
         ],
         script=None,
     )

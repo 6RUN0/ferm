@@ -22,7 +22,6 @@ from pyferm.domains import (
     Family,
     find_tool,
     initialize_domain,
-    is_ip_family,
     parse_family,
     read_previous,
 )
@@ -49,11 +48,11 @@ def test_parse_family_error_message() -> None:
         parse_family("tcp")
 
 
-def test_is_ip_family_only_ip_and_ip6() -> None:
-    assert is_ip_family("ip") is True
-    assert is_ip_family("ip6") is True
-    assert is_ip_family("arp") is False
-    assert is_ip_family("eb") is False
+def test_family_is_ip_only_ip_and_ip6() -> None:
+    assert Family.IP.is_ip is True
+    assert Family.IP6.is_ip is True
+    assert Family.ARP.is_ip is False
+    assert Family.EB.is_ip is False
 
 
 # --- find_tool -------------------------------------------------------------

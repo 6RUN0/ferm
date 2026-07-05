@@ -52,7 +52,6 @@ from pyferm.domains import (
     Family,
     ShellSnapshot,
     TableInfo,
-    is_ip_family,
 )
 from pyferm.domains import (
     read_previous as _domains_read_previous,
@@ -498,7 +497,7 @@ class IptablesBackend(Backend):
         ip/ip6 own a save/restore pair; arp/eb expose only ``*tables``.
         """
         names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if is_ip_family(domain):
+        if domain.is_ip:
             names[TOOL_SAVE] = domain + TOOL_SAVE
             names[TOOL_RESTORE] = domain + TOOL_RESTORE
         return names
@@ -809,7 +808,7 @@ class IptablesBackend(Backend):
         # eb branch below spawns `ebtables --atomic-save` even under --test,
         # a side effect a read-only plan must not cause -- and mark the family
         # so the cli notes it as unsupported.
-        if options.plan and not is_ip_family(domain):
+        if options.plan and not domain.is_ip:
             domain_info.plan_unsupported = True
             return
         del capture  # x_tables snapshots via *-save, not stdout capture
