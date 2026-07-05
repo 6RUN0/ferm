@@ -28,7 +28,8 @@ from pyferm.parser import DEPRECATED_KEYWORDS
 #: Dispatch variables whose string comparisons the scan harvests.
 _SCAN_NAMES: Final = frozenset({"keyword", "token", "lead", "tok"})
 
-#: Collected-but-not-a-keyword tokens (assert 1), each with a reason.
+#: Collected tokens that need no BUILTINS entry (assert 1), each with a
+#: reason: punctuation, or keywords documented elsewhere.
 _INTROSPECT_IGNORED: Final = frozenset(
     {
         ";",  # statement terminator, not a keyword
@@ -41,14 +42,14 @@ _INTROSPECT_IGNORED: Final = frozenset(
         ")",  # tuple/array close
         "=",  # @def assignment
         ",",  # list separator
+        "sport",  # port switch; documented as a tcp/udp module keyword
+        "dport",  # same
     }
 )
 
 #: BUILTINS keys the scan cannot find (assert 2), each with a reason.
 _INTROSPECT_MANUAL: Final = frozenset(
     {
-        "mod",  # regex dispatch mod(?:ule)? -- parser.py:1402
-        "module",  # same regex
         "ACCEPT",  # core target, lives in rules.py (not scanned)
         "DROP",  # core target
         "RETURN",  # core target

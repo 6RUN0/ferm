@@ -37,6 +37,7 @@ from __future__ import annotations
 import io
 import re
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
@@ -114,7 +115,7 @@ from pyferm.values import (
 from pyferm.walker import Walker
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Generator, Iterable, Iterator
 
     from pyferm.config import Options
     from pyferm.scope import Scope
@@ -195,7 +196,9 @@ _LOWER_RE = re.compile(r"[a-z]")
 #: A ``'...'``/``"..."`` quoted subchain name (Perl ``:2681``).
 _QUOTED_SUB_RE = re.compile(r"([\"'])(.*)\1", re.DOTALL)
 #: Built-in chain names that must be upper case (Perl ``:2588``).
-_LOWER_BUILTIN_RE = re.compile(r"input|forward|output|prerouting|postrouting")
+_LOWER_BUILTIN_CHAINS = frozenset(
+    {"input", "forward", "output", "prerouting", "postrouting"}
+)
 #: A sign glued to a number (``-1``/``+5``) following a chain-priority
 #: landmark, e.g. ``priority filter -1`` -- folded into the offset form.
 _GLUED_SIGN_RE = re.compile(r"[+-][0-9]+")
@@ -658,8 +661,7 @@ class Parser:
         elif len(domain) == 0:
             family = "none"
         elif any(
-            not (isinstance(d, str) and re.fullmatch(r"ip6?", d, re.DOTALL))
-            for d in domain
+            not (isinstance(d, str) and d in ("ip", "ip6")) for d in domain
         ):
             error("Cannot combine non-IP domains")
         else:
@@ -704,6 +706,45 @@ class Parser:
             name = "mark"
         self.set_target(rule, "jump", name)
         merge_keywords(rule, defs.keywords, name)
+
+    def _load_match_modules(self, rule: Rule) -> None:
+        """
+        Handle ``mod``/``module``: load each named match module.
+
+        Reads the value list, appends a ``match`` option per not-yet-loaded
+        module and merges its keywords so the module's options parse
+        afterwards.
+        """
+        for value in to_array(self.evaluator.getvalues()):
+            module = stringify(value)
+            if module in rule.match:
+                continue
+            family_defs = MATCH_DEFS.get(rule.domain_family or "", {})
+            defs = family_defs.get(module)
+            append_option(rule, "match", module)
+            rule.match.add(module)
+            if defs is not None:
+                merge_keywords(rule, defs.keywords, module)
+
+    def _resolve_shortcut(self, rule: Rule, keyword: str) -> str:
+        """
+        Resolve a shortcut keyword, implicitly loading its match module.
+
+        Returns ``keyword`` unchanged when the family defines no shortcut
+        for it; otherwise appends the ``match`` option, merges the module's
+        keywords and returns the replacement keyword.
+        """
+        family = rule.domain_family or ""
+        shortcut = SHORTCUTS.get(family, {}).get(keyword)
+        if shortcut is None:
+            return keyword
+        module = shortcut[0]
+        defs = MATCH_DEFS.get(family, {}).get(module)
+        append_option(rule, "match", module)
+        rule.match.add(module)
+        if defs is not None:
+            merge_keywords(rule, defs.keywords, module)
+        return shortcut[1]
 
     # -- keyword / option parsing (:1943-2031) ---------------------------
 
@@ -846,22 +887,41 @@ class Parser:
         the rule carries no match (policy-only), exactly as the oracle.
         """
         domain = _domain_key(rule.domain)
-        domain_info = self.domains[domain]
-        domain_info.enabled = True
 
         if not self.options.nft:
             self._expand_setrefs_for_iptables(rule)
 
+        for _name, _table_info, chain_info in self._walk_chain_infos(
+            rule, enable=True
+        ):
+            if rule.has_rule and not self.options.flush:
+                mkrules2(domain, chain_info.rules, rule)
+
+    def _walk_chain_infos(
+        self, rule: Rule, *, enable: bool = False
+    ) -> Iterator[tuple[str, TableInfo, ChainInfo]]:
+        """
+        Walk the rule's (table, chain) product, materializing the entries.
+
+        Yields ``(chain name, TableInfo, ChainInfo)`` per combination,
+        creating missing table/chain entries via ``setdefault`` in oracle
+        order.  ``enable`` switches the rule's domain on first (the
+        header/mkrules sites); ``@preserve`` walks without enabling.
+        """
+        domain_info = self.domains[_domain_key(rule.domain)]
+        if enable:
+            domain_info.enabled = True
         for table in to_array(rule.table):
             table_info = domain_info.tables.setdefault(
                 stringify(table), TableInfo()
             )
             for chain in to_array(rule.chain):
-                chain_info = table_info.chains.setdefault(
-                    stringify(chain), ChainInfo()
+                name = stringify(chain)
+                yield (
+                    name,
+                    table_info,
+                    table_info.chains.setdefault(name, ChainInfo()),
                 )
-                if rule.has_rule and not self.options.flush:
-                    mkrules2(domain, chain_info.rules, rule)
 
     @staticmethod
     def _expand_setrefs_for_iptables(rule: Rule) -> None:
@@ -1112,9 +1172,7 @@ class Parser:
                 warning("Chain is already specified")
             chains = self.evaluator.getvalues()
             for chain in to_array(chains):
-                if isinstance(chain, str) and _LOWER_BUILTIN_RE.fullmatch(
-                    chain
-                ):
+                if isinstance(chain, str) and chain in _LOWER_BUILTIN_CHAINS:
                     error("Please write built-in chain names in upper case")
             if rule.domain is None:
                 self.set_domain(rule, self.options.domain or "ip")
@@ -1155,17 +1213,10 @@ class Parser:
             ):
                 error(f"Invalid policy target: {policy}")
             self.tokenizer.expect_token(";")
-            domain = _domain_key(rule.domain)
-            domain_info = self.domains[domain]
-            domain_info.enabled = True
-            for table in to_array(rule.table):
-                table_info = domain_info.tables.setdefault(
-                    stringify(table), TableInfo()
-                )
-                for chain in to_array(rule.chain):
-                    table_info.chains.setdefault(
-                        stringify(chain), ChainInfo()
-                    ).policy = policy
+            for _name, _table_info, chain_info in self._walk_chain_infos(
+                rule, enable=True
+            ):
+                chain_info.policy = policy
             return new_level(prev)
 
         # priority: an nft base-chain priority override that precedes the
@@ -1191,23 +1242,21 @@ class Parser:
             priority = resolve_chain_priority(domain, token)
         except ValueError:
             error(f"Invalid chain priority: {token}")
-        domain_info = self.domains[domain]
-        domain_info.enabled = True
         already_set = False
-        for table in to_array(rule.table):
-            table_info = domain_info.tables.setdefault(
-                stringify(table), TableInfo()
-            )
-            for chain in to_array(rule.chain):
-                chain_info = table_info.chains.setdefault(
-                    stringify(chain), ChainInfo()
-                )
-                if chain_info.priority is not None:
-                    already_set = True
-                chain_info.priority = priority
+        for _name, _table_info, chain_info in self._walk_chain_infos(
+            rule, enable=True
+        ):
+            if chain_info.priority is not None:
+                already_set = True
+            chain_info.priority = priority
         if already_set:
             warning("Priority is already specified")
         return rule
+
+    def _script_position(self) -> SourcePosition:
+        """Return the current (filename, line) of the active script."""
+        script = self.tokenizer.script
+        return SourcePosition(script.filename, script.line)
 
     def _dispatch_leading(self, walker: Walker, lead: object) -> object | None:
         """
@@ -1220,7 +1269,7 @@ class Parser:
         dispatch (which would bypass its typed path once handle() is gone).
         """
         tokenizer = self.tokenizer
-        pos = SourcePosition(tokenizer.script.filename, tokenizer.script.line)
+        pos = self._script_position()
         if lead == "{":
             tokenizer.next_token()
             return walker.visit(BlockNode(source_pos=pos))
@@ -1244,8 +1293,7 @@ class Parser:
         (``! def``, consumed by getvar) so it reaches its typed path instead of
         the leaf handle. Returns None if ``keyword`` is not a promoted kind.
         """
-        script = self.tokenizer.script
-        pos = SourcePosition(script.filename, script.line)
+        pos = self._script_position()
         if keyword in ("@def", "def"):
             return walker.visit(DefNode(source_pos=pos, span=()))
         if keyword == "@set":
@@ -1338,10 +1386,6 @@ class Parser:
         # cannot desync from a preceding shim statement's matches.
         walker = Walker(self, level, prev, base_level)
 
-        def script_position() -> SourcePosition:
-            script = self.tokenizer.script
-            return SourcePosition(script.filename, script.line)
-
         def handle(keyword: object, negated: NegatedFlag) -> str:
             walker.shown_keyword = keyword
 
@@ -1353,7 +1397,7 @@ class Parser:
                     error('No action defined; did you mean "NOP"?')
                 if walker.rule.chain is None:
                     error("No chain defined")
-                walker.rule.script = script_position()
+                walker.rule.script = self._script_position()
                 self.mkrules(walker.rule)
                 walker.rule = new_level(prev)
                 return "next"
@@ -1399,21 +1443,8 @@ class Parser:
             walker.rule.has_rule = True
 
             # extended parameters: module load
-            if isinstance(keyword, str) and re.fullmatch(
-                r"mod(?:ule)?", keyword
-            ):
-                for value in to_array(self.evaluator.getvalues()):
-                    module = stringify(value)
-                    if module in walker.rule.match:
-                        continue
-                    family_defs = MATCH_DEFS.get(
-                        walker.rule.domain_family or "", {}
-                    )
-                    defs = family_defs.get(module)
-                    append_option(walker.rule, "match", module)
-                    walker.rule.match.add(module)
-                    if defs is not None:
-                        merge_keywords(walker.rule, defs.keywords, module)
+            if isinstance(keyword, str) and keyword in ("mod", "module"):
+                self._load_match_modules(walker.rule)
                 return "next"
 
             # shortcuts
@@ -1421,17 +1452,8 @@ class Parser:
                 isinstance(keyword, str)
                 and keyword not in walker.rule.keywords
             ):
-                family = walker.rule.domain_family or ""
-                shortcut = SHORTCUTS.get(family, {}).get(keyword)
-                if shortcut is not None:
-                    module = shortcut[0]
-                    defs = MATCH_DEFS.get(family, {}).get(module)
-                    append_option(walker.rule, "match", module)
-                    walker.rule.match.add(module)
-                    if defs is not None:
-                        merge_keywords(walker.rule, defs.keywords, module)
-                    keyword = shortcut[1]
-                    walker.shown_keyword = keyword
+                keyword = self._resolve_shortcut(walker.rule, keyword)
+                walker.shown_keyword = keyword
 
             # keywords from rule.keywords
             if isinstance(keyword, str) and keyword in walker.rule.keywords:
@@ -1473,7 +1495,7 @@ class Parser:
                 return "next"
 
             # port switches
-            if isinstance(keyword, str) and re.fullmatch(r"[sd]port", keyword):
+            if isinstance(keyword, str) and keyword in ("sport", "dport"):
                 proto = realize_protocol(walker.rule)
                 valid = proto is not None and any(
                     isinstance(p, str) and p in PORT_PROTOCOLS
@@ -1527,7 +1549,7 @@ class Parser:
                 else:
                     result = walker.visit(
                         RuleNode(
-                            source_pos=script_position(),
+                            source_pos=self._script_position(),
                             span=self._capture_rule_span(),
                         )
                     )
@@ -1581,6 +1603,13 @@ class Parser:
             raise internal_error()
         self.tokenizer.script = old_script
 
+    @staticmethod
+    def _require_name(token: object, message: str) -> str:
+        r"""Return ``token`` when it is a ``\w+`` name; ``error`` otherwise."""
+        if not (isinstance(token, str) and _NAME_RE.fullmatch(token)):
+            error(message)
+        return token
+
     def _parse_def(self, rule: Rule) -> None:
         """
         Define a variable (``$``) or function (``&``) (Perl ``:2325``).
@@ -1592,18 +1621,18 @@ class Parser:
             error('"def" must be the first token in a command')
         kind = self.tokenizer.require_next_token()
         if kind == "$":
-            name = self.tokenizer.require_next_token()
-            if not (isinstance(name, str) and _NAME_RE.fullmatch(name)):
-                error("invalid variable name")
+            name = self._require_name(
+                self.tokenizer.require_next_token(), "invalid variable name"
+            )
             self.tokenizer.expect_token("=")
             value = self.evaluator.getvalues(allow_negation=True)
             self.tokenizer.expect_token(";")
             if name not in self.scope.globals.vars:
                 self.scope.top.vars[name] = value
         elif kind == "&":
-            name = self.tokenizer.require_next_token()
-            if not (isinstance(name, str) and _NAME_RE.fullmatch(name)):
-                error("invalid function name")
+            name = self._require_name(
+                self.tokenizer.require_next_token(), "invalid function name"
+            )
             self.tokenizer.expect_token(
                 "(", 'function parameter list or "()" expected'
             )
@@ -1618,9 +1647,10 @@ class Parser:
                     token = self.tokenizer.require_next_token()
                 if token != "$":
                     error('"$" and parameter name expected')
-                token = self.tokenizer.require_next_token()
-                if not (isinstance(token, str) and _NAME_RE.fullmatch(token)):
-                    error("invalid function parameter name")
+                token = self._require_name(
+                    self.tokenizer.require_next_token(),
+                    "invalid function parameter name",
+                )
                 params.append(token)
             self.tokenizer.expect_token("=")
             tokens = self.evaluator.collect_tokens()
@@ -1646,9 +1676,9 @@ class Parser:
         kind = self.tokenizer.require_next_token()
         if kind != "$":
             error('"$" and set name expected')
-        name = self.tokenizer.require_next_token()
-        if not (isinstance(name, str) and _NAME_RE.fullmatch(name)):
-            error("invalid set name")
+        name = self._require_name(
+            self.tokenizer.require_next_token(), "invalid set name"
+        )
         if not _NFT_SET_NAME_RE.match(name):
             error(
                 f"invalid nft set name '{name}': "
@@ -1683,9 +1713,9 @@ class Parser:
         """
         del rule  # the call is replayed through the token stream
         line_token = make_line_token(self.tokenizer.script.line)
-        name = self.tokenizer.require_next_token()
-        if not (isinstance(name, str) and _NAME_RE.fullmatch(name)):
-            error("function name expected")
+        name = self._require_name(
+            self.tokenizer.require_next_token(), "function name expected"
+        )
         found = self.evaluator.lookup_function(name)
         if found is None:
             error(f"no such function: &{name}")
@@ -1757,26 +1787,31 @@ class Parser:
         if not self.options.test and domain_info.previous is None:
             error(f"@preserve not supported on domain {domain}")
 
-        for table in to_array(rule.table):
-            table_info = domain_info.tables.setdefault(
-                stringify(table), TableInfo()
-            )
-            for chain in to_array(rule.chain):
-                name = stringify(chain)
-                chain_info = table_info.chains.setdefault(name, ChainInfo())
-                if chain_info.rules:
-                    error(
-                        f"Cannot @preserve chain {name} because it is "
-                        "not empty"
-                    )
-                regex = re.fullmatch(r"/(.+)/", name)
-                if regex is not None:
-                    table_info.preserve_regexes.append(
-                        re.compile(regex.group(1))
-                    )
-                    del table_info.chains[name]
-                else:
-                    chain_info.preserve = True
+        for name, table_info, chain_info in self._walk_chain_infos(rule):
+            if chain_info.rules:
+                error(f"Cannot @preserve chain {name} because it is not empty")
+            regex = re.fullmatch(r"/(.+)/", name)
+            if regex is not None:
+                table_info.preserve_regexes.append(re.compile(regex.group(1)))
+                del table_info.chains[name]
+            else:
+                chain_info.preserve = True
+
+    @contextmanager
+    def _scoped_frame(self, frame: Frame) -> Generator[None]:
+        """
+        Push ``frame`` around a nested ``enter()`` and assert balance.
+
+        Deliberately no try/finally: ``error()`` exits via exception and
+        the original failure must propagate as-is -- a late pop or a
+        depth check raising over it would mask the error path.
+        """
+        old_depth = len(self.scope.stack)
+        self.scope.push(frame)
+        yield
+        self.scope.pop()
+        if len(self.scope.stack) != old_depth:
+            raise internal_error()
 
     def _parse_subchain(
         self, keyword: str, rule: Rule, prev: Rule | None, level: int
@@ -1848,18 +1883,12 @@ class Parser:
         if rule.protocol is not None:
             inner.auto_protocol = rule.protocol
 
-        old_depth = len(self.scope.stack)
         frame = Frame(auto=dict(self.scope.top.auto))
         frame.auto["CHAIN"] = subchain
-        self.scope.push(frame)
-        self.enter(level + 1, inner)
-        self.scope.pop()
-        if len(self.scope.stack) != old_depth:
-            raise internal_error()
+        with self._scoped_frame(frame):
+            self.enter(level + 1, inner)
 
-        rule.script = SourcePosition(
-            self.tokenizer.script.filename, self.tokenizer.script.line
-        )
+        rule.script = self._script_position()
         self.mkrules(rule)
         rule = new_level(prev)
         rule.has_rule = False

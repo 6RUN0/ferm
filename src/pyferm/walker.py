@@ -104,12 +104,8 @@ class Walker(NodeVisitor):
         path -- the nested statements stream through the recursion.
         """
         parser = self.parser
-        old_depth = len(parser.scope.stack)
-        parser.scope.push(Frame(auto=dict(parser.scope.top.auto)))
-        parser.enter(self.level + 1, self.rule)
-        parser.scope.pop()
-        if len(parser.scope.stack) != old_depth:
-            raise internal_error()
+        with parser._scoped_frame(Frame(auto=dict(parser.scope.top.auto))):
+            parser.enter(self.level + 1, self.rule)
         self.rule = new_level(self.prev)
         return "next"
 
