@@ -631,6 +631,23 @@ def _check_family(
     return seen
 
 
+def _parse_object_head(
+    parts: list[str], family: str | None, lineno: int, raw: str
+) -> tuple[str, str]:
+    """
+    Validate the shared ``add <kind> <family> ferm <name>`` line head.
+
+    Every object line in a ferm-generated nft script carries the same
+    5-token head; the non-``ferm`` table check and the cross-line family
+    consistency check are identical for all four kinds.  Returns the
+    narrowed ``(family, name)``.
+    """
+    fam_tok, table_name, name = parts[2], parts[3], parts[4]
+    if table_name != "ferm":
+        raise _parse_error(lineno, raw)
+    return _check_family(family, fam_tok, lineno, raw), name
+
+
 def parse_nft_script(text: str) -> dict[str, ParsedTable]:
     """
     Parse a render().save nft script into {table: ParsedTable} (fail-loud).
@@ -693,11 +710,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
         # -- add chain -------------------------------------------------------
         if sub == "chain" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
-            fam_tok, table_name, chain_name = parts[2], parts[3], parts[4]
-            if table_name != "ferm":
-                raise _parse_error(lineno, raw)
-            family = _check_family(family, fam_tok, lineno, raw)
-            assert family is not None  # assigned by _check_family above
+            family, chain_name = _parse_object_head(parts, family, lineno, raw)
 
             # parts[5:] is the payload after <chain>.  Valid shapes:
             #   [] (user chain) or ['{', ..., '}'] (base chain).
@@ -725,10 +738,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
         # -- add set ---------------------------------------------------------
         if sub == "set" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
-            fam_tok, table_name, set_name = parts[2], parts[3], parts[4]
-            if table_name != "ferm":
-                raise _parse_error(lineno, raw)
-            family = _check_family(family, fam_tok, lineno, raw)
+            family, set_name = _parse_object_head(parts, family, lineno, raw)
             _ensure_ferm_table(tables)
             set_obj = tables["ferm"].sets.setdefault(
                 set_name, ParsedSet(set_name)
@@ -742,10 +752,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
         # -- add element -----------------------------------------------------
         if sub == "element" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
-            fam_tok, table_name, set_name = parts[2], parts[3], parts[4]
-            if table_name != "ferm":
-                raise _parse_error(lineno, raw)
-            family = _check_family(family, fam_tok, lineno, raw)
+            family, set_name = _parse_object_head(parts, family, lineno, raw)
             brace_open = line.find("{")
             brace_close = line.rfind("}")
             if brace_open == -1 or brace_close <= brace_open:
@@ -763,14 +770,10 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
         # -- add rule --------------------------------------------------------
         if sub == "rule" and len(parts) >= _NFT_RULE_MIN_PARTS:
-            fam_tok, table_name, chain_name = parts[2], parts[3], parts[4]
-            if table_name != "ferm":
-                raise _parse_error(lineno, raw)
-            family = _check_family(family, fam_tok, lineno, raw)
-            assert family is not None
+            family, chain_name = _parse_object_head(parts, family, lineno, raw)
 
             # Body is everything after 'add rule <fam> ferm <chain>'.
-            prefix = f"add rule {fam_tok} ferm {chain_name}"
+            prefix = f"add rule {parts[2]} ferm {chain_name}"
             body = line[len(prefix) :].strip()
             ferm_table = tables.get("ferm")
             if ferm_table is None or chain_name not in ferm_table.chains:

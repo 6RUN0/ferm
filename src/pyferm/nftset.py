@@ -148,16 +148,23 @@ def classify(element: str) -> tuple[int, object]:
     )
 
 
+def _sort_key(index: int, element: str) -> tuple[object, ...]:
+    """
+    Return the canonical element sort key shared by sets and vmaps.
+
+    Unparsable elements keep their original order (stable) and sort last.
+    """
+    rank, natural = classify(element)
+    if rank == RANK_UNPARSABLE:
+        return (rank, index)
+    return (rank, natural, element)
+
+
 def sort_set_elements(elements: list[str]) -> list[str]:
     """Return *elements* in the one canonical order (see module docstring)."""
 
     def key(item: tuple[int, str]) -> tuple[object, ...]:
-        index, element = item
-        rank, natural = classify(element)
-        if rank == RANK_UNPARSABLE:
-            # Keep unparsable elements last, in original order (stable).
-            return (rank, index)
-        return (rank, natural, element)
+        return _sort_key(item[0], item[1])
 
     return [element for _, element in sorted(enumerate(elements), key=key)]
 
@@ -173,11 +180,7 @@ def sort_vmap_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """
 
     def key(item: tuple[int, tuple[str, str]]) -> tuple[object, ...]:
-        index, (element, _verdict) = item
-        rank, natural = classify(element)
-        if rank == RANK_UNPARSABLE:
-            return (rank, index)
-        return (rank, natural, element)
+        return _sort_key(item[0], item[1][0])
 
     return [pair for _, pair in sorted(enumerate(pairs), key=key)]
 

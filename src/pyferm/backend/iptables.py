@@ -20,6 +20,10 @@ save/command builders need the family (``domain``) the oracle did not -- it
 formatted before this point.
 """
 
+# The backend derives its policy whitelist from the parser's own core-target
+# tuple (_CORE_TARGETS) by design, so pyright's private-usage rule is off
+# here (mirrors graph.py).
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import re
@@ -55,7 +59,11 @@ from pyferm.domains import (
     read_previous as _domains_read_previous,
 )
 from pyferm.errors import FermError, internal_error
-from pyferm.rules import RenderedRule, is_netfilter_builtin_chain
+from pyferm.rules import (
+    _CORE_TARGETS,
+    RenderedRule,
+    is_netfilter_builtin_chain,
+)
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import (
     Deferred,
@@ -108,9 +116,10 @@ _IPT_NAME_RE = re.compile(r"\A[A-Za-z0-9_.+-]+\Z", re.ASCII)
 #: A backend-side whitelist (not the parser's ``is_netfilter_core_target``):
 #: it additionally admits the synthesized ``-`` and passes ``None`` through.
 #: Defense-in-depth -- policy is already gated at the parser border.
-_IPT_POLICIES: frozenset[str] = frozenset(
-    {"ACCEPT", "DROP", "RETURN", "QUEUE", "-"}
-)
+#: Derived from the core-TARGET tuple: two distinct concepts that coincide
+#: today, so a new core target silently widens this (already deliberately
+#: over-permissive) whitelist too.
+_IPT_POLICIES: frozenset[str] = frozenset(_CORE_TARGETS) | {"-"}
 
 
 def _validate_policy(policy: str | None) -> str | None:
@@ -122,18 +131,21 @@ def _validate_policy(policy: str | None) -> str | None:
     return policy
 
 
-def _validate_chain_name(name: str) -> str:
+def _validate_ipt_name(name: str, kind: str) -> str:
     """Return *name* if it matches the safe alphabet, else error."""
     if not _IPT_NAME_RE.match(name):
-        raise FermError(f"invalid chain name {name!r} for iptables backend")
+        raise FermError(f"invalid {kind} name {name!r} for iptables backend")
     return name
+
+
+def _validate_chain_name(name: str) -> str:
+    """Return *name* if it matches the safe alphabet, else error."""
+    return _validate_ipt_name(name, "chain")
 
 
 def _validate_table_name(name: str) -> str:
     """Return *name* if it matches the safe alphabet, else error."""
-    if not _IPT_NAME_RE.match(name):
-        raise FermError(f"invalid table name {name!r} for iptables backend")
-    return name
+    return _validate_ipt_name(name, "table")
 
 
 def validate_names(domain_info: DomainInfo) -> None:
