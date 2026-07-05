@@ -12,6 +12,7 @@ from pyferm.plan import (
     parse_nft_list,
     parse_nft_script,
     render_structured,
+    render_unified,
 )
 
 
@@ -76,6 +77,22 @@ def test_set_modified() -> None:
     sc = next(c for c in diff.set_changes if c.name == "ssh")
     assert sc.kind == SetChangeKind.MODIFY
     assert sc.elements == ["22", "2222"]
+    # the live side travels with the change so the diff can show what the
+    # elements change FROM.
+    assert sc.current_elements == ["22"]
+
+
+def test_modified_set_diff_shows_current_elements() -> None:
+    # A MODIFY used to render the current side as a bare `add set` line,
+    # hiding WHICH elements disappear; both sides must show elements.
+    diff = diff_tables(
+        current=_table_with_set("ssh", ["22"]),
+        desired=_table_with_set("ssh", ["22", "2222"]),
+        noflush=False,
+    )
+    out = render_unified(Plan(families={"ip": diff}))
+    assert "-add set ferm ssh { 22 }" in out
+    assert "+add set ferm ssh { 22, 2222 }" in out
 
 
 def test_set_unchanged_is_noop() -> None:

@@ -1073,12 +1073,19 @@ class SetChangeKind(enum.StrEnum):
 
 @dataclass
 class SetChange:
-    """A named set added, removed, or with changed elements."""
+    """
+    A named set added, removed, or with changed elements.
+
+    ``elements`` is the desired side; ``current_elements`` is the live
+    side, carried for MODIFY so the diff can show what the elements
+    change FROM, not just what they change to.
+    """
 
     table: str
     name: str
     kind: SetChangeKind
     elements: list[str]
+    current_elements: list[str] = field(default_factory=list[str])
 
 
 @dataclass
@@ -1528,6 +1535,7 @@ def diff_tables(
                         set_name,
                         SetChangeKind.MODIFY,
                         desired_set.elements,
+                        current_elements=current_set.elements,
                     )
                 )
         for set_name in current_sets:
@@ -1736,7 +1744,11 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
                 elems = ", ".join(sc.elements)
                 desired.append(f"add set {table} {sc.name} {{ {elems} }}")
             if sc.kind.is_removal:
-                current.append(f"add set {table} {sc.name}")
+                if sc.current_elements:
+                    elems = ", ".join(sc.current_elements)
+                    current.append(f"add set {table} {sc.name} {{ {elems} }}")
+                else:
+                    current.append(f"add set {table} {sc.name}")
     return current, desired
 
 
