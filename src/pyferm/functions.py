@@ -291,8 +291,9 @@ class Evaluator:
         Look up a variable, then a pseudo-variable (Perl ``:1221``).
 
         ``LINE`` resolves to the current input line; otherwise the stack is
-        walked from the top, falling back to the global frame's ``auto``
-        pseudo-variables.  Returns ``None`` when undefined.
+        walked from the top, falling back to the top (innermost) frame's
+        ``auto`` pseudo-variables (Perl ``$stack[0]{auto}``).  Returns
+        ``None`` when undefined.
         """
         if name == "LINE":
             # No script while evaluating --def: fall through to undefined,

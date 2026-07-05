@@ -301,6 +301,11 @@ def _scan_verdicts(toks: Sequence[str], family: str) -> list[str]:
     jump target); (2) an option value whose previous significant token is
     a registry keyword with params -- for the ``(...)`` array form the whole
     group is skipped; (3) quoted candidates never match a bare target name.
+
+    Known blind spot: rule 2 skips exactly ONE value token, so the second
+    word of a two-argument option is scanned again -- a trailing argument
+    spelled like a target (``chunk-types only ACCEPT``) emits a phantom
+    verdict edge.
     """
     targets = _family_targets(family)
     params_keys = _KW_HAS_PARAMS.get(family, frozenset())

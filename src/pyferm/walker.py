@@ -4,9 +4,9 @@ Walk-driven evaluator over the structural AST (strangler facade).
 The per-block Walker owns statement order and the mutable dispatch state of
 one block -- the pending rule and the last-seen keyword -- which used to be
 _enter_body closure cells. Every typed visit_* method mutates that ONE rule,
-so a promoted { or @if cannot desync from matches a preceding statement
-accumulated -- e.g. the saddr in ``saddr 1.2.3.4 { ACCEPT; }`` must reach the
-nested rule.
+so a promoted { or @if cannot desync from the matches that a preceding
+statement accumulated -- e.g. the saddr in ``saddr 1.2.3.4 { ACCEPT; }`` must
+reach the nested rule.
 
 Each statement is a typed node visited here; the leaf rule keywords and the
 bare control tokens (; } @else) that are not promoted stay in the parser's
