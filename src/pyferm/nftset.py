@@ -17,12 +17,13 @@ Two concerns live here, both keyed off the one :func:`classify` ranking:
 from __future__ import annotations
 
 import ipaddress
+from typing import Final
 
-RANK_NUMBER = 0
-RANK_INTERVAL = 1
-RANK_ADDRESS = 2
-RANK_PROTONAME = 3
-RANK_UNPARSABLE = 4
+RANK_NUMBER: Final[int] = 0
+RANK_INTERVAL: Final[int] = 1
+RANK_ADDRESS: Final[int] = 2
+RANK_PROTONAME: Final[int] = 3
+RANK_UNPARSABLE: Final[int] = 4
 
 #: nft canonical L4-protocol keyword -> IP protocol number.  nft stores a
 #: ``meta l4proto`` / ``inet_proto`` set member as its *name* but orders the
@@ -30,7 +31,7 @@ RANK_UNPARSABLE = 4
 #: so the sorter must key these names by number to match the kernel form.
 #: Spellings and numbers are nft's own (verified against nft v1.1.6); a name
 #: nft does not know cannot survive a readback, so it stays unparsable.
-_NFT_L4PROTO_NUMBER: dict[str, int] = {
+_NFT_L4PROTO_NUMBER: Final[dict[str, int]] = {
     "icmp": 1,
     "igmp": 2,
     "ipencap": 4,
@@ -61,7 +62,7 @@ _NFT_L4PROTO_NUMBER: dict[str, int] = {
 #: nft reads a numeric ``meta l4proto`` operand back as its name (``6`` ->
 #: ``tcp``), so the emitter normalizes a known number to the name the kernel
 #: will store; a number with no well-known name has none and stays numeric.
-_NFT_L4PROTO_NAME: dict[int, str] = {
+_NFT_L4PROTO_NAME: Final[dict[int, str]] = {
     number: name for name, number in _NFT_L4PROTO_NUMBER.items()
 }
 

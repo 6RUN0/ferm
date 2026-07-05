@@ -40,16 +40,18 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from pyferm.domains import (
     CapturePrevious,
     ChainInfo,
     DomainInfo,
+    Family,
     LineEmitter,
     ShellSnapshotBuilder,
     TableInfo,
     initialize_domain,
+    parse_family,
     resolve_chain_priority,
 )
 from pyferm.errors import FermError, error, internal_error, warning
@@ -121,7 +123,7 @@ if TYPE_CHECKING:
     from pyferm.scope import Scope
 
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
-DEPRECATED_KEYWORDS = {"realgoto": "goto"}
+DEPRECATED_KEYWORDS: Final[dict[str, str]] = {"realgoto": "goto"}
 
 #: Control tokens that lead a statement but are not promoted to a node: the
 #: statement terminator, the block terminator, and a leftover @else. They go
@@ -172,7 +174,7 @@ _STMT_KEYWORDS: Final = frozenset(
 #: replays its block with ``enter(0, ...)`` (:meth:`Parser._replay_array`),
 #: resetting ``level``.  A sanctioned deviation: Perl recurses until
 #: memory runs out, the port fails with a located diagnostic.
-MAX_BLOCK_DEPTH = 100
+MAX_BLOCK_DEPTH: Final[int] = 100
 
 #: iptables chain-name cap, shared by every target that names a chain --
 #: chain/subchain/jump/goto (Perl ``:2600``/``:2693``/``:2809``/``:2817``).
@@ -183,29 +185,33 @@ MAX_CHAIN_NAME_LENGTH: Final[int] = 29
 #: :data:`MAX_CHAIN_NAME_LENGTH`.
 MAX_LOG_PREFIX_LENGTH: Final[int] = 29
 
-_NAME_RE = re.compile(r"\w+")
+_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 #: nft set identifier: letter-led word chars only, no digit-leading names.
 #: Early UX reject; authoritative check is on the nft emit boundary.
-_NFT_SET_NAME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
-_DVAR_RE = re.compile(r"\$(\w+)")
+_NFT_SET_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z][A-Za-z0-9_]*\Z"
+)
+_DVAR_RE: Final[re.Pattern[str]] = re.compile(r"\$(\w+)")
 #: A double-quoted token, for the function-expansion interpolation (``:2484``).
-_DQUOTE_RE = re.compile(r'".*"', re.DOTALL)
+_DQUOTE_RE: Final[re.Pattern[str]] = re.compile(r'".*"', re.DOTALL)
 #: A lower-case lead, distinguishing letter param codes (``s``/``c``) from a
 #: numeric count in ``parse_keyword`` (Perl ``$params =~ /^[a-z]/``).
-_LOWER_RE = re.compile(r"[a-z]")
+_LOWER_RE: Final[re.Pattern[str]] = re.compile(r"[a-z]")
 #: A ``'...'``/``"..."`` quoted subchain name (Perl ``:2681``).
-_QUOTED_SUB_RE = re.compile(r"([\"'])(.*)\1", re.DOTALL)
+_QUOTED_SUB_RE: Final[re.Pattern[str]] = re.compile(
+    r"([\"'])(.*)\1", re.DOTALL
+)
 #: Built-in chain names that must be upper case (Perl ``:2588``).
-_LOWER_BUILTIN_CHAINS = frozenset(
+_LOWER_BUILTIN_CHAINS: Final[frozenset[str]] = frozenset(
     {"input", "forward", "output", "prerouting", "postrouting"}
 )
 #: A sign glued to a number (``-1``/``+5``) following a chain-priority
 #: landmark, e.g. ``priority filter -1`` -- folded into the offset form.
-_GLUED_SIGN_RE = re.compile(r"[+-][0-9]+")
+_GLUED_SIGN_RE: Final[re.Pattern[str]] = re.compile(r"[+-][0-9]+")
 #: A relative ``@include`` path / pipe spec (Perl ``:1112``).
-_ABS_OR_PIPE_RE = re.compile(r"^/|\|$")
+_ABS_OR_PIPE_RE: Final[re.Pattern[str]] = re.compile(r"^/|\|$")
 #: dpkg backup files skipped by a directory ``@include`` (Perl ``:1129``).
-_DPKG_RE = re.compile(r"\.dpkg-(old|dist|new|tmp)$")
+_DPKG_RE: Final[re.Pattern[str]] = re.compile(r"\.dpkg-(old|dist|new|tmp)$")
 
 
 def _check_chain_name(name: str) -> None:
@@ -656,8 +662,15 @@ class Parser:
         if not self.check_domain(domain):
             return False
 
+        family: Family | Literal["none"]
         if not isinstance(domain, list):
-            family = "ip" if domain == "ip6" else stringify(domain)
+            # already validated by check_domain -> parse_family cannot raise;
+            # ip6 folds to ip exactly as the oracle does.
+            family = (
+                Family.IP
+                if domain == "ip6"
+                else parse_family(stringify(domain))
+            )
         elif len(domain) == 0:
             family = "none"
         elif any(
@@ -665,7 +678,7 @@ class Parser:
         ):
             error("Cannot combine non-IP domains")
         else:
-            family = "ip"
+            family = Family.IP
 
         rule.domain_family = family
         base = MATCH_DEFS.get(family, {}).get("")
@@ -759,10 +772,15 @@ class Parser:
         matching :class:`Evaluator` method (Perl's ``&$params($rule)``,
         ``:1959``).
         """
-        method = getattr(self.evaluator, function.name, None)
+        dispatch: dict[str, Callable[[Rule], Value]] = {
+            "address_magic": self.evaluator.address_magic,
+            "cgroup_classid": self.evaluator.cgroup_classid,
+            "multiport_params": self.evaluator.multiport_params,
+        }
+        method = dispatch.get(function.name)
         if method is None:
             raise internal_error()
-        return cast("Value", method(rule))
+        return method(rule)
 
     def parse_keyword(
         self, rule: Rule, keyword: Keyword, negated: NegatedFlag
@@ -1719,6 +1737,8 @@ class Parser:
         found = self.evaluator.lookup_function(name)
         if found is None:
             error(f"no such function: &{name}")
+        # lookup_function returns ``object`` (it lives below ``parser`` in the
+        # import layering); narrow it back to the local ``Function`` here.
         function = cast("Function", found)
 
         params = self.evaluator.get_function_params(allow_negation=True)

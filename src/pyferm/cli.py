@@ -30,6 +30,7 @@ realised with :mod:`signal` (``signal.alarm``/``SIGALRM``) rather than Perl's
 from __future__ import annotations
 
 import argparse
+import enum
 import os
 import re
 import subprocess  # live-only: run rules / hooks / *-save / *-restore
@@ -89,6 +90,21 @@ if TYPE_CHECKING:
     from pyferm.domains import DomainInfo
     from pyferm.tree import Block
 
+
+class ExitCode(enum.IntEnum):
+    """
+    Process exit status: the ferm/plan contract.
+
+    ``0`` on success/no changes, ``2`` when ``--plan``/``--lint`` finds
+    pending changes, ``1`` on a ferm error -- never a bare literal past
+    this module boundary.
+    """
+
+    OK = 0
+    ERROR = 1
+    CHANGES = 2
+
+
 #: A clean run leaves exactly two scope frames on the stack: the global
 #: frame plus the top-level script frame.  Anything else is an internal bug.
 BALANCED_STACK_DEPTH: Final[int] = 2
@@ -102,7 +118,7 @@ _DEFAULT_CONFIG: Final[str] = "/etc/ferm/ferm.conf"
 # ``perl reference/src/ferm --help``.  Perl prints it to stdout for both
 # ``--help`` (exit 0) and the wrong-argument-count path (exit 1):
 # pod2usage writes to STDOUT whenever the exit status is below 2.
-HELP_TEXT = """\
+HELP_TEXT: Final[str] = """\
 Usage:
     ferm options inputfiles
 
@@ -130,8 +146,8 @@ Options:
 
 """
 
-_TIMEOUT_RE = re.compile(r"^[+-]?\d+$")
-_DEF_RE = re.compile(r"\$?(\w+)=(.*)", re.DOTALL)
+_TIMEOUT_RE: Final[re.Pattern[str]] = re.compile(r"^[+-]?\d+$")
+_DEF_RE: Final[re.Pattern[str]] = re.compile(r"\$?(\w+)=(.*)", re.DOTALL)
 
 # Perl system() runs a one-string command through /bin/sh only when it
 # contains shell metacharacters (perl doio.c, Perl_do_exec3); otherwise it
@@ -139,8 +155,8 @@ _DEF_RE = re.compile(r"\$?(\w+)=(.*)", re.DOTALL)
 # Perl-side refinements (a trailing "2>&1", a trailing newline) force the
 # shell here too -- both contain metacharacters from this set -- which only
 # swaps an exec for an equivalent shell run.
-_SHELL_META = "$&*(){}[]'\";\\|?<>~`\n"
-_VAR_ASSIGN_RE = re.compile(r"[A-Za-z]*=")
+_SHELL_META: Final[str] = "$&*(){}[]'\";\\|?<>~`\n"
+_VAR_ASSIGN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z]*=")
 
 
 def printversion() -> None:
@@ -427,7 +443,7 @@ def _make_io(
             # Perl: $? == -1 -> print and exit 1 at once, skipping the
             # status bookkeeping, post hooks and rollback (:2903-2905).
             sys.stderr.write(f"failed to execute: {exc.strerror or exc}\n")
-            raise SystemExit(1) from exc
+            raise SystemExit(ExitCode.ERROR) from exc
         ret = completed.returncode
         if ret == 0:
             return None
@@ -632,7 +648,7 @@ def _rollback_all(
             restore=restore,
         )
     sys.stderr.write("\nFirewall rules rolled back.\n")
-    raise SystemExit(1)
+    raise SystemExit(ExitCode.ERROR)
 
 
 class _ConfirmTimeoutError(Exception):
@@ -749,19 +765,23 @@ def _run_lint(config_path: str, *, fail_level: Severity | None) -> int:
         sys.stdout.write(f"{escape_control_chars(line)}\n")
 
     if fail_level is None:
-        return 0
-    return 2 if any(f.severity <= fail_level for f in findings) else 0
+        return ExitCode.OK
+    return (
+        ExitCode.CHANGES
+        if any(f.severity <= fail_level for f in findings)
+        else ExitCode.OK
+    )
 
 
 #: Namespace attrs the introspection guard must not reject: its own two
 #: flags, the earlier-dispatched help/version, and files (own guard).
-_INTROSPECTION_EXEMPT: Final = frozenset(
+_INTROSPECTION_EXEMPT: Final[frozenset[str]] = frozenset(
     {"list_modules", "describe", "help", "version", "files"}
 )
 
 #: dest -> user-facing flag, where the mechanical "--" + dest.replace()
 #: derivation would lie (--remote/--test share dest="test").
-_INTROSPECTION_FLAG_NAMES: Final = {
+_INTROSPECTION_FLAG_NAMES: Final[dict[str, str]] = {
     "defs": "--def",
     "test": "--test/--remote",
 }
@@ -815,12 +835,12 @@ def _run_introspection(args: argparse.Namespace) -> int:
         assert args.describe is not None
         text = describe(args.describe)
     sys.stdout.write(text)
-    return 0
+    return ExitCode.OK
 
 
 #: Namespace attrs the --graph guard must not reject (its own flags,
 #: earlier-dispatched help/version, and files -- guarded separately).
-_GRAPH_EXEMPT: Final = frozenset(
+_GRAPH_EXEMPT: Final[frozenset[str]] = frozenset(
     {"graph", "graph_format", "help", "version", "files"}
 )
 
@@ -843,7 +863,7 @@ def _run_graph(args: argparse.Namespace) -> int:
     fmt = args.graph_format or "d2"
     text = render_dot(graph) if fmt == "dot" else render_d2(graph)
     sys.stdout.write(text)
-    return 0
+    return ExitCode.OK
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -855,7 +875,7 @@ def main(argv: list[str] | None = None) -> int:
         return _main(argv)
     except FermError as exc:
         sys.stderr.write(f"{exc}\n")
-        return 1
+        return ExitCode.ERROR
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -875,10 +895,10 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.help:
         sys.stdout.write(HELP_TEXT)
-        return 0
+        return ExitCode.OK
     if args.version:
         printversion()
-        return 0
+        return ExitCode.OK
 
     # Introspection is a terminal read-only mode: dispatch before
     # _resolve_options so no apply-path validation (tty, timeout) runs.
@@ -895,7 +915,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     if len(args.files) != 1:
         sys.stdout.write(HELP_TEXT)
-        return 1
+        return ExitCode.ERROR
 
     # Eval-free lint must dispatch before any eval/kernel/previous-ruleset
     # I/O -- unlike --plan, which runs post-eval inside _apply_config.
@@ -998,7 +1018,7 @@ def _run_plan(
     """
     plan = build_plan(domains, options, backend)
     sys.stdout.write(render_plan(plan, fmt=options.plan_format))
-    return 2 if plan.has_changes() else 0
+    return ExitCode.CHANGES if plan.has_changes() else ExitCode.OK
 
 
 def _commit_subject(
@@ -1266,7 +1286,7 @@ def _apply_config(
         for info in domains.values():
             info.close()
 
-    return 0
+    return ExitCode.OK
 
 
 def _run(
@@ -1349,7 +1369,7 @@ def _rollback_main(argv: list[str]) -> int:
 
     if args.list:
         sys.stdout.write(etckeeper.list_history(subpath))
-        return 0
+        return ExitCode.OK
 
     if args.to is not None:
         return _rollback_to(
@@ -1400,7 +1420,7 @@ def _rollback_to(
         answer = sys.stdin.readline().strip().lower()
         if answer not in ("y", "yes"):
             sys.stderr.write("Rollback cancelled.\n")
-            return 0
+            return ExitCode.OK
 
     etckeeper.rollback(sha, subpath)
     lines_stream, restore_streams = _setup_streams(options)

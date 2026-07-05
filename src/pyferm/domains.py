@@ -31,11 +31,12 @@ only in prose.
 
 from __future__ import annotations
 
+import enum
 import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import IO, TYPE_CHECKING, Final, Literal, cast, get_args
+from typing import IO, TYPE_CHECKING, Final
 
 from pyferm.errors import FermError
 
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
 #: The ebtables tables in their FIXED order (``:94``).  The order is a
 #: deliberate literal, NOT sorted -- arp/eb output is byte-for-byte and not
 #: canonicalized by ``sort.pl`` (design revision 3, the ``@eb_tables`` fix).
-EB_TABLES = ("filter", "nat", "broute")
+EB_TABLES: Final[tuple[str, ...]] = ("filter", "nat", "broute")
 
 #: nft's named base-chain priority landmarks, per family.  ip/ip6 share nft's
 #: inet-style landmarks; the bridge family (ferm ``eb``) has its own; the arp
@@ -58,7 +59,7 @@ EB_TABLES = ("filter", "nat", "broute")
 #: are keyed here: ferm domains (``ip``/``ip6``/``arp``/``eb``) for the parser
 #: and the nft family name ``bridge`` for the plan's canonicalizer, so a
 #: single table is the source of truth for both sides.
-_NFT_PRIORITY_LANDMARKS_INET: dict[str, int] = {
+_NFT_PRIORITY_LANDMARKS_INET: Final[dict[str, int]] = {
     "raw": -300,
     "mangle": -150,
     "dstnat": -100,
@@ -66,15 +67,15 @@ _NFT_PRIORITY_LANDMARKS_INET: dict[str, int] = {
     "security": 50,
     "srcnat": 100,
 }
-_NFT_PRIORITY_LANDMARKS_BRIDGE: dict[str, int] = {
+_NFT_PRIORITY_LANDMARKS_BRIDGE: Final[dict[str, int]] = {
     "dstnat": -300,
     "filter": -200,
     "out": 100,
     "srcnat": 300,
 }
 #: arp registers only the filter hook; ``filter`` is its sole valid landmark.
-_NFT_PRIORITY_LANDMARKS_ARP: dict[str, int] = {"filter": 0}
-NFT_PRIORITY_LANDMARKS: dict[str, dict[str, int]] = {
+_NFT_PRIORITY_LANDMARKS_ARP: Final[dict[str, int]] = {"filter": 0}
+NFT_PRIORITY_LANDMARKS: Final[dict[str, dict[str, int]]] = {
     "ip": _NFT_PRIORITY_LANDMARKS_INET,
     "ip6": _NFT_PRIORITY_LANDMARKS_INET,
     "arp": _NFT_PRIORITY_LANDMARKS_ARP,
@@ -84,17 +85,17 @@ NFT_PRIORITY_LANDMARKS: dict[str, dict[str, int]] = {
 
 #: nft stores a chain priority as a signed 32-bit integer; a value outside
 #: this range is rejected by nft at apply, so reject it at the border too.
-_NFT_PRIORITY_MIN = -(2**31)
-_NFT_PRIORITY_MAX = 2**31 - 1
+_NFT_PRIORITY_MIN: Final[int] = -(2**31)
+_NFT_PRIORITY_MAX: Final[int] = 2**31 - 1
 
 #: A plain priority integer: an optional sign and ASCII digits only -- no
 #: underscores, no non-ASCII digits (Python's ``int()`` would accept both).
-_PRIORITY_INT_RE = re.compile(r"[+-]?[0-9]+")
+_PRIORITY_INT_RE: Final[re.Pattern[str]] = re.compile(r"[+-]?[0-9]+")
 
 #: A chain-priority token: a landmark name with an optional ``+``/``-`` offset
 #: (``filter``, ``dstnat - 10``, ``filter+5``).  A plain signed integer is
 #: handled separately by ``_PRIORITY_INT_RE``.
-_PRIORITY_LANDMARK_RE = re.compile(
+_PRIORITY_LANDMARK_RE: Final[re.Pattern[str]] = re.compile(
     r"\A(?P<name>[A-Za-z]+)\s*(?:(?P<sign>[+-])\s*(?P<magnitude>[0-9]+))?\Z"
 )
 
@@ -102,8 +103,10 @@ _PRIORITY_LANDMARK_RE = re.compile(
 #: re.ASCII: Perl's byte-mode \s+ does not match \x1c-\x1f, so a Unicode
 #: \s would accept a policy field the oracle rejects (found by the
 #: differential fuzzer).
-_SAVE_TABLE_RE = re.compile(r"^\*(\w+)", re.ASCII)
-_SAVE_CHAIN_RE = re.compile(r"^:(\w+)\s+(\S+)", re.ASCII)
+_SAVE_TABLE_RE: Final[re.Pattern[str]] = re.compile(r"^\*(\w+)", re.ASCII)
+_SAVE_CHAIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^:(\w+)\s+(\S+)", re.ASCII
+)
 
 
 def apply_priority_offset(base: int, sign: str, magnitude: int) -> int:
@@ -150,29 +153,82 @@ TOOL_TABLES: Final[str] = "tables"
 TOOL_SAVE: Final[str] = "tables-save"
 TOOL_RESTORE: Final[str] = "tables-restore"
 
-#: A netfilter family (the four ferm domains).  The single source of
-#: truth for what a valid family is; ``parse_family`` is the only gate.
-Family = Literal["ip", "ip6", "arp", "eb"]
-_FAMILIES: frozenset[str] = frozenset(get_args(Family))
+
+class Family(enum.StrEnum):
+    """
+    A netfilter family (the four ferm domains).
+
+    The single source of truth for what a valid family is;
+    :meth:`from_name` is the only gate.  A ``StrEnum`` so each member is a
+    drop-in for its wire string (``"ip"`` ...) in comparisons, f-strings,
+    dict keys and tool-name concatenation -- keeping emitted output
+    byte-identical to the old ``Literal``.
+    """
+
+    IP = "ip"
+    IP6 = "ip6"
+    ARP = "arp"
+    EB = "eb"
+
+    @classmethod
+    def from_name(cls, name: str) -> Family:
+        """Return *name* as a :class:`Family`, or raise (the only gate)."""
+        try:
+            return cls(name)
+        except ValueError:
+            raise FermError(f"Invalid domain '{name}'") from None
+
+
+#: All valid families as a membership set; ``StrEnum`` members compare equal
+#: to their wire strings, so ``"ip" in _FAMILIES`` still holds.
+_FAMILIES: Final[frozenset[Family]] = frozenset(Family)
 #: Families that own ``*-save``/``*-restore`` tools (``:934-935``).
-_IP_FAMILIES: frozenset[Family] = frozenset({"ip", "ip6"})
+_IP_FAMILIES: Final[frozenset[Family]] = frozenset({Family.IP, Family.IP6})
 assert _IP_FAMILIES <= _FAMILIES
 
 
 def parse_family(name: str) -> Family:
-    """Return *name* as a :data:`Family`, or raise (the only family gate)."""
-    if name not in _FAMILIES:
-        raise FermError(f"Invalid domain '{name}'")
-    return cast("Family", name)
+    """Return *name* as a :class:`Family`, or raise (thin alias, the gate)."""
+    return Family.from_name(name)
 
 
-def is_ip_family(family: Family) -> bool:
+def is_ip_family(family: str) -> bool:
     """Whether *family* owns a ``*-save``/``*-restore`` tool pair."""
     return family in _IP_FAMILIES
 
 
+#: ferm's own nft table name in every family; every ferm table merges into
+#: ``table <family> ferm``.  Shared by the nft emitter and the plan-side nft
+#: delta parser (which both import ``domains``) so the name has one home.
+NFT_TABLE_NAME: Final[str] = "ferm"
+
+#: nft's fixed ct-state bitmask order (NOT alphabetical, NOT ``sorted()``):
+#: the single source of truth for the nft emitter's membership check and the
+#: plan canonicalizer's ordering.  Keep this order sacred -- sorting it
+#: silently corrupts the canonicalizer.
+NFT_CT_STATES: Final[tuple[str, ...]] = (
+    "invalid",
+    "established",
+    "related",
+    "new",
+    "untracked",
+)
+
+#: iptables ip4 ``reject-with`` name -> icmp6 name: the oracle's ip4->icmp6
+#: alias set (``:1871-1878``), shared by the nft and iptables backends so the
+#: two identical copies cannot drift.  Owned by neither backend.
+ICMP6_REJECT_MAP: Final[dict[str, str]] = {
+    "icmp-net-unreachable": "icmp6-no-route",
+    "icmp-host-unreachable": "icmp6-addr-unreachable",
+    "icmp-port-unreachable": "icmp6-port-unreachable",
+    "icmp-net-prohibited": "icmp6-adm-prohibited",
+    "icmp-host-prohibited": "icmp6-adm-prohibited",
+    "icmp-admin-prohibited": "icmp6-adm-prohibited",
+}
+
+
 #: Split a tool name into ``(base ending in 'tables', suffix)`` (``:886``).
-_LEGACY_RE = re.compile(r"^(.*tables)(.*)$")
+_LEGACY_RE: Final[re.Pattern[str]] = re.compile(r"^(.*tables)(.*)$")
 
 #: Captures a family's previous ruleset once its tools are resolved --
 #: the cli's closure over :meth:`pyferm.backend.base.Backend.capture_previous`

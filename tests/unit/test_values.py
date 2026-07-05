@@ -222,7 +222,7 @@ def test_replace_round_trip_is_stable(
 
 
 def test_rendered_option_is_frozen() -> None:
-    opt = RenderedOption(name="dport", value="80", kind="s", module=None)
+    opt = RenderedOption(name="dport", value="80", kind="option", module=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
         opt.value = "443"  # type: ignore[misc]
 

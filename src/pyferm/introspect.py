@@ -19,6 +19,7 @@ Read-only: never touches the kernel, the eval path or any config file.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 from typing import Final
 
@@ -32,6 +33,7 @@ from pyferm.modules import (
     KeywordParams,
     ModuleDef,
     ParamFunction,
+    Registry,
 )
 from pyferm.parser import DEPRECATED_KEYWORDS
 
@@ -79,6 +81,19 @@ _KIND_LABELS: Final[dict[str, str]] = {
 }
 
 
+class RegistryKind(enum.StrEnum):
+    """Which module registry a def came from; the label is golden output."""
+
+    PROTO = "proto"
+    MATCH = "match"
+    TARGET = "target"
+
+    @property
+    def label(self) -> str:
+        """Display label for this registry kind."""
+        return _KIND_LABELS[self]
+
+
 def _option_row(
     key: str, keyword: Keyword, module: ModuleDef
 ) -> tuple[str, str, str]:
@@ -110,20 +125,34 @@ def _render_rows(rows: list[tuple[str, str, str]]) -> list[str]:
 
 
 def _render_module(
-    kind: str, name: str, family: str, module: ModuleDef
+    kind: RegistryKind, name: str, family: str, module: ModuleDef
 ) -> str:
     """Render one registry hit as a titled option table."""
+    kind = RegistryKind(kind)
     rows = [
         _option_row(key, keyword, module)
         for key, keyword in module.keywords.items()
         if key == keyword.name  # alias keys render on their canonical row
     ]
-    lines = [
-        f"{_KIND_LABELS[kind]} module '{name}' ({_FAMILY_LABELS[family]}):"
-    ]
+    lines = [f"{kind.label} module '{name}' ({_FAMILY_LABELS[family]}):"]
     lines.extend(_render_rows(rows))
     lines.append("  see iptables-extensions(8) and ferm(1)")
     return "\n".join(lines)
+
+
+class BuiltinCategory(enum.StrEnum):
+    """Category of a built-in language keyword; the label is golden output."""
+
+    LOCATION = "location"
+    STRUCTURE = "structure"
+    RULE = "rule"
+    FUNCTION = "function"
+    TARGET = "target"
+
+    @property
+    def label(self) -> str:
+        """Display label for this builtin category."""
+        return _CATEGORY_LABELS[self]
 
 
 @dataclass(frozen=True)
@@ -131,13 +160,13 @@ class Builtin:
     """One built-in language keyword with a curated one-liner."""
 
     name: str
-    category: str  # "location" | "structure" | "rule" | "function" | "target"
+    category: BuiltinCategory
     signature: str
     summary: str
 
 
 def _builtin(
-    name: str, category: str, signature: str, summary: str
+    name: str, category: BuiltinCategory, signature: str, summary: str
 ) -> tuple[str, Builtin]:
     return name, Builtin(name, category, signature, summary)
 
@@ -147,226 +176,263 @@ BUILTINS: Final[dict[str, Builtin]] = dict(
         # -- location headers (_HEADER_KEYWORDS, parser.py:316)
         _builtin(
             "domain",
-            "location",
+            BuiltinCategory.LOCATION,
             "domain (ip ip6 ...) { ... }",
             "select the netfilter domain(s) a block applies to",
         ),
         _builtin(
             "table",
-            "location",
+            BuiltinCategory.LOCATION,
             "table NAME { ... }",
             "select the table (filter, nat, mangle, ...)",
         ),
         _builtin(
             "chain",
-            "location",
+            BuiltinCategory.LOCATION,
             "chain NAME [NAME ...] { ... }",
             "select the chain(s) the rules go into",
         ),
         _builtin(
             "policy",
-            "location",
+            BuiltinCategory.LOCATION,
             "policy (ACCEPT|DROP|...);",
             "set the built-in chain policy",
         ),
         _builtin(
             "priority",
-            "location",
+            BuiltinCategory.LOCATION,
             "priority NUMBER;",
             "set the nft base-chain hook priority (port-only)",
         ),
         # -- structure
         _builtin(
             "@def",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@def $name = value; / @def &fn(...) = ...;",
             "define a variable or a function",
         ),
         _builtin(
-            "def", "structure", "def ...", "deprecated spelling of '@def'"
+            "def",
+            BuiltinCategory.STRUCTURE,
+            "def ...",
+            "deprecated spelling of '@def'",
         ),
         _builtin(
             "@include",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@include 'file'|'dir/'|'command|';",
             "include a file, a directory or a command's output",
         ),
         _builtin(
             "include",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "include ...",
             "deprecated spelling of '@include'",
         ),
         _builtin(
             "@if",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@if condition { ... } [@else { ... }]",
             "conditional inclusion at evaluation time",
         ),
         _builtin(
             "@else",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@if ... @else { ... }",
             "alternative branch of '@if'",
         ),
         _builtin(
             "@hook",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@hook (pre|post|flush) 'command';",
             "run a shell command around rule application",
         ),
         _builtin(
-            "hook", "structure", "hook ...", "deprecated spelling of '@hook'"
+            "hook",
+            BuiltinCategory.STRUCTURE,
+            "hook ...",
+            "deprecated spelling of '@hook'",
         ),
         _builtin(
             "@preserve",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@preserve;",
             "keep the kernel's current rules for this chain",
         ),
         _builtin(
             "@set",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@set NAME ...;",
             "define a named set (nft backend)",
         ),
         _builtin(
             "@subchain",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@subchain ['NAME'] { ... }",
             "move the enclosed rules into their own chain",
         ),
         _builtin(
             "subchain",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "subchain ...",
             "deprecated spelling of '@subchain'",
         ),
         _builtin(
             "@gotosubchain",
-            "structure",
+            BuiltinCategory.STRUCTURE,
             "@gotosubchain ['NAME'] { ... }",
             "like '@subchain' but enters the chain with goto",
         ),
         # -- rule keywords
-        _builtin("jump", "rule", "jump CHAIN", "jump to a chain"),
         _builtin(
-            "goto", "rule", "goto CHAIN", "go to a chain without returning"
+            "jump", BuiltinCategory.RULE, "jump CHAIN", "jump to a chain"
         ),
         _builtin(
-            "NOP", "rule", "NOP;", "emit the rule without any jump target"
+            "goto",
+            BuiltinCategory.RULE,
+            "goto CHAIN",
+            "go to a chain without returning",
+        ),
+        _builtin(
+            "NOP",
+            BuiltinCategory.RULE,
+            "NOP;",
+            "emit the rule without any jump target",
         ),
         _builtin(
             "proto",
-            "rule",
+            BuiltinCategory.RULE,
             "proto PROTOCOL",
             "match the protocol (alias: protocol)",
         ),
-        _builtin("protocol", "rule", "protocol PROTOCOL", "alias of 'proto'"),
+        _builtin(
+            "protocol",
+            BuiltinCategory.RULE,
+            "protocol PROTOCOL",
+            "alias of 'proto'",
+        ),
         # sport/dport are parser-level port switches (no module keyword
         # table carries them): they map to --sport/--dport of the active
         # tcp/udp protocol, so they are describable only here.
         _builtin(
             "sport",
-            "rule",
+            BuiltinCategory.RULE,
             "sport PORT[:PORT]",
             "match the source port (needs proto tcp/udp)",
         ),
         _builtin(
             "dport",
-            "rule",
+            BuiltinCategory.RULE,
             "dport PORT[:PORT]",
             "match the destination port (needs proto tcp/udp)",
         ),
         _builtin(
             "mod",
-            "rule",
+            BuiltinCategory.RULE,
             "mod MODULE [MODULE ...]",
             "load a match module (alias: module)",
         ),
         _builtin(
-            "module", "rule", "module MODULE [MODULE ...]", "alias of 'mod'"
+            "module",
+            BuiltinCategory.RULE,
+            "module MODULE [MODULE ...]",
+            "alias of 'mod'",
         ),
         # -- core targets (rules.py:52; manual entries, not scanned)
         _builtin(
             "ACCEPT",
-            "target",
+            BuiltinCategory.TARGET,
             "ACCEPT",
             "core netfilter target (no module required)",
         ),
         _builtin(
             "DROP",
-            "target",
+            BuiltinCategory.TARGET,
             "DROP",
             "core netfilter target (no module required)",
         ),
         _builtin(
             "RETURN",
-            "target",
+            BuiltinCategory.TARGET,
             "RETURN",
             "core netfilter target (no module required)",
         ),
         _builtin(
             "QUEUE",
-            "target",
+            BuiltinCategory.TARGET,
             "QUEUE",
             "core netfilter target (no module required)",
         ),
         # -- @-functions (signatures mirror functions.py literals)
         _builtin(
             "@defined",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@defined($name) / @defined(&name)",
             "true if the variable or function is defined",
         ),
-        _builtin("@eq", "function", "@eq(a, b)", "true if a equals b"),
-        _builtin("@ne", "function", "@ne(a, b)", "true if a differs from b"),
-        _builtin("@not", "function", "@not(a)", "boolean negation"),
+        _builtin(
+            "@eq", BuiltinCategory.FUNCTION, "@eq(a, b)", "true if a equals b"
+        ),
+        _builtin(
+            "@ne",
+            BuiltinCategory.FUNCTION,
+            "@ne(a, b)",
+            "true if a differs from b",
+        ),
+        _builtin(
+            "@not", BuiltinCategory.FUNCTION, "@not(a)", "boolean negation"
+        ),
         _builtin(
             "@cat",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@cat(a, b, ...)",
             "concatenate values into one string",
         ),
         _builtin(
             "@join",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@join(separator, ...)",
             "join values with a separator",
         ),
         _builtin(
             "@substr",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@substr(string, num, num)",
             "extract a substring",
         ),
         _builtin(
-            "@length", "function", "@length(string)", "length of a string"
+            "@length",
+            BuiltinCategory.FUNCTION,
+            "@length(string)",
+            "length of a string",
         ),
         _builtin(
             "@basename",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@basename(path)",
             "file name part of a path",
         ),
         _builtin(
             "@dirname",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@dirname(path)",
             "directory part of a path",
         ),
         _builtin(
-            "@glob", "function", "@glob(string)", "expand a filename glob"
+            "@glob",
+            BuiltinCategory.FUNCTION,
+            "@glob(string)",
+            "expand a filename glob",
         ),
         _builtin(
             "@resolve",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@resolve((hostname ...), [type])",
             "resolve hostnames via DNS at evaluation time",
         ),
         _builtin(
             "@ipfilter",
-            "function",
+            BuiltinCategory.FUNCTION,
             "@ipfilter((ip1 ip2 ...))",
             "keep only addresses matching the current domain family",
         ),
@@ -385,15 +451,15 @@ _CATEGORY_LABELS: Final[dict[str, str]] = {
 def _render_builtin(builtin: Builtin) -> str:
     """Render one BUILTINS hit: signature plus curated one-liner."""
     return (
-        f"built-in {_CATEGORY_LABELS[builtin.category]} '{builtin.name}':\n"
+        f"built-in {builtin.category.label} '{builtin.name}':\n"
         f"  {builtin.signature} -- {builtin.summary}"
     )
 
 
-_REGISTRIES: Final = (
-    ("proto", PROTO_DEFS),
-    ("match", MATCH_DEFS),
-    ("target", TARGET_DEFS),
+_REGISTRIES: Final[tuple[tuple[RegistryKind, Registry], ...]] = (
+    (RegistryKind.PROTO, PROTO_DEFS),
+    (RegistryKind.MATCH, MATCH_DEFS),
+    (RegistryKind.TARGET, TARGET_DEFS),
 )
 
 
@@ -414,7 +480,7 @@ def _option_fallback_blocks(name: str) -> list[str]:
                     _implicit_base_label(family)
                     if module_name == ""
                     else (
-                        f"{_KIND_LABELS[kind]} module '{module_name}' "
+                        f"{kind.label} module '{module_name}' "
                         f"({_FAMILY_LABELS[family]})"
                     )
                 )
@@ -486,11 +552,9 @@ def list_modules() -> str:
             if not modules:
                 continue
             names = sorted(name for name in modules if name)
-            lines.append(
-                f"{_KIND_LABELS[kind]} modules ({_FAMILY_LABELS[family]}):"
-            )
+            lines.append(f"{kind.label} modules ({_FAMILY_LABELS[family]}):")
             lines.extend(_fold_columns(names, 2))
-            implicit = modules.get("") if kind == "match" else None
+            implicit = modules.get("") if kind == RegistryKind.MATCH else None
             if implicit is not None:
                 lines.append("  implicit base options:")
                 canonical = sorted(

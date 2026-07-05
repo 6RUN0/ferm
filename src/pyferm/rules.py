@@ -39,21 +39,23 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from pyferm.errors import internal_error
 from pyferm.values import Deferred, Value, contains_deferred, realize_deferred
 
 if TYPE_CHECKING:
     from pyferm.modules import ModuleDef, Registry
-    from pyferm.scope import Option, Rule, SourcePosition
+    from pyferm.scope import Option, OptionKind, Rule, SourcePosition
 
 #: Targets understood by netfilter itself, no ``-m`` module (``:1769``).
-_CORE_TARGETS = ("ACCEPT", "DROP", "RETURN", "QUEUE")
+#: Public so the backends and graph builder share one definition instead of
+#: reaching for a private name behind a file-level pyright suppression.
+CORE_TARGETS: Final[tuple[str, ...]] = ("ACCEPT", "DROP", "RETURN", "QUEUE")
 
 #: The built-in chains across all tables/families (``:1785``); the table
 #: argument is ignored, exactly as in the oracle.
-_BUILTIN_CHAINS = (
+_BUILTIN_CHAINS: Final[tuple[str, ...]] = (
     "PREROUTING",
     "INPUT",
     "FORWARD",
@@ -73,7 +75,7 @@ def is_netfilter_core_target(target: str | None) -> bool:
     """
     if target is None or target == "":
         raise internal_error("undefined or empty target")
-    return target in _CORE_TARGETS
+    return target in CORE_TARGETS
 
 
 def is_netfilter_module_target(
@@ -144,13 +146,14 @@ class RenderedOption:
     ``value`` is the single value selected for
     this option in this leaf rule (no arrays, deferred already realized);
     negation survives as a ``Negated``/``PreNegated`` tag on ``value``, not as
-    a field.  ``kind``/``module`` are the port-only fields carried over from
-    :class:`pyferm.scope.Option` (no Phase 1 consumer).
+    a field.  ``kind``/``module`` are carried over from
+    :class:`pyferm.scope.Option`; the nft backend branches on ``kind`` (see
+    that class), so keep its spellings byte-stable.
     """
 
     name: str
     value: Value
-    kind: str
+    kind: OptionKind
     module: str | None
 
 

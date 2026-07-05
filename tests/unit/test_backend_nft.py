@@ -8,6 +8,8 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from pyferm.scope import OptionKind
+
 from pyferm.backend.nft import (
     NftBaseChain,
     NftMatch,
@@ -288,7 +290,7 @@ from pyferm.values import Value  # noqa: E402
 def _opt(
     name: str,
     value: Value,
-    kind: str = "option",
+    kind: OptionKind = "option",
     module: str | None = None,
 ) -> RenderedOption:
     return RenderedOption(name=name, value=value, kind=kind, module=module)

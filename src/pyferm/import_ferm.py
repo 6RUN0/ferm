@@ -33,7 +33,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO, cast
+from typing import TYPE_CHECKING, Final, TextIO, cast
 
 from pyferm.errors import FermError
 from pyferm.modules import (
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 #: import-ferm's own short-flag aliases (Perl ``%aliases``, ``:61``).  These
 #: are the single-letter iptables options, unrelated to ferm's keyword
 #: aliases; they map ``-s`` -> ``saddr`` and so on.
-_ALIASES = {
+_ALIASES: Final[dict[str, str]] = {
     "i": "interface",
     "o": "outerface",
     "f": "fragment",
@@ -84,18 +84,18 @@ _ALIASES = {
 #: ``\n?``: the oracle anchors with a bare-word ``$``, which also
 #: matches before a trailing newline; ``re.ASCII``: Perl's byte-mode
 #: ``\S`` includes ``\x1c``-``\x1f`` (found by the differential fuzzer).
-_OPTION_RE = re.compile(r"-(\w)\n?", re.ASCII)
-_LONG_OPTION_RE = re.compile(r"--(\S+)\n?", re.ASCII)
-_ESCAPE_RE = re.compile(r"[^-\w.:/]", re.ASCII)
+_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"-(\w)\n?", re.ASCII)
+_LONG_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"--(\S+)\n?", re.ASCII)
+_ESCAPE_RE: Final[re.Pattern[str]] = re.compile(r"[^-\w.:/]", re.ASCII)
 
 #: ``re.ASCII``: Perl's byte-mode ``\s`` is ``[ \t\n\r\f\x0B]``, so a
 #: Unicode ``\s`` would swallow ``\x1c``-``\x1f`` bytes the oracle
 #: lexes as words (found by the differential fuzzer).
-_TOK_QUOTED = re.compile(r'\s*"([^"]*)"', re.ASCII)
-_TOK_BANG = re.compile(r"\s*(!)", re.ASCII)
-_TOK_WORD = re.compile(r"\s*(\S+)", re.ASCII)
+_TOK_QUOTED: Final[re.Pattern[str]] = re.compile(r'\s*"([^"]*)"', re.ASCII)
+_TOK_BANG: Final[re.Pattern[str]] = re.compile(r"\s*(!)", re.ASCII)
+_TOK_WORD: Final[re.Pattern[str]] = re.compile(r"\s*(\S+)", re.ASCII)
 
-_USAGE = (
+_USAGE: Final[str] = (
     "Usage:\n"
     "    import-ferm > ferm.conf\n"
     "    iptables-save | import-ferm > ferm.conf\n"

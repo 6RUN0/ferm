@@ -24,7 +24,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, TypeAlias
+from typing import IO, TYPE_CHECKING, Final, TypeAlias
 
 from pyferm.errors import FermError, error, set_error_context
 from pyferm.streams import BYTE_ENCODING, reconfigure_latin1
@@ -91,10 +91,10 @@ class Script:
 # re.ASCII: Perl's byte-mode ``\w`` is ``[0-9A-Za-z_]``; a Unicode ``\w``
 # would also lex bytes like ``\xb9`` as word runs (found by the
 # differential fuzzer once the strategies covered the full byte range).
-_TOKEN_RE = re.compile(
+_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"""(".*?"|'.*?'|`.*?`|[!,=&$%(){};]|[-+\w/.:]+|@\w+|#)""", re.ASCII
 )
-_NOT_ALLOWED_RE = re.compile(r"[;{}]")
+_NOT_ALLOWED_RE: Final[re.Pattern[str]] = re.compile(r"[;{}]")
 
 
 def tokenize_string(string: str) -> list[str]:

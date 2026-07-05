@@ -20,10 +20,6 @@ save/command builders need the family (``domain``) the oracle did not -- it
 formatted before this point.
 """
 
-# The backend derives its policy whitelist from the parser's own core-target
-# tuple (_CORE_TARGETS) by design, so pyright's private-usage rule is off
-# here (mirrors graph.py).
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import re
@@ -32,7 +28,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import IO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Final
 
 from pyferm import __version__
 from pyferm.backend.base import (
@@ -47,6 +43,7 @@ from pyferm.backend.base import (
 )
 from pyferm.domains import (
     EB_TABLES,
+    ICMP6_REJECT_MAP,
     TOOL_RESTORE,
     TOOL_SAVE,
     TOOL_TABLES,
@@ -54,13 +51,14 @@ from pyferm.domains import (
     DomainInfo,
     ShellSnapshot,
     TableInfo,
+    is_ip_family,
 )
 from pyferm.domains import (
     read_previous as _domains_read_previous,
 )
 from pyferm.errors import FermError, internal_error
 from pyferm.rules import (
-    _CORE_TARGETS,
+    CORE_TARGETS,
     RenderedRule,
     is_netfilter_builtin_chain,
 )
@@ -82,18 +80,20 @@ if TYPE_CHECKING:
 
 #: A token needing no quoting (Perl ``:1809``); ``$`` allows a trailing
 #: newline exactly as Perl's ``$`` does.
-_PLAIN_TOKEN_RE = re.compile(r"[-_a-zA-Z0-9]+$")
+_PLAIN_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[-_a-zA-Z0-9]+$")
 #: An already-quoted backtick command (slow mode only, ``:1821``).
-_BACKTICK_RE = re.compile(r"`.*`$")
+_BACKTICK_RE: Final[re.Pattern[str]] = re.compile(r"`.*`$")
 #: Characters forcing double-quoting in fast (``iptables-restore``) mode
 #: (``:1818``).  ``re.ASCII``: Perl's byte-mode ``\s`` is
 #: ``[ \t\n\r\f\x0B]``; Python's Unicode ``\s`` would also match
 #: ``\x1c``-``\x1f`` and quote tokens the oracle leaves bare (found by
 #: the differential fuzzer).
-_FAST_SPECIAL_RE = re.compile(r"[\s'\\;&]", re.ASCII)
+_FAST_SPECIAL_RE: Final[re.Pattern[str]] = re.compile(r"[\s'\\;&]", re.ASCII)
 #: Characters forcing single-quoting in slow (per-command) mode (``:1824``);
 #: ``re.ASCII`` for the same reason as above.
-_SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
+_SLOW_SPECIAL_RE: Final[re.Pattern[str]] = re.compile(
+    r'[\s"\\;<>&|]', re.ASCII
+)
 
 #: Bytes ALLOWED in a config-supplied table/chain name.  A fail-closed
 #: WHITELIST, deliberately stricter than the oracle (which length-checks
@@ -109,7 +109,9 @@ _SLOW_SPECIAL_RE = re.compile(r'[\s"\\;<>&|]', re.ASCII)
 #: injection).  The alphabet below is what real ferm chain/table names use;
 #: ``+`` is included because the oracle accepts it (e.g. ``a+b``).
 #: ``re.ASCII`` so the class never widens to Unicode digits.
-_IPT_NAME_RE = re.compile(r"\A[A-Za-z0-9_.+-]+\Z", re.ASCII)
+_IPT_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z0-9_.+-]+\Z", re.ASCII
+)
 
 
 #: Policies the iptables save grammar accepts on a ``:{chain} {policy}`` line.
@@ -119,7 +121,7 @@ _IPT_NAME_RE = re.compile(r"\A[A-Za-z0-9_.+-]+\Z", re.ASCII)
 #: Derived from the core-TARGET tuple: two distinct concepts that coincide
 #: today, so a new core target silently widens this (already deliberately
 #: over-permissive) whitelist too.
-_IPT_POLICIES: frozenset[str] = frozenset(_CORE_TARGETS) | {"-"}
+_IPT_POLICIES: Final[frozenset[str]] = frozenset(CORE_TARGETS) | {"-"}
 
 
 def _validate_policy(policy: str | None) -> str | None:
@@ -173,16 +175,6 @@ def validate_names(domain_info: DomainInfo) -> None:
 
 #: ip6 ``reject-with`` value translation (``:1871-1878``); several IPv4 names
 #: collapse onto ``icmp6-adm-prohibited``.
-_ICMP6_REJECT_MAP = {
-    "icmp-net-unreachable": "icmp6-no-route",
-    "icmp-host-unreachable": "icmp6-addr-unreachable",
-    "icmp-port-unreachable": "icmp6-port-unreachable",
-    "icmp-net-prohibited": "icmp6-adm-prohibited",
-    "icmp-host-prohibited": "icmp6-adm-prohibited",
-    "icmp-admin-prohibited": "icmp6-adm-prohibited",
-}
-
-
 def _scalar(value: Value) -> str:
     """
     Narrow a ``params``/``multi`` element to a scalar string.
@@ -276,7 +268,8 @@ def format_option(domain: str, name: str, value: Value, *, fast: bool) -> str:
 
     For ``ip6`` only: protocol ``icmp`` becomes ``icmpv6``, the ``icmp-type``
     keyword becomes ``icmpv6-type``, and ``reject-with`` values are mapped via
-    :data:`_ICMP6_REJECT_MAP`.  The reject map is consulted only for scalar
+    :data:`pyferm.domains.ICMP6_REJECT_MAP`.  The reject map is consulted only
+    for scalar
     values; a tagged value passes through unchanged (the oracle's ``exists
     $icmp_map{$value}`` never matches a stringified ref).
     """
@@ -285,7 +278,7 @@ def format_option(domain: str, name: str, value: Value, *, fast: bool) -> str:
     if domain == "ip6" and name == "icmp-type":
         name = "icmpv6-type"
     if domain == "ip6" and name == "reject-with" and isinstance(value, str):
-        value = _ICMP6_REJECT_MAP.get(value, value)
+        value = ICMP6_REJECT_MAP.get(value, value)
 
     return shell_format_option(name, value, fast=fast)
 
@@ -502,7 +495,7 @@ class IptablesBackend(Backend):
         ip/ip6 own a save/restore pair; arp/eb expose only ``*tables``.
         """
         names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if domain in ("ip", "ip6"):
+        if is_ip_family(domain):
             names[TOOL_SAVE] = domain + TOOL_SAVE
             names[TOOL_RESTORE] = domain + TOOL_RESTORE
         return names
@@ -813,7 +806,7 @@ class IptablesBackend(Backend):
         # eb branch below spawns `ebtables --atomic-save` even under --test,
         # a side effect a read-only plan must not cause -- and mark the family
         # so the cli notes it as unsupported.
-        if options.plan and domain not in ("ip", "ip6"):
+        if options.plan and not is_ip_family(domain):
             domain_info.plan_unsupported = True
             return
         del capture  # x_tables snapshots via *-save, not stdout capture

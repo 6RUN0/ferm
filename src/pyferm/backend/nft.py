@@ -8,12 +8,13 @@ nft-expression model and serializes it (``to_text``) into one atomic
 
 from __future__ import annotations
 
+import enum
 import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pyferm.backend.base import (
     Backend,
@@ -24,8 +25,14 @@ from pyferm.backend.base import (
     RestoreDomain,
     SaveReader,
 )
-from pyferm.domains import ShellSnapshot
+from pyferm.domains import (
+    ICMP6_REJECT_MAP,
+    NFT_CT_STATES,
+    NFT_TABLE_NAME,
+    ShellSnapshot,
+)
 from pyferm.errors import FermError, internal_error
+from pyferm.modules import PORT_PROTOCOLS
 from pyferm.nftset import (
     RANK_ADDRESS,
     RANK_INTERVAL,
@@ -36,6 +43,7 @@ from pyferm.nftset import (
 )
 from pyferm.plan import build_nft_delta, needs_full_reload
 from pyferm.rules import (
+    CORE_TARGETS,
     RenderedOption,
     RenderedRule,
     is_netfilter_builtin_chain,
@@ -50,11 +58,9 @@ if TYPE_CHECKING:
     from pyferm.domains import DomainInfo, TableInfo
 
 #: nft comment byte limit; over -> a plain ferm error.
-NFT_COMMENT_MAX: int = 128
-#: ferm's own table name in every family.
-NFT_TABLE_NAME: str = "ferm"
+NFT_COMMENT_MAX: Final[int] = 128
 #: ``DomainInfo.tools`` key for the single nft binary.
-TOOL_NFT: str = "nft"
+TOOL_NFT: Final[str] = "nft"
 
 # ---------------------------------------------------------------------------
 # Operand escaping / validation (review 2026-06-14).
@@ -73,33 +79,39 @@ TOOL_NFT: str = "nft"
 #: An nft address operand: IPv4/IPv6/hex digits, CIDR ``/``, range ``-``,
 #: and ``:`` (IPv6 and NAT ``addr:port``).  Rejects every token-breaking
 #: metacharacter.
-_NFT_ADDR_RE = re.compile(r"\A[0-9A-Fa-f.:/-]+\Z")
+_NFT_ADDR_RE: Final[re.Pattern[str]] = re.compile(r"\A[0-9A-Fa-f.:/-]+\Z")
 #: An nft port operand: a numeric/service port or ``lo-hi`` range.  Service
 #: names (``ssh``) are accepted (nft resolves them); metacharacters are not.
-_NFT_PORT_RE = re.compile(r"\A[0-9A-Za-z][0-9A-Za-z-]*\Z")
+_NFT_PORT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[0-9A-Za-z][0-9A-Za-z-]*\Z"
+)
 #: ferm/iptables write a closed port range as ``lo:hi``; nft's grammar uses
 #: ``lo-hi``, so a colon range is normalized to the dash form.  Both ends
 #: must be present -- half-open ``:hi`` / ``lo:`` has no nft spelling here
 #: and is rejected (fail-closed) rather than mistranslated (review
 #: 2026-06-14).
-_NFT_PORT_COLON_RANGE_RE = re.compile(r"\A([0-9A-Za-z]+):([0-9A-Za-z]+)\Z")
+_NFT_PORT_COLON_RANGE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A([0-9A-Za-z]+):([0-9A-Za-z]+)\Z"
+)
 #: Bytes nft cannot represent inside a double-quoted string: a literal
 #: quote, a backslash, or any control byte.  nft has no escape for these,
 #: so :func:`_nft_quote_string` rejects rather than escapes them.
-_NFT_UNQUOTABLE_RE = re.compile(r'["\\\x00-\x1f]')
+_NFT_UNQUOTABLE_RE: Final[re.Pattern[str]] = re.compile(r'["\\\x00-\x1f]')
 #: An nft ``limit rate`` value: ``N`` or ``N/unit`` (``3/second``).
-_NFT_RATE_RE = re.compile(r"\A\d+(?:/[A-Za-z]+)?\Z")
+_NFT_RATE_RE: Final[re.Pattern[str]] = re.compile(r"\A\d+(?:/[A-Za-z]+)?\Z")
 #: An nft chain identifier (bare word; nft has no quoted-chain-name form).
-_NFT_CHAIN_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
+_NFT_CHAIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z][A-Za-z0-9_]*\Z"
+)
 #: An nft set/map identifier: must start with a letter, then word chars only.
-_NFT_SET_NAME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
+_NFT_SET_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z][A-Za-z0-9_]*\Z"
+)
 #: First rejected name length (empirically confirmed: 255 accepted, 256 not).
-_NFT_NAME_MAXLEN: int = 256
+_NFT_NAME_MAXLEN: Final[int] = 256
 #: ct state keywords nft accepts for ``ct state`` (the ferm ``state`` module
 #: maps to iptables ``--state``, whose vocabulary is this set).
-_CT_STATES: frozenset[str] = frozenset(
-    {"new", "established", "related", "invalid", "untracked"}
-)
+_CT_STATES: Final[frozenset[str]] = frozenset(NFT_CT_STATES)
 
 
 def _validate_address(scalar: str) -> str:
@@ -320,21 +332,30 @@ def render_comment(comment: str) -> str:
 
 #: A numeric port or a closed numeric range; service/protocol NAMES are
 #: rejected because their nft type and sort order cannot be inferred here.
-_SET_PORT_NUMERIC_RE: re.Pattern[str] = re.compile(r"\A\d+([-:]\d+)?\Z")
+_SET_PORT_NUMERIC_RE: Final[re.Pattern[str]] = re.compile(r"\A\d+([-:]\d+)?\Z")
+
+
+class NftSetType(enum.StrEnum):
+    """nft named-set element type keyword (emitted verbatim into scripts)."""
+
+    INET_SERVICE = "inet_service"
+    IPV4_ADDR = "ipv4_addr"
+    IPV6_ADDR = "ipv6_addr"
+    IFNAME = "ifname"
 
 
 @dataclass
 class _SetDecl:
     """A named-set declaration: type plus ordered, validated elements."""
 
-    type_: str
+    type_: NftSetType
     flags_interval: bool
     elements: list[str]
 
 
 def _set_type_and_elements(
     domain: str, selector: str, setref: SetRef
-) -> tuple[str, bool, list[str]]:
+) -> tuple[NftSetType, bool, list[str]]:
     """
     Infer (nft type, flags-interval, validated sorted elements) for a set.
 
@@ -358,13 +379,15 @@ def _set_type_and_elements(
                     "or range; service/protocol names are not supported"
                 )
         elements = [_validate_port(element) for element in raw]
-        type_ = "inet_service"
+        type_ = NftSetType.INET_SERVICE
     elif "saddr" in selector or "daddr" in selector:
         elements = [_validate_address(element) for element in raw]
-        type_ = "ipv4_addr" if domain == "ip" else "ipv6_addr"
+        type_ = (
+            NftSetType.IPV4_ADDR if domain == "ip" else NftSetType.IPV6_ADDR
+        )
     elif selector.endswith(("iifname", "oifname")):
         elements = [_nft_quote_string(element) for element in raw]
-        type_ = "ifname"
+        type_ = NftSetType.IFNAME
     else:
         raise FermError(f"named set selector '{selector}' not supported")
     flags_interval = any(
@@ -495,7 +518,7 @@ def _full_reload_text(save: str, family: str) -> str:
 # ---------------------------------------------------------------------------
 
 #: ferm family -> nft family, 1:1.
-_NFT_FAMILY: dict[str, str] = {
+_NFT_FAMILY: Final[dict[str, str]] = {
     "ip": "ip",
     "ip6": "ip6",
     "arp": "arp",
@@ -504,7 +527,7 @@ _NFT_FAMILY: dict[str, str] = {
 
 #: (table, chain) -> (nft type, hook, priority).  Numeric priorities for
 #: cross-version portability.
-_BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
+_BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
     ("filter", "INPUT"): ("filter", "input", 0),
     ("filter", "FORWARD"): ("filter", "forward", 0),
     ("filter", "OUTPUT"): ("filter", "output", 0),
@@ -522,7 +545,7 @@ _BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
 }
 
 #: arp supports only filter/INPUT and filter/OUTPUT.
-_ARP_BASE_CHAIN_MAP: dict[tuple[str, str], tuple[str, str, int]] = {
+_ARP_BASE_CHAIN_MAP: Final[dict[tuple[str, str], tuple[str, str, int]]] = {
     ("filter", "INPUT"): ("filter", "input", 0),
     ("filter", "OUTPUT"): ("filter", "output", 0),
 }
@@ -686,20 +709,21 @@ def first_scalar(value: Value) -> str:
 # ---------------------------------------------------------------------------
 
 #: canonical option name -> nft address keyword.
-_ADDR_KEYWORD: dict[str, str] = {"source": "saddr", "destination": "daddr"}
+_ADDR_KEYWORD: Final[dict[str, str]] = {
+    "source": "saddr",
+    "destination": "daddr",
+}
 #: canonical option name -> nft interface keyword.
-_IFACE_KEYWORD: dict[str, str] = {
+_IFACE_KEYWORD: Final[dict[str, str]] = {
     "in-interface": "iifname",
     "out-interface": "oifname",
 }
 #: port option names; the nft keyword equals the ferm name.
-_PORT_KEYWORD: dict[str, str] = {"sport": "sport", "dport": "dport"}
-#: protocols that admit a port match (mirrors PORT_PROTOCOLS, modules.py).
-_PORT_PROTOCOLS: tuple[str, ...] = ("tcp", "udp", "udplite", "dccp", "sctp")
+_PORT_KEYWORD: Final[dict[str, str]] = {"sport": "sport", "dport": "dport"}
 #: Selectors that may carry an anonymous set (the collapse allow-list).
 #: ``ip protocol`` is intentionally absent: the backend emits protocol as
 #: ``meta l4proto``, so a separate ``ip protocol`` selector is never produced.
-_SET_ELIGIBLE_SELECTORS: frozenset[str] = frozenset(
+_SET_ELIGIBLE_SELECTORS: Final[frozenset[str]] = frozenset(
     {
         "tcp dport",
         "tcp sport",
@@ -796,7 +820,7 @@ def _match_selector(domain: str, name: str, protocol: str | None) -> str:
     if name in _IFACE_KEYWORD:
         return _IFACE_KEYWORD[name]
     if name in _PORT_KEYWORD:
-        if protocol not in _PORT_PROTOCOLS:
+        if protocol not in PORT_PROTOCOLS:
             raise FermError(
                 f"option '{name}' needs a tcp/udp protocol for the nft backend"
             )
@@ -824,19 +848,18 @@ def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
 # build_verdict
 # ---------------------------------------------------------------------------
 
-#: target VALUE -> nft verdict; QUEUE is core, REJECT is not.
-_VERDICT_TARGET: dict[str, str] = {
-    "ACCEPT": "accept",
-    "DROP": "drop",
-    "RETURN": "return",
-    "QUEUE": "queue",
+#: target VALUE -> nft verdict; QUEUE is core, REJECT is not.  Derived from
+#: :data:`CORE_TARGETS` so the two cannot drift; every core target lower-cases
+#: to its nft spelling (ACCEPT->accept, ...), preserving insertion order.
+_VERDICT_TARGET: Final[dict[str, str]] = {
+    target: target.lower() for target in CORE_TARGETS
 }
 #: iptables ``reject-with`` canonical name -> nft reject spec, ip family.
 #: Covers every type ``iptables -j REJECT`` accepts; the short aliases
 #: (``net-unreach`` ...) resolve to these keys via :data:`_REJECT_ALIAS`.
 #: nft spells iptables ``icmp-proto-unreachable`` as ``prot-unreachable``
 #: (verified against nft v1.1.6).
-_REJECT_WITH: dict[str, str] = {
+_REJECT_WITH: Final[dict[str, str]] = {
     "icmp-net-unreachable": "reject with icmp type net-unreachable",
     "icmp-host-unreachable": "reject with icmp type host-unreachable",
     "icmp-proto-unreachable": "reject with icmp type prot-unreachable",
@@ -847,7 +870,7 @@ _REJECT_WITH: dict[str, str] = {
     "tcp-reset": "reject with tcp reset",
 }
 #: iptables ip-family short alias -> canonical :data:`_REJECT_WITH` key.
-_REJECT_ALIAS: dict[str, str] = {
+_REJECT_ALIAS: Final[dict[str, str]] = {
     "net-unreach": "icmp-net-unreachable",
     "host-unreach": "icmp-host-unreachable",
     "proto-unreach": "icmp-proto-unreachable",
@@ -860,7 +883,7 @@ _REJECT_ALIAS: dict[str, str] = {
 #: ip6 ``reject-with`` canonical name -> nft reject spec (icmpv6 types plus
 #: the family-agnostic tcp reset).  Covers every type ``ip6tables -j REJECT``
 #: accepts; short aliases resolve via :data:`_REJECT_ALIAS_IP6`.
-_REJECT_WITH_IP6: dict[str, str] = {
+_REJECT_WITH_IP6: Final[dict[str, str]] = {
     "icmp6-no-route": "reject with icmpv6 type no-route",
     "icmp6-adm-prohibited": "reject with icmpv6 type admin-prohibited",
     "icmp6-addr-unreachable": "reject with icmpv6 type addr-unreachable",
@@ -870,7 +893,7 @@ _REJECT_WITH_IP6: dict[str, str] = {
     "tcp-reset": "reject with tcp reset",
 }
 #: ip6 short alias -> canonical :data:`_REJECT_WITH_IP6` key.
-_REJECT_ALIAS_IP6: dict[str, str] = {
+_REJECT_ALIAS_IP6: Final[dict[str, str]] = {
     "no-route": "icmp6-no-route",
     "adm-prohibited": "icmp6-adm-prohibited",
     "addr-unreach": "icmp6-addr-unreachable",
@@ -878,23 +901,9 @@ _REJECT_ALIAS_IP6: dict[str, str] = {
     "policy-fail": "icmp6-policy-fail",
     "reject-route": "icmp6-reject-route",
 }
-#: ip4 reject-with names the oracle remaps to icmp6 under ip6
-#: (``iptables.py:82-89``); a user may write the ip4 spelling in an ip6
-#: domain, so normalize before the ip6 lookup or a valid config would
-#: falsely raise "not yet supported".
-_ICMP6_REJECT_ALIAS: dict[str, str] = {
-    "icmp-net-unreachable": "icmp6-no-route",
-    "icmp-host-unreachable": "icmp6-addr-unreachable",
-    "icmp-port-unreachable": "icmp6-port-unreachable",
-    "icmp-net-prohibited": "icmp6-adm-prohibited",
-    "icmp-host-prohibited": "icmp6-adm-prohibited",
-    "icmp-admin-prohibited": "icmp6-adm-prohibited",
-}
-
-
 #: The error a port-bearing NAT verdict raises without a transport match
 #: nft would reject the applied script, so fail at translate.
-_NAT_PORT_NEEDS_PROTO = (
+_NAT_PORT_NEEDS_PROTO: Final[str] = (
     "NAT to a port needs a tcp/udp protocol match for the nft backend"
 )
 
@@ -920,7 +929,9 @@ def _nat_has_port(domain: str, operand: str) -> bool:
 
 def _reject_for(domain: str, scalar: str) -> str:
     if domain == "ip6":
-        scalar = _ICMP6_REJECT_ALIAS.get(scalar, scalar)
+        # normalize an ip4 reject spelling written in an ip6 domain before
+        # the ip6 lookup (shared oracle ip4->icmp6 alias set)
+        scalar = ICMP6_REJECT_MAP.get(scalar, scalar)
         scalar = _REJECT_ALIAS_IP6.get(scalar, scalar)
         spec = _REJECT_WITH_IP6.get(scalar)
     else:
@@ -1059,7 +1070,7 @@ def build_verdict(
 
 #: option names that are companion arguments of a target, consumed by
 #: :func:`build_verdict` rather than emitted as matches.
-_TARGET_COMPANIONS: tuple[str, ...] = (
+_TARGET_COMPANIONS: Final[tuple[str, ...]] = (
     "reject-with",
     "to-source",
     "to-destination",
@@ -1131,7 +1142,7 @@ def translate_rule(domain: str, table: str, rule: RenderedRule) -> NftRule:
     # nft's `... to <addr>:<port>` NAT mapping is "only valid after transport
     # protocol match" -- a port match or a `meta l4proto tcp/udp` covers it,
     # both implied by the rule carrying a port-bearing protocol.
-    has_transport = protocol in _PORT_PROTOCOLS
+    has_transport = protocol in PORT_PROTOCOLS
 
     # Guard: at most one SetRef option per rule (a second would need two
     # named-set declarations sharing one rule, which is not supported yet).
@@ -1309,10 +1320,10 @@ def _collapse_one_pass(rules: list[NftRule]) -> tuple[list[NftRule], bool]:
 #: value.  'reject'/'log'/NAT/'counter' are statements nft rejects inside a
 #: vmap, so a rule carrying one breaks the run and stays linear (verified on
 #: nft v1.1.6).  'queue' is a verdict we emit but deliberately do not fold.
-_VMAP_VERDICTS: frozenset[str] = frozenset({"accept", "drop", "return"})
+_VMAP_VERDICTS: Final[frozenset[str]] = frozenset({"accept", "drop", "return"})
 
 #: A vmap leaf rule is exactly one set-eligible match plus its verdict.
-_VMAP_LEAF_STATEMENTS = 2
+_VMAP_LEAF_STATEMENTS: Final[int] = 2
 
 
 def _is_vmap_verdict(statement: NftStatement) -> bool:
@@ -1441,7 +1452,8 @@ class NftBackend(Backend):
                 nft_name = nft_chain_name(tbl, original)
                 if nft_name in rules:
                     raise FermError(
-                        f"nft chain name collision '{nft_name}' in table ferm"
+                        f"nft chain name collision '{nft_name}' in table "
+                        f"{NFT_TABLE_NAME}"
                     )
                 rules[nft_name] = _collapse_chain_rules(
                     [
@@ -1562,7 +1574,8 @@ class NftBackend(Backend):
                     )
             return
         snapshot = capture(
-            f"{domain_info.tools[TOOL_NFT]} list table {family} ferm"
+            f"{domain_info.tools[TOOL_NFT]} list table {family} "
+            f"{NFT_TABLE_NAME}"
         )
         domain_info.previous = snapshot or None
 
@@ -1590,7 +1603,8 @@ class NftBackend(Backend):
             restore(domain_info, domain_info.previous)
         else:
             execute(
-                f"{domain_info.tools[TOOL_NFT]} delete table {family} ferm"
+                f"{domain_info.tools[TOOL_NFT]} delete table {family} "
+                f"{NFT_TABLE_NAME}"
             )
 
     def read_previous(

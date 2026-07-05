@@ -57,21 +57,23 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_NAME_RE = re.compile(r"\w+")
-_DVAR_RE = re.compile(r"\$(\w+)")
-_QUOTED_RE = {
+_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
+_DVAR_RE: Final[re.Pattern[str]] = re.compile(r"\$(\w+)")
+_QUOTED_RE: Final[dict[str, re.Pattern[str]]] = {
     "`": re.compile(r"`(.*)`", re.DOTALL),
     "'": re.compile(r"'(.*)'", re.DOTALL),
     '"': re.compile(r'"(.*)"', re.DOTALL),
 }
-_CLASSID_RE = re.compile(r"([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{1,4})")
-_DECIMAL_RE = re.compile(r"-?\d+")
-_MULTIPORT_PROTO_RE = re.compile(r"tcp|udp|udplite")
+_CLASSID_RE: Final[re.Pattern[str]] = re.compile(
+    r"([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{1,4})"
+)
+_DECIMAL_RE: Final[re.Pattern[str]] = re.compile(r"-?\d+")
+_MULTIPORT_PROTO_RE: Final[re.Pattern[str]] = re.compile(r"tcp|udp|udplite")
 #: The crude ipfilter family probes: a ``:hex:`` run looks IPv6, a purely
 #: numeric/dot/slash token is IPv4/CIDR.  No re.ASCII -- Perl's patterns
 #: here are plain byte-mode literals with no \s/\w classes.
-_IPV6_HINT_RE = re.compile(r":[0-9a-f]*:")
-_IPV4_NUMERIC_RE = re.compile(r"[0-9./]+")
+_IPV6_HINT_RE: Final[re.Pattern[str]] = re.compile(r":[0-9a-f]*:")
+_IPV4_NUMERIC_RE: Final[re.Pattern[str]] = re.compile(r"[0-9./]+")
 
 #: Cap on value-reader recursion depth (:meth:`Evaluator.getvalues`).
 #: Nested arrays ``((( ... )))``, chained negation ``!!! ...`` and nested
@@ -80,7 +82,7 @@ _IPV4_NUMERIC_RE = re.compile(r"[0-9./]+")
 #: of :data:`~pyferm.parser.MAX_BLOCK_DEPTH`: Perl recurses until memory runs
 #: out (OOM only at ~200k levels), the port fails earlier with a located
 #: diagnostic.
-MAX_VALUE_DEPTH = 100
+MAX_VALUE_DEPTH: Final[int] = 100
 
 #: Largest ``classid`` value: the kernel field is an unsigned 32-bit int.
 MAX_CLASSID: Final[int] = 0xFFFFFFFF
@@ -192,13 +194,13 @@ def _perl_substr(string: str, offset: int, length: int) -> str:
 
 #: ``re.ASCII``: Perl numification skips byte-mode ``\s`` only, so a
 #: Unicode ``\s`` would accept ``\x1c``-``\x1f`` before the digits.
-_NUMERIC_PREFIX_RE = re.compile(
+_NUMERIC_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
     r"\s*(?P<sign>[+-]?)(?P<number>\d+(?:\.\d*)?|\.\d+)(?P<exp>[eE][+-]?\d+)?",
     re.ASCII,
 )
 
-_UV_MAX = 2**64 - 1
-_IV_MIN = -(2**63)
+_UV_MAX: Final[int] = 2**64 - 1
+_IV_MIN: Final[int] = -(2**63)
 
 
 def _perl_substr_index(text: str) -> int:
@@ -317,7 +319,12 @@ class Evaluator:
         return value
 
     def lookup_function(self, name: str) -> object | None:
-        """Find a user-defined ``@function`` on the stack (Perl ``:1370``)."""
+        """
+        Find a user-defined ``@function`` on the stack (Perl ``:1370``).
+
+        Returns ``object`` because ``functions`` sits below ``parser`` in the
+        import layering and cannot name ``Function``; the caller casts.
+        """
         for frame in self.scope.stack:
             if name in frame.functions:
                 return frame.functions[name]

@@ -29,6 +29,7 @@ a ``new_level`` call, so rebuilding and reassigning is equivalent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Final, Literal, TypeAlias
 
 # Runtime imports, not TYPE_CHECKING: the parametrized default_factory
 # expressions below (``dict[str, Keyword]`` etc.) evaluate at class-body
@@ -53,6 +54,12 @@ class SourcePosition:
     column: int | None = None
 
 
+#: The closed set of synthesized option kinds (see :data:`_OPTION_KINDS`).
+#: Consumed by the nft backend's rule translator, so it is a live contract,
+#: not a dead field -- keep the spellings byte-stable.
+OptionKind: TypeAlias = Literal["option", "match_module", "proto", "target"]
+
+
 @dataclass
 class Option:
     """
@@ -69,8 +76,10 @@ class Option:
     from ``name`` in :func:`append_option`; ``module`` is the name of the
     module that introduced a sub-option's keyword, recorded by
     :func:`merge_keywords` on :attr:`Rule.keyword_module` and passed in by
-    ``parse_option`` (``None`` for non-module options).  Phase 1 has no
-    consumer for either field (iptables emission is positional and flat).
+    ``parse_option`` (``None`` for non-module options).  The iptables backend
+    emits positionally and ignores both, but the nft backend's rule translator
+    branches on :attr:`kind` (``proto``/``match_module``/``target``), so it is
+    a live contract field -- keep the spellings stable.
 
     :attr:`chosen` is the deferred analog of Perl's formatted slot
     ``$option->[2]`` (``:1888``): :func:`pyferm.rules.unfold_rule` records the
@@ -81,7 +90,7 @@ class Option:
 
     name: str
     value: Value
-    kind: str = "option"
+    kind: OptionKind = "option"
     module: str | None = None
     chosen: Value = None
 
@@ -106,6 +115,10 @@ class Rule:
     match: set[str] = field(default_factory=set[str])
     options: list[Option] = field(default_factory=list[Option])
     domain: Value = None
+    #: The folded family this rule is pinned to (a family string, the sentinel
+    #: ``"none"`` for empty ``domain ()``, or ``None`` when unset).  Typed
+    #: ``str`` rather than ``Family`` because ``scope`` sits below ``domains``
+    #: in the import layering; the parser assigns a validated ``Family`` here.
     domain_family: str | None = None
     domain_both: bool = False
     table: Value = None
@@ -186,7 +199,7 @@ def merge_keywords(
 #: Map an option ``name`` to its synthesized :attr:`Option.kind`:
 #: ``match``->``match_module``, ``protocol``->``proto``,
 #: ``jump``/``goto``->``target``, everything else->``option``.
-_OPTION_KINDS = {
+_OPTION_KINDS: Final[dict[str, OptionKind]] = {
     "match": "match_module",
     "protocol": "proto",
     "jump": "target",
@@ -206,8 +219,8 @@ def append_option(
 
     ``kind`` is synthesized from ``name`` via :data:`_OPTION_KINDS`; ``module``
     (the introducing module for a sub-option) is passed through from the
-    call-site.  Both are port-only contract fields with no Phase 1 consumer
-    (see :class:`Option`).
+    call-site.  ``kind`` is consumed by the nft backend's rule translator (see
+    :class:`Option`); ``module`` is currently unused by either backend.
     """
     kind = _OPTION_KINDS.get(name, "option")
     rule.options.append(Option(name, value, kind, module))
@@ -227,6 +240,10 @@ class Frame:
     """
 
     vars: dict[str, Value] = field(default_factory=dict[str, Value])
+    #: User-defined ``@function`` bodies (parser ``Function`` objects); typed
+    #: ``object`` because ``scope`` sits below ``parser`` in the import
+    #: layering, so it cannot name ``Function`` even under TYPE_CHECKING.
+    #: :meth:`pyferm.functions.Evaluator.lookup_function` narrows it back.
     functions: dict[str, object] = field(default_factory=dict[str, object])
     auto: dict[str, Value] = field(default_factory=dict[str, Value])
 

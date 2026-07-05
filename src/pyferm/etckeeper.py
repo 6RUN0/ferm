@@ -23,13 +23,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Final
 
 from pyferm.errors import FermError
 from pyferm.streams import BYTE_ENCODING
 
 #: How many path-scoped revisions to read to find the one before the current
 #: state: the current config plus the previous one.
-_PREVIOUS_DEPTH = 2
+_PREVIOUS_DEPTH: Final[int] = 2
 
 #: Safe alphabet for a user-supplied revision passed to git.  Branch and tag
 #: names legitimately carry ``/``, ``.`` and ``-`` (e.g. ``origin/main``,
@@ -37,7 +38,9 @@ _PREVIOUS_DEPTH = 2
 #: (flag injection) and a ``..`` sequence (commit range) are rejected
 #: separately.  Extended revision syntax (``HEAD~3``, ``@{...}``) is out of
 #: scope -- use ``--list`` to find the exact sha.
-_REVISION_RE = re.compile(r"\A[A-Za-z0-9_./-]+\Z", re.ASCII)
+_REVISION_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z0-9_./-]+\Z", re.ASCII
+)
 
 
 def _validate_revision(sha: str) -> None:

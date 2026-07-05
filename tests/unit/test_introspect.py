@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from pyferm.errors import FermError
-from pyferm.introspect import _render_module, describe, render_params
+from pyferm.introspect import (
+    RegistryKind,
+    _render_module,
+    describe,
+    render_params,
+)
 from pyferm.modules import MATCH_DEFS, PROTO_DEFS, KeywordParams, ParamFunction
 
 
@@ -31,7 +36,7 @@ def test_render_params(params: KeywordParams, expected: str) -> None:
 
 def test_render_module_connlimit_block() -> None:
     block = _render_module(
-        "match", "connlimit", "ip", MATCH_DEFS["ip"]["connlimit"]
+        RegistryKind.MATCH, "connlimit", "ip", MATCH_DEFS["ip"]["connlimit"]
     )
     lines = block.splitlines()
     assert lines[0] == "match module 'connlimit' (ip/ip6):"
@@ -43,7 +48,9 @@ def test_render_module_connlimit_block() -> None:
 
 
 def test_render_module_alias_grouping() -> None:
-    block = _render_module("proto", "icmp", "ip", PROTO_DEFS["ip"]["icmp"])
+    block = _render_module(
+        RegistryKind.PROTO, "icmp", "ip", PROTO_DEFS["ip"]["icmp"]
+    )
     # icmpv6-type is an alias key of icmp-type: one row, no own line
     assert "(aliases: icmpv6-type)" in block
     assert block.count("icmpv6-type") == 1
@@ -64,7 +71,7 @@ def test_render_module_lines_fit_width() -> None:
             if (family, name) in _known_wide:
                 continue
             for line in _render_module(
-                "match", name, family, module
+                RegistryKind.MATCH, name, family, module
             ).splitlines():
                 assert len(line) <= MAX_WIDTH, (family, name, line)
 

@@ -10,7 +10,7 @@ share one definition; analysis.py re-exports for backward compatibility.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from .tree import Block
 
@@ -42,11 +42,11 @@ __all__ = [
     "_unquote",
 ]
 
-_NAME_RE = re.compile(r"\w+")
+_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 
 #: The oracle's double-quote interpolation form: "$" immediately
 #: followed by word chars. There is no ${name} form in ferm.
-_INTERPOLATION_RE = re.compile(r"\$(\w+)")
+_INTERPOLATION_RE: Final[re.Pattern[str]] = re.compile(r"\$(\w+)")
 
 
 def _index_of(span: Sequence[object], token: str) -> int | None:
@@ -110,22 +110,24 @@ def _child_blocks(node: Node) -> Iterator[Block]:
 
 
 #: Subchain declaration keywords -- each names a chain.
-_SUBCHAIN_KW = frozenset({"@subchain", "subchain", "@gotosubchain"})
+_SUBCHAIN_KW: Final[frozenset[str]] = frozenset(
+    {"@subchain", "subchain", "@gotosubchain"}
+)
 
 #: Rule keywords that create an explicit jump edge to a chain. realgoto
 #: is the deprecated alias of goto: the eval path remaps it, but the
 #: structural tree keeps the original token.
-_JUMP_KW = ("jump", "goto", "realgoto")
+_JUMP_KW: Final[tuple[str, ...]] = ("jump", "goto", "realgoto")
 
 #: A quoted token needs at least an opening and a closing quote.
-_QUOTE_PAIR_MIN_LEN = 2
+_QUOTE_PAIR_MIN_LEN: Final[int] = 2
 
 #: Structural boundaries that stand where a ``chain`` name would be, i.e. a
 #: bare ``chain`` with no name (malformed input). NOT a name-run terminator:
 #: ``chain`` takes exactly ONE value (a single name or a parenthesised array),
 #: so a name colliding with a header keyword (``chain table {}``) is still the
 #: chain name, not a stop word.
-_CHAIN_VALUE_BOUNDARY = frozenset({"{", "}", ";"})
+_CHAIN_VALUE_BOUNDARY: Final[frozenset[str]] = frozenset({"{", "}", ";"})
 
 
 def _str_tokens(span: Sequence[object]) -> Iterator[str]:

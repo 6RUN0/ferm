@@ -22,8 +22,14 @@ import difflib
 import re
 import shlex
 from dataclasses import dataclass, field
+from typing import Final, Literal
 
-from pyferm.domains import NFT_PRIORITY_LANDMARKS, apply_priority_offset
+from pyferm.domains import (
+    NFT_CT_STATES,
+    NFT_PRIORITY_LANDMARKS,
+    NFT_TABLE_NAME,
+    apply_priority_offset,
+)
 from pyferm.errors import FermError, internal_error
 from pyferm.nftset import (
     canonicalize_element,
@@ -32,11 +38,11 @@ from pyferm.nftset import (
 )
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
-_CHAIN_PARTS_MIN = 2
-_CHAIN_PARTS_MAX = 3
+_CHAIN_PARTS_MIN: Final[int] = 2
+_CHAIN_PARTS_MAX: Final[int] = 3
 
 # ``-c pkts bytes`` occupies the first 3 tokens of a rule body.
-_COUNTER_TOKENS = 3
+_COUNTER_TOKENS: Final[int] = 3
 
 
 @dataclass
@@ -156,7 +162,7 @@ def parse_save(text: str, *, host_mask: str) -> dict[str, ParsedTable]:
 
 #: Whole-token option aliases (source of truth: Makefile RESULT_SED, plus the
 #: multiport long->short pair).  Matched as whole tokens, never as prefixes.
-_OPTION_ALIASES = {
+_OPTION_ALIASES: Final[dict[str, str]] = {
     "--protocol": "-p",
     "--source": "-s",
     "--destination": "-d",
@@ -170,7 +176,9 @@ _OPTION_ALIASES = {
     "--source-ports": "--sports",
 }
 #: ``-m <proto>`` matches the kernel injects as implied by ``-p <proto>``.
-_IMPLIED_MATCHES = frozenset({"tcp", "udp", "icmp", "icmpv6"})
+_IMPLIED_MATCHES: Final[frozenset[str]] = frozenset(
+    {"tcp", "udp", "icmp", "icmpv6"}
+)
 
 
 def _tokenize_rule(body: str) -> list[str]:
@@ -245,30 +253,20 @@ def _canonicalize_rule(body: str, host_mask: str) -> str:
     return " ".join(out)
 
 
-#: nft's fixed ct-state bitmask order (NOT alphabetical, NOT sorted()).
-#: A rule's members are re-ordered to this sequence on both sides.
-_NFT_CT_STATE_ORDER: tuple[str, ...] = (
-    "invalid",
-    "established",
-    "related",
-    "new",
-    "untracked",
-)
-
 #: Standard nft priority landmark names -> numeric, keyed by nft family.
 #: Shared with the parser (which resolves config-side landmark priorities)
 #: via ``domains`` so a single table is the source of truth; the
 #: canonicalizer here keys it by nft family (``bridge``), the parser by ferm
 #: domain (``eb``), both of which the table carries.
-_NFT_PRIORITY_NAMES = NFT_PRIORITY_LANDMARKS
+_NFT_PRIORITY_NAMES: Final[dict[str, dict[str, int]]] = NFT_PRIORITY_LANDMARKS
 
 #: ip-family reject default: nft collapses to bare 'reject'.
-_NFT_REJECT_DEFAULTS: dict[str, str] = {
+_NFT_REJECT_DEFAULTS: Final[dict[str, str]] = {
     "ip": "icmp",
     "ip6": "icmpv6",
 }
 #: nft's default reject message type for both icmp families.
-_NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
+_NFT_REJECT_DEFAULT_TYPE: Final[str] = "port-unreachable"
 
 
 #: One ``{ ... }`` operand run, with an optional ``vmap`` marker so a verdict
@@ -278,13 +276,17 @@ _NFT_REJECT_DEFAULT_TYPE = "port-unreachable"
 #: The ``vmap`` marker is anchored on its left (``(?<![\w@])``) so a token
 #: that merely ends in ``vmap`` (an identifier, an ``@foovmap`` set reference)
 #: is not misread as a verdict map on the untrusted kernel-readback side.
-_NFT_SET_RE = re.compile(r"((?<![\w@])vmap\s*)?\{([^{}]*)\}")
+_NFT_SET_RE: Final[re.Pattern[str]] = re.compile(
+    r"((?<![\w@])vmap\s*)?\{([^{}]*)\}"
+)
 
 #: A brace run is a ct-state operand when ``ct state`` (optionally negated)
 #: immediately precedes it.  The brace run alone carries no context, so the
 #: text to its left supplies it; this lets the braced form reorder to nft's
 #: bitmask sequence like the unbraced ``ct state a,b`` form already does.
-_CT_STATE_PREFIX_RE = re.compile(r"ct state\s*(?:!=)?\s*$")
+_CT_STATE_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"ct state\s*(?:!=)?\s*$"
+)
 
 
 def _normalize_set_run(match: re.Match[str]) -> str:
@@ -311,9 +313,9 @@ def _normalize_set_run(match: re.Match[str]) -> str:
     # counterpart of the unbraced ct-state transform.  The reorder applies only
     # when every member is a known state (an unknown member is safe-bias kept).
     if _CT_STATE_PREFIX_RE.search(match.string[: match.start()]) and all(
-        m in _NFT_CT_STATE_ORDER for m in members
+        m in NFT_CT_STATES for m in members
     ):
-        ordered = sorted(members, key=_NFT_CT_STATE_ORDER.index)
+        ordered = sorted(members, key=NFT_CT_STATES.index)
         return "{ " + ", ".join(ordered) + " }"
     # An operator-bearing member (concat / OR, recognised by an interior space)
     # is not a plain scalar: scalar dedup/sort and element canon do not model
@@ -418,8 +420,8 @@ def canonicalize_nft_rule(body: str, *, family: str) -> str:
             if index < len(tokens):
                 members_token = tokens[index]
                 members = members_token.split(",")
-                if all(m in _NFT_CT_STATE_ORDER for m in members):
-                    ordered = sorted(members, key=_NFT_CT_STATE_ORDER.index)
+                if all(m in NFT_CT_STATES for m in members):
+                    ordered = sorted(members, key=NFT_CT_STATES.index)
                     out.append(",".join(ordered))
                 else:
                     # unknown member -> safe-bias: leave verbatim
@@ -581,17 +583,17 @@ def _header_priority(header: str) -> str | None:
 
 # Exact token counts for the recognized table/flush productions.
 # add table <fam> ferm  /  flush table <fam> ferm  -- exactly 4 tokens.
-_NFT_TABLE_PARTS = 4
+_NFT_TABLE_PARTS: Final[int] = 4
 # add chain: add chain <fam> ferm <chain>
-_NFT_CHAIN_MIN_PARTS = 5
+_NFT_CHAIN_MIN_PARTS: Final[int] = 5
 # add rule: add rule <fam> ferm <chain> <body-token>
-_NFT_RULE_MIN_PARTS = 6
+_NFT_RULE_MIN_PARTS: Final[int] = 6
 
 
 def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
     """Insert an empty ``ferm`` table entry if not already present."""
-    if "ferm" not in tables:
-        tables["ferm"] = ParsedTable()
+    if NFT_TABLE_NAME not in tables:
+        tables[NFT_TABLE_NAME] = ParsedTable()
 
 
 def _parse_set_header(inner: str) -> tuple[str | None, tuple[str, ...]]:
@@ -643,7 +645,7 @@ def _parse_object_head(
     narrowed ``(family, name)``.
     """
     fam_tok, table_name, name = parts[2], parts[3], parts[4]
-    if table_name != "ferm":
+    if table_name != NFT_TABLE_NAME:
         raise _parse_error(lineno, raw)
     return _check_family(family, fam_tok, lineno, raw), name
 
@@ -686,7 +688,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         # ferm table; see the _ensure_ferm_table call below for why. ---------
         # Exact 4-token match: any extra token is a parse error.
         if parts[1:2] == ["table"] and verb in ("add", "flush", "delete"):
-            if len(parts) != _NFT_TABLE_PARTS or parts[3] != "ferm":
+            if len(parts) != _NFT_TABLE_PARTS or parts[3] != NFT_TABLE_NAME:
                 raise _parse_error(lineno, raw)
             family = _check_family(family, parts[2], lineno, raw)
             if verb == "delete":
@@ -694,7 +696,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
                 # re-materializes it empty.  This models the atomic whole-table
                 # replace (delete + re-add) the nft backend emits on a full
                 # reload so a removed base chain cannot survive empty.
-                tables.pop("ferm", None)
+                tables.pop(NFT_TABLE_NAME, None)
                 continue
             # Declaring the table materializes it even when the config
             # renders no chains: diff_tables iterates desired tables, so a
@@ -719,7 +721,9 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             if not tail:
                 # user chain: nothing after the chain name
                 _ensure_ferm_table(tables)
-                tables["ferm"].chains[chain_name] = ParsedChain(policy="-")
+                tables[NFT_TABLE_NAME].chains[chain_name] = ParsedChain(
+                    policy="-"
+                )
             elif tail[0] == "{":
                 # base chain: closing brace must be present on the same line
                 rest = line[len("add chain") :].strip()
@@ -730,7 +734,9 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
                 header = rest[brace_start + 1 : brace_end].strip()
                 canon = canonicalize_nft_header(header, family=family)
                 _ensure_ferm_table(tables)
-                tables["ferm"].chains[chain_name] = ParsedChain(policy=canon)
+                tables[NFT_TABLE_NAME].chains[chain_name] = ParsedChain(
+                    policy=canon
+                )
             else:
                 # extra token before the brace (or instead of it) is invalid
                 raise _parse_error(lineno, raw)
@@ -740,7 +746,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
         if sub == "set" and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, set_name = _parse_object_head(parts, family, lineno, raw)
             _ensure_ferm_table(tables)
-            set_obj = tables["ferm"].sets.setdefault(
+            set_obj = tables[NFT_TABLE_NAME].sets.setdefault(
                 set_name, ParsedSet(set_name)
             )
             brace_open = line.find("{")
@@ -760,7 +766,9 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             rest = line[brace_open + 1 : brace_close]
             elements = [e.strip() for e in rest.split(",") if e.strip()]
             _ensure_ferm_table(tables)
-            ps = tables["ferm"].sets.setdefault(set_name, ParsedSet(set_name))
+            ps = tables[NFT_TABLE_NAME].sets.setdefault(
+                set_name, ParsedSet(set_name)
+            )
             # A named set is not anonymous: nft rejects a contained-interval
             # overlap rather than absorbing it, so keep every element.
             ps.elements = canonicalize_set_elements(
@@ -775,7 +783,7 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             # Body is everything after 'add rule <fam> ferm <chain>'.
             prefix = f"add rule {parts[2]} ferm {chain_name}"
             body = line[len(prefix) :].strip()
-            ferm_table = tables.get("ferm")
+            ferm_table = tables.get(NFT_TABLE_NAME)
             if ferm_table is None or chain_name not in ferm_table.chains:
                 raise _parse_error(lineno, raw)
             ferm_table.chains[chain_name].rules.append(
@@ -789,25 +797,33 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
 
 # Depth levels for parse_nft_list's brace-state machine.
-_NL_DEPTH_OUTSIDE = 0  # outside everything
-_NL_DEPTH_TABLE = 1  # inside the table block
-_NL_DEPTH_CHAIN = 2  # inside a chain block
-_NL_DEPTH_SET = 3  # inside a set block
+_NL_DEPTH_OUTSIDE: Final[int] = 0  # outside everything
+_NL_DEPTH_TABLE: Final[int] = 1  # inside the table block
+_NL_DEPTH_CHAIN: Final[int] = 2  # inside a chain block
+_NL_DEPTH_SET: Final[int] = 3  # inside a set block
 
 # Regex anchors for the brace-delimited nft-list grammar.
 # These match only the structural openers; rule bodies at chain depth are
 # never tested against them (so a '{' inside a rule body is invisible).
-_NFT_LIST_TABLE_RE = re.compile(r"^table\s+(\S+)\s+ferm\s*\{$")
-_NFT_LIST_CHAIN_RE = re.compile(r"^chain\s+(\S+)\s*\{$")
-_NFT_LIST_SET_RE = re.compile(r"^set\s+(\S+)\s*\{$")
+_NFT_LIST_TABLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^table\s+(\S+)\s+ferm\s*\{$"
+)
+_NFT_LIST_CHAIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^chain\s+(\S+)\s*\{$"
+)
+_NFT_LIST_SET_RE: Final[re.Pattern[str]] = re.compile(r"^set\s+(\S+)\s*\{$")
 # A base-chain header starts with 'type' followed by the hook/priority tokens.
-_NFT_LIST_HEADER_RE = re.compile(r"^type\s+\S+\s+hook\s+\S+\s+priority\b")
+_NFT_LIST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^type\s+\S+\s+hook\s+\S+\s+priority\b"
+)
 # nft bare-word identifier grammar (mirrors the backend's _NFT_CHAIN_RE /
 # _NFT_SET_NAME_RE).  Names from a LIVE snapshot are synthesized back into
 # 'delete chain'/'delete set' lines, so reject anything nft could not have
 # legitimately created -- fail-closed defense-in-depth (no real injection
 # vector: the grammar already forbids whitespace/metacharacters).
-_NFT_LIST_IDENT_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]*\Z")
+_NFT_LIST_IDENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z][A-Za-z0-9_]*\Z"
+)
 
 
 def _join_multiline_elements(text: str) -> str:
@@ -895,7 +911,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                 if not _NFT_LIST_IDENT_RE.match(set_name):
                     raise _parse_error(lineno, raw)
                 current_set = ParsedSet(set_name)
-                tables["ferm"].sets[current_set.name] = current_set
+                tables[NFT_TABLE_NAME].sets[current_set.name] = current_set
                 depth = _NL_DEPTH_SET
                 continue
             m = _NFT_LIST_CHAIN_RE.match(line)
@@ -906,7 +922,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                 raise _parse_error(lineno, raw)
             # policy will be set when the first body line arrives
             current_chain = ParsedChain(policy="-")
-            tables["ferm"].chains[chain_name] = current_chain
+            tables[NFT_TABLE_NAME].chains[chain_name] = current_chain
             chain_header_seen = False
             depth = _NL_DEPTH_CHAIN
             continue
@@ -1031,7 +1047,7 @@ class SetChange:
 
     table: str
     name: str
-    kind: str  # "add" | "remove" | "modify"
+    kind: Literal["add", "remove", "modify"]
     elements: list[str]
 
 
@@ -1056,7 +1072,7 @@ class _DesiredIndex:
 
 # Index of a render line: 'add <sub> <fam> ferm <name> ...'
 # -> name at parts[4].
-_DESIRED_NAME_INDEX = 4
+_DESIRED_NAME_INDEX: Final[int] = 4
 
 
 def _build_desired_index(desired_save: str) -> _DesiredIndex:
@@ -1116,7 +1132,9 @@ def _emit_set_changes(
     here is a broken contract -> ``internal_error``.
     """
     prefix = f"{family} ferm"
-    current_sets = current["ferm"].sets if "ferm" in current else {}
+    current_sets = (
+        current[NFT_TABLE_NAME].sets if NFT_TABLE_NAME in current else {}
+    )
     out: list[str] = []
     for sc in sorted(diff.set_changes, key=lambda s: s.name):
         if sc.kind == "remove":
@@ -1168,7 +1186,9 @@ def _emit_chain_changes(
     chains and foreign user chains are deleted (convergence to desired).
     """
     prefix = f"{family} ferm"
-    current_chains = current["ferm"].chains if "ferm" in current else {}
+    current_chains = (
+        current[NFT_TABLE_NAME].chains if NFT_TABLE_NAME in current else {}
+    )
     rule_changed = {rc.chain for rc in diff.rules_added} | {
         rc.chain for rc in diff.rules_removed
     }

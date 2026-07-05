@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TypeAlias
+from typing import Final, TypeAlias
 
 from pyferm.errors import FermError
 from pyferm.values import perl_true
@@ -86,10 +86,10 @@ class ModuleDef:
 #: A registry: ``domain_family -> module_name -> ModuleDef``.
 Registry: TypeAlias = "dict[str, dict[str, ModuleDef]]"
 
-_ALIAS_RE = re.compile(r":=(\S+)$")
-_STAR_RE = re.compile(r"\*(\d+)$")
-_EQ_RE = re.compile(r"=([acs]+|m)$")
-_AMP_RE = re.compile(r"&(\S+)$")
+_ALIAS_RE: Final[re.Pattern[str]] = re.compile(r":=(\S+)$")
+_STAR_RE: Final[re.Pattern[str]] = re.compile(r"\*(\d+)$")
+_EQ_RE: Final[re.Pattern[str]] = re.compile(r"=([acs]+|m)$")
+_AMP_RE: Final[re.Pattern[str]] = re.compile(r"&(\S+)$")
 
 
 def _add_def(
@@ -683,20 +683,23 @@ def _build_registry() -> tuple[Registry, Registry, Registry]:
     return proto_defs, match_defs, target_defs
 
 
-PROTO_DEFS, MATCH_DEFS, TARGET_DEFS = _build_registry()
+_proto_defs, _match_defs, _target_defs = _build_registry()
+PROTO_DEFS: Final[Registry] = _proto_defs
+MATCH_DEFS: Final[Registry] = _match_defs
+TARGET_DEFS: Final[Registry] = _target_defs
 
 #: Protocols that carry ``sport``/``dport`` keywords (Perl ``:2868``;
 #: ``import-ferm`` ``:420``/``:447``).  The single source of this fact for
 #: the parser's port-switch check and import-ferm's keyword injection.
 #: Distinct from multiport's narrower ``tcp|udp|udplite`` (Perl ``:509``).
-PORT_PROTOCOLS: frozenset[str] = frozenset(
+PORT_PROTOCOLS: Final[frozenset[str]] = frozenset(
     {"tcp", "udp", "udplite", "dccp", "sctp"}
 )
 
 #: ``domain_family -> shortcut_keyword -> [module_name, real_keyword]``
 #: (Perl ``%shortcuts``, ``:442``).  Read by the parser only; ``import-ferm``
 #: hardcodes its own ``dports``/``sports`` aliases (Perl ``:406``).
-SHORTCUTS: dict[str, dict[str, list[str]]] = {
+SHORTCUTS: Final[dict[str, dict[str, list[str]]]] = {
     "ip": {
         "sports": ["multiport", "source-ports"],
         "dports": ["multiport", "destination-ports"],

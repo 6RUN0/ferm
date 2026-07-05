@@ -29,7 +29,7 @@ The deferred *callable* is injected when the :class:`Deferred` is built
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Final, TypeAlias
 
 from pyferm.errors import error, internal_error
 
@@ -114,7 +114,15 @@ Value: TypeAlias = (
     | SetRef
 )
 
-_REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred, SetRef)
+_REF_TYPES: Final[tuple[type, ...]] = (
+    list,
+    Negated,
+    PreNegated,
+    Params,
+    Multi,
+    Deferred,
+    SetRef,
+)
 
 
 def _is_ref(value: object) -> bool:

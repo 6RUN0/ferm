@@ -8,8 +8,9 @@ carrying (domains, tables, chains) context, accumulates nodes/edges per
 No eval, kernel, resolver, or previous-ruleset I/O (see spec §1).
 """
 
-# The builder reuses the parser's own recognition constants (_CORE_TARGETS)
-# by design, so pyright's private-usage rule is off here (mirrors walker.py).
+# The builder reuses the eval-free scan primitives from ``_treescan`` (the
+# ``_str_tokens``/``_chain_decls``/... helpers) by design, so pyright's
+# private-usage rule is off here (mirrors walker.py).
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import enum
 import functools
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ._treescan import (
     _CHAIN_VALUE_BOUNDARY,
@@ -32,7 +33,7 @@ from ._treescan import (
 )
 from .modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
 from .parser import MAX_BLOCK_DEPTH
-from .rules import _CORE_TARGETS, is_netfilter_builtin_chain
+from .rules import CORE_TARGETS, is_netfilter_builtin_chain
 from .tree import (
     Block,
     BlockNode,
@@ -45,8 +46,8 @@ from .tree import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_ID_SAFE = frozenset(
+_CONTROL_CHARS_RE: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_ID_SAFE: Final[frozenset[str]] = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 )
 
@@ -140,7 +141,7 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
 
 
 def _header_context(
-    span: object,
+    span: Sequence[object],
 ) -> tuple[
     tuple[str, ...] | None,
     tuple[str, ...] | None,
@@ -171,7 +172,7 @@ def _header_context(
     flattened string tokens, so it preserves quoting (``_str_tokens`` is
     idempotent on plain strings) for the downstream ``_emit_span`` scanners.
     """
-    toks = list(_str_tokens(span))  # type: ignore[arg-type]
+    toks = list(_str_tokens(span))
     new_domains: tuple[str, ...] | None = None
     new_tables: tuple[str, ...] | None = None
     new_chains: tuple[str, ...] | None = None
@@ -192,7 +193,7 @@ def _header_context(
             continue
         if tok == "policy":
             nxt = toks[i + 1] if i + 1 < len(toks) else None
-            if nxt in _CORE_TARGETS:
+            if nxt in CORE_TARGETS:
                 policy_target = nxt
             i += 2
             continue
@@ -200,7 +201,7 @@ def _header_context(
     return new_domains, new_tables, new_chains, policy_target, tuple(toks[i:])
 
 
-_KIND_BY_JUMP_KW = {
+_KIND_BY_JUMP_KW: Final[dict[str, EdgeKind]] = {
     "jump": EdgeKind.JUMP,
     "goto": EdgeKind.GOTO,
     "realgoto": EdgeKind.GOTO,  # deprecated alias -> goto (spec §3)
@@ -227,7 +228,7 @@ def _family_targets(family: str) -> frozenset[str]:
     _classify, over a handful of distinct families per run; the registry
     is immutable after import.
     """
-    return frozenset(_CORE_TARGETS) | frozenset(TARGET_DEFS.get(family, {}))
+    return frozenset(CORE_TARGETS) | frozenset(TARGET_DEFS.get(family, {}))
 
 
 def _build_kw_has_params() -> dict[str, frozenset[str]]:
@@ -251,7 +252,7 @@ def _build_kw_has_params() -> dict[str, frozenset[str]]:
     return {family: frozenset(kws) for family, kws in index.items()}
 
 
-_KW_HAS_PARAMS = _build_kw_has_params()
+_KW_HAS_PARAMS: Final[dict[str, frozenset[str]]] = _build_kw_has_params()
 
 
 @dataclass
@@ -360,12 +361,12 @@ def _emit_span(
     domains: tuple[str, ...],
     tables: tuple[str, ...],
     chains: tuple[str, ...],
-    span: object,
+    span: Sequence[object],
 ) -> None:
     """Emit jump/goto/subchain/verdict edges from a rule/def/subchain span."""
     # one materialized token list feeds all four scanners (and the
     # per-domain verdict scan) instead of each re-filtering the span
-    toks = list(_str_tokens(span))  # type: ignore[arg-type]
+    toks = list(_str_tokens(span))
     jumps = list(_jump_edges(toks))
     subs = list(_subchain_decls(toks))
     declared_here = list(_chain_decls(toks))
@@ -492,7 +493,7 @@ def collect_graph(root: Block) -> ChainGraph:
     return _freeze(acc)
 
 
-_DOT_NODE_ATTR = {
+_DOT_NODE_ATTR: Final[dict[NodeKind, str]] = {
     NodeKind.BUILTIN: " [shape=box]",
     NodeKind.UNDEFINED: " [style=dashed]",
     NodeKind.VERDICT: " [shape=plaintext]",
@@ -527,7 +528,7 @@ def render_dot(graph: ChainGraph) -> str:
     return "\n".join(lines) + "\n"
 
 
-_D2_NODE_STYLE = {
+_D2_NODE_STYLE: Final[dict[NodeKind, str]] = {
     NodeKind.BUILTIN: "shape: hexagon",
     NodeKind.UNDEFINED: "style.stroke-dash: 3",
     NodeKind.VERDICT: "shape: oval",

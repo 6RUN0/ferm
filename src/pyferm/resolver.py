@@ -31,15 +31,17 @@ import re
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 
 from pyferm.errors import FermError, error, warning
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import Value, to_array
 
-_NETMASK_RE = re.compile(r"/\d+$")
-_IPV4_RE = re.compile(r"\d+\.\d+\.\d+\.\d+")
-_IPV6_RE = re.compile(r"[0-9a-fA-F]*:[0-9a-fA-F:]*:[0-9a-fA-F:]*")
+_NETMASK_RE: Final[re.Pattern[str]] = re.compile(r"/\d+$")
+_IPV4_RE: Final[re.Pattern[str]] = re.compile(r"\d+\.\d+\.\d+\.\d+")
+_IPV6_RE: Final[re.Pattern[str]] = re.compile(
+    r"[0-9a-fA-F]*:[0-9a-fA-F:]*:[0-9a-fA-F:]*"
+)
 
 
 def identify_numeric_address(value: str) -> str | None:
@@ -243,12 +245,12 @@ class StubResolver:
 # some platforms, so build the sets defensively. Everything NOT in these
 # sets -- including errno is None and transient EAI_AGAIN/EAI_FAIL -- maps
 # to a loud SERVFAIL so a resolver hiccup never silently drops a rule.
-_NXDOMAIN_EAI = {
+_NXDOMAIN_EAI: Final[set[int]] = {
     code
     for name in ("EAI_NONAME",)
     if (code := getattr(socket, name, None)) is not None
 }
-_NOERROR_EAI = {
+_NOERROR_EAI: Final[set[int]] = {
     code
     for name in ("EAI_NODATA", "EAI_ADDRFAMILY")
     if (code := getattr(socket, name, None)) is not None
