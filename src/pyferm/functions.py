@@ -18,6 +18,9 @@ during rule assembly -- when the evaluator's token position has moved on;
 the callable must depend only on its domain and arguments.
 """
 
+# The evaluator reuses values' own reference predicate (_is_ref) by
+# design, so pyright's private-usage rule is off here (mirrors walker.py).
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import glob as globlib
@@ -34,12 +37,10 @@ from pyferm.streams import BYTE_ENCODING
 from pyferm.tokenizer import Token, Tokenizer, make_line_token
 from pyferm.values import (
     Deferred,
-    Multi,
     Negated,
-    Params,
-    PreNegated,
     SetRef,
     Value,
+    _is_ref,
     cat,
     contains_deferred,
     deferred_cat,
@@ -56,14 +57,6 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_REF_TYPES = (list, Negated, PreNegated, Params, Multi, Deferred, SetRef)
-
-
-def _is_ref(value: object) -> bool:
-    """Whether ``value`` is a Perl reference (an array or a blessed value)."""
-    return isinstance(value, _REF_TYPES)
-
-
 _NAME_RE = re.compile(r"\w+")
 _DVAR_RE = re.compile(r"\$(\w+)")
 _QUOTED_RE = {
@@ -74,6 +67,11 @@ _QUOTED_RE = {
 _CLASSID_RE = re.compile(r"([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{1,4})")
 _DECIMAL_RE = re.compile(r"-?\d+")
 _MULTIPORT_PROTO_RE = re.compile(r"tcp|udp|udplite")
+#: The crude ipfilter family probes: a ``:hex:`` run looks IPv6, a purely
+#: numeric/dot/slash token is IPv4/CIDR.  No re.ASCII -- Perl's patterns
+#: here are plain byte-mode literals with no \s/\w classes.
+_IPV6_HINT_RE = re.compile(r":[0-9a-f]*:")
+_IPV4_NUMERIC_RE = re.compile(r"[0-9./]+")
 
 #: Cap on value-reader recursion depth (:meth:`Evaluator.getvalues`).
 #: Nested arrays ``((( ... )))``, chained negation ``!!! ...`` and nested
@@ -115,12 +113,10 @@ def ipfilter(domain: str, value: Value) -> list[Value]:
     """
     ips = to_array(value)
     if domain == "ip":
-        return [
-            ip for ip in ips if not re.search(r":[0-9a-f]*:", stringify(ip))
-        ]
+        return [ip for ip in ips if not _IPV6_HINT_RE.search(stringify(ip))]
     if domain == "ip6":
         return [
-            ip for ip in ips if not re.fullmatch(r"[0-9./]+", stringify(ip))
+            ip for ip in ips if not _IPV4_NUMERIC_RE.fullmatch(stringify(ip))
         ]
     return ips
 
@@ -624,20 +620,11 @@ class Evaluator:
                 _perl_substr_index(stringify(params[2])),
             )
         if token == "@length":
-            params = self._params("@length(string)", 1)
-            if _is_ref(params[0]):
-                error("String expected")
-            return str(len(stringify(params[0])))
+            return str(len(self._string_param("@length(string)")))
         if token == "@basename":
-            params = self._params("@basename(path)", 1)
-            if _is_ref(params[0]):
-                error("String expected")
-            return splitpath_file(stringify(params[0]))
+            return splitpath_file(self._string_param("@basename(path)"))
         if token == "@dirname":
-            params = self._params("@dirname(path)", 1)
-            if _is_ref(params[0]):
-                error("String expected")
-            return splitpath_dir(stringify(params[0]))
+            return splitpath_dir(self._string_param("@dirname(path)"))
         if token == "@glob":
             return self._builtin_glob()
         if token == "@resolve":
@@ -658,6 +645,13 @@ class Evaluator:
         if len(params) != count:
             error(f"Usage: {usage}")
         return params
+
+    def _string_param(self, usage: str) -> str:
+        """Read the single non-reference argument, stringified."""
+        params = self._params(usage, 1)
+        if _is_ref(params[0]):
+            error("String expected")
+        return stringify(params[0])
 
     def _builtin_defined(self) -> Value:
         """``@defined($var)`` / ``@defined(&func)`` (Perl ``:1523``)."""

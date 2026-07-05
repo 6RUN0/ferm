@@ -98,6 +98,13 @@ _PRIORITY_LANDMARK_RE = re.compile(
     r"\A(?P<name>[A-Za-z]+)\s*(?:(?P<sign>[+-])\s*(?P<magnitude>[0-9]+))?\Z"
 )
 
+#: Save-file table (``*filter``) and chain (``:INPUT ACCEPT``) heads.
+#: re.ASCII: Perl's byte-mode \s+ does not match \x1c-\x1f, so a Unicode
+#: \s would accept a policy field the oracle rejects (found by the
+#: differential fuzzer).
+_SAVE_TABLE_RE = re.compile(r"^\*(\w+)", re.ASCII)
+_SAVE_CHAIN_RE = re.compile(r"^:(\w+)\s+(\S+)", re.ASCII)
+
 
 def apply_priority_offset(base: int, sign: str, magnitude: int) -> int:
     """Apply an nft priority offset (``base + n`` / ``base - n``)."""
@@ -312,16 +319,13 @@ def read_previous(lines: Iterable[str], domain_info: DomainInfo) -> str:
     for line in lines:
         save += line
 
-        # re.ASCII: Perl's byte-mode \s+ does not match \x1c-\x1f, so a
-        # Unicode \s would accept a policy field the oracle rejects
-        # (found by the differential fuzzer).
-        table_match = re.match(r"^\*(\w+)", line, re.ASCII)
+        table_match = _SAVE_TABLE_RE.match(line)
         if table_match is not None:
             table = table_match.group(1)
             table_info = domain_info.tables.setdefault(table, TableInfo())
             continue
 
-        chain_match = re.match(r"^:(\w+)\s+(\S+)", line, re.ASCII)
+        chain_match = _SAVE_CHAIN_RE.match(line)
         if (
             table_info is not None
             and chain_match is not None
