@@ -94,10 +94,21 @@ def _cluster_id(domain: str, table: str) -> str:
     return f"{_san(domain)}__{_san(table)}"
 
 
+def escape_control_chars(name: str) -> str:
+    r"""
+    Escape C0/C1 control bytes as ``\xNN``.
+
+    Names come verbatim from the config, and the latin-1 byte model admits
+    any byte including ESC/CR; escaping them keeps a crafted name from
+    injecting terminal-control sequences into rendered output.
+    """
+    return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
+
+
 def _escape_ident(name: str) -> str:
     r"""Escape a name for a DOT/d2 quoted string: '\' then '"' then C0/C1."""
     name = name.replace("\\", "\\\\").replace('"', '\\"')
-    return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
+    return escape_control_chars(name)
 
 
 def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:

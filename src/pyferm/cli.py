@@ -48,7 +48,12 @@ from pyferm.backend.nft import TOOL_NFT, NftBackend, nft_family
 from pyferm.config import Options
 from pyferm.errors import FermError, internal_error
 from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
-from pyferm.graph import collect_graph, render_d2, render_dot
+from pyferm.graph import (
+    collect_graph,
+    escape_control_chars,
+    render_d2,
+    render_dot,
+)
 from pyferm.introspect import describe, list_modules
 from pyferm.parser import Parser
 from pyferm.plan import (
@@ -82,6 +87,7 @@ if TYPE_CHECKING:
         SaveReader,
     )
     from pyferm.domains import DomainInfo
+    from pyferm.tree import Block
 
 #: A clean run leaves exactly two scope frames on the stack: the global
 #: frame plus the top-level script frame.  Anything else is an internal bug.
@@ -684,18 +690,29 @@ def _confirm_rules(options: Options) -> bool:
     return line == "yes"
 
 
-_CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-
-
-def _escape_control_chars(name: str) -> str:
-    r"""
-    Escape C0/C1 control bytes in a lint finding name (``\xNN``).
-
-    Def/chain names come verbatim from the config, and the latin-1 byte model
-    admits any byte including ESC/CR; escaping them keeps a crafted name from
-    injecting terminal-control sequences into a ``warning:`` line on stdout.
+def _parse_config_eval_free(config_path: str, *, mode: str) -> Block:
     """
-    return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
+    Open one config through ``open_script`` and parse it eval-free.
+
+    Shared by ``--lint`` and ``--graph``: both advertise a read-only,
+    subprocess-free contract meant to be pointed at untrusted files, so a
+    trailing-``|`` pipe path is rejected rather than run through the shell
+    (honouring it would be arbitrary command execution driven by a
+    filename).  ``open_script`` supplies the input through the same
+    boundary as apply/``--plan`` -- preserving ``-`` (stdin), the single
+    ``FermError`` on a missing file, and the latin-1 byte model.
+    """
+    if config_path.endswith("|"):
+        raise FermError(f"ferm {mode} cannot read from a pipe command")
+    script = open_script(config_path, None)
+    try:
+        handle = script.handle
+        if handle is None:  # open_script always sets it; guard for the type
+            raise internal_error("open_script returned no handle")
+        config = handle.read()
+    finally:
+        script.close()
+    return Parser.parse_to_block(config)
 
 
 def _run_lint(config_path: str, *, fail_level: Severity | None) -> int:
@@ -708,36 +725,19 @@ def _run_lint(config_path: str, *, fail_level: Severity | None) -> int:
     resolver, or previous-ruleset I/O is touched.  ``open_script`` supplies the
     input through the same boundary as apply/``--plan`` -- preserving ``-``
     (stdin), the single ``FermError`` on a missing file, and the latin-1 byte
-    model -- so the analysis sees the exact config bytes.
-
-    Unlike apply/``--plan``, a trailing-``|`` path is rejected rather than run
-    through the shell: apply reads a root-owned config where Perl's two-arg
-    ``open`` pipe-include is intended, but ``--lint`` advertises a read-only,
-    subprocess-free contract meant to be pointed at untrusted files (e.g. a CI
-    linting repository paths), so honouring the pipe here would be arbitrary
-    command execution driven by a filename.
+    model -- so the analysis sees the exact config bytes.  The pipe-path
+    rejection rationale lives on :func:`_parse_config_eval_free`.
 
     Findings print to stdout as ``<severity>: <message>`` lines in a
     fixed, deterministic order (severity tier, then analyzer
     registration order, then message; see analysis.run_analysis); the
-    whole line passes through _escape_control_chars.  Without a
+    whole line passes through escape_control_chars.  Without a
     ``fail_level`` the exit code stays ``0`` even with findings
     (warnings must not break another project's CI on a heuristic); with
     one, any finding at or above the threshold exits ``2`` for opt-in
     CI gating.
     """
-    if config_path.endswith("|"):
-        raise FermError("ferm --lint cannot read from a pipe command")
-    script = open_script(config_path, None)
-    try:
-        handle = script.handle
-        if handle is None:  # open_script always sets it; guard for the type
-            raise internal_error("open_script returned no handle")
-        config = handle.read()
-    finally:
-        script.close()
-
-    block = Parser.parse_to_block(config)
+    block = _parse_config_eval_free(config_path, mode="--lint")
 
     findings = run_analysis(block)
     # The raw message is the sort key; escaping at print time is
@@ -746,7 +746,7 @@ def _run_lint(config_path: str, *, fail_level: Severity | None) -> int:
     # logs.
     for finding in findings:
         line = f"{finding.severity.name.lower()}: {finding.message}"
-        sys.stdout.write(f"{_escape_control_chars(line)}\n")
+        sys.stdout.write(f"{escape_control_chars(line)}\n")
 
     if fail_level is None:
         return 0
@@ -767,6 +767,27 @@ _INTROSPECTION_FLAG_NAMES: Final = {
 }
 
 
+def _reject_other_flags(
+    args: argparse.Namespace, *, mode: str, exempt: frozenset[str]
+) -> None:
+    """
+    Reject every flag outside ``exempt`` via the default-Namespace diff.
+
+    The diff (not a hand-kept flag list) is what keeps future flags
+    auto-rejected instead of silently ignored; ``exempt`` names the
+    mode's own flags plus attrs guarded separately by the caller.
+    """
+    defaults = vars(_build_parser().parse_args([]))
+    for attr, default in defaults.items():
+        if attr in exempt:
+            continue
+        if getattr(args, attr) != default:
+            flag = _INTROSPECTION_FLAG_NAMES.get(
+                attr, "--" + attr.replace("_", "-")
+            )
+            raise FermError(f"ferm {mode} cannot be combined with {flag}")
+
+
 def _run_introspection(args: argparse.Namespace) -> int:
     """
     Run ``--list-modules`` / ``--describe`` (port-only, eval-free).
@@ -784,15 +805,7 @@ def _run_introspection(args: argparse.Namespace) -> int:
         )
     if args.files:
         raise FermError(f"ferm {mode} takes no input file")
-    defaults = vars(_build_parser().parse_args([]))
-    for attr, default in defaults.items():
-        if attr in _INTROSPECTION_EXEMPT:
-            continue
-        if getattr(args, attr) != default:
-            flag = _INTROSPECTION_FLAG_NAMES.get(
-                attr, "--" + attr.replace("_", "-")
-            )
-            raise FermError(f"ferm {mode} cannot be combined with {flag}")
+    _reject_other_flags(args, mode=mode, exempt=_INTROSPECTION_EXEMPT)
     if args.list_modules:
         text = list_modules()
     else:
@@ -822,29 +835,10 @@ def _run_graph(args: argparse.Namespace) -> int:
     refuses a trailing-``|`` pipe path like --lint. Parses one config with
     parse_to_block, builds the graph, and renders d2 (default) or DOT.
     """
-    defaults = vars(_build_parser().parse_args([]))
-    for attr, default in defaults.items():
-        if attr in _GRAPH_EXEMPT:
-            continue
-        if getattr(args, attr) != default:
-            flag = _INTROSPECTION_FLAG_NAMES.get(
-                attr, "--" + attr.replace("_", "-")
-            )
-            raise FermError(f"ferm --graph cannot be combined with {flag}")
+    _reject_other_flags(args, mode="--graph", exempt=_GRAPH_EXEMPT)
     if len(args.files) != 1:
         raise FermError("ferm --graph requires exactly one input file")
-    config_path = args.files[0]
-    if config_path.endswith("|"):
-        raise FermError("ferm --graph cannot read from a pipe command")
-    script = open_script(config_path, None)
-    try:
-        handle = script.handle
-        if handle is None:  # open_script always sets it; guard for the type
-            raise internal_error("open_script returned no handle")
-        config = handle.read()
-    finally:
-        script.close()
-    block = Parser.parse_to_block(config)
+    block = _parse_config_eval_free(args.files[0], mode="--graph")
     graph = collect_graph(block)
     fmt = args.graph_format or "d2"
     text = render_dot(graph) if fmt == "dot" else render_d2(graph)
