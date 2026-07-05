@@ -83,6 +83,13 @@ def test_datapath_through_ferm_rules() -> None:
         # sysctls can be written.  Narrower than --privileged.
         "--cap-add=NET_ADMIN",
         "--cap-add=SYS_ADMIN",
+        # Capabilities alone do not clear those mounts on AppArmor
+        # hosts (GitHub's Ubuntu runners): the docker-default profile
+        # denies mount(2) outright, so the driver dies at the remount
+        # with EPERM despite SYS_ADMIN.  Lifting the profile keeps the
+        # capability set narrow; a no-op where AppArmor is not loaded.
+        "--security-opt",
+        "apparmor=unconfined",
         "-v",
         f"{_REPO_ROOT}/src:/work/src:ro",
         "-v",
