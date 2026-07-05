@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, NamedTuple
 
 from pyferm.errors import FermError
 from pyferm.modules import (
@@ -94,9 +94,15 @@ class RegistryKind(enum.StrEnum):
         return _KIND_LABELS[self]
 
 
-def _option_row(
-    key: str, keyword: Keyword, module: ModuleDef
-) -> tuple[str, str, str]:
+class OptionRow(NamedTuple):
+    """One table row (name, argument shape, notes) for a canonical key."""
+
+    name: str
+    arg: str
+    notes: str
+
+
+def _option_row(key: str, keyword: Keyword, module: ModuleDef) -> OptionRow:
     """One table row (name, argument shape, notes) for a canonical key."""
     notes: list[str] = []
     if keyword.pre_negation:
@@ -110,14 +116,14 @@ def _option_row(
     ]
     if aliases:
         notes.append("(aliases: " + ", ".join(aliases) + ")")
-    return key, render_params(keyword.params), " ".join(notes)
+    return OptionRow(key, render_params(keyword.params), " ".join(notes))
 
 
-def _render_rows(rows: list[tuple[str, str, str]]) -> list[str]:
+def _render_rows(rows: list[OptionRow]) -> list[str]:
     if not rows:  # e.g. 'eui64': a flag-only match with no keywords at all
         return []
-    name_width = max(len(row[0]) for row in rows) + 2
-    arg_width = max(len(row[1]) for row in rows) + 2
+    name_width = max(len(row.name) for row in rows) + 2
+    arg_width = max(len(row.arg) for row in rows) + 2
     return [
         f"  {name.ljust(name_width)}{arg.ljust(arg_width)}{tail}".rstrip()
         for name, arg, tail in rows
@@ -485,11 +491,13 @@ def _option_fallback_blocks(name: str) -> list[str]:
                     )
                 )
                 row = _option_row(keyword.name, keyword, module)
-                tail = row[2]
+                tail = row.notes
                 if name != keyword.name:
                     tail = f"{tail} alias of '{keyword.name}'".strip()
                 lines = [f"option '{name}' of {owner}:"]
-                lines.extend(_render_rows([(row[0], row[1], tail)]))
+                lines.extend(
+                    _render_rows([OptionRow(row.name, row.arg, tail)])
+                )
                 blocks.append("\n".join(lines))
     return blocks
 

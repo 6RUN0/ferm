@@ -18,7 +18,7 @@ import enum
 import functools
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from ._treescan import (
     _CHAIN_VALUE_BOUNDARY,
@@ -150,20 +150,22 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
     return tuple(values), i
 
 
-def _header_context(
-    span: Sequence[object],
-) -> tuple[
-    tuple[str, ...] | None,
-    tuple[str, ...] | None,
-    tuple[str, ...] | None,
-    str | None,
-    tuple[str, ...],
-]:
+class HeaderContext(NamedTuple):
+    """Header-context updates, the policy target, and the rule tail."""
+
+    new_domains: tuple[str, ...] | None
+    new_tables: tuple[str, ...] | None
+    new_chains: tuple[str, ...] | None
+    policy_target: str | None
+    tail: tuple[str, ...]
+
+
+def _header_context(span: Sequence[object]) -> HeaderContext:
     """
     Extract header-context updates, the policy target, and the rule tail.
 
-    Returns (new_domains, new_tables, new_chains, policy_target, tail). The
-    header prefix is a contiguous run of location specifiers -- the
+    Returns a :class:`HeaderContext`. The header prefix is a contiguous
+    run of location specifiers -- the
     ``domain``/``table``/``chain`` keywords (each + a scalar or ``(...)``
     array value) and the ``policy`` fold -- taken from one HeaderNode's
     ``(keyword, *value_span)``. Scanning STOPS at the first token that is
@@ -208,7 +210,9 @@ def _header_context(
             i += 2
             continue
         break  # first non-header token: the inline rule tail starts here
-    return new_domains, new_tables, new_chains, policy_target, tuple(toks[i:])
+    return HeaderContext(
+        new_domains, new_tables, new_chains, policy_target, tuple(toks[i:])
+    )
 
 
 #: Backs :meth:`EdgeKind.from_jump_keyword`; ``realgoto`` is the deprecated
@@ -274,14 +278,6 @@ class _ClusterAcc:
     declared: set[str]
     edges: set[tuple[str, str, EdgeKind]]
     names: set[str]
-
-
-def _acc_for(
-    acc: dict[tuple[str, str], _ClusterAcc], domain: str, table: str
-) -> _ClusterAcc:
-    return acc.setdefault(
-        (domain, table), _ClusterAcc(declared=set(), edges=set(), names=set())
-    )
 
 
 def _scan_verdicts(toks: Sequence[str], family: str) -> list[str]:
@@ -354,122 +350,6 @@ def _scan_span(
     return node.span
 
 
-def _declare(
-    acc: dict[tuple[str, str], _ClusterAcc],
-    domains: tuple[str, ...],
-    tables: tuple[str, ...],
-    names: tuple[str, ...],
-) -> None:
-    for domain in domains:
-        for table in tables:
-            ca = _acc_for(acc, domain, table)
-            for name in names:
-                ca.declared.add(name)
-                ca.names.add(name)
-
-
-def _emit_span(
-    acc: dict[tuple[str, str], _ClusterAcc],
-    domains: tuple[str, ...],
-    tables: tuple[str, ...],
-    chains: tuple[str, ...],
-    span: Sequence[object],
-) -> None:
-    """Emit jump/goto/subchain/verdict edges from a rule/def/subchain span."""
-    # one materialized token list feeds all four scanners (and the
-    # per-domain verdict scan) instead of each re-filtering the span
-    toks = list(_str_tokens(span))
-    jumps = list(_jump_edges(toks))
-    subs = list(_subchain_decls(toks))
-    declared_here = list(_chain_decls(toks))
-    for domain in domains:
-        family = _fold_family(domain)
-        verdicts = _scan_verdicts(toks, family)
-        for table in tables:
-            ca = _acc_for(acc, domain, table)
-            for name in declared_here:
-                ca.declared.add(name)
-                ca.names.add(name)
-            for src in chains:
-                ca.names.add(src)
-                for kind, dst in jumps:
-                    ca.edges.add((src, dst, kind))
-                    ca.names.add(dst)
-                for name in subs:
-                    ca.edges.add((src, name, EdgeKind.SUBCHAIN))
-                    ca.declared.add(name)
-                    ca.names.add(name)
-                for dst in verdicts:
-                    ca.edges.add((src, dst, EdgeKind.VERDICT))
-                    ca.names.add(dst)
-
-
-def _walk(
-    block: Block,
-    domains: tuple[str, ...],
-    tables: tuple[str, ...],
-    chains: tuple[str, ...],
-    acc: dict[tuple[str, str], _ClusterAcc],
-    depth: int,
-) -> None:
-    if depth > MAX_BLOCK_DEPTH:
-        return
-    # A rule-prefixed @subchain body is a SIBLING BlockNode immediately
-    # after the RuleNode that names the subchain; attribute it to the
-    # subchain, not the outer chain. Keyed on _subchain_names, so a plain
-    # rule-group block (proto tcp { ... }) is NOT re-attributed. The
-    # pending marker is a per-call local: it cannot leak across block
-    # boundaries.
-    pending_subchain: tuple[str, ...] | None = None
-    for node in block.statements:
-        d, t, c = domains, tables, chains
-        if isinstance(node, BlockNode) and pending_subchain is not None:
-            body_chains, pending_subchain = pending_subchain, None
-            for child in _child_blocks(node):
-                _walk(child, d, t, body_chains, acc, depth + 1)
-            continue
-        pending_subchain = None
-        if isinstance(node, HeaderNode):
-            nd, nt, nc, policy_target, tail = _header_context(
-                (node.keyword, *node.value_span)
-            )
-            if nd is not None:
-                d = nd
-            if nt is not None:
-                t = nt
-            if nc is not None:
-                # entering a chain context defaults the table to filter
-                if not t:
-                    t = (DEFAULT_TABLE,)
-                c = nc
-                _declare(acc, d, t, nc)
-            if policy_target is not None and c:
-                eff_tables = t or (DEFAULT_TABLE,)
-                for domain in d:
-                    for table in eff_tables:
-                        ca = _acc_for(acc, domain, table)
-                        for src in c:
-                            ca.edges.add((src, policy_target, EdgeKind.POLICY))
-                            ca.names.add(src)
-                            ca.names.add(policy_target)
-            if tail and c:
-                # flat inline form: the fused rule tail is a rule in the
-                # current chain, routed through the same edge/verdict path
-                # as a braced rule (context updates already applied above).
-                _emit_span(acc, d, t or (DEFAULT_TABLE,), c, tail)
-        elif isinstance(node, (RuleNode, DefNode, SubchainNode)) and c:
-            eff_tables = t or (DEFAULT_TABLE,)
-            scan = _scan_span(node)
-            if scan is not None:
-                _emit_span(acc, d, eff_tables, c, scan)
-            if isinstance(node, RuleNode):
-                subs = tuple(_subchain_names(node.span))
-                if subs:
-                    pending_subchain = subs
-        for child in _child_blocks(node):
-            _walk(child, d, t, c, acc, depth + 1)
-
-
 def _classify(name: str, declared: set[str], family: str) -> NodeKind:
     """Priority BUILTIN > USER > VERDICT > UNDEFINED (spec §3)."""
     if is_netfilter_builtin_chain("", name):
@@ -481,28 +361,154 @@ def _classify(name: str, declared: set[str], family: str) -> NodeKind:
     return NodeKind.UNDEFINED
 
 
-def _freeze(acc: dict[tuple[str, str], _ClusterAcc]) -> ChainGraph:
-    clusters: list[Cluster] = []
-    for (domain, table), ca in acc.items():
-        family = _fold_family(domain)
-        nodes = tuple(
-            sorted(
-                (name, _classify(name, ca.declared, family))
-                for name in ca.names
-            )
+class _GraphBuilder:
+    """Owns the mutable per-(domain, table) accumulator built by one walk."""
+
+    def __init__(self) -> None:
+        self._acc: dict[tuple[str, str], _ClusterAcc] = {}
+
+    def acc_for(self, domain: str, table: str) -> _ClusterAcc:
+        return self._acc.setdefault(
+            (domain, table),
+            _ClusterAcc(declared=set(), edges=set(), names=set()),
         )
-        edges = tuple(sorted(ca.edges))
-        clusters.append(Cluster(domain, table, nodes, edges))
-    return ChainGraph(
-        tuple(sorted(clusters, key=lambda c: (c.domain, c.table)))
-    )
+
+    def declare(
+        self,
+        domains: tuple[str, ...],
+        tables: tuple[str, ...],
+        names: tuple[str, ...],
+    ) -> None:
+        for domain in domains:
+            for table in tables:
+                ca = self.acc_for(domain, table)
+                for name in names:
+                    ca.declared.add(name)
+                    ca.names.add(name)
+
+    def emit_span(
+        self,
+        domains: tuple[str, ...],
+        tables: tuple[str, ...],
+        chains: tuple[str, ...],
+        span: Sequence[object],
+    ) -> None:
+        """Emit jump/goto/subchain/verdict edges from a leaf span."""
+        # one materialized token list feeds all four scanners (and the
+        # per-domain verdict scan) instead of each re-filtering the span
+        toks = list(_str_tokens(span))
+        jumps = list(_jump_edges(toks))
+        subs = list(_subchain_decls(toks))
+        declared_here = list(_chain_decls(toks))
+        for domain in domains:
+            family = _fold_family(domain)
+            verdicts = _scan_verdicts(toks, family)
+            for table in tables:
+                ca = self.acc_for(domain, table)
+                for name in declared_here:
+                    ca.declared.add(name)
+                    ca.names.add(name)
+                for src in chains:
+                    ca.names.add(src)
+                    for kind, dst in jumps:
+                        ca.edges.add((src, dst, kind))
+                        ca.names.add(dst)
+                    for name in subs:
+                        ca.edges.add((src, name, EdgeKind.SUBCHAIN))
+                        ca.declared.add(name)
+                        ca.names.add(name)
+                    for dst in verdicts:
+                        ca.edges.add((src, dst, EdgeKind.VERDICT))
+                        ca.names.add(dst)
+
+    def walk(
+        self,
+        block: Block,
+        domains: tuple[str, ...],
+        tables: tuple[str, ...],
+        chains: tuple[str, ...],
+        depth: int,
+    ) -> None:
+        if depth > MAX_BLOCK_DEPTH:
+            return
+        # A rule-prefixed @subchain body is a SIBLING BlockNode immediately
+        # after the RuleNode that names the subchain; attribute it to the
+        # subchain, not the outer chain. Keyed on _subchain_names, so a plain
+        # rule-group block (proto tcp { ... }) is NOT re-attributed. The
+        # pending marker is a per-call local: it cannot leak across block
+        # boundaries.
+        pending_subchain: tuple[str, ...] | None = None
+        for node in block.statements:
+            d, t, c = domains, tables, chains
+            if isinstance(node, BlockNode) and pending_subchain is not None:
+                body_chains, pending_subchain = pending_subchain, None
+                for child in _child_blocks(node):
+                    self.walk(child, d, t, body_chains, depth + 1)
+                continue
+            pending_subchain = None
+            if isinstance(node, HeaderNode):
+                ctx = _header_context((node.keyword, *node.value_span))
+                if ctx.new_domains is not None:
+                    d = ctx.new_domains
+                if ctx.new_tables is not None:
+                    t = ctx.new_tables
+                if ctx.new_chains is not None:
+                    # entering a chain context defaults the table to filter
+                    if not t:
+                        t = (DEFAULT_TABLE,)
+                    c = ctx.new_chains
+                    self.declare(d, t, ctx.new_chains)
+                if ctx.policy_target is not None and c:
+                    eff_tables = t or (DEFAULT_TABLE,)
+                    for domain in d:
+                        for table in eff_tables:
+                            ca = self.acc_for(domain, table)
+                            for src in c:
+                                ca.edges.add(
+                                    (src, ctx.policy_target, EdgeKind.POLICY)
+                                )
+                                ca.names.add(src)
+                                ca.names.add(ctx.policy_target)
+                if ctx.tail and c:
+                    # flat inline form: the fused rule tail is a rule in
+                    # the current chain, routed through the same
+                    # edge/verdict path as a braced rule (context updates
+                    # already applied above).
+                    self.emit_span(d, t or (DEFAULT_TABLE,), c, ctx.tail)
+            elif isinstance(node, (RuleNode, DefNode, SubchainNode)) and c:
+                eff_tables = t or (DEFAULT_TABLE,)
+                scan = _scan_span(node)
+                if scan is not None:
+                    self.emit_span(d, eff_tables, c, scan)
+                if isinstance(node, RuleNode):
+                    subs = tuple(_subchain_names(node.span))
+                    if subs:
+                        pending_subchain = subs
+            for child in _child_blocks(node):
+                self.walk(child, d, t, c, depth + 1)
+
+    def freeze(self) -> ChainGraph:
+        clusters: list[Cluster] = []
+        for (domain, table), ca in self._acc.items():
+            family = _fold_family(domain)
+            nodes = tuple(
+                sorted(
+                    (name, _classify(name, ca.declared, family))
+                    for name in ca.names
+                )
+            )
+            edges = tuple(sorted(ca.edges))
+            clusters.append(Cluster(domain, table, nodes, edges))
+        return ChainGraph(
+            tuple(sorted(clusters, key=lambda c: (c.domain, c.table)))
+        )
 
 
 def collect_graph(root: Block) -> ChainGraph:
     """Build the chain control-flow graph from a parse_to_block tree."""
-    acc: dict[tuple[str, str], _ClusterAcc] = {}
-    _walk(root, ("ip",), (), (), acc, 0)
-    return _freeze(acc)
+    builder = _GraphBuilder()
+    builder.walk(root, ("ip",), (), (), 0)
+    return builder.freeze()
 
 
 _DOT_NODE_ATTR: Final[dict[NodeKind, str]] = {
