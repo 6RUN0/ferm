@@ -4,12 +4,15 @@ from pyferm.nftset import (
     RANK_PROTONAME,
     RANK_QUOTED,
     RANK_UNPARSABLE,
+    _collapse_address_range,
+    _drop_contained_networks,
     canonicalize_element,
     canonicalize_set_elements,
     classify,
     l4proto_name,
     set_body,
     sort_set_elements,
+    sort_vmap_pairs,
 )
 
 
@@ -399,3 +402,57 @@ def test_protocol_name_is_left_verbatim_by_canonicalize() -> None:
 
 def test_canonicalize_set_elements_orders_protocol_names_by_number() -> None:
     assert canonicalize_set_elements(["udp", "tcp"]) == ["tcp", "udp"]
+
+
+# -- helper-level guards: containment, range collapse, quoting, vmap order --
+
+
+def test_empty_quoted_string_is_quoted_rank() -> None:
+    # A bare "" is two quote characters: exactly the minimum length, so the
+    # >= bound (not >) must accept it as a quoted element.
+    assert classify('""')[0] == RANK_QUOTED
+
+
+def test_collapse_cross_family_range_is_none() -> None:
+    # The two ends must be the same family AND ordered low<=high; a v6 low
+    # with a v4 high is not a range at all, so it collapses to None (the
+    # caller then leaves the token verbatim).
+    assert _collapse_address_range("::1", "10.0.0.0") is None
+
+
+def test_collapse_requires_both_alignment_and_size_power_of_two() -> None:
+    # 10.0.0.0-10.0.0.4 spans 5 addresses: aligned to 0 but not a power-of-two
+    # block, so it must stay a range, never fold to a (wrong) /30.
+    assert canonicalize_element("10.0.0.0-10.0.0.4") == "10.0.0.0-10.0.0.4"
+
+
+def test_drop_contained_scans_every_network_after_a_non_network() -> None:
+    # The dict-building loop must skip (not stop at) a non-network element, or
+    # a trailing contained host is never absorbed.
+    assert _drop_contained_networks(
+        ["1024-2048", "10.0.0.0/24", "10.0.0.5"]
+    ) == ["1024-2048", "10.0.0.0/24"]
+
+
+def test_drop_contained_keeps_scanning_after_a_dropped_v6_member() -> None:
+    # After a contained v6 host is dropped the sweep must continue to the
+    # remaining elements, not break out and lose them.
+    assert _drop_contained_networks(
+        ["2001:db8::/32", "2001:db8::5", "10.0.0.5"]
+    ) == ["2001:db8::/32", "10.0.0.5"]
+
+
+def test_drop_contained_parses_host_bit_cidrs_leniently() -> None:
+    # strict=False lets a host-bit CIDR ("10.0.0.5/24") parse to its network,
+    # so it and the equal "10.0.0.0/24" absorb each other; strict parsing
+    # would treat one as a non-network and wrongly keep both.
+    assert _drop_contained_networks(["10.0.0.0/24", "10.0.0.5/24"]) == []
+
+
+def test_sort_vmap_unparsable_keys_keep_input_order() -> None:
+    # Two unparsable vmap keys have no natural order, so they must fall back to
+    # the enumerate index (input order), not sort by the (key, verdict) pair.
+    assert sort_vmap_pairs([("zzz", "accept"), ("aaa", "drop")]) == [
+        ("zzz", "accept"),
+        ("aaa", "drop"),
+    ]

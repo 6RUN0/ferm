@@ -256,3 +256,71 @@ def test_mkrules2_empty_array_yields_zero_rules() -> None:
     out: list[RenderedRule] = []
     mkrules2("ip", out, rule)
     assert len(out) == 0  # product over a zero-length array
+
+
+# --- deferred family threading through the unfold (mkrules2/unfold_rule) ----
+#
+# ``@ipfilter`` is family-sensitive: under ``ip6`` it keeps only the IPv6
+# address.  These pin that the family reaches ``realize_deferred`` at every
+# unfold call site rather than being dropped to ``None`` (which would leave the
+# IPv4 address in and inflate the cartesian product).
+
+
+def _ipfilter_option(name: str) -> Option:
+    from pyferm.functions import ipfilter
+
+    return Option(
+        name,
+        [Deferred(function=ipfilter, params=[["10.0.0.1", "fe80::1"]])],
+    )
+
+
+def test_mkrules2_threads_family_into_deferred_array() -> None:
+    rule = Rule()
+    rule.options = [_ipfilter_option("saddr")]
+    out: list[RenderedRule] = []
+    mkrules2("ip6", out, rule)
+    # one address survives the ip6 filter -> exactly one rule with fe80::1
+    assert len(out) == 1
+    assert [o.value for o in out[0].options] == ["fe80::1"]
+
+
+def test_unfold_rule_threads_family_after_first_array() -> None:
+    # A plain array option precedes the deferred one; the recursion under it
+    # must still thread the family, so the deferred yields one value (not two).
+    rule = Rule()
+    rule.options = [Option("dport", ["80", "443"]), _ipfilter_option("saddr")]
+    out: list[RenderedRule] = []
+    mkrules2("ip6", out, rule)
+    # 2 dports x 1 surviving addr = 2 rules, all with the ip6 address
+    assert len(out) == 2
+    saddrs = [o.value for r in out for o in r.options if o.name == "saddr"]
+    assert saddrs == ["fe80::1", "fe80::1"]
+
+
+def test_append_rule_preserves_the_rule_script() -> None:
+    # the RenderedRule carries the source position through verbatim; a mutant
+    # that hard-codes None would lose the rollback/error anchor.
+    from pyferm.scope import SourcePosition
+
+    rule = Rule()
+    rule.options = [Option("dport", "22")]
+    rule.script = SourcePosition("firewall.ferm", 42)
+    out: list[RenderedRule] = []
+    append_rule(out, rule)
+    assert out[0].script == SourcePosition("firewall.ferm", 42)
+
+
+def test_mkrules2_cardinality_check_uses_pre_call_baseline() -> None:
+    # The postcondition measures ``len - before``: appending a second batch to
+    # a chain list that already holds rules must not miscount (a ``+ before``
+    # would raise a bogus internal error on the second call).
+    def make_rule() -> Rule:
+        rule = Rule()
+        rule.options = [Option("dport", ["80", "443"])]
+        return rule
+
+    out: list[RenderedRule] = []
+    mkrules2("ip", out, make_rule())  # before=0 -> 2 rules
+    mkrules2("ip", out, make_rule())  # before=2 -> must still validate cleanly
+    assert len(out) == 4

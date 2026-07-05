@@ -822,3 +822,19 @@ def test_corpus_stuart_has_no_garbage_clusters() -> None:
         assert c.domain in valid_domains, f"garbage domain {c.domain!r}"
         assert ")" not in c.table, f"garbage table {c.table!r}"
         assert c.table != "ACCEPT", f"garbage table {c.table!r}"
+
+
+def test_collect_graph_header_array_keeps_literal_after_var() -> None:
+    # A header chain-array mixing a $var with a literal name -- `chain ($x
+    # FOO)` -- must still collect FOO after skipping the non-literal $x, so
+    # FOO's own body (the ACCEPT verdict) is attributed to it and it stays a
+    # user chain rather than collapsing to an undefined node.
+    g = collect_graph(
+        Parser.parse_to_block(
+            "table filter chain ($x FOO) { ACCEPT; }"
+            "table filter chain INPUT { jump FOO; }"
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert dict(c.nodes)["FOO"] == NodeKind.USER
+    assert ("FOO", "ACCEPT", EdgeKind.VERDICT) in c.edges

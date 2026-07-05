@@ -24,7 +24,7 @@ from pyferm.functions import Evaluator
 from pyferm.parser import MAX_BLOCK_DEPTH, Parser, collect_filenames
 from pyferm.scope import Frame, OptionKind, Scope
 from pyferm.tokenizer import Script, Tokenizer
-from pyferm.values import Negated
+from pyferm.values import Multi, Negated, Params, PreNegated
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -167,6 +167,51 @@ def test_table_array_replays_per_table() -> None:
         assert _options(rules[0]) == [("jump", "ACCEPT", OptionKind.TARGET)]
 
 
+def _comment(rule: RenderedRule) -> object:
+    """Return the value of a rule's ``comment`` option, if any."""
+    return {opt.name: opt.value for opt in rule.options}.get("comment")
+
+
+def test_chain_auto_var_expands_to_chain_name() -> None:
+    # The header records the chain in ``auto["CHAIN"]`` so ``$CHAIN`` resolves
+    # to the current chain name.
+    parser = _parse("chain INPUT mod comment comment $CHAIN ACCEPT;")
+    assert _comment(_rules(parser, Family.IP, "filter", "INPUT")[0]) == "INPUT"
+
+
+def test_chain_array_auto_var_expands_per_chain() -> None:
+    # Each chain in an array gets its own ``auto["CHAIN"]`` entry, so
+    # ``$CHAIN`` differs per replay.
+    parser = _parse("chain (INPUT OUTPUT) mod comment comment $CHAIN ACCEPT;")
+    for chain in ("INPUT", "OUTPUT"):
+        assert _comment(_rules(parser, Family.IP, "filter", chain)[0]) == chain
+
+
+def test_table_auto_var_expands_to_table_name() -> None:
+    parser = _parse(
+        "table nat chain POSTROUTING mod comment comment $TABLE ACCEPT;"
+    )
+    rule = _rules(parser, Family.IP, "nat", "POSTROUTING")[0]
+    assert _comment(rule) == "nat"
+
+
+def test_table_array_auto_var_expands_per_table() -> None:
+    parser = _parse(
+        "table (filter mangle) chain FORWARD "
+        "mod comment comment $TABLE ACCEPT;"
+    )
+    for table in ("filter", "mangle"):
+        rule = _rules(parser, Family.IP, table, "FORWARD")[0]
+        assert _comment(rule) == table
+
+
+def test_duplicate_table_specification_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _parse("table filter table nat chain INPUT ACCEPT;")
+    assert "Table is already specified" in capsys.readouterr().err
+
+
 def test_lowercase_builtin_chain_name_is_rejected() -> None:
     with pytest.raises(FermError, match="upper case"):
         _parse("chain input ACCEPT;")
@@ -211,6 +256,74 @@ def test_function_body_is_spliced_into_the_stream() -> None:
 def test_function_wrong_arity_errors() -> None:
     with pytest.raises(FermError, match="Wrong number of parameters"):
         _parse("@def &f($a) = ACCEPT; chain INPUT &f(1, 2);")
+
+
+def test_function_interpolates_param_inside_quoted_token() -> None:
+    # A $param inside a double-quoted body token is string-interpolated
+    # (not spliced as a separate token), so "pre-$x" becomes "pre-hi".
+    parser = _parse(
+        '@def &c($x) = mod comment comment "pre-$x" ACCEPT;chain INPUT &c(hi);'
+    )
+    rule = _rules(parser, Family.IP, "filter", "INPUT")[0]
+    assert _comment(rule) == "pre-hi"
+
+
+def test_function_binds_each_parameter_positionally() -> None:
+    parser = _parse(
+        "@def &f($a, $b) = proto tcp sport $a dport $b ACCEPT;"
+        "chain INPUT &f(11, 22);"
+    )
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert options == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("sport", "11", OptionKind.OPTION),
+        ("dport", "22", OptionKind.OPTION),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
+
+
+def test_function_expands_list_argument_into_each_rule() -> None:
+    # A list argument is spliced back as "( ... )" so the callee unfolds it
+    # into one rule per element.
+    parser = _parse(
+        "@def &f($p) = proto tcp dport $p ACCEPT;chain INPUT &f((22 80));"
+    )
+    dports = [
+        value
+        for name, value, _ in [
+            opt
+            for rule in _rules(parser, Family.IP, "filter", "INPUT")
+            for opt in _options(rule)
+        ]
+        if name == "dport"
+    ]
+    assert dports == ["22", "80"]
+
+
+def test_function_substitutes_param_at_end_of_body() -> None:
+    # When a $param is the last token of the body, the interpolation loop's
+    # look-ahead must still see the following name token; an off-by-one there
+    # leaves a bare "$" in the stream.
+    parser = _parse("@def &g($t) = proto tcp jump $t;chain INPUT &g(ACCEPT);")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert options == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
+
+
+def test_block_function_call_consumes_trailing_semicolon() -> None:
+    # A function whose body contains a { } block is a "block" function; its
+    # call site consumes the trailing ";" (expect_token(";")).
+    parser = _parse(
+        "@def &b($p) = proto $p { dport 22 ACCEPT; }chain INPUT &b(tcp);"
+    )
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert options == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("dport", "22", OptionKind.OPTION),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
 
 
 # -- conditionals ----------------------------------------------------------
@@ -272,6 +385,50 @@ def test_proto_negation_is_not_a_module_merge() -> None:
     assert value == Negated("tcp")
 
 
+def _option_values(parser: Parser, chain: str) -> dict[str, object]:
+    return {
+        name: value
+        for name, value, _ in _options(
+            _rules(parser, Family.IP, "filter", chain)[0]
+        )
+    }
+
+
+def test_pre_negation_is_tagged_distinctly() -> None:
+    # A "!" that precedes a value on a pre-negatable keyword yields a
+    # PreNegated value (tagged "pre_negated"), distinct from an ordinary
+    # value negation -- the tag drives per-family iptables rendering.
+    parser = _parse("chain INPUT mod conntrack ctstate ! ESTABLISHED ACCEPT;")
+    assert _option_values(parser, "INPUT")["ctstate"] == PreNegated(
+        "ESTABLISHED"
+    )
+
+
+def test_multi_code_keyword_collects_every_param() -> None:
+    # A keyword with several letter codes (tcp-flags is "s s") gathers one
+    # value per code into a Params list; dropping the list empties it.
+    parser = _parse("chain INPUT proto tcp tcp-flags (SYN ACK) SYN ACCEPT;")
+    assert _option_values(parser, "INPUT")["tcp-flags"] == Params(
+        ["SYN,ACK", "SYN"]
+    )
+
+
+def test_m_param_keyword_keeps_all_values() -> None:
+    # An "m" (repeated multi) parameter passes the family plus every value to
+    # realize_deferred; dropping the family argument swallows the first value.
+    parser = _parse(
+        "table nat chain POSTROUTING proto tcp "
+        "SNAT to-source (1.2.3.4 5.6.7.8);"
+    )
+    values = {
+        name: value
+        for name, value, _ in _options(
+            _rules(parser, Family.IP, "nat", "POSTROUTING")[0]
+        )
+    }
+    assert values["to-source"] == Multi(["1.2.3.4", "5.6.7.8"])
+
+
 def test_negation_on_unsupported_keyword_errors() -> None:
     with pytest.raises(FermError, match="Doesn't support negation"):
         _parse("chain INPUT ! proto tcp ACCEPT;")
@@ -298,6 +455,111 @@ def test_named_subchain_uses_given_name() -> None:
     assert "ssh" in chains
 
 
+def test_named_subchain_registers_jump_and_body() -> None:
+    # The parent rule jumps to the given name, and that name's chain holds the
+    # body -- pins the quoted-name extraction and the per-table registration.
+    parser = _parse(
+        'chain INPUT proto tcp @subchain "mysub" { dport 22 ACCEPT; }'
+    )
+    chains = parser.domains[Family.IP].tables["filter"].chains
+    assert ("jump", "mysub", OptionKind.TARGET) in _options(
+        chains["INPUT"].rules[0]
+    )
+    assert _options(chains["mysub"].rules[0]) == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("dport", "22", OptionKind.OPTION),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
+
+
+def test_subchain_registers_in_the_rules_table() -> None:
+    # The sub-chain must be created in the rule's own table, not "filter".
+    parser = _parse(
+        "table nat chain PREROUTING proto tcp "
+        '@subchain "redir" { REDIRECT to-ports 8080; }'
+    )
+    nat_chains = parser.domains[Family.IP].tables["nat"].chains
+    assert "redir" in nat_chains
+    assert ("jump", "redir", OptionKind.TARGET) in _options(
+        nat_chains["PREROUTING"].rules[0]
+    )
+
+
+def test_subchain_body_sees_chain_auto_var() -> None:
+    # Inside the sub-chain, ``$CHAIN`` resolves to the sub-chain's own name
+    # (the frame's auto["CHAIN"] is rebound on entry).
+    parser = _parse(
+        'chain INPUT proto tcp @subchain "mysub" '
+        "{ mod comment comment $CHAIN ACCEPT; }"
+    )
+    chains = parser.domains[Family.IP].tables["filter"].chains
+    assert _comment(chains["mysub"].rules[0]) == "mysub"
+
+
+def test_bareword_subchain_uses_value_as_name() -> None:
+    # An unquoted sub-chain name is read as a value (getvar); the parent jumps
+    # to it and the body lands in that chain -- pins the non-quoted branch.
+    parser = _parse(
+        "chain INPUT proto tcp @subchain vsub { dport 22 ACCEPT; }"
+    )
+    chains = parser.domains[Family.IP].tables["filter"].chains
+    assert ("jump", "vsub", OptionKind.TARGET) in _options(
+        chains["INPUT"].rules[0]
+    )
+    assert _options(chains["vsub"].rules[0]) == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("dport", "22", OptionKind.OPTION),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
+
+
+def test_subchain_replays_into_each_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A sub-chain under a table array is registered once per table (the
+    # per-table ``setdefault`` loop keyed by the table name); registering
+    # under the wrong key re-creates it and warns "already exists".
+    parser = _parse(
+        "table (filter mangle) chain FORWARD proto tcp "
+        '@subchain "s" { ACCEPT; }'
+    )
+    for table in ("filter", "mangle"):
+        chains = parser.domains[Family.IP].tables[table].chains
+        assert "s" in chains
+        assert ("jump", "s", OptionKind.TARGET) in _options(
+            chains["FORWARD"].rules[0]
+        )
+    assert "already exists" not in capsys.readouterr().err
+
+
+def test_subchain_without_preceding_rule_names_keyword() -> None:
+    # A sub-chain with no rule before it is rejected, and the message names
+    # the sub-chain keyword (``subchain`` -> ``@subchain``).
+    with pytest.raises(
+        FermError, match="No rule specified before '@subchain'"
+    ):
+        _parse('chain INPUT @subchain "x" { ACCEPT; }')
+
+
+def test_bare_subchain_keyword_normalised_in_error() -> None:
+    # The bare ``subchain`` keyword is normalised to ``@subchain`` for
+    # diagnostics via re.sub(r"^sub", "@sub", ...).
+    with pytest.raises(
+        FermError, match="No rule specified before '@subchain'"
+    ):
+        _parse('chain INPUT subchain "x" { ACCEPT; }')
+
+
+def test_subchain_without_chain_is_rejected() -> None:
+    with pytest.raises(FermError, match="Chain must be specified"):
+        _parse('@subchain "x" { ACCEPT; }')
+
+
+def test_subchain_requires_brace_after_keyword() -> None:
+    with pytest.raises(FermError, match=r'"\{" or chain name expected'):
+        _parse('chain INPUT proto tcp @subchain "x" y ACCEPT;')
+
+
 # -- shortcuts and modules -------------------------------------------------
 
 
@@ -313,6 +575,19 @@ def test_mod_loads_match_module() -> None:
     options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert ("match", "conntrack", OptionKind.MATCH_MODULE) in options
     assert ("ctstate", "ESTABLISHED", OptionKind.OPTION) in options
+
+
+def test_shortcut_module_deduped_against_explicit_mod() -> None:
+    # The shortcut records its match module in rule.match, so a later explicit
+    # "mod multiport" is deduped: only one "match multiport" is emitted.
+    parser = _parse("chain INPUT proto tcp dports (80) mod multiport ACCEPT;")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    matches = [
+        opt
+        for opt in options
+        if opt == ("match", "multiport", OptionKind.MATCH_MODULE)
+    ]
+    assert len(matches) == 1
 
 
 def test_address_magic_realizes_a_list() -> None:
@@ -354,6 +629,40 @@ def test_goto_action() -> None:
     parser = _parse("chain FORWARD; chain INPUT proto tcp goto FORWARD;")
     options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert ("goto", "FORWARD", OptionKind.TARGET) in options
+
+
+def test_nop_is_a_valid_action() -> None:
+    # NOP satisfies the "no action defined" check (has_action) without
+    # emitting a target option -- the rule keeps only its matches.
+    parser = _parse("chain INPUT proto tcp NOP;")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert options == [("protocol", "tcp", OptionKind.PROTO)]
+
+
+def test_protocol_long_form_keyword() -> None:
+    # "protocol" is the long form of "proto"; both reach the same branch.
+    parser = _parse("chain INPUT protocol tcp ACCEPT;")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert ("protocol", "tcp", OptionKind.PROTO) in options
+
+
+def test_module_long_form_keyword() -> None:
+    # "module" is the long form of "mod"; both load a match module.
+    parser = _parse("chain INPUT module conntrack ctstate ESTABLISHED ACCEPT;")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert ("match", "conntrack", OptionKind.MATCH_MODULE) in options
+
+
+def test_semicolon_carries_chain_context_to_next_rule() -> None:
+    # After ";" the next rule is re-seeded from the block's prev frame, so it
+    # inherits the chain; losing that seed would leave it with no chain.
+    parser = _parse("chain INPUT { proto tcp ACCEPT; proto udp ACCEPT; }")
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
+    assert len(rules) == 2
+    assert _options(rules[1]) == [
+        ("protocol", "udp", OptionKind.PROTO),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
 
 
 # -- @preserve -------------------------------------------------------------
@@ -515,6 +824,11 @@ _GRAMMAR_DIAGNOSTICS = [
         "table mangle chain FORWARD proto udp TCPMSS set-mss 1400;",
         'TCPMSS not available for protocol "udp"',
         id="tcpmss-wrong-proto",
+    ),
+    pytest.param(
+        "chain INPUT proto icmp dport 22 ACCEPT;",
+        "To use sport or dport",
+        id="dport-without-port-proto",
     ),
 ]
 

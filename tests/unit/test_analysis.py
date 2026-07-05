@@ -19,6 +19,7 @@ from pyferm.analysis import (
     _iter_var_refs,
     _jump_targets,
     _subchain_names,
+    _undefined_jump_findings,
     _walk_all,
     find_deprecated_keywords,
     find_duplicate_definitions,
@@ -869,6 +870,25 @@ def test_is_quoted_boundaries(tok: str, expected: bool) -> None:
         (["@subchain", '"$x"', "{"], []),
         # a single-quoted "$x" never interpolates -- still a literal name.
         (["chain", "'$x'", "{"], ["$x"]),
+        # A "$var" that the tokenizer split into the pair ("$", name) must
+        # be consumed WHOLE. In the array form the name-eating only fires
+        # when the token after "$" is a real name: a "$" glued to a
+        # non-name neighbour ("." here) leaves that neighbour to be
+        # harvested as an ordinary literal member.
+        (["chain", "(", "$", ".", "A", ")", "{"], [".", "A"]),
+        # Array member colliding with the "chain" keyword is still a
+        # literal member, harvested exactly once (a member scan that
+        # rewound would re-emit the closing ")").
+        (["chain", "(", "chain", ")", "{"], ["chain"]),
+        # Bare "chain $var ...": the ("$", name) pair is skipped silently,
+        # so a following "chain FOO" is NOT declared by this header. A scan
+        # that consumed only "$" (or rewound after the name) would wrongly
+        # re-read the trailing "chain FOO" and leak "FOO".
+        (["chain", "$", "chain", "FOO", "{"], []),
+        # Two consecutive bare declarations: the scan must advance by
+        # exactly one token past a harvested name, or the second "chain"
+        # keyword is skipped and "BAR" is lost.
+        (["chain", "chain", "chain", "BAR", "{"], ["chain", "BAR"]),
     ],
 )
 def test_declared_chains_token_scan(
@@ -1080,3 +1100,49 @@ def test_header_declared_subchain_is_not_a_self_loop() -> None:
     )
     assert _cycles(cfg) == []
     assert _unreachable(cfg) == []
+
+
+def test_unreachable_finding_carries_warning_severity_and_code() -> None:
+    # The _unreachable() helper pins only the message; assert the full
+    # Finding triple so a dropped severity or a mangled rule code is caught.
+    cfg = (
+        "table filter {\n"
+        "  chain INPUT { ACCEPT; }\n"
+        "  chain FOO { ACCEPT; }\n"
+        "}\n"
+    )
+    assert find_unreachable_chains(_tree(cfg)) == [
+        Finding(
+            Severity.WARNING,
+            "unreachable-chain",
+            "unreachable chain: FOO",
+        )
+    ]
+
+
+def test_undefined_jump_findings_wrapper_produces_findings() -> None:
+    # The registered "undefined-jump" analyzer wrapper is shadowed by
+    # run_analysis's shared fast-path, so exercise it directly: a regression
+    # that unshadows it (or breaks the wrapper's argument threading) must fail.
+    cfg = "table filter chain INPUT { jump MISSING; }\n"
+    assert _undefined_jump_findings(_tree(cfg)) == [
+        Finding(
+            Severity.WARNING,
+            "undefined-jump",
+            "jump to undefined chain: MISSING",
+        )
+    ]
+
+
+def test_bare_var_chain_name_is_not_harvested_as_literal() -> None:
+    # `chain $x { ... }` declares a chain whose name is a $var; the eval-free
+    # scan yields no literal name for it (so FOO stays the only undefined
+    # jump). Guards the $-name branch of the chain-decl token scan against
+    # feeding a None token to the name regex.
+    cfg = (
+        "table filter {\n"
+        "  chain $x { ACCEPT; }\n"
+        "  chain INPUT { jump FOO; }\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == ["FOO"]

@@ -323,3 +323,44 @@ def test_minimal_six_part_rule_is_accepted() -> None:
     )
     tables = parse_nft_script(text)
     assert tables["ferm"].chains["INPUT"].rules == ["accept"]
+
+
+def test_mixed_families_in_one_script_rejected() -> None:
+    # Every line must carry the family derived from the first; a second
+    # family is a fail-loud parse error (not silently accepted / crashed).
+    text = "add table ip ferm\nadd table ip6 ferm\n"
+    with pytest.raises(FermError):
+        parse_nft_script(text)
+
+
+def test_delete_table_drops_declared_chains() -> None:
+    # `delete table` must reset the table: a chain declared before the
+    # delete must not survive a following `add table`.
+    text = (
+        "add table ip ferm\n"
+        "add chain ip ferm INPUT\n"
+        "delete table ip ferm\n"
+        "add table ip ferm\n"
+    )
+    tables = parse_nft_script(text)
+    assert tables["ferm"].chains == {}
+
+
+def test_bare_set_declaration_without_body_parses() -> None:
+    # `add set <fam> ferm <name>` with no `{ ... }` body is the minimal
+    # valid set line; it must materialize the set, not be rejected.
+    text = "add table ip ferm\nadd set ip ferm s\n"
+    tables = parse_nft_script(text)
+    assert "s" in tables["ferm"].sets
+
+
+def test_named_set_keeps_element_contained_in_interval() -> None:
+    # A named set is not anonymous: nft rejects a contained-interval overlap
+    # rather than absorbing it, so both elements must be kept verbatim.
+    text = (
+        "add table ip ferm\n"
+        "add set ip ferm s { type ipv4_addr; flags interval; }\n"
+        "add element ip ferm s { 1.2.3.0/24, 1.2.3.4 }\n"
+    )
+    tables = parse_nft_script(text)
+    assert tables["ferm"].sets["s"].elements == ["1.2.3.0/24", "1.2.3.4"]

@@ -32,7 +32,7 @@ from pyferm.import_ferm import (
     main,
 )
 from pyferm.modules import Keyword
-from pyferm.values import Multi, Negated
+from pyferm.values import Multi, Negated, Params, PreNegated
 
 
 def _imported(save: str) -> str:
@@ -116,6 +116,43 @@ def test_canon_rule_preserves_optional_fields() -> None:
     assert _canon(Rule(jump="A")) != _canon(Rule(jump="B"))
 
 
+def test_canon_rule_preserves_goto_match_keywords_and_block() -> None:
+    # The remaining optional fields (goto, match_keywords, block) equally gate
+    # merge-equality: dropping one, or inverting its "is not None" presence
+    # test, would collapse two genuinely distinct rules.
+    assert _canon(Rule(goto="A")) != _canon(Rule(goto="B"))
+    assert _canon(Rule(match_keywords={"x": Keyword("x", "1")})) != _canon(
+        Rule(match_keywords={"x": Keyword("x", "2")})
+    )
+    assert _canon(Rule(block=[Rule(jump="A")])) != _canon(
+        Rule(block=[Rule(jump="B")])
+    )
+
+
+def test_canon_rule_preserves_match_list() -> None:
+    # _canon's Rule branch feeds rule.match into _canon_rule; substituting None
+    # there would let two rules differing only in their match compare equal.
+    assert _canon(Rule(match=[MatchEntry("saddr", "1")])) != _canon(
+        Rule(match=[MatchEntry("saddr", "2")])
+    )
+
+
+def test_canon_bool_canonicalizes_as_numeric() -> None:
+    # A bool travels through the numeric branch as int(value); the two bools
+    # must land on distinct canonical forms (and int() must keep its argument).
+    assert _canon(True) == ("num", 1)
+    assert _canon(False) == ("num", 0)
+
+
+def test_canon_preserves_prenegated_and_params_content() -> None:
+    # PreNegated and Params must recurse into their payload: collapsing the
+    # content (or dropping the recursion) would merge distinct values, and a
+    # bare tuple(None) for Params would raise instead of canonicalizing.
+    assert _canon(PreNegated("a")) != _canon(PreNegated("b"))
+    assert _canon(Params(["a"])) != _canon(Params(["b"]))
+    assert _canon(Params(["a"])) == ("params", (("str", "a"),))
+
+
 def test_optimize_factors_common_prefix_block() -> None:
     # Two rules sharing a leading match collapse into one block.
     rules = [
@@ -145,6 +182,81 @@ def test_optimize_combines_array_values() -> None:
     result = _optimize(rules)
     assert len(result) == 1
     assert result[0].match[0].value == ["1.2.3.4", "5.6.7.8"]
+
+
+def test_optimize_flattens_existing_array_member() -> None:
+    # When a merging member already holds a list value, its elements are
+    # spliced into the combined array (extend), not nested as one element.
+    rules = [
+        Rule(
+            match=[MatchEntry("saddr", ["1.1.1.1", "2.2.2.2"])], jump="ACCEPT"
+        ),
+        Rule(match=[MatchEntry("saddr", "3.3.3.3")], jump="ACCEPT"),
+    ]
+    result = _optimize(rules)
+    assert len(result) == 1
+    assert result[0].match[0].value == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
+
+
+def test_run_shared_prefix_collapsing_to_one_array_reinserts_match() -> None:
+    # Two rules share "protocol tcp" and differ only in saddr: the extracted
+    # block optimizes down to a single array-valued rule, so the shared match
+    # is re-inserted at its front rather than wrapped in a nested block.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp -s 1.1.1.1 -j ACCEPT
+-A INPUT -p tcp -s 2.2.2.2 -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol tcp saddr (1.1.1.1 2.2.2.2) ACCEPT;" in output
+
+
+def test_run_string_param_option_stays_unmerged() -> None:
+    # "comment" takes a single string (=s): two rules differing only in the
+    # comment value must NOT array-merge into "comment (aaa bbb)"; the =s guard
+    # in _array_match_count keeps them on separate lines.  This also pins that
+    # a jump populates rule.match_keywords (else the guard cannot see params).
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m comment --comment aaa -j ACCEPT
+-A INPUT -m comment --comment bbb -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "comment aaa ACCEPT;" in output
+    assert "comment bbb ACCEPT;" in output
+    assert "(aaa bbb)" not in output
+
+
+def test_optimize_combines_three_or_more_values() -> None:
+    # The array combine folds every consecutive match, not just the first
+    # following one: three rules collapse into a single three-element array.
+    rules = [
+        Rule(match=[MatchEntry("saddr", "1.1.1.1")], jump="ACCEPT"),
+        Rule(match=[MatchEntry("saddr", "2.2.2.2")], jump="ACCEPT"),
+        Rule(match=[MatchEntry("saddr", "3.3.3.3")], jump="ACCEPT"),
+    ]
+    result = _optimize(rules)
+    assert len(result) == 1
+    assert result[0].match[0].value == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
+
+
+def test_run_comma_list_option_array_merges() -> None:
+    # "state" takes a comma list (=c), not a single string (=s): two rules
+    # differing only in the state value MUST array-merge -- the =s guard is
+    # specific to "s" and must not fire for other string param codes.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m state --state NEW -j ACCEPT
+-A INPUT -m state --state ESTABLISHED -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "mod state state (NEW ESTABLISHED) ACCEPT;" in output
 
 
 def test_optimize_keeps_negated_rules_separate() -> None:
@@ -520,3 +632,138 @@ COMMIT
     assert "chain LOGDROP {" in output
     # The LOG rule inside the user chain must carry the translated log-prefix.
     assert "LOG log-prefix 'dropped: ';" in output
+
+
+# --- parse_option dispatch coverage ---------------------------------------
+#
+# The cases below pin the option-name resolution and per-branch keyword
+# loading in ``Importer.parse_option`` that the round-trip fixtures exercise
+# but the unit tests above did not: the sports alias, protocol/match keyword
+# merges, negated protocol, goto, and the icmp6-under-ipv6-icmp coverage.
+
+
+def test_run_multiport_sports_alias_expands_to_array() -> None:
+    # multiport's --sports is the source-ports alias (mirror of --dports); its
+    # comma list becomes a ferm array under the "source-ports" keyword.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp -m multiport --sports 22,80 --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol tcp mod multiport source-ports (22 80) ACCEPT;" in output
+
+
+def test_run_protocol_merges_proto_specific_keywords() -> None:
+    # "-p tcp" must load tcp's own keyword table (here --syn) via PROTO_DEFS,
+    # not merely the port options; a broken lookup leaves --syn "not
+    # understood".
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp --syn --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol tcp syn ACCEPT;" in output
+
+
+def test_run_match_module_falls_back_to_proto_keywords() -> None:
+    # "-m tcp" names a protocol module that is absent from MATCH_DEFS, so the
+    # importer falls back to PROTO_DEFS for tcp's keywords (--syn); tcp being a
+    # port protocol also brings --dport into scope -- both without a "-p tcp".
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m tcp --syn --dport 22 --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "mod tcp syn dport 22 ACCEPT;" in output
+
+
+def test_run_negated_protocol_renders_bang() -> None:
+    # A leading "!" before -p negates the protocol match; dropping the negation
+    # flag would emit a plain "protocol tcp".
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT ! -p tcp --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol ! tcp ACCEPT;" in output
+
+
+def test_run_goto_target_uses_goto_keyword() -> None:
+    # "-g CHAIN" is a goto, distinct from "-j": it consumes the chain name and
+    # renders "goto CHAIN;".
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+:LOGC - [0:0]
+-A INPUT -g LOGC
+-A LOGC -j DROP
+COMMIT
+"""
+    output = _imported(save)
+    assert "goto LOGC;" in output
+
+
+def test_run_multi_code_option_becomes_params() -> None:
+    # tcp-flags takes two arguments (=cc): a comma-list mask and a comma-list
+    # of set flags, emitted as two ferm arguments ("(SYN ACK) SYN").  This is
+    # the multi-code branch that builds a Params of both parts.
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p tcp --tcp-flags SYN,ACK SYN -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol tcp tcp-flags (SYN ACK) SYN ACCEPT;" in output
+
+
+def test_run_pre_negated_option_keeps_its_value() -> None:
+    # addrtype's src-type is a pre-negation keyword: "! --src-type LOCAL"
+    # renders the "!" before the keyword and must keep its value ("LOCAL").
+    save = """\
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m addrtype ! --src-type LOCAL -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "mod addrtype ! src-type LOCAL ACCEPT;" in output
+
+
+def test_run_icmp6_module_covered_by_ipv6_icmp_protocol() -> None:
+    # Under "-p ipv6-icmp" the "-m icmp6" module is already loaded, so no
+    # redundant "mod" is emitted, and icmp6 is remapped to icmpv6 for the
+    # keyword lookup (else --icmpv6-type would be "not understood").
+    save = """\
+# Generated by ip6tables-save
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p ipv6-icmp -m icmp6 --icmpv6-type echo-request -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol ipv6-icmp icmpv6-type echo-request ACCEPT;" in output
+    assert "mod icmp6" not in output
+
+
+def test_run_icmpv6_protocol_spelling_covers_icmp6_module() -> None:
+    # The alternate "-p icmpv6" spelling equally covers "-m icmp6": still no
+    # redundant "mod" and the keyword table still loads.
+    save = """\
+# Generated by ip6tables-save
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -p icmpv6 -m icmp6 --icmpv6-type echo-request -j ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "protocol icmpv6 icmpv6-type echo-request ACCEPT;" in output
+    assert "mod icmp6" not in output

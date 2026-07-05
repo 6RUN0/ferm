@@ -541,3 +541,33 @@ def test_vmap_malformed_member_returned_verbatim() -> None:
     body = "tcp dport vmap { malformed } accept"
     out = canonicalize_nft_rule(body, family="ip")
     assert out == "tcp dport vmap { malformed } accept"
+
+
+def test_reject_no_type_word_default_collapse_keeps_trailing_token() -> None:
+    # A token FOLLOWING the collapsed default reject must be preserved: the
+    # index advance past the 'type'-less reject run is exactly four tokens
+    # (reject with <fam> <msg>), so an over-advance would swallow the tail.
+    body = "reject with icmp port-unreachable counter"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "reject counter"
+
+
+def test_header_priority_landmark_offset_resolved() -> None:
+    # nft pretty-prints a numeric priority near a landmark as an offset;
+    # 'filter + 5' -> 5 and 'security - 1' -> 49 must resolve to the integer
+    # so a config's numeric priority canonicalizes to the kernel readback.
+    assert "priority 5 " in canonicalize_nft_header(
+        "type filter hook input priority filter + 5;", family="ip"
+    )
+    assert "priority 49 " in canonicalize_nft_header(
+        "type filter hook input priority security - 1;", family="ip"
+    )
+
+
+def test_header_priority_malformed_offset_left_verbatim() -> None:
+    # A non-numeric offset magnitude is safe-bias kept verbatim: no crash,
+    # no dropped tokens, no partial resolution.
+    out = canonicalize_nft_header(
+        "type filter hook input priority filter + xx;", family="ip"
+    )
+    assert out == "type filter hook input priority filter + xx policy accept"

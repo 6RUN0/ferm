@@ -114,6 +114,41 @@ def test_past_tokens_reset_after_statement_end() -> None:
     assert tk.script.past_tokens == [["c"]]
 
 
+def _past_snapshot(tk: Tokenizer) -> list[list[object]]:
+    """Deep-copy ``past_tokens`` so a later mutation cannot rewrite history."""
+    return [list(group) for group in tk.script.past_tokens]
+
+
+def test_past_tokens_track_a_flat_block() -> None:
+    # "p { a ; b } c": a statement, a brace-opened block, a ';' that resets the
+    # block's current statement to its "{" head, then the "}" close and tail.
+    tk = _tokenizer("p { a ; b } c")
+    tk.next_token()  # p
+    tk.next_token()  # {
+    # "{" opens a fresh nested group; the head statement is still recorded.
+    assert _past_snapshot(tk) == [["p"], ["{"]]
+    tk.next_token()  # a
+    tk.next_token()  # ;
+    tk.next_token()  # b
+    # the ';' collapsed "{ a ;" back to the block head "{" (len(past) > 1),
+    # then "b" started the next statement inside the same block.
+    assert _past_snapshot(tk) == [["p"], ["{", "b"]]
+    tk.next_token()  # }
+    tk.next_token()  # c
+    # closing "}" pops the block; the outer head was not itself "{", so it
+    # resets to [], and "c" becomes the sole current statement.
+    assert _past_snapshot(tk) == [["c"]]
+
+
+def test_past_tokens_track_a_doubly_nested_block() -> None:
+    # "a { b { c } d } e": the inner "}" pops back into an outer block whose
+    # head IS "{", so the reset keeps the "{" head rather than clearing it.
+    tk = _tokenizer("a { b { c } d } e")
+    for _ in range(7):  # a { b { c } d
+        tk.next_token()
+    assert _past_snapshot(tk) == [["a"], ["{", "d"]]
+
+
 def test_expect_token_success_and_failure() -> None:
     tk = _tokenizer("proto tcp")
     tk.expect_token("proto")  # no raise
@@ -153,6 +188,42 @@ def test_open_script_detects_cycles() -> None:
         open_script("a.ferm", parent)
 
 
+def test_open_script_detects_cycle_via_grandparent() -> None:
+    # The cycle check walks the whole parent chain, not just the direct
+    # parent: a file re-including its grandparent is still circular.
+    grandparent = Script(filename="g.ferm", handle=io.StringIO(""))
+    parent = Script(
+        filename="p.ferm", handle=io.StringIO(""), parent=grandparent, line=5
+    )
+    with pytest.raises(FermError, match="Circular reference"):
+        open_script("g.ferm", parent)
+
+
+def test_open_script_records_filename_and_parent(tmp_path: Path) -> None:
+    # A sub-script keeps the opened filename and a link to the opener so the
+    # cycle walk and error locations follow the include chain.
+    parent = Script(filename="parent.ferm", handle=io.StringIO(""))
+    path = tmp_path / "child.ferm"
+    path.write_text("proto tcp;\n", encoding="utf-8")
+    script = open_script(str(path), parent)
+    try:
+        assert script.filename == str(path)
+        assert script.parent is parent
+    finally:
+        script.close()
+
+
+def test_open_script_labels_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    # "-" reads the real stdin but relabels the script "<stdin>" for error
+    # messages (a StringIO has no reconfigure, so latin-1 setup is a no-op).
+    monkeypatch.setattr(
+        "pyferm.tokenizer.sys.stdin", io.StringIO("proto tcp;\n")
+    )
+    script = open_script("-", None)
+    assert script.filename == "<stdin>"
+    assert script.handle is not None
+
+
 def test_open_script_reads_a_real_file(tmp_path: Path) -> None:
     path = tmp_path / "rules.ferm"
     path.write_text("proto tcp;\n", encoding="utf-8")
@@ -161,6 +232,23 @@ def test_open_script_reads_a_real_file(tmp_path: Path) -> None:
     assert tk.next_token() == "proto"
     assert script.parent is None
     script.close()
+
+
+def test_tokenizer_open_script_passes_current_as_parent(
+    tmp_path: Path,
+) -> None:
+    # Tokenizer.open_script must hand the *current* script down as the parent
+    # so a file that @includes itself is caught as a cycle rather than
+    # silently re-opened.
+    path = tmp_path / "self.ferm"
+    path.write_text("proto tcp;\n", encoding="utf-8")
+    script = open_script(str(path), None)
+    try:
+        tk = Tokenizer(script)
+        with pytest.raises(FermError, match="Circular reference"):
+            tk.open_script(str(path))
+    finally:
+        script.close()
 
 
 def test_open_script_missing_file_errors() -> None:

@@ -10,6 +10,7 @@ that removes the now-untracked post-``sha`` files.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -17,9 +18,10 @@ import pytest
 
 from pyferm import etckeeper
 from pyferm.errors import FermError
+from pyferm.streams import BYTE_ENCODING
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 
 class _Recorder:
@@ -28,11 +30,13 @@ class _Recorder:
     def __init__(self, responses: Sequence[object] | None = None) -> None:
         self.responses = list(responses or [])
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict[str, object]] = []
 
     def __call__(
-        self, argv: list[str], **_kwargs: object
+        self, argv: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
+        self.kwargs.append(kwargs)
         response = self.responses.pop(0) if self.responses else _ok()
         if isinstance(response, BaseException):
             raise response
@@ -351,3 +355,185 @@ def test_rollback_accepts_branch_and_tag_names(
         _patch(monkeypatch, recorder)
         etckeeper.rollback(good, "ferm")  # must not raise
         assert recorder.calls[1][3] == good
+
+
+# --- subprocess.run contract (mocked-boundary blind spot) -----------------
+# The _Recorder swallows kwargs, so the run() keyword contract
+# (capture_output/encoding/check) is invisible unless a test pins it. These
+# assert it explicitly: capture_output so stdout/stderr are readable, and
+# check=False so a nonzero exit is handled by hand rather than raising.
+
+
+def test_vcs_run_captures_output_without_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder([_ok(stdout="x\n")])
+    _patch(monkeypatch, recorder)
+    etckeeper.list_history("ferm")
+    kwargs = recorder.kwargs[0]
+    assert kwargs.get("capture_output") is True
+    assert kwargs.get("encoding") == BYTE_ENCODING
+    assert kwargs.get("check") is False
+
+
+def test_commit_run_captures_output_without_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder([_ok()])
+    _patch(monkeypatch, recorder)
+    etckeeper.commit("msg")
+    kwargs = recorder.kwargs[0]
+    assert kwargs.get("capture_output") is True
+    assert kwargs.get("encoding") == BYTE_ENCODING
+    assert kwargs.get("check") is False
+
+
+# --- find_etckeeper program name ------------------------------------------
+
+
+def test_find_etckeeper_queries_program_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def fake_which(name: str) -> str:
+        seen.append(name)
+        return "/usr/bin/etckeeper"
+
+    monkeypatch.setattr("pyferm.etckeeper.shutil.which", fake_which)
+    etckeeper.find_etckeeper()
+    assert seen == ["etckeeper"]
+
+
+# --- repo_relative_subpath: issued argv and parent-escape guard -----------
+
+
+def test_repo_relative_subpath_issues_rev_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder([_ok(stdout="/etc\n")])
+    _patch(monkeypatch, recorder)
+    etckeeper.repo_relative_subpath("/etc/ferm/ferm.conf")
+    assert recorder.calls[0] == [
+        "etckeeper",
+        "vcs",
+        "rev-parse",
+        "--show-toplevel",
+    ]
+
+
+def test_repo_relative_subpath_one_level_above_root_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # config_dir is exactly the repo's parent: relpath is ".." with no trailing
+    # separator, which the startswith("../") guard misses; the exact "==" check
+    # is what rejects it. Missing it would scope rollback to "..".
+    _patch(monkeypatch, _Recorder([_ok(stdout="/etc/ferm\n")]))
+    with pytest.raises(FermError, match="outside the etckeeper"):
+        etckeeper.repo_relative_subpath("/etc/config.conf")
+
+
+# --- commit failure detail (_describe_failure) ----------------------------
+
+
+def test_commit_warning_reports_stderr_detail(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch(monkeypatch, _Recorder([_fail(stderr="boom")]))
+    etckeeper.commit("msg")
+    assert "boom" in capsys.readouterr().err
+
+
+def test_commit_warning_reports_exit_code_when_stderr_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch(monkeypatch, _Recorder([_fail(code=2, stderr="")]))
+    etckeeper.commit("msg")
+    assert "exit 2" in capsys.readouterr().err
+
+
+# --- read-only helpers name the failed operation --------------------------
+# Every _vcs caller labels its operation (the ``action``) so a failure says
+# which git verb broke. Exercised on both failure paths: a spawn error
+# (OSError in _vcs) and a nonzero exit with empty stderr (the
+# _stdout_or_raise fallback). Existing failure tests use non-empty stderr,
+# which shadows the action label entirely.
+
+_VCS_ACTIONS = [
+    pytest.param(
+        lambda: etckeeper.list_history("ferm"), "log", id="list_history"
+    ),
+    pytest.param(
+        lambda: etckeeper.diff_revision("deadbeef", "ferm"),
+        "diff",
+        id="diff_revision",
+    ),
+    pytest.param(
+        lambda: etckeeper.previous_revision("ferm"),
+        "log",
+        id="previous_revision",
+    ),
+    pytest.param(
+        lambda: etckeeper.repo_relative_subpath("/etc/ferm/ferm.conf"),
+        "rev-parse",
+        id="repo_relative_subpath",
+    ),
+    pytest.param(
+        lambda: etckeeper.working_tree_dirty("ferm"),
+        "status",
+        id="working_tree_dirty",
+    ),
+]
+
+
+@pytest.mark.parametrize(("invoke", "action_word"), _VCS_ACTIONS)
+def test_vcs_spawn_error_names_action(
+    monkeypatch: pytest.MonkeyPatch,
+    invoke: Callable[[], object],
+    action_word: str,
+) -> None:
+    _patch(monkeypatch, _Recorder([OSError("no etckeeper")]))
+    with pytest.raises(
+        FermError, match=rf"vcs {re.escape(action_word)} failed"
+    ):
+        invoke()
+
+
+@pytest.mark.parametrize(("invoke", "action_word"), _VCS_ACTIONS)
+def test_vcs_nonzero_empty_stderr_names_action(
+    monkeypatch: pytest.MonkeyPatch,
+    invoke: Callable[[], object],
+    action_word: str,
+) -> None:
+    _patch(monkeypatch, _Recorder([_fail(stderr="")]))
+    with pytest.raises(
+        FermError, match=rf"vcs {re.escape(action_word)} failed"
+    ):
+        invoke()
+
+
+# --- rollback names the failing step / vcs action -------------------------
+
+
+def test_rollback_unstage_step_failure_names_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, _Recorder([_fail(stderr="x")]))
+    with pytest.raises(FermError, match="rollback unstage failed"):
+        etckeeper.rollback("deadbeef", "ferm")
+
+
+def test_rollback_clean_step_failure_names_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, _Recorder([_ok(), _ok(), _fail(stderr="x")]))
+    with pytest.raises(FermError, match="rollback clean failed"):
+        etckeeper.rollback("deadbeef", "ferm")
+
+
+def test_rollback_spawn_error_names_vcs_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, _Recorder([OSError("no etckeeper")]))
+    with pytest.raises(FermError, match="vcs unstage failed"):
+        etckeeper.rollback("deadbeef", "ferm")

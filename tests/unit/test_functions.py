@@ -15,6 +15,7 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.functions import (
+    MAX_CLASSID,
     MAX_VALUE_DEPTH,
     Evaluator,
     _perl_substr_index,
@@ -25,7 +26,7 @@ from pyferm.functions import (
 from pyferm.resolver import ZonefileResolver, set_resolver_provider
 from pyferm.scope import Frame, FunctionLike, Rule, Scope
 from pyferm.tokenizer import Script, Token, Tokenizer
-from pyferm.values import Deferred, Negated, Value
+from pyferm.values import Deferred, Negated, SetRef, Value, realize_deferred
 
 
 class _FunctionStub:
@@ -355,6 +356,8 @@ def test_builtin_defined_variable_and_function() -> None:
     assert _evaluator("@defined($ v)").getvalues() == ""
     ev2 = _evaluator("@defined(& f)", functions={"f": _FunctionStub()})
     assert ev2.getvalues() == "1"
+    # An undefined function is the empty string, mirroring the $-variable arm.
+    assert _evaluator("@defined(& missing)").getvalues() == ""
 
 
 def test_builtin_unknown_errors() -> None:
@@ -609,3 +612,80 @@ def test_getvalues_depth_counter_recovers_after_error() -> None:
         ev.getvalues()
     # the finally chain unwound every frame
     assert ev._value_depth == 0
+
+
+# -- cgroup_classid: negation, boundaries, hex parsing (mutation-hardening) ---
+
+
+def test_cgroup_classid_scalar_negation() -> None:
+    # A negated scalar classid must round-trip through the Negated branch.
+    assert _evaluator("! 5").cgroup_classid(Rule()) == Negated(["5"])
+
+
+def test_cgroup_classid_zero_is_valid() -> None:
+    # 0 is a legal classid: the lower bound is `< 0`, not `<= 0`.
+    assert _evaluator("0").cgroup_classid(Rule()) == ["0"]
+
+
+def test_cgroup_classid_max_value_is_valid() -> None:
+    # The upper bound is inclusive: MAX_CLASSID itself is accepted, only
+    # MAX_CLASSID + 1 is rejected.
+    assert _evaluator(str(MAX_CLASSID)).cgroup_classid(Rule()) == [
+        str(MAX_CLASSID)
+    ]
+
+
+def test_cgroup_classid_hex_pair_uses_base_16() -> None:
+    # Both halves parse as base 16; digits that also read as base 17 ('10',
+    # '20') pin the radix so a base-17 slip is caught.
+    assert _evaluator("10:20").cgroup_classid(Rule()) == [
+        str((0x10 << 16) + 0x20)
+    ]
+
+
+# -- @-builtins: deferred wiring, empty @join, @substr ref guard -------------
+
+
+def test_join_without_arguments_is_empty() -> None:
+    assert _evaluator("@join()").getvalues() == ""
+
+
+def test_substr_rejects_reference_argument() -> None:
+    # A non-scalar (array) argument to @substr is an error, not silently
+    # stringified.
+    with pytest.raises(FermError, match="String expected"):
+        _evaluator("@substr((a b), 1, 2)").getvalues()
+
+
+def test_ipfilter_deferred_realizes_with_family() -> None:
+    # @ipfilter defers to `ipfilter`; realizing it must apply the family
+    # filter (drops the IPv6 address in an ip realization).
+    ev = _evaluator("@ipfilter((1.2.3.4 ::1))")
+    assert realize_deferred("ip", ev.getvalues()) == ["1.2.3.4"]
+
+
+def test_cat_deferred_realizes_via_deferred_cat() -> None:
+    # A @cat carrying a deferred argument defers to `deferred_cat`; realizing
+    # it concatenates the (family-filtered) operands.
+    ev = _evaluator("@cat(@ipfilter((1.2.3.4)), x)")
+    assert realize_deferred("ip", ev.getvalues()) == ["1.2.3.4x"]
+
+
+# -- address_magic: SetRef branch (family filtering of a named set) ----------
+
+
+def test_address_magic_setref_dualstack_filters_elements() -> None:
+    # A SetRef value on a dual-stack rule keeps its name but drops
+    # wrong-family elements.
+    ev = _evaluator("$s", variables={"s": SetRef("myset", ["1.2.3.4", "::1"])})
+    assert ev.address_magic(Rule(domain="ip", domain_both=True)) == SetRef(
+        "myset", ["1.2.3.4"]
+    )
+
+
+def test_address_magic_setref_single_family_keeps_all() -> None:
+    # A SetRef on a single-family rule is returned intact (no ipfilter pass).
+    ev = _evaluator("$s", variables={"s": SetRef("myset", ["1.2.3.4", "::1"])})
+    assert ev.address_magic(Rule(domain="ip")) == SetRef(
+        "myset", ["1.2.3.4", "::1"]
+    )

@@ -13,6 +13,7 @@ from typing import cast
 import pytest
 
 from pyferm.errors import FermError
+from pyferm.functions import ipfilter
 from pyferm.rules import RenderedOption, RenderedRule
 from pyferm.scope import OptionKind
 from pyferm.values import (
@@ -33,6 +34,7 @@ from pyferm.values import (
     negate_value,
     perl_true,
     realize_deferred,
+    stringify,
     to_array,
 )
 
@@ -234,3 +236,54 @@ def test_rendered_rule_is_frozen() -> None:
     rule = RenderedRule(options=[], script=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
         rule.options = []  # type: ignore[misc]
+
+
+# --- deferred family threading (realize_deferred / deferred_cat) -----------
+#
+# ``@ipfilter`` is family-sensitive: under ``ip6`` it drops the numeric IPv4
+# address and keeps the IPv6 one.  These pins prove the ``domain`` argument is
+# threaded through every deferred call site -- the top level, the recursion
+# over nested params, and ``deferred_cat``'s own realize -- rather than being
+# dropped to ``None`` (which would leave both addresses, unfiltered).
+
+_MIXED_ADDRS: list[Value] = ["10.0.0.1", "fe80::1"]
+
+
+def test_realize_deferred_threads_family_to_deferred() -> None:
+    deferred = Deferred(function=ipfilter, params=[_MIXED_ADDRS])
+    assert realize_deferred("ip6", deferred) == ["fe80::1"]
+    assert realize_deferred("ip", deferred) == ["10.0.0.1"]
+
+
+def test_realize_deferred_threads_family_through_nested_params() -> None:
+    # A deferred whose *params* hold another deferred: the recursion that
+    # realizes those params must carry the family, not reset it to None.
+    def passthrough(_domain: str, *args: Value) -> list[Value]:
+        return list(args)
+
+    inner = Deferred(function=ipfilter, params=[_MIXED_ADDRS])
+    outer = Deferred(function=passthrough, params=[inner])
+    assert realize_deferred("ip6", outer) == ["fe80::1"]
+
+
+def test_deferred_cat_threads_family_before_concatenating() -> None:
+    # deferred_cat realizes under the family first, so the IPv4 element is
+    # gone before @cat joins -- not concatenated into "10.0.0.1fe80::1".
+    deferred = Deferred(function=ipfilter, params=[_MIXED_ADDRS])
+    assert deferred_cat("ip6", deferred) == ["fe80::1"]
+
+
+# --- cat / stringify small-scalar corners ----------------------------------
+
+
+def test_cat_skips_none_without_truncating_the_rest() -> None:
+    # a mid-list None is *skipped* (continue), never a *stop* (break): the
+    # trailing "b" still contributes.
+    assert cat("a", None, "b") == "ab"
+
+
+def test_stringify_coerces_non_string_scalars() -> None:
+    # a non-string, non-None scalar goes through str(), not "" -- undef alone
+    # stringifies empty.
+    assert stringify(5) == "5"
+    assert stringify(None) == ""

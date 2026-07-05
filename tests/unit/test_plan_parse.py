@@ -62,3 +62,36 @@ def test_comments_and_blanks_ignored() -> None:
 def test_malformed_raises(bad: str) -> None:
     with pytest.raises(FermError):
         parse_save(bad, host_mask="/32")
+
+
+def test_rejects_space_in_table_name() -> None:
+    # A '*table' name containing a space is malformed; the guard must reject
+    # it (distinct from the already-tested duplicate/empty cases).
+    with pytest.raises(FermError):
+        parse_save("*a b\nCOMMIT\n", host_mask="/32")
+
+
+def test_accepts_counterless_chain_line() -> None:
+    # ':chain policy' with no [pkts:bytes] counter is the minimum valid chain
+    # line (exactly _CHAIN_PARTS_MIN tokens); it must parse, not be rejected.
+    tables = parse_save("*filter\n:INPUT ACCEPT\nCOMMIT\n", host_mask="/32")
+    assert tables["filter"].chains["INPUT"].policy == "ACCEPT"
+
+
+def test_rejects_rule_for_undeclared_chain() -> None:
+    # A '-A' targeting a chain that was never ':'-declared is malformed
+    # iptables-save and must raise FermError (not KeyError).
+    text = "*filter\n:INPUT ACCEPT [0:0]\n-A NOPE -j DROP\nCOMMIT\n"
+    with pytest.raises(FermError):
+        parse_save(text, host_mask="/32")
+
+
+def test_strips_host_mask_from_rule_address() -> None:
+    # host_mask must reach _canonicalize_rule so the family host mask is
+    # stripped from rule addresses.
+    text = (
+        "*filter\n:INPUT ACCEPT [0:0]\n"
+        "-A INPUT -s 1.2.3.4/32 -j ACCEPT\nCOMMIT\n"
+    )
+    tables = parse_save(text, host_mask="/32")
+    assert tables["filter"].chains["INPUT"].rules == ["-s 1.2.3.4 -j ACCEPT"]

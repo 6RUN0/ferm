@@ -6,7 +6,7 @@ import io
 import os
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pyferm.backend.base import (
+        Backend,
         ExecuteCommand,
         LineEmitter,
         Rendered,
@@ -2048,3 +2049,561 @@ def test_list_modules_wins_over_graph_format() -> None:
     # guard order: introspection dispatches first (spec §7)
     with pytest.raises(FermError, match="--list-modules cannot be combined"):
         _main(["--list-modules", "--graph-format", "dot"])
+
+
+# ===========================================================================
+# Mutation-kill coverage for pyferm.cli survivors.
+# ===========================================================================
+
+
+# --- _run_hook -------------------------------------------------------------
+
+
+def test_run_hook_runs_command_via_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Outside --noexec the hook is executed with shell=True, check=False and
+    # the command string is echoed under --lines (Perl :777-794).
+    from pyferm.cli import _run_hook
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: calls.append((a, k))
+    )
+    emitted: list[str] = []
+    _run_hook("echo hi", Options(lines=True), emitted.append)
+    assert calls == [(("echo hi",), {"shell": True, "check": False})]
+    assert emitted == ["echo hi\n"]
+
+
+def test_run_hook_noexec_echoes_but_does_not_run(
+    tmp_path: Path,
+) -> None:
+    # Under --noexec (implied by --test) the hook echoes but must not run: a
+    # side-effecting command leaves no trace.
+    from pyferm.cli import main
+
+    marker = tmp_path / "hook-ran"
+    conf = tmp_path / "t.ferm"
+    conf.write_text(
+        f'@hook pre "touch {marker}";\nchain INPUT ACCEPT;\n',
+        encoding="utf-8",
+    )
+    assert main(["--test", str(conf)]) == 0
+    assert not marker.exists()
+
+
+# --- _apply_def ------------------------------------------------------------
+
+
+def test_def_binds_name_and_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --def X=1234 binds group(1) as the name and the parsed group(2) as the
+    # value; a hook interpolating $X echoes it under --test --lines.
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text(
+        '@hook pre "echo mark-$X-end";\nchain INPUT ACCEPT;\n',
+        encoding="utf-8",
+    )
+    assert main(["--test", "--def", "X=1234", str(conf)]) == 0
+    assert "mark-1234-end" in capsys.readouterr().out
+
+
+# --- _apply_config auto path variables -------------------------------------
+
+
+def test_apply_config_binds_path_auto_variables(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FILENAME/FILEBNAME/DIRNAME are seeded on the script frame (Perl :751);
+    # a hook echoing them under --test --lines shows the exact values.
+    from pyferm.cli import main
+    from pyferm.functions import splitpath_dir, splitpath_file
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    conf = sub / "my.ferm"
+    conf.write_text(
+        '@hook pre "echo F=$FILENAME B=$FILEBNAME D=$DIRNAME";\n'
+        "chain INPUT ACCEPT;\n",
+        encoding="utf-8",
+    )
+    assert main(["--test", str(conf)]) == 0
+    name = str(conf)
+    expected = (
+        f"echo F={name} B={splitpath_file(name)} D={splitpath_dir(name)}"
+    )
+    assert expected in capsys.readouterr().out
+
+
+# --- _build_parser short-flag aliases and choices --------------------------
+
+
+@pytest.mark.parametrize(
+    ("flag", "attr"),
+    [
+        ("-n", "noexec"),
+        ("-F", "flush"),
+        ("-l", "lines"),
+        ("-i", "interactive"),
+        ("-h", "help"),
+        ("-V", "version"),
+    ],
+)
+def test_short_flag_aliases_map_to_long(flag: str, attr: str) -> None:
+    # A deleted or case-swapped single-letter alias would make argparse reject
+    # the invocation (or bind the wrong dest), so each alias is pinned here.
+    args = _build_parser().parse_args([flag, "f"])
+    assert getattr(args, attr) is True
+
+
+def test_short_timeout_alias_takes_value() -> None:
+    assert _build_parser().parse_args(["-t", "5", "f"]).timeout == "5"
+
+
+def test_remote_is_alias_for_test() -> None:
+    # --remote shares --test's dest, so it toggles the same option.
+    assert _build_parser().parse_args(["--remote", "f"]).test is True
+
+
+def test_plan_format_rejects_unknown_choice() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--plan", "--plan-format", "bogus", "f"])
+
+
+def test_graph_format_rejects_unknown_choice() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--graph", "--graph-format", "bogus", "f"])
+
+
+def test_graph_format_accepts_d2_choice() -> None:
+    args = _build_parser().parse_args(["--graph", "--graph-format", "d2", "f"])
+    assert args.graph_format == "d2"
+
+
+# --- _resolve_options passthrough ------------------------------------------
+
+
+def test_resolve_flush_passthrough() -> None:
+    assert _resolve_plan(["--flush", "a.ferm"]).flush is True
+
+
+def test_resolve_domain_passthrough() -> None:
+    assert _resolve_plan(["--domain", "ip", "a.ferm"]).domain == "ip"
+
+
+def test_resolve_slow_sets_fast_false() -> None:
+    assert _resolve_plan(["--slow", "a.ferm"]).fast is False
+    assert _resolve_plan(["a.ferm"]).fast is True
+
+
+def test_resolve_timeout_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opts = _resolve(["-i", "-t", "5", "f"], tty=True, monkeypatch=monkeypatch)
+    assert opts.timeout == 5
+
+
+# --- build_plan host_mask --------------------------------------------------
+
+
+def test_plan_bare_address_uses_ipv4_host_mask(tmp_path: Path) -> None:
+    # A bare saddr is canonicalized with /32 under ip, comparing equal to a
+    # masked /32 in the current ruleset -> no change.
+    prev = _write(
+        tmp_path,
+        "p4.save",
+        "*filter\n:INPUT ACCEPT [0:0]\n"
+        "-A INPUT -s 1.2.3.4/32 -j ACCEPT\nCOMMIT\n",
+    )
+    cfg = _write(
+        tmp_path,
+        "c4.ferm",
+        "domain ip table filter chain INPUT saddr 1.2.3.4 ACCEPT;\n",
+    )
+    code = main(
+        ["--plan", "--test", f"--test-mock-previous=ip={prev}", str(cfg)]
+    )
+    assert code == 0
+
+
+def test_plan_bare_address_uses_ipv6_host_mask(tmp_path: Path) -> None:
+    # The else branch uses /128 under ip6; a bare saddr compares equal to a
+    # masked /128 current rule.
+    prev = _write(
+        tmp_path,
+        "p6.save",
+        "*filter\n:INPUT ACCEPT [0:0]\n"
+        "-A INPUT -s fe80::1/128 -j ACCEPT\nCOMMIT\n",
+    )
+    cfg = _write(
+        tmp_path,
+        "c6.ferm",
+        "domain ip6 table filter chain INPUT saddr fe80::1 ACCEPT;\n",
+    )
+    code = main(
+        ["--plan", "--test", f"--test-mock-previous=ip6={prev}", str(cfg)]
+    )
+    assert code == 0
+
+
+# --- _run_plan format passthrough ------------------------------------------
+
+
+def test_run_plan_uses_selected_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --plan-format diff renders the unified diff (with @@ hunk headers); the
+    # renderer receives the resolved format, not a hardcoded default.
+    prev = _write(tmp_path, "prev.save", _PREV)
+    cfg = _write(
+        tmp_path,
+        "c.ferm",
+        "domain ip table filter chain INPUT proto tcp dport 80 ACCEPT;",
+    )
+    code = main(
+        [
+            "--plan",
+            "--plan-format",
+            "diff",
+            "--test",
+            f"--test-mock-previous=ip={prev}",
+            str(cfg),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "@@" in out
+    assert "--- ip (current)" in out
+
+
+# --- _commit_subject / _build_commit_message / _commit_history -------------
+
+
+def test_commit_subject_lists_enabled_families() -> None:
+    # With enabled families the subject names them space-joined; the disabled
+    # family is omitted.
+    from pyferm.cli import _commit_subject
+    from pyferm.domains import DomainInfo as RealDomainInfo
+    from pyferm.domains import Family
+
+    domains = {
+        Family.IP: RealDomainInfo(enabled=True),
+        Family.IP6: RealDomainInfo(enabled=True),
+        Family.ARP: RealDomainInfo(enabled=False),
+    }
+    assert _commit_subject("a/f.conf", domains, Options()) == (
+        "applied f.conf (ip ip6, iptables)"
+    )
+
+
+def _nft_body_backend() -> Backend:
+    """A MagicMock nft backend rendering a save that diffs against empty."""
+    from unittest.mock import MagicMock
+
+    save = (
+        "add table ip ferm\n"
+        "add chain ip ferm INPUT { type filter hook input priority 0; }\n"
+        "add rule ip ferm INPUT accept\n"
+    )
+    rendered = MagicMock()
+    rendered.save = save
+    backend = MagicMock()
+    backend.render.return_value = rendered
+    return cast("Backend", backend)
+
+
+def test_build_commit_message_appends_family_body() -> None:
+    # The body comes from build_plan(domains, options, backend); a dropped or
+    # nulled options/backend argument would AttributeError, and a nulled body
+    # would strip the per-family delta.
+    from pyferm.backend.nft import TOOL_NFT
+    from pyferm.cli import _build_commit_message
+    from pyferm.domains import DomainInfo as RealDomainInfo
+    from pyferm.domains import Family
+
+    di = RealDomainInfo(enabled=True, tools={TOOL_NFT: "nft"})
+    message = _build_commit_message(
+        "f.conf", {Family.IP: di}, Options(nft=True), _nft_body_backend(), None
+    )
+    assert message.startswith("ferm: applied f.conf (ip, nft)")
+    assert "\n\n  ip:" in message
+
+
+def test_commit_history_forwards_backend_with_enabled_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With enabled nft domains build_plan uses the backend; a dropped backend
+    # argument to _build_commit_message would AttributeError and the commit
+    # would be silently skipped.
+    from pyferm.backend.nft import TOOL_NFT
+    from pyferm.cli import _commit_history
+    from pyferm.domains import DomainInfo as RealDomainInfo
+    from pyferm.domains import Family
+
+    spy = _install_etckeeper(monkeypatch)
+    di = RealDomainInfo(enabled=True, tools={TOOL_NFT: "nft"})
+    _commit_history(
+        "f.conf", {Family.IP: di}, Options(nft=True), _nft_body_backend(), None
+    )
+    assert len(spy.messages) == 1
+    assert "\n\n  ip:" in spy.messages[0]
+
+
+# --- _apply_config commit / rollback seams ---------------------------------
+
+
+def test_apply_disabled_family_is_skipped_not_break(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A disabled family sorted before an enabled one must be skipped
+    # (continue), not break the loop -- breaking would leave the enabled
+    # family unapplied.
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+    from pyferm.domains import DomainInfo as RealDomainInfo
+    from pyferm.domains import Family
+
+    class _MultiParser(_FakeParser):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            self.domains = {
+                Family.ARP: RealDomainInfo(enabled=False),
+                Family.IP: RealDomainInfo(enabled=True),
+            }
+
+    committed: list[object] = []
+
+    class _RecordingCommit(_ApplyBackend):
+        def commit(self, *args: object, **_kwargs: object) -> int | None:
+            committed.append(args[0])
+            return None
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_select_backend",
+        lambda _o: _RecordingCommit(commit_result=None),
+    )
+    monkeypatch.setattr(cli_mod, "Parser", _MultiParser)
+    monkeypatch.setattr(cli_mod, "_commit_history", lambda *_a, **_k: None)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert _apply_config(str(conf), Options(), sys.stdout, defs=[]) == 0
+    assert committed == [Family.IP]
+
+
+class _SeamRecordingBackend(_ApplyBackend):
+    """An _ApplyBackend whose rollback records the seams it is handed."""
+
+    def __init__(self, *, commit_result: int | None) -> None:
+        super().__init__(commit_result=commit_result)
+        self.seen: dict[str, object] = {}
+
+    def rollback(self, *args: object, **kwargs: object) -> None:
+        self.seen = {
+            "options": args[2],
+            "execute": kwargs["execute"],
+            "restore": kwargs["restore"],
+        }
+
+
+def _patch_seam_backend(
+    monkeypatch: pytest.MonkeyPatch, backend: _SeamRecordingBackend
+) -> None:
+    import pyferm.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_select_backend", lambda _o: backend)
+    monkeypatch.setattr(cli_mod, "Parser", _FakeParser)
+    monkeypatch.setattr(cli_mod, "_commit_history", lambda *_a, **_k: None)
+
+
+def test_apply_status_rollback_receives_real_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A non-None commit result triggers _rollback_all; it must be handed the
+    # real options/execute/restore, not None.
+    from pyferm.cli import _apply_config
+
+    backend = _SeamRecordingBackend(commit_result=1)
+    _patch_seam_backend(monkeypatch, backend)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _apply_config(str(conf), Options(), sys.stdout, defs=[])
+    assert backend.seen["options"] is not None
+    assert backend.seen["execute"] is not None
+    assert backend.seen["restore"] is not None
+
+
+def test_apply_interactive_decline_receives_real_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Declining confirmation rolls back; _confirm_rules is passed the real
+    # options and _rollback_all the real seams.
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+
+    backend = _SeamRecordingBackend(commit_result=None)
+    _patch_seam_backend(monkeypatch, backend)
+    confirm_args: list[object] = []
+
+    def _decline(opts: object) -> bool:
+        confirm_args.append(opts)
+        return False
+
+    monkeypatch.setattr(cli_mod, "_confirm_rules", _decline)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _apply_config(
+            str(conf), Options(interactive=True), sys.stdout, defs=[]
+        )
+    assert confirm_args
+    assert confirm_args[0] is not None
+    assert backend.seen["options"] is not None
+    assert backend.seen["execute"] is not None
+    assert backend.seen["restore"] is not None
+
+
+# --- _make_io / _setup_streams ---------------------------------------------
+
+
+def test_execute_emits_command_line_under_lines() -> None:
+    # execute() echoes the command followed by a newline to the lines sink
+    # before (not) running it.
+    buf = io.StringIO()
+    execute, _emit, _read, _restore, _capture = _make_io(
+        Options(lines=True, noexec=True), buf
+    )
+    assert execute("iptables -A INPUT") is None
+    assert buf.getvalue() == "iptables -A INPUT\n"
+
+
+def test_setup_streams_passthrough_undo_returns_none() -> None:
+    _lines, restore = _setup_streams(Options(lines=True))
+    assert restore() is None
+
+
+def test_setup_streams_shell_sink_writes_latin1(
+    capfdbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    # The --shell lines sink is line-buffered latin-1: a newline-terminated
+    # write reaches the captured fd immediately (no explicit flush) as the
+    # verbatim high byte, not its utf-8 two-byte encoding.
+    lines_stream, restore = _setup_streams(Options(shell=True, lines=True))
+    try:
+        # No flush: line buffering must push the "\n"-terminated write through
+        # on its own; block buffering would hold it back and read empty.
+        lines_stream.write("h\xfc\n")
+        out, _err = capfdbinary.readouterr()
+    finally:
+        restore()
+    assert b"h\xfc\n" in out
+    assert b"h\xc3\xbc" not in out
+
+
+# --- _run_introspection ----------------------------------------------------
+
+
+def test_describe_known_name_prints_module_doc(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --describe forwards the requested name to describe(); a nulled argument
+    # would fail the lookup and exit 1.
+    assert main(["--describe", "tcp"]) == 0
+    assert "tcp" in capsys.readouterr().out
+
+
+# --- _rollback_main / _rollback_options ------------------------------------
+
+
+def test_rollback_list_passes_config_derived_subpath(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --list resolves the subpath from the config and lists that subpath; both
+    # the config and the resolved subpath must flow through unchanged.
+    from pyferm.cli import _rollback_main
+
+    seen_config: list[object] = []
+    seen_subpath: list[object] = []
+
+    def _record_subpath(config: object) -> str:
+        seen_config.append(config)
+        return "the-subpath"
+
+    def _record_history(subpath: object) -> str:
+        seen_subpath.append(subpath)
+        return "history\n"
+
+    monkeypatch.setattr(etckeeper, "rollback_available", lambda: True)
+    monkeypatch.setattr(etckeeper, "repo_relative_subpath", _record_subpath)
+    monkeypatch.setattr(etckeeper, "list_history", _record_history)
+    assert _rollback_main(["--list", "/etc/x.conf"]) == 0
+    assert seen_config == ["/etc/x.conf"]
+    assert seen_subpath == ["the-subpath"]
+
+
+def test_rollback_bare_passes_subpath_config_and_defs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bare form reads the previous revision of the subpath, then re-applies
+    # the config with the inherited --def overrides.
+    from pyferm.cli import _rollback_main
+
+    seen_prev: list[object] = []
+    _rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+
+    def _record_previous(subpath: object) -> str:
+        seen_prev.append(subpath)
+        return "prevsha"
+
+    monkeypatch.setattr(etckeeper, "previous_revision", _record_previous)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "yes\n", raising=False)
+    assert _rollback_main(["--def", "X=1", "/etc/x.conf"]) == 0
+    assert seen_prev == ["ferm"]
+    assert apply_spy.calls[0][0] == "/etc/x.conf"
+    assert apply_spy.defs[0] == ["X=1"]
+
+
+def test_rollback_bare_confirmed_with_bare_y(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bare 'y' answer (not only 'yes') confirms the interactive rollback.
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "y\n", raising=False)
+    assert _rollback_main([]) == 0
+    assert rollback_spy.calls == [("prev1234", "ferm")]
+
+
+def _rollback_opts(argv: list[str]) -> Options:
+    from pyferm.cli import _build_rollback_parser, _rollback_options
+
+    return _rollback_options(_build_rollback_parser().parse_args(argv))
+
+
+def test_rollback_options_fast_from_slow() -> None:
+    assert _rollback_opts(["--slow", "/etc/x"]).fast is False
+    assert _rollback_opts(["/etc/x"]).fast is True
+
+
+def test_rollback_options_domain_passthrough() -> None:
+    assert _rollback_opts(["--domain", "ip", "/etc/x"]).domain == "ip"
+
+
+def test_rollback_options_full_reload_passthrough() -> None:
+    assert (
+        _rollback_opts(["--nft", "--full-reload", "/etc/x"]).full_reload
+        is True
+    )
+
+
+def test_rollback_options_etckeeper_from_no_etckeeper() -> None:
+    assert _rollback_opts(["/etc/x"]).etckeeper is True
+    assert _rollback_opts(["--no-etckeeper", "/etc/x"]).etckeeper is False

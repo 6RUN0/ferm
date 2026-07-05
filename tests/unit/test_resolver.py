@@ -17,11 +17,14 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.resolver import (
+    ResourceRecord,
     StubResolver,
     SystemResolver,
     ZonefileResolver,
+    _canonical_name,
     _dnspython_available,
     _expand_ipv6,
+    _make_record,
     _warn_stub_backend,
     identify_numeric_address,
     pick_resolver,
@@ -87,8 +90,68 @@ def test_expand_ipv6_rejects_unparsable_rdata() -> None:
         _expand_ipv6("not-an-address")
 
 
+def test_canonical_name_lowercases_and_drops_trailing_dot() -> None:
+    # Both the .lower() and the rstrip(".") matter: an upper-cased name or a
+    # name keeping its trailing label separator would miss the zone lookup.
+    assert _canonical_name("MAX.") == "max"
+    assert _canonical_name("Ns.Example.Com.") == "ns.example.com"
+
+
+def test_make_record_ns_canonicalizes_target() -> None:
+    # An NS target is a hostname resolved again in a second pass, so it must
+    # be canonicalized (lower-cased, trailing dot dropped) like a query name.
+    assert _make_record("NS", ["NS1.EXAMPLE.COM."]) == ResourceRecord(
+        "NS", "ns1.example.com"
+    )
+
+
+def test_make_record_mx_single_field_is_the_exchange() -> None:
+    # A well-formed MX rdata is "priority exchange"; a lone field has no
+    # priority, so the field itself is the exchange (no out-of-range read).
+    assert _make_record("MX", ["10"]) == ResourceRecord("MX", "10")
+
+
+def test_make_record_mx_uses_exchange_after_priority() -> None:
+    assert _make_record("MX", ["10", "MAIL.EXAMPLE.COM."]) == ResourceRecord(
+        "MX", "mail.example.com"
+    )
+
+
+def test_make_record_other_type_keeps_type_and_first_field() -> None:
+    # An unhandled type is recorded verbatim (its first rdata field) only so
+    # the name is known to exist; the type is preserved, not blanked.
+    assert _make_record("TXT", ["hello"]) == ResourceRecord("TXT", "hello")
+
+
+def test_make_record_empty_rdata_is_none() -> None:
+    assert _make_record("A", []) is None
+
+
 def test_resolve_a_record(zone: ZonefileResolver) -> None:
     assert resolve("ip", "v4.example.com", resolver=zone) == ["192.0.2.1"]
+
+
+def test_resolve_numeric_literal_does_not_stop_the_loop(
+    zone: ZonefileResolver,
+) -> None:
+    # After a numeric literal is emitted the loop must continue to the next
+    # name (a break here would silently drop every following host).
+    assert resolve(
+        "ip", ["10.0.0.5", "v4.example.com"], "A", resolver=zone
+    ) == [
+        "10.0.0.5",
+        "192.0.2.1",
+    ]
+
+
+def test_resolve_silent_miss_does_not_stop_the_loop(
+    zone: ZonefileResolver,
+) -> None:
+    # A silently-missed name (NXDOMAIN/NOERROR) must not abort the loop; a
+    # break would drop the resolvable name that follows it.
+    assert resolve(
+        "ip", ["nonexistent.example.com", "v4.example.com"], resolver=zone
+    ) == ["192.0.2.1"]
 
 
 def test_resolve_defaults_to_aaaa_for_ip6_and_expands(
@@ -370,19 +433,30 @@ def test_system_resolver_failure_carries_message(
 
     result, _ = _system_search(monkeypatch, raise_failure)
     assert result.found is False
+    assert result.answer == []  # a loud failure still carries an empty answer
     assert result.errorstring == "connection timed out"
 
 
 def test_stub_resolver_a_record(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_getaddrinfo(
-        _host: str, _port: object, family: int, socktype: int, **_kwargs: int
+        host: str, port: object, family: int, socktype: int, *, flags: int
     ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        # Pin every positional passed to getaddrinfo: an "A" query maps to
+        # AF_INET (not AF_INET6), the hostname/socktype travel through
+        # verbatim, and flags is pinned to 0 (no AI_V4MAPPED/AI_ADDRCONFIG).
+        assert host == "v4.example.com"
+        assert port is None
+        assert family == socket.AF_INET
+        assert socktype == socket.SOCK_STREAM
+        assert flags == 0
         return [(family, socktype, 6, "", ("192.0.2.1", 0))]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     result = StubResolver().search("v4.example.com", "A")
     assert result.found is True
     assert [(rr.type, rr.data) for rr in result.answer] == [("A", "192.0.2.1")]
+    # A successful lookup is a silent-miss-free NOERROR, never a bare None.
+    assert result.errorstring == "NOERROR"
 
 
 def test_stub_resolver_aaaa_dedup_and_scope(
@@ -437,6 +511,7 @@ def test_stub_eai_noname_is_silent_nxdomain(
 ) -> None:
     result = _stub_gaierror(monkeypatch, socket.EAI_NONAME)
     assert result.found is False
+    assert result.answer == []
     assert result.errorstring == "NXDOMAIN"
 
 
@@ -447,6 +522,7 @@ def test_stub_eai_nodata_is_silent_noerror(
     errno = getattr(socket, "EAI_NODATA", None) or socket.EAI_ADDRFAMILY
     result = _stub_gaierror(monkeypatch, errno)
     assert result.found is False
+    assert result.answer == []
     assert result.errorstring == "NOERROR"
 
 
@@ -454,6 +530,8 @@ def test_stub_eai_again_is_loud_servfail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = _stub_gaierror(monkeypatch, socket.EAI_AGAIN)
+    assert result.found is False
+    assert result.answer == []
     assert result.errorstring == "SERVFAIL"
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,8 @@ from pyferm.backend.iptables import (
     rules_to_save,
     shell_escape,
     shell_format_option,
+    table_to_save,
+    validate_names,
 )
 from pyferm.config import Options
 from pyferm.domains import (
@@ -1114,3 +1117,633 @@ def test_chain_name_injection_rejected_on_plan_path(
     )
     assert proc.returncode != 0
     assert "evil chain" in proc.stderr
+
+
+# ===========================================================================
+# Mutation-kill coverage for the emit/execute corners the flat-input tests
+# leave equivalent: the slow command list ordering + guard/atomic framing,
+# the fast save's header/preserve/flush branches, family-sensitive value
+# formatting, and the rollback/capture command shapes.
+# ===========================================================================
+
+_ATOMIC_FILE_RE = re.compile(r"--atomic-file \S+")
+
+
+def _norm(text: str) -> str:
+    """Collapse the random atomic-file tempname so commands compare stably."""
+    return _ATOMIC_FILE_RE.sub("--atomic-file TMP", text)
+
+
+def _target_rule(name: str = "jump", value: str = "ACCEPT") -> RenderedRule:
+    return RenderedRule(
+        options=[RenderedOption(name, value, OptionKind.TARGET, None)],
+        script=None,
+    )
+
+
+# --- _render_slow: exact command list + guard/atomic framing ---------------
+
+
+def test_render_slow_full_command_list_and_walk_order() -> None:
+    # Two tables, builtin + custom chains: pins the reset walk (-P builtins,
+    # -F, -X), the create walk (-P for a non-ACCEPT builtin, -N/-N -P for
+    # custom chains) and the rule walk, in oracle order.
+    domain_info = DomainInfo(
+        tools={"tables": "iptables"},
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(
+                        builtin=True, policy="ACCEPT", rules=[_target_rule()]
+                    ),
+                    "FORWARD": ChainInfo(builtin=True, policy="DROP"),
+                    "web": ChainInfo(policy="DROP"),
+                    "misc": ChainInfo(),
+                }
+            ),
+            "nat": TableInfo(chains={"PREROUTING": ChainInfo(builtin=True)}),
+        },
+    )
+    rendered = IptablesBackend().render(Family.IP, domain_info, _SLOW)
+    try:
+        assert [(c.text, c.guarded) for c in rendered.commands] == [
+            ("iptables -t filter -P INPUT ACCEPT", True),
+            ("iptables -t filter -P FORWARD ACCEPT", True),
+            ("iptables -t filter -F", True),
+            ("iptables -t filter -X", True),
+            ("iptables -t filter -P FORWARD DROP", True),
+            ("iptables -t filter -N web -P DROP", True),
+            ("iptables -t filter -N misc", True),
+            ("iptables -t filter -A INPUT --jump ACCEPT", True),
+            ("iptables -t nat -P PREROUTING ACCEPT", True),
+            ("iptables -t nat -F", True),
+            ("iptables -t nat -X", True),
+        ]
+    finally:
+        rendered.close()
+
+
+def test_render_slow_auto_detects_builtin_without_flag() -> None:
+    # has_builtin is False and INPUT is not flagged builtin, so the
+    # name-based auto-detect must still treat INPUT as a builtin: it is reset
+    # to ACCEPT and its non-default policy is applied with -P (not -N).
+    domain_info = DomainInfo(
+        tools={"tables": "iptables"},
+        tables={
+            "filter": TableInfo(
+                has_builtin=False,
+                chains={
+                    "INPUT": ChainInfo(
+                        builtin=False, policy="DROP", rules=[_target_rule()]
+                    ),
+                    "custom": ChainInfo(),
+                },
+            )
+        },
+    )
+    rendered = IptablesBackend().render(Family.IP, domain_info, _SLOW)
+    try:
+        assert [c.text for c in rendered.commands] == [
+            "iptables -t filter -P INPUT ACCEPT",
+            "iptables -t filter -F",
+            "iptables -t filter -X",
+            "iptables -t filter -P INPUT DROP",
+            "iptables -t filter -N custom",
+            "iptables -t filter -A INPUT --jump ACCEPT",
+        ]
+    finally:
+        rendered.close()
+
+
+def test_render_slow_resets_builtin_after_a_leading_custom_chain() -> None:
+    # A non-builtin chain sorted/declared BEFORE a builtin one must not stop
+    # the reset walk (continue, not break): the builtin's -P line survives.
+    domain_info = DomainInfo(
+        tools={"tables": "iptables"},
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "achain": ChainInfo(),
+                    "INPUT": ChainInfo(builtin=True),
+                }
+            )
+        },
+    )
+    rendered = IptablesBackend().render(Family.IP, domain_info, _SLOW)
+    try:
+        reset = [c.text for c in rendered.commands if " -P " in c.text]
+        assert reset == ["iptables -t filter -P INPUT ACCEPT"]
+    finally:
+        rendered.close()
+
+
+def test_render_slow_ip6_reject_maps_to_icmp6() -> None:
+    # The ip6 slow path (arp/eb-style: no *-restore tool) still formats each
+    # rule with the family, so reject-with maps to the icmp6 name.
+    domain_info = DomainInfo(
+        tools={"tables": "ip6tables"},
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(
+                        builtin=True,
+                        rules=[
+                            _target_rule(
+                                "reject-with", "icmp-port-unreachable"
+                            )
+                        ],
+                    )
+                }
+            )
+        },
+    )
+    rendered = IptablesBackend().render(Family.IP6, domain_info, _SLOW)
+    try:
+        rule_lines = [
+            c.text for c in rendered.commands if "-A INPUT" in c.text
+        ]
+        assert rule_lines == [
+            "ip6tables -t filter -A INPUT --reject-with icmp6-port-unreachable"
+        ]
+    finally:
+        rendered.close()
+
+
+def test_render_slow_flush_still_walks_every_table() -> None:
+    # Under --flush each table emits only its reset/-F/-X then is skipped
+    # (continue, not break): a second table must still be walked.
+    domain_info = DomainInfo(
+        tools={"tables": "iptables"},
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(builtin=True, rules=[_target_rule()])
+                }
+            ),
+            "nat": TableInfo(chains={"PREROUTING": ChainInfo(builtin=True)}),
+        },
+    )
+    rendered = IptablesBackend().render(
+        Family.IP, domain_info, Options(fast=False, flush=True)
+    )
+    try:
+        assert [c.text for c in rendered.commands] == [
+            "iptables -t filter -P INPUT ACCEPT",
+            "iptables -t filter -F",
+            "iptables -t filter -X",
+            "iptables -t nat -P PREROUTING ACCEPT",
+            "iptables -t nat -F",
+            "iptables -t nat -X",
+        ]
+    finally:
+        rendered.close()
+
+
+def test_render_slow_eb_full_framing_and_guard_flags() -> None:
+    # The eb atomic init/commit framing is unguarded; the per-table walk is
+    # guarded.  Pins the exact command sequence (names normalized) and every
+    # guard flag, so a mutant flipping a framing command to guarded, dropping
+    # the "eb" branch, or nulling a command is caught.
+    domain_info = DomainInfo(
+        tools={"tables": "ebtables"},
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(builtin=True, rules=[_target_rule()])
+                }
+            )
+        },
+    )
+    rendered = IptablesBackend().render(Family.EB, domain_info, _SLOW)
+    try:
+        assert [(_norm(c.text), c.guarded) for c in rendered.commands] == [
+            ("ebtables -t filter --atomic-file TMP --atomic-init", False),
+            ("ebtables -t filter --atomic-file TMP --init-table", False),
+            ("ebtables -t nat --atomic-file TMP --atomic-init", False),
+            ("ebtables -t nat --atomic-file TMP --init-table", False),
+            ("ebtables -t broute --atomic-file TMP --atomic-init", False),
+            ("ebtables -t broute --atomic-file TMP --init-table", False),
+            ("ebtables -t filter --atomic-file TMP -P INPUT ACCEPT", True),
+            ("ebtables -t filter --atomic-file TMP -F", True),
+            ("ebtables -t filter --atomic-file TMP -X", True),
+            (
+                "ebtables -t filter --atomic-file TMP -A INPUT --jump ACCEPT",
+                True,
+            ),
+            ("ebtables -t filter --atomic-file TMP --atomic-commit", False),
+            ("ebtables -t nat --atomic-file TMP --atomic-commit", False),
+            ("ebtables -t broute --atomic-file TMP --atomic-commit", False),
+        ]
+    finally:
+        rendered.close()
+
+
+# --- rules_to_save: header, ip6 mapping, preserve + flush branches ----------
+
+
+def _reject_ip6_domain() -> DomainInfo:
+    return DomainInfo(
+        tools={
+            "tables-save": "ip6tables-save",
+            "tables-restore": "ip6tables-restore",
+        },
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(
+                        builtin=True,
+                        rules=[
+                            _target_rule(
+                                "reject-with", "icmp-port-unreachable"
+                            )
+                        ],
+                    )
+                }
+            )
+        },
+    )
+
+
+def test_rules_to_save_header_carries_when_stamp() -> None:
+    save = rules_to_save(
+        Family.IP, _reject_ip6_domain(), Options(), now="WHEN"
+    )
+    from pyferm import __version__
+
+    assert save.splitlines()[0] == (
+        f"# Generated by ferm {__version__} (ip6tables-save) on WHEN"
+    )
+
+
+def test_rules_to_save_ip6_reject_maps_to_icmp6() -> None:
+    save = rules_to_save(
+        Family.IP6, _reject_ip6_domain(), Options(), now="WHEN"
+    )
+    assert "-A INPUT --reject-with icmp6-port-unreachable" in save.splitlines()
+
+
+def test_render_fast_ip6_reject_maps_to_icmp6() -> None:
+    # render() -> rules_to_save must pass the family through, so the fast save
+    # carries the icmp6 name (a mutant nulling the family gives icmp-...).
+    rendered = IptablesBackend().render(
+        Family.IP6, _reject_ip6_domain(), Options()
+    )
+    try:
+        assert rendered.save is not None
+        assert "-A INPUT --reject-with icmp6-port-unreachable" in rendered.save
+    finally:
+        rendered.close()
+
+
+_PREV_DISTINCT = (
+    "*filter\n"
+    ":INPUT ACCEPT [0:0]\n"
+    ":docker DROP [7:8]\n"
+    "-A docker -j RETURN\n"
+    "COMMIT\n"
+)
+
+
+def test_rules_to_save_copies_preserve_policy_line_verbatim() -> None:
+    # Two preserve chains: 'docker' exists in the previous dump with a
+    # DISTINCTIVE policy line (DROP [7:8]) that is copied verbatim, and 'zzz'
+    # is absent so it is synthesized to '-'.  Both must appear (no break after
+    # the first), and the copied line must not be re-synthesized to
+    # ':docker - [0:0]'.
+    table_info = TableInfo(
+        chains={
+            "INPUT": ChainInfo(builtin=True),
+            "docker": ChainInfo(preserve=True),
+            "zzz": ChainInfo(preserve=True),
+        }
+    )
+    table_info.preserve_regexes = [re.compile("docker"), re.compile("zzz")]
+    domain_info = DomainInfo(
+        tools={
+            "tables-save": "iptables-save",
+            "tables-restore": "iptables-restore",
+        },
+        previous=_PREV_DISTINCT,
+        tables={"filter": table_info},
+    )
+    save = rules_to_save(Family.IP, domain_info, Options(), now="WHEN")
+    # Assert the exact body (everything after the version header line): a
+    # mutant that RESETS `result` at the copied line instead of appending
+    # would silently drop the header/``*filter``/``:INPUT`` prefix, which a
+    # membership check would miss.
+    body = save.split("\n", 1)[1]
+    assert body == (
+        "*filter\n"
+        ":INPUT ACCEPT [0:0]\n"
+        ":docker DROP [7:8]\n"
+        ":zzz - [0:0]\n"
+        "-A docker -j RETURN\n"
+        "COMMIT\n"
+    )
+
+
+def test_rules_to_save_flush_keeps_builtin_before_custom() -> None:
+    # Under --flush a custom chain 'AAA' sorts before the builtin 'INPUT';
+    # the policy walk must continue past the custom (which flush drops) so
+    # INPUT's synthesized ACCEPT line survives (a break would lose it).
+    domain_info = DomainInfo(
+        tools={
+            "tables-save": "iptables-save",
+            "tables-restore": "iptables-restore",
+        },
+        tables={
+            "filter": TableInfo(
+                has_builtin=True,
+                chains={"AAA": ChainInfo(), "INPUT": ChainInfo(builtin=True)},
+            )
+        },
+    )
+    save = rules_to_save(Family.IP, domain_info, Options(flush=True), now="W")
+    chain_lines = [line for line in save.splitlines() if line.startswith(":")]
+    assert chain_lines == [":INPUT ACCEPT [0:0]"]
+
+
+# --- table_to_save: preserved text + rules, flush, ip6, fast quoting -------
+
+
+def _dport_rule(port: str) -> RenderedRule:
+    return RenderedRule(
+        options=[RenderedOption("dport", port, OptionKind.OPTION, None)],
+        script=None,
+    )
+
+
+def test_table_to_save_prepends_preserved_then_rules() -> None:
+    chains = {
+        "a": ChainInfo(rules=[_dport_rule("1")]),
+        "b": ChainInfo(rules=[_dport_rule("2")]),
+    }
+    out = table_to_save(
+        Family.IP, chains, Options(), {"a": "PA\n", "b": "PB\n"}
+    )
+    assert out == "PA\n-A a --dport 1\nPB\n-A b --dport 2\n"
+
+
+def test_table_to_save_flush_keeps_preserved_drops_rules() -> None:
+    chains = {
+        "a": ChainInfo(rules=[_dport_rule("1")]),
+        "b": ChainInfo(rules=[_dport_rule("2")]),
+    }
+    out = table_to_save(
+        Family.IP, chains, Options(flush=True), {"a": "PA\n", "b": "PB\n"}
+    )
+    assert out == "PA\nPB\n"
+
+
+def test_table_to_save_ip6_reject_maps_to_icmp6() -> None:
+    chains = {
+        "INPUT": ChainInfo(
+            rules=[_target_rule("reject-with", "icmp-port-unreachable")]
+        )
+    }
+    out = table_to_save(Family.IP6, chains, Options(), {})
+    assert out == "-A INPUT --reject-with icmp6-port-unreachable\n"
+
+
+def test_table_to_save_uses_fast_quoting_for_special_chars() -> None:
+    # The save path always quotes fast-mode (double quotes), so a ';' in a
+    # value is wrapped as "a;b" -- never slow-mode single quotes.
+    chains = {
+        "c": ChainInfo(
+            rules=[
+                RenderedRule(
+                    options=[
+                        RenderedOption(
+                            "comment", "a;b", OptionKind.OPTION, None
+                        )
+                    ],
+                    script=None,
+                )
+            ]
+        )
+    }
+    out = table_to_save(Family.IP, chains, Options(), {})
+    assert out == '-A c --comment "a;b"\n'
+
+
+# --- shell_format_option: negation + fast-quoting corners ------------------
+
+
+def test_shell_format_option_negated_array_takes_first_element() -> None:
+    # A negated ARRAY (address_magic) collapses to its first element, kept
+    # verbatim: " ! --k a", never a bare flag or the second element.
+    assert (
+        shell_format_option("k", Negated(["a", "b"]), fast=True) == " ! --k a"
+    )
+
+
+def test_shell_format_option_negated_flag_keeps_bang() -> None:
+    # A negated None is a negated flag: the " !" prefix must survive.
+    assert shell_format_option("k", Negated(None), fast=True) == " ! --k"
+
+
+def test_shell_format_option_negated_params_keeps_bang() -> None:
+    assert (
+        shell_format_option("k", Negated(Params(["a", "b"])), fast=True)
+        == " ! --k a b"
+    )
+
+
+def test_shell_format_option_params_special_chars_fast_quoted() -> None:
+    assert shell_format_option("k", Params(["a;b"]), fast=True) == ' --k "a;b"'
+
+
+def test_shell_format_option_multi_special_chars_fast_quoted() -> None:
+    assert shell_format_option("k", Multi(["a;b"]), fast=True) == ' --k "a;b"'
+
+
+# --- format_option / format_rule family guards -----------------------------
+
+
+def test_format_option_ip_family_leaves_reject_with_unmapped() -> None:
+    # The icmp6 reject map is gated on domain == "ip6" AND name; the ip family
+    # must pass reject-with through untouched (a mutated OR would map it).
+    assert (
+        format_option(
+            Family.IP, "reject-with", "icmp-port-unreachable", fast=True
+        )
+        == " --reject-with icmp-port-unreachable"
+    )
+
+
+def test_format_rule_ip6_maps_reject_with() -> None:
+    rule = _target_rule("reject-with", "icmp-port-unreachable")
+    assert (
+        format_rule(Family.IP6, rule, fast=True)
+        == " --reject-with icmp6-port-unreachable"
+    )
+
+
+# --- extract_chain_from_table_save: multi-match join -----------------------
+
+
+def test_extract_chain_joins_matches_without_separator() -> None:
+    # Two -A lines for the same chain are concatenated with no separator
+    # between them (a mutated join would splice in stray text).
+    body = "-A INPUT -j A\n-A OUTPUT -j B\n-A INPUT -j C\n"
+    assert extract_chain_from_table_save(body, "INPUT") == (
+        "-A INPUT -j A\n-A INPUT -j C\n"
+    )
+
+
+# --- validate_names: policy gate -------------------------------------------
+
+
+def test_validate_names_rejects_bad_chain_policy() -> None:
+    # validate_names must check each chain's OWN policy; a mutant validating
+    # a constant None would silently accept a bogus policy.
+    domain_info = DomainInfo(
+        tools={},
+        tables={
+            "filter": TableInfo(
+                chains={"INPUT": ChainInfo(builtin=True, policy="BOGUSPOL")}
+            )
+        },
+    )
+    with pytest.raises(FermError, match="BOGUSPOL"):
+        validate_names(domain_info)
+
+
+# --- rollback: full reset text + eb commits + capture ----------------------
+
+
+def test_rollback_ip_resets_every_builtin_across_tables() -> None:
+    captured: list[tuple[object, str]] = []
+    domain_info = DomainInfo(
+        enabled=True,
+        tools={"tables-restore": "iptables-restore"},
+        previous="PREVIOUS\n",
+        tables={
+            "filter": TableInfo(
+                chains={
+                    "INPUT": ChainInfo(builtin=True),
+                    "OUTPUT": ChainInfo(builtin=True),
+                    "custom": ChainInfo(),
+                }
+            ),
+            "nat": TableInfo(chains={"PREROUTING": ChainInfo(builtin=True)}),
+        },
+    )
+    IptablesBackend().rollback(
+        Family.IP,
+        domain_info,
+        Options(),
+        execute=lambda _c: None,
+        restore=lambda info, save: captured.append((info, save)),
+    )
+    assert captured == [
+        (
+            domain_info,
+            "*filter\n:INPUT ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n"
+            "*nat\n:PREROUTING ACCEPT [0:0]\nCOMMIT\n"
+            "PREVIOUS\n",
+        )
+    ]
+
+
+def test_rollback_eb_commits_each_previous_snapshot() -> None:
+    calls: list[str] = []
+    domain_info = DomainInfo(
+        tools={"tables": "ebtables"},
+        enabled=True,
+        tables={"filter": TableInfo(chains={})},
+    )
+    for table in EB_TABLES:
+        domain_info.ebt_previous[table] = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            prefix="ferm."
+        )
+    try:
+        IptablesBackend().rollback(
+            Family.EB,
+            domain_info,
+            Options(),
+            execute=calls.append,
+            restore=lambda _i, _s: pytest.fail("eb rollback must not restore"),
+        )
+        # Assert the exact per-table atomic-file path (from the snapshot the
+        # rollback commits), not a normalized placeholder: a mutant that nulls
+        # the name to ``None`` would still match a normalized ``TMP``.
+        assert calls == [
+            f"ebtables -t {table} "
+            f"--atomic-file {domain_info.ebt_previous[table].name} "
+            "--atomic-commit"
+            for table in EB_TABLES
+        ]
+    finally:
+        for handle in domain_info.ebt_previous.values():
+            handle.close()
+
+
+def test_capture_previous_eb_atomic_save_commands_are_ebtables() -> None:
+    # The eb snapshot must name the ebtables tool (a mutant nulling the tool
+    # command would emit "None -t ...").
+    calls: list[str] = []
+    info = DomainInfo(tools={"tables": "ebtables"}, enabled=True)
+    try:
+        IptablesBackend().capture_previous(
+            Family.EB,
+            info,
+            Options(test=True),
+            execute=lambda c: calls.append(_norm(c)),
+            read_save=lambda _t: None,
+            capture=lambda _c: None,
+        )
+        assert calls == [
+            "ebtables -t filter --atomic-file TMP --atomic-save",
+            "ebtables -t nat --atomic-file TMP --atomic-save",
+            "ebtables -t broute --atomic-file TMP --atomic-save",
+        ]
+    finally:
+        info.close()
+
+
+# --- restore_domain: argv construction -------------------------------------
+
+
+def test_restore_domain_appends_noflush_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --noflush appends a distinct argv element to the restore tool path; the
+    # command runs with check=False (ferm maps the exit code itself).
+    seen: dict[str, object] = {}
+
+    def fake_run(
+        args: list[str],
+        *,
+        input: bytes,  # noqa: A002, ARG001
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        seen["args"] = list(args)
+        seen["check"] = check
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("pyferm.backend.iptables.subprocess.run", fake_run)
+    info = DomainInfo(tools={"tables-restore": "iptables-restore"})
+    restore_domain(info, "SAVE\n", Options(noflush=True))
+    assert seen["args"] == ["iptables-restore", "--noflush"]
+    assert seen["check"] is False
+
+
+def test_restore_domain_without_noflush_is_bare_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(
+        args: list[str],
+        *,
+        input: bytes,  # noqa: A002, ARG001
+        check: bool,  # noqa: ARG001
+    ) -> subprocess.CompletedProcess[bytes]:
+        seen["args"] = list(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("pyferm.backend.iptables.subprocess.run", fake_run)
+    info = DomainInfo(tools={"tables-restore": "iptables-restore"})
+    restore_domain(info, "SAVE\n", Options())
+    assert seen["args"] == ["iptables-restore"]

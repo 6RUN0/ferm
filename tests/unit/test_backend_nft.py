@@ -21,7 +21,7 @@ from pyferm.backend.nft import (
 )
 from pyferm.errors import FermError
 from pyferm.scope import OptionKind
-from pyferm.values import SetRef
+from pyferm.values import SetRef, Value
 
 
 def test_model_constructors_hold_fields() -> None:
@@ -279,7 +279,6 @@ def test_first_scalar_unsupported_shape_is_error() -> None:
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_match  # noqa: E402
 from pyferm.rules import RenderedOption  # noqa: E402
-from pyferm.values import Value  # noqa: E402
 
 
 def _opt(
@@ -2175,3 +2174,278 @@ def test_translate_rule_rejects_empty_named_set() -> None:
     )
     with pytest.raises(FermError, match="internal error"):
         translate_rule(Family.IP6, "filter", rule)
+
+
+# ---------------------------------------------------------------------------
+# translate_rule: structured match/verdict metadata (mutation-hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_translate_rule_port_match_carries_set_metadata() -> None:
+    # A folded set is built from set_key/element, not by reverse-parsing expr;
+    # the structured fields on the emitted match must survive translation.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("dport", "22"),
+            _target("ACCEPT"),
+        ),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert (match.expr, match.set_key, match.element) == (
+        "tcp dport 22",
+        "tcp dport",
+        "22",
+    )
+
+
+def test_translate_rule_l4proto_carries_set_metadata() -> None:
+    # The bare-proto `meta l4proto` match is set-eligible too, so it keeps the
+    # `meta l4proto` set_key and the protocol element for folding.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "icmp", kind=OptionKind.PROTO),
+            _target("DROP"),
+        ),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert (match.expr, match.set_key, match.element) == (
+        "meta l4proto icmp",
+        "meta l4proto",
+        "icmp",
+    )
+
+
+def test_translate_rule_negated_proto_emits_inequality() -> None:
+    # A negated protocol keeps its `!=` and is NOT set-eligible.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", Negated("tcp"), kind=OptionKind.PROTO),
+            _target("DROP"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto != tcp",
+        "drop",
+    ]
+
+
+def test_translate_rule_without_target_appends_no_verdict() -> None:
+    # A rule carrying only matches (no target) must not synthesize a verdict.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(_opt("source", "10.0.0.1")),
+    )
+    assert [s.to_text() for s in nft.statements] == ["ip saddr 10.0.0.1"]
+
+
+def test_translate_rule_nat_to_ports_uses_transport_context() -> None:
+    # A tcp protocol establishes the transport match a port-bearing NAT needs,
+    # so `REDIRECT to-ports` translates instead of being rejected.
+    nft = translate_rule(
+        Family.IP,
+        "nat",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _target("REDIRECT"),
+            _opt("to-ports", "8080", module="REDIRECT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto tcp",
+        "redirect to :8080",
+    ]
+
+
+def test_translate_rule_verdict_receives_family_domain() -> None:
+    # build_verdict must be handed the rule's family: an ip6 reject-with only
+    # resolves via the icmpv6 map, so a wrong/None domain would fail it.
+    nft = translate_rule(
+        Family.IP6,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("dport", "80"),
+            _target("REJECT"),
+            _opt("reject-with", "icmp6-port-unreachable", module="REJECT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp dport 80",
+        "reject with icmpv6 type port-unreachable",
+    ]
+
+
+def test_translate_rule_comment_before_matches_keeps_matches() -> None:
+    # The comment option must `continue`, not terminate option processing:
+    # a comment ahead of the matches must not drop the rest of the rule.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("comment", "hi", module="comment"),
+            _opt("source", "10.0.0.1"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert nft.comment == "hi"
+    assert [s.to_text() for s in nft.statements] == [
+        "ip saddr 10.0.0.1",
+        "accept",
+    ]
+
+
+def test_translate_rule_companion_before_matches_keeps_matches() -> None:
+    # A target companion (reject-with) must `continue`, not terminate the loop,
+    # so a match option following it is still emitted.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _target("REJECT"),
+            _opt("reject-with", "icmp-port-unreachable", module="REJECT"),
+            _opt("source", "10.0.0.1"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto tcp",
+        "ip saddr 10.0.0.1",
+        "reject with icmp type port-unreachable",
+    ]
+
+
+def test_translate_rule_address_setref_selector_and_ref() -> None:
+    # A SetRef match renders `<selector> @name` and keeps the SetRef plus the
+    # structured selector for the later set-declaration pass.
+    setref = SetRef("myset", ["10.0.0.1"])
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(_opt("source", setref), _target("ACCEPT")),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "ip saddr @myset"
+    assert match.set_selector == "ip saddr"
+    assert match.setref == setref
+
+
+def test_translate_rule_port_setref_uses_protocol_selector() -> None:
+    # A port SetRef selector needs the rule protocol (tcp/udp); dropping it
+    # would fail the tcp/udp guard.
+    setref = SetRef("ports", ["22"])
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("dport", setref),
+            _target("ACCEPT"),
+        ),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "tcp dport @ports"
+    assert match.set_selector == "tcp dport"
+
+
+def test_translate_match_negated_interface_keeps_inequality() -> None:
+    # A negated interface must keep its `!=`; the shared `_op` negation prefix
+    # is easy to lose on the interface arm specifically.
+    assert (
+        translate_match(Family.IP, _opt("in-interface", Negated("eth0")), None)
+        == 'iifname != "eth0"'
+    )
+
+
+# ---------------------------------------------------------------------------
+# serialize_table: named-set declaration emission (mutation-hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_table_emits_named_set_declarations() -> None:
+    from pyferm.backend.nft import NftSetType, _SetDecl
+
+    decls = {
+        "ports": _SetDecl(NftSetType.INET_SERVICE, False, ["22", "80"]),
+        "nets": _SetDecl(NftSetType.IPV4_ADDR, True, ["10.0.0.0/8"]),
+    }
+    table = NftTable(family="ip", name="ferm")
+    out = serialize_table(
+        table, [NftRegularChain("c")], {"c": []}, decls, noflush=False
+    )
+    # Declarations are emitted by sorted name; the interval flag is present
+    # only on the set that needs it, and elements render as a set body.
+    assert (
+        "add set ip ferm nets { type ipv4_addr; flags interval; }\n"
+        "add element ip ferm nets { 10.0.0.0/8 }\n"
+        "add set ip ferm ports { type inet_service; }\n"
+        "add element ip ferm ports { 22, 80 }\n"
+    ) in out
+
+
+def test_serialize_table_chain_absent_from_rules_map() -> None:
+    # A chain with no entry in the rules map contributes no rule lines (the
+    # `rules.get(name, [])` default must be an empty list, not None).
+    table = NftTable(family="ip", name="ferm")
+    out = serialize_table(
+        table, [NftRegularChain("empty")], {}, {}, noflush=True
+    )
+    assert out == "add table ip ferm\nadd chain ip ferm empty\n"
+
+
+def test_serialize_table_rule_without_statements_has_no_separator() -> None:
+    # An empty rule (no statements, no comment) renders `add rule ... <chain>`
+    # with no trailing separator.
+    table = NftTable(family="ip", name="ferm")
+    out = serialize_table(
+        table,
+        [NftRegularChain("c")],
+        {"c": [NftRule([])]},
+        {},
+        noflush=True,
+    )
+    assert "add rule ip ferm c\n" in out
+
+
+# ---------------------------------------------------------------------------
+# _set_type_and_elements: per-selector typing + interval flag
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("domain", "selector", "elements", "type_name", "interval"),
+    [
+        (Family.IP, "ip daddr", ["10.0.0.1"], "IPV4_ADDR", False),
+        (Family.IP6, "ip6 daddr", ["fe80::1"], "IPV6_ADDR", False),
+        (Family.IP, "tcp sport", ["22"], "INET_SERVICE", False),
+        (Family.IP, "tcp dport", ["22"], "INET_SERVICE", False),
+        # A plain host must NOT need `flags interval`; a CIDR must.
+        (Family.IP, "ip saddr", ["10.0.0.1"], "IPV4_ADDR", False),
+        (Family.IP, "ip saddr", ["10.0.0.0/8"], "IPV4_ADDR", True),
+    ],
+)
+def test_set_type_and_elements_selector_typing(
+    domain: Family,
+    selector: str,
+    elements: list[Value],
+    type_name: str,
+    interval: bool,
+) -> None:
+    from pyferm.backend.nft import NftSetType, _set_type_and_elements
+
+    type_, flags_interval, _ = _set_type_and_elements(
+        domain, selector, SetRef("s", elements)
+    )
+    assert type_ is getattr(NftSetType, type_name)
+    assert flags_interval is interval

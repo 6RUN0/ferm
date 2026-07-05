@@ -14,16 +14,20 @@ its tests live in ``test_backend_iptables.py`` (x_tables) and
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from pyferm.config import Options
 from pyferm.domains import (
     DomainInfo,
     Family,
+    ShellSnapshot,
     find_tool,
     initialize_domain,
     parse_family,
     read_previous,
+    resolve_chain_priority,
 )
 from pyferm.errors import FermError
 
@@ -108,6 +112,67 @@ def test_find_tool_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pyferm.domains.os.access", lambda _p, _m: False)
     with pytest.raises(FermError, match="not found in PATH"):
         find_tool("nosuchtool", Options())
+
+
+def _executable_at(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
+    """Make ``os.access`` report *present* paths executable, pinning X_OK."""
+
+    def fake_access(path: str, mode: int) -> bool:
+        # X_OK is the only correct probe; a mutated ``None`` mode is a bug.
+        assert mode == os.X_OK
+        return path in present
+
+    monkeypatch.setattr("pyferm.domains.os.access", fake_access)
+
+
+def test_find_tool_path_unset_uses_sbin_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With PATH unset the search still covers /usr/sbin and /sbin; the empty
+    # default must be a string (an int/None default would crash the split).
+    monkeypatch.delenv("PATH", raising=False)
+    _executable_at(monkeypatch, {"/usr/sbin/nft"})
+    assert find_tool("nft", Options()) == "/usr/sbin/nft"
+
+
+def test_find_tool_searches_path_env_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A tool present only in a PATH directory is found via $PATH, so the
+    # lookup must read the "PATH" variable itself (not a mistyped name).
+    monkeypatch.setenv("PATH", "/custom")
+    _executable_at(monkeypatch, {"/custom/nft"})
+    assert find_tool("nft", Options()) == "/custom/nft"
+
+
+def test_find_tool_splits_path_on_colon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # $PATH entries are colon-separated; the second directory must be searched
+    # too (splitting on whitespace or a literal would miss it).
+    monkeypatch.setenv("PATH", "/a:/custom")
+    _executable_at(monkeypatch, {"/custom/nft"})
+    assert find_tool("nft", Options()) == "/custom/nft"
+
+
+def test_find_tool_path_unset_checks_empty_dir_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # PATH unset defaults to "", which splits to a single empty directory; the
+    # candidate is then "/<name>". A non-empty default would change that path.
+    monkeypatch.delenv("PATH", raising=False)
+    _executable_at(monkeypatch, {"/nft"})
+    assert find_tool("nft", Options()) == "/nft"
+
+
+def test_find_tool_legacy_lookup_uses_x_ok_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The legacy-preference loop must also probe with X_OK; only the plain
+    # name exists here, so it falls through to it after the legacy misses.
+    monkeypatch.setenv("PATH", "/bin")
+    _executable_at(monkeypatch, {"/sbin/iptables-save"})
+    assert find_tool("iptables-save", Options()) == "/sbin/iptables-save"
 
 
 # --- read_previous ---------------------------------------------------------
@@ -232,3 +297,46 @@ def test_initialize_domain_resolves_single_nft_binary() -> None:
         resolve_tools=lambda _domain: {"nft": "nft"},
     )
     assert domains[Family.IP].tools == {"nft": "nft"}
+
+
+# --- resolve_chain_priority ------------------------------------------------
+
+
+def test_resolve_chain_priority_unknown_family_raises_value_error() -> None:
+    # An unknown family has no landmark table; the lookup must default to an
+    # empty mapping so a landmark token fails as a clean ValueError (a None
+    # default would raise TypeError on the membership test instead).
+    with pytest.raises(ValueError, match="filter"):
+        resolve_chain_priority("nosuchfamily", "filter")
+
+
+def test_resolve_chain_priority_known_landmark() -> None:
+    # Sanity anchor: a valid family/landmark still resolves to nft's integer.
+    assert resolve_chain_priority("ip", "filter") == 0
+
+
+# --- initialize_domain: --shell snapshot gate ------------------------------
+
+
+def test_initialize_domain_shell_without_interactive_skips_snapshot() -> None:
+    # The anti-lockout snapshot is emitted only for --shell AND --interactive
+    # together; --shell alone (non-interactive) must not touch the snapshot
+    # seam at all.
+    emitted: list[str] = []
+    snapshot_calls: list[Family] = []
+
+    def build_snapshot(domain: Family, _info: DomainInfo) -> ShellSnapshot:
+        snapshot_calls.append(domain)
+        return ShellSnapshot(
+            setup=("var=tmp", "save > var"), restore="restore"
+        )
+
+    initialize_domain(
+        Family.IP,
+        {},
+        Options(test=True, shell=True, interactive=False),
+        emit_line=emitted.append,
+        shell_snapshot=build_snapshot,
+    )
+    assert snapshot_calls == []
+    assert emitted == []

@@ -281,3 +281,19 @@ def test_parse_error_carries_line_number_and_excerpt() -> None:
     message = str(exc.value)
     assert "line 2" in message
     assert "notachain foo" in message
+
+
+def test_named_set_keeps_element_contained_in_interval() -> None:
+    # A named set from `nft list` is not anonymous: an element contained in
+    # an interval must be kept verbatim, not absorbed into the range.
+    text = (
+        "table ip ferm {\n"
+        "\tset s {\n"
+        "\t\ttype ipv4_addr\n"
+        "\t\tflags interval\n"
+        "\t\telements = { 1.2.3.0/24, 1.2.3.4 }\n"
+        "\t}\n"
+        "}\n"
+    )
+    tables = parse_nft_list(text, family="ip")
+    assert tables["ferm"].sets["s"].elements == ["1.2.3.0/24", "1.2.3.4"]
