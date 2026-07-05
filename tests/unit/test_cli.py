@@ -1868,6 +1868,53 @@ def test_rollback_full_reload_requires_nft(
         _rollback_main(["--to", "deadbeef", "--full-reload"])
 
 
+def test_rollback_interactive_non_tty_stdin_refused_before_any_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mirrors the apply path's tty guard (_resolve_options): --interactive
+    # on a non-tty stdin must be refused before etckeeper or the kernel are
+    # touched, for both rollback forms -- including --to, whose own
+    # confirmation-prompt tty check (confirm=False) never runs.
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    with pytest.raises(FermError, match="stdin is not a tty"):
+        _rollback_main(["--to", "deadbeef", "--interactive"])
+    assert rollback_spy.calls == []
+    assert apply_spy.calls == []
+
+
+def test_rollback_interactive_non_tty_stderr_refused_before_any_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False, raising=False)
+    with pytest.raises(FermError, match="stderr is not a tty"):
+        _rollback_main(["--to", "deadbeef", "--interactive"])
+    assert rollback_spy.calls == []
+    assert apply_spy.calls == []
+
+
+def test_rollback_interactive_tty_reaches_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Positive control: --interactive must still work when both streams are
+    # a tty -- the new guard must not affect the unaffected case.
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    assert _rollback_main(["--to", "deadbeef", "--interactive"]) == 0
+    assert rollback_spy.calls == [("deadbeef", "ferm")]
+    assert apply_spy.calls[0][1].interactive is True
+
+
 def test_rollback_inherits_nolegacy_and_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1349,6 +1349,21 @@ def _rollback_options(args: argparse.Namespace) -> Options:
     """Derive the inherited apply options for a rollback re-apply."""
     if args.full_reload and not args.nft:
         raise FermError("ferm --full-reload has no sense without --nft")
+    # Same tty guard as _resolve_options: both rollback forms (bare and
+    # --to) reach _apply_config -> _confirm_rules, and the bare form's
+    # own tty check in _rollback_to only fires for its history
+    # confirmation, not for the interactive-apply prompt further down --
+    # without this, a non-tty --interactive rollback checks out the reverted
+    # config and rolls back the kernel before failing, leaving the worktree
+    # on the old config while the kernel still runs the pre-rollback rules.
+    if args.interactive and not sys.stdin.isatty():
+        raise FermError(
+            "ferm interactive mode not possible: /dev/stdin is not a tty"
+        )
+    if args.interactive and not sys.stderr.isatty():
+        raise FermError(
+            "ferm interactive mode not possible: /dev/stderr is not a tty"
+        )
     return Options(
         fast=not args.slow,
         interactive=args.interactive,
