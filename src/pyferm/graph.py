@@ -26,10 +26,11 @@ from ._treescan import (
     _NAME_RE,
     _chain_decls,
     _child_blocks,
+    _is_quoted_interpolation,
     _jump_pairs,
     _str_tokens,
-    _subchain_decls,
     _subchain_names,
+    _subchain_pairs,
     _unquote,
 )
 from .domains import DEFAULT_TABLE
@@ -71,6 +72,17 @@ class EdgeKind(enum.StrEnum):
         ``realgoto`` is the deprecated alias for ``goto``.
         """
         return _KIND_BY_JUMP_KEYWORD[keyword]
+
+    @classmethod
+    def from_subchain_keyword(cls, keyword: str) -> EdgeKind:
+        """
+        Map an @subchain/@gotosubchain keyword to its edge kind.
+
+        ``@gotosubchain`` carries goto semantics (jumps to the subchain
+        without a return); ``@subchain``/the deprecated bare ``subchain``
+        keep the ordinary subchain edge.
+        """
+        return _KIND_BY_SUBCHAIN_KEYWORD[keyword]
 
 
 class NodeKind(enum.StrEnum):
@@ -130,8 +142,9 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
     """
     Collect literal value(s) after a header keyword at toks[i].
 
-    Handles a bare single value and a ``(A B ...)`` array; $-names are
-    dropped (non-literal, eval-free contract). Returns (values, next_index).
+    Handles a bare single value and a ``(A B ...)`` array; $-names, and a
+    quoted double-quote interpolation (``"$x"``/``"@arr"``), are dropped
+    (non-literal, eval-free contract). Returns (values, next_index).
     """
     values: list[str] = []
     if i < len(toks) and toks[i] == "(":
@@ -145,7 +158,8 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
             if toks[i].startswith("$"):
                 i += 1  # defensive: a glued "$name" token
                 continue
-            values.append(_unquote(toks[i]))
+            if not _is_quoted_interpolation(toks[i]):
+                values.append(_unquote(toks[i]))
             i += 1
         if i < len(toks) and toks[i] == ")":
             i += 1
@@ -155,7 +169,8 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
             if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
                 i += 1
         elif not toks[i].startswith("$"):
-            values.append(_unquote(toks[i]))
+            if not _is_quoted_interpolation(toks[i]):
+                values.append(_unquote(toks[i]))
             i += 1
         else:
             i += 1  # defensive: a glued "$name" token
@@ -235,11 +250,25 @@ _KIND_BY_JUMP_KEYWORD: Final[dict[str, EdgeKind]] = {
     "realgoto": EdgeKind.GOTO,
 }
 
+#: Backs :meth:`EdgeKind.from_subchain_keyword` (the parser gives goto
+#: jumptype only to a subchain keyword starting with ``@go``).
+_KIND_BY_SUBCHAIN_KEYWORD: Final[dict[str, EdgeKind]] = {
+    "@subchain": EdgeKind.SUBCHAIN,
+    "subchain": EdgeKind.SUBCHAIN,
+    "@gotosubchain": EdgeKind.GOTO,
+}
+
 
 def _jump_edges(toks: Sequence[str]) -> Iterator[tuple[EdgeKind, str]]:
     """Yield (kind, literal target) for each jump/goto/realgoto in a span."""
     for kw, target in _jump_pairs(toks):
         yield EdgeKind.from_jump_keyword(kw), target
+
+
+def _subchain_edges(toks: Sequence[str]) -> Iterator[tuple[EdgeKind, str]]:
+    """Yield (kind, literal name) for each @subchain/@gotosubchain span hit."""
+    for kw, name in _subchain_pairs(toks):
+        yield EdgeKind.from_subchain_keyword(kw), name
 
 
 def _fold_family(domain: str) -> str:
@@ -415,7 +444,7 @@ class _GraphBuilder:
         # per-domain verdict scan) instead of each re-filtering the span
         toks = list(_str_tokens(span))
         jumps = list(_jump_edges(toks))
-        subs = list(_subchain_decls(toks))
+        subs = list(_subchain_edges(toks))
         declared_here = list(_chain_decls(toks))
         for domain in domains:
             family = _fold_family(domain)
@@ -430,8 +459,8 @@ class _GraphBuilder:
                     for kind, dst in jumps:
                         ca.edges.add((src, dst, kind))
                         ca.names.add(dst)
-                    for name in subs:
-                        ca.edges.add((src, name, EdgeKind.SUBCHAIN))
+                    for kind, name in subs:
+                        ca.edges.add((src, name, kind))
                         ca.declared.add(name)
                         ca.names.add(name)
                     for dst in verdicts:

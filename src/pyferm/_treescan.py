@@ -34,11 +34,13 @@ __all__ = [
     "_declared_chains",
     "_index_of",
     "_is_quoted",
+    "_is_quoted_interpolation",
     "_iter_func_refs",
     "_iter_var_refs",
     "_jump_targets",
     "_str_tokens",
     "_subchain_names",
+    "_subchain_pairs",
     "_unquote",
 ]
 
@@ -151,6 +153,23 @@ def _unquote(tok: str) -> str:
     return tok[1:-1] if _is_quoted(tok) else tok
 
 
+def _is_quoted_interpolation(tok: str) -> bool:
+    """
+    Return whether a double-quoted token is an interpolation, not a literal.
+
+    The oracle interpolates ``"$x"``/``"@arr"`` inside double quotes, so a
+    harvester that unquotes such a token verbatim would leak the
+    variable/array reference as a literal chain/jump name (mirroring the
+    bare ``$var`` skip, which a quoted form otherwise evades). A
+    single-quoted token never interpolates (ferm passes it through
+    literally) and chain names are restricted to ``[A-Za-z0-9_.+-]``, so
+    the ``@`` check can never exclude a legitimate literal name.
+    """
+    return (
+        _is_quoted(tok) and tok[0] == '"' and _unquote(tok)[:1] in ("$", "@")
+    )
+
+
 def _declared_chains(span: Sequence[object]) -> Iterator[str]:
     """
     Yield every chain name a token span declares.
@@ -188,7 +207,8 @@ def _chain_decls(toks: Sequence[str]) -> Iterator[str]:
                     if toks[i].startswith("$"):
                         i += 1  # defensive: a glued "$name" token
                         continue
-                    yield _unquote(toks[i])
+                    if not _is_quoted_interpolation(toks[i]):
+                        yield _unquote(toks[i])
                     i += 1
                 if i < len(toks) and toks[i] == ")":
                     i += 1
@@ -201,14 +221,19 @@ def _chain_decls(toks: Sequence[str]) -> Iterator[str]:
                     if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
                         i += 1
                 elif not toks[i].startswith("$"):
-                    yield _unquote(toks[i])
+                    if not _is_quoted_interpolation(toks[i]):
+                        yield _unquote(toks[i])
                     i += 1
                 else:
                     i += 1  # defensive: a glued "$name" token
             continue
         if tok in _SUBCHAIN_KW:
             i += 1
-            if i < len(toks) and _is_quoted(toks[i]):
+            if (
+                i < len(toks)
+                and _is_quoted(toks[i])
+                and not _is_quoted_interpolation(toks[i])
+            ):
                 yield _unquote(toks[i])
             continue
         i += 1
@@ -228,11 +253,26 @@ def _subchain_names(span: Sequence[object]) -> Iterator[str]:
 
 def _subchain_decls(toks: Sequence[str]) -> Iterator[str]:
     """Scan pre-filtered string tokens (:func:`_subchain_names` core)."""
+    for _kw, name in _subchain_pairs(toks):
+        yield name
+
+
+def _subchain_pairs(toks: Sequence[str]) -> Iterator[tuple[str, str]]:
+    """
+    Yield (keyword, literal name) per quoted @subchain/@gotosubchain pair.
+
+    The shared core of :func:`_subchain_decls` and the graph's edge scan
+    (which additionally maps the keyword to an edge kind, mirroring
+    :func:`_jump_pairs`/:func:`_jump_targets`): an interpolated
+    ``"$x"``/``"@arr"`` quoted name is skipped, byte-identically for both.
+    """
     for i, tok in enumerate(toks):
         if tok in _SUBCHAIN_KW and i + 1 < len(toks):
             candidate = toks[i + 1]
-            if _is_quoted(candidate):
-                yield _unquote(candidate)
+            if _is_quoted(candidate) and not _is_quoted_interpolation(
+                candidate
+            ):
+                yield tok, _unquote(candidate)
 
 
 def _jump_targets(span: Sequence[object]) -> Iterator[str]:
@@ -246,11 +286,14 @@ def _jump_pairs(toks: Sequence[str]) -> Iterator[tuple[str, str]]:
     Yield (keyword, literal target) per jump/goto/realgoto token pair.
 
     The shared core of :func:`_jump_targets` and the graph's edge scan
-    (which additionally maps the keyword to an edge kind); $var targets
-    are skipped and quotes are stripped, byte-identically for both.
+    (which additionally maps the keyword to an edge kind); $var targets and
+    interpolated quoted targets (``"$x"``/``"@arr"``) are skipped, and
+    quotes are stripped from a literal target, byte-identically for both.
     """
     for i, tok in enumerate(toks):
         if tok in _JUMP_KW and i + 1 < len(toks):
             target = toks[i + 1]
-            if not target.startswith("$"):
+            if not target.startswith("$") and not _is_quoted_interpolation(
+                target
+            ):
                 yield tok, _unquote(target)

@@ -353,6 +353,58 @@ def test_subchain_edge_and_user_node() -> None:
     assert dict(c.nodes)["sc"] == NodeKind.USER
 
 
+def test_gotosubchain_edge_carries_goto_kind() -> None:
+    # The parser gives goto jumptype to subchain keywords starting with
+    # "@go", so the @gotosubchain edge must render as GOTO, not SUBCHAIN.
+    g = collect_graph(
+        Parser.parse_to_block(
+            'chain INPUT { proto tcp @gotosubchain "sc" { ACCEPT; } }'
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "sc", EdgeKind.GOTO) in c.edges
+    assert dict(c.nodes)["sc"] == NodeKind.USER
+    assert '  "INPUT" -> "sc": goto' in render_d2(g).splitlines()
+    assert '    "INPUT" -> "sc" [label="goto"];' in render_dot(g).splitlines()
+
+
+def test_subchain_and_gotosubchain_edges_coexist() -> None:
+    # Both keywords side by side must keep their own distinct edge kind.
+    g = collect_graph(
+        Parser.parse_to_block(
+            'chain INPUT { proto tcp @subchain "s1" { ACCEPT; }'
+            ' proto udp @gotosubchain "s2" { ACCEPT; } }'
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert ("INPUT", "s1", EdgeKind.SUBCHAIN) in c.edges
+    assert ("INPUT", "s2", EdgeKind.GOTO) in c.edges
+
+
+def test_quoted_interpolation_chain_header_makes_no_phantom_node() -> None:
+    # `chain "$x" { ... }` is a double-quoted interpolation, not a
+    # literal chain name -- it must not fabricate a "$x" node/cluster
+    # entry (graph.py's own _header_value harvests header names
+    # independently of the _treescan.py scanners).
+    g = collect_graph(
+        Parser.parse_to_block(
+            '@def $x = FOO;\nchain "$x" { ACCEPT; }\nchain INPUT { }\n'
+        )
+    )
+    c = _cluster(g, "ip", "filter")
+    assert "$x" not in dict(c.nodes)
+
+
+def test_quoted_interpolation_jump_target_makes_no_phantom_edge() -> None:
+    # `jump "$x"` must not create an edge/node for the literal "$x".
+    g = collect_graph(
+        Parser.parse_to_block('@def $x = FOO;\nchain INPUT { jump "$x"; }\n')
+    )
+    c = _cluster(g, "ip", "filter")
+    assert c.edges == ()
+    assert dict(c.nodes).keys() == {"INPUT"}
+
+
 def test_empty_and_chainless_configs() -> None:
     # zero clusters: render_dot -> "digraph ferm {\n}\n"; render_d2 joins an
     # empty line list ("") and appends the trailing newline -> "\n". A

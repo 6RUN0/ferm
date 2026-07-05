@@ -153,6 +153,35 @@ def test_var_jump_target_is_known_limitation() -> None:
     assert find_undefined_chain_jumps(_tree(cfg)) == []
 
 
+def test_quoted_interpolation_jump_target_skipped() -> None:
+    # `jump "$x"` -- a double-quoted interpolation evades the bare
+    # `$var` skip (the token starts with '"', not '$'); it must not be
+    # treated as a literal jump to a chain named "$x".
+    cfg = '@def $x = FOO;\ntable filter chain INPUT { jump "$x"; }\n'
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
+def test_quoted_interpolation_chain_decl_not_harvested_as_literal() -> None:
+    # `chain "$x" { ... }` must not fabricate a literal "$x" chain
+    # declaration -- that phantom declaration used to surface as an
+    # unreachable chain (nothing jumps to the literal name "$x").
+    cfg = (
+        "@def $x = FOO;\n"
+        'chain "$x" { ACCEPT; }\n'
+        "chain FOO { ACCEPT; }\n"
+        "chain INPUT { jump FOO; }\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+    assert _unreachable(cfg) == []
+
+
+def test_quoted_literal_chain_name_still_detected() -> None:
+    # A legitimate double-quoted LITERAL name (no leading $/@) is not an
+    # interpolation and must keep being harvested as a real declaration.
+    cfg = 'chain "FOO" { ACCEPT; }\nchain INPUT { jump FOO; }\n'
+    assert find_undefined_chain_jumps(_tree(cfg)) == []
+
+
 def test_jump_to_chain_named_like_a_keyword_not_flagged() -> None:
     # A user chain may be named after a header keyword (table/domain/policy/
     # priority/chain) -- the oracle accepts such names. `chain` takes exactly
@@ -832,6 +861,14 @@ def test_is_quoted_boundaries(tok: str, expected: bool) -> None:
         (["@subchain"], []),
         # an unquoted @subchain must not stop the scan for later ones.
         (["@subchain", "$v", "@subchain", "'S'", "{"], ["S"]),
+        # a double-quoted interpolation is not a literal name, in
+        # every form that would otherwise unquote it.
+        (["chain", '"$x"', "{"], []),
+        (["chain", '"@arr"', "{"], []),
+        (["chain", "(", '"$x"', "A", ")", "{"], ["A"]),
+        (["@subchain", '"$x"', "{"], []),
+        # a single-quoted "$x" never interpolates -- still a literal name.
+        (["chain", "'$x'", "{"], ["$x"]),
     ],
 )
 def test_declared_chains_token_scan(
@@ -889,6 +926,10 @@ def test_iter_var_refs_boundaries(
         (["jump", "FOO"], ["FOO"]),  # target is the LAST token
         (["jump"], []),  # bare 'jump' at span end yields nothing
         (["goto", "BAR"], ["BAR"]),  # a later keyword is still scanned
+        # a double-quoted interpolation target is skipped like $var.
+        (["jump", '"$x"'], []),
+        (["jump", '"@arr"'], []),
+        (["jump", "'$x'"], ["$x"]),  # single-quoted never interpolates
     ],
 )
 def test_jump_targets_boundaries(span: list[str], expected: list[str]) -> None:
@@ -901,6 +942,9 @@ def test_jump_targets_boundaries(span: list[str], expected: list[str]) -> None:
         (["@subchain", "'S'", "x"], ["S"]),  # quoted name mid-span
         (["@subchain", "'S'"], ["S"]),  # quoted name is the LAST token
         (["@subchain"], []),  # bare '@subchain' at span end yields nothing
+        # a double-quoted interpolation name is skipped like $var.
+        (["@subchain", '"$x"'], []),
+        (["@gotosubchain", '"@arr"'], []),
     ],
 )
 def test_subchain_names_boundaries(
