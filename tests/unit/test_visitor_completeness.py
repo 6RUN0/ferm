@@ -64,13 +64,13 @@ def _missing_visit_methods(
 _WALKER_IGNORED: Final = frozenset({"Block"})
 
 #: _DefCollector only cares about declarations (@def) and leaf token spans
-#: that can mention a $var (@set, a rule, an @if condition); the other node
-#: kinds carry no var reference of their own.
+#: that can mention a $var (@set, a rule, an @if condition, and a header --
+#: a ``$var`` chain name or the flat inline form's fused rule tail); the
+#: other node kinds carry no var reference of their own.
 _DEF_COLLECTOR_IGNORED: Final = frozenset(
     {
         "Block",
         "BlockNode",
-        "HeaderNode",
         "HookNode",
         "IncludeNode",
         "PreserveNode",

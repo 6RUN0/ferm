@@ -978,3 +978,61 @@ def test_edge_guard_trips_exactly_past_max_block_depth() -> None:
     past_cap = find_jump_cycles(_bury(inner, MAX_BLOCK_DEPTH))
     assert [f.message for f in at_cap] == ["jump cycle: FOO -> FOO"]
     assert past_cap == []
+
+
+# --- Review 2026-07-05 T1: the flat inline form fuses the rule into the
+# header span; every analyzer must scan it, not just harvest chain names ---
+
+
+def test_inline_form_jump_is_collected() -> None:
+    # `chain INPUT jump MISSING;` is ONE HeaderNode with the jump fused
+    # into its value span; missing it was a lint false negative.
+    cfg = "table filter chain INPUT jump MISSING;\n"
+    assert find_undefined_chain_jumps(_tree(cfg)) == ["MISSING"]
+
+
+def test_inline_form_cycle_detected() -> None:
+    cfg = "table filter chain A jump B;\ntable filter chain B jump A;\n"
+    assert _cycles(cfg) == ["jump cycle: A -> B -> A"]
+
+
+def test_chain_jumped_only_from_inline_form_is_reachable() -> None:
+    # FOO's only caller is an inline-form header; the edge must exist or
+    # FOO is falsely reported unreachable.
+    cfg = (
+        "table filter chain INPUT jump FOO;\n"
+        "table filter chain FOO { ACCEPT; }\n"
+    )
+    assert _unreachable(cfg) == []
+
+
+def test_def_used_only_in_inline_form_not_flagged_as_unused() -> None:
+    # the $p use lives in the fused header span, nowhere else.
+    cfg = (
+        "@def $p = 22;\ntable filter chain INPUT proto tcp dport $p ACCEPT;\n"
+    )
+    assert find_unused_defs(_tree(cfg)) == []
+
+
+def test_def_used_as_chain_name_not_flagged_as_unused() -> None:
+    # braced form: the ONLY use of $c is the chain-name position of the
+    # header itself.
+    cfg = "@def $c = FOO;\ntable filter chain $c { ACCEPT; }\n"
+    assert find_unused_defs(_tree(cfg)) == []
+
+
+def test_inline_form_realgoto_reported_as_deprecated() -> None:
+    cfg = "table filter chain INPUT realgoto FOO;\n"
+    assert len(find_deprecated_keywords(_tree(cfg))) == 1
+
+
+def test_header_declared_subchain_is_not_a_self_loop() -> None:
+    # the header span both declares SC (@subchain) and implicitly jumps to
+    # it; SC must be an edge TARGET only, never a source, or a phantom
+    # `SC -> SC` cycle appears.
+    cfg = (
+        "table filter chain INPUT proto tcp "
+        '@subchain "SC" { dport 22 ACCEPT; }\n'
+    )
+    assert _cycles(cfg) == []
+    assert _unreachable(cfg) == []

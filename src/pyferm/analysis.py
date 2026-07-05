@@ -180,6 +180,19 @@ class _DefCollector(NodeVisitor):
         self.mentioned.update(_iter_var_refs(node.cond_span))
         self.mentioned.update(_iter_func_refs(node.cond_span))
 
+    def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
+        """
+        Record var/func mentions in a header span.
+
+        A header value may be a ``$var`` name (``chain $c {}``) and, in the
+        flat inline form, the fused rule tail (``chain INPUT saddr $x
+        ACCEPT;``) carries $-var and &-function uses. Without this the uses
+        are invisible and the defs look unused (a false positive).
+        """
+        span = (node.keyword, *node.value_span)
+        self.mentioned.update(_iter_var_refs(span))
+        self.mentioned.update(_iter_func_refs(span))
+
 
 def _walk_all(block: Block, visitor: NodeVisitor, depth: int = 0) -> None:
     """
@@ -238,10 +251,20 @@ class _ChainCollector(NodeVisitor):
         self.subchains: set[str] = set()
 
     def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
-        """Harvest chain names embedded in a header's keyword + value span."""
-        self.declared.update(
-            _declared_chains((node.keyword, *node.value_span))
-        )
+        """
+        Harvest chains, jumps and subchains from a header span.
+
+        The flat inline form (``chain INPUT jump FOO;``) fuses the whole
+        rule into ONE HeaderNode value span, so the jump/subchain tokens
+        live here, not in a child RuleNode. The scan primitives are
+        keyword-triggered (jump/goto/realgoto, @subchain), and the header
+        location prefix carries none of those, so scanning the whole span
+        never mis-harvests a location value as a jump.
+        """
+        span = (node.keyword, *node.value_span)
+        self.declared.update(_declared_chains(span))
+        self.jumps.extend(_jump_targets(span))
+        self.subchains.update(_subchain_names(span))
 
     def visit_RuleNode(self, node: RuleNode) -> None:  # noqa: N802
         """Collect jumps, plus a mid-rule @subchain chain declaration."""
@@ -315,6 +338,10 @@ class _DeprecatedKeywordCollector(NodeVisitor):
     def visit_DefNode(self, node: DefNode) -> None:  # noqa: N802
         """Scan a @def span (a function body may hold rule keywords)."""
         self._scan(node.span)
+
+    def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
+        """Scan a header span (the flat inline form fuses the rule here)."""
+        self._scan((node.keyword, *node.value_span))
 
 
 def find_deprecated_keywords(root: Block) -> list[Finding]:
@@ -456,11 +483,27 @@ def _collect_edges(
     for node in block.statements:
         node_sources = sources
         if isinstance(node, HeaderNode):
-            declared = tuple(
-                _declared_chains((node.keyword, *node.value_span))
+            span = (node.keyword, *node.value_span)
+            subs_here = set(_subchain_names(span))
+            # A subchain the header itself declares is a TARGET of this
+            # header's implicit jump, never a SOURCE -- keep it out of the
+            # chain context so it cannot emit a phantom self-edge.
+            chain_context = tuple(
+                name
+                for name in _declared_chains(span)
+                if name not in subs_here
             )
-            if declared:
-                node_sources = declared
+            if chain_context:
+                node_sources = chain_context
+            # flat inline form: jump/subchain tokens are fused into the
+            # header span; attribute them to the chain declared here.
+            header_targets = list(_jump_targets(span))
+            header_targets.extend(subs_here)
+            edges.update(
+                (source, target)
+                for source in node_sources
+                for target in header_targets
+            )
         if isinstance(node, (RuleNode, SubchainNode, DefNode)):
             targets = list(_jump_targets(node.span))
             targets.extend(_subchain_names(node.span))
