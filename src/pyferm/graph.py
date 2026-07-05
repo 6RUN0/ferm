@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 from ._treescan import (
     _CHAIN_VALUE_BOUNDARY,
     _JUMP_KW,
+    _NAME_RE,
     _chain_decls,
     _child_blocks,
     _jump_pairs,
@@ -136,17 +137,28 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
     if i < len(toks) and toks[i] == "(":
         i += 1
         while i < len(toks) and toks[i] != ")":
-            name = toks[i]
+            if toks[i] == "$":
+                i += 1
+                if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
+                    i += 1
+                continue
+            if toks[i].startswith("$"):
+                i += 1  # defensive: a glued "$name" token
+                continue
+            values.append(_unquote(toks[i]))
             i += 1
-            if not name.startswith("$"):
-                values.append(_unquote(name))
         if i < len(toks) and toks[i] == ")":
             i += 1
     elif i < len(toks) and toks[i] not in _CHAIN_VALUE_BOUNDARY:
-        name = toks[i]
-        i += 1
-        if not name.startswith("$"):
-            values.append(_unquote(name))
+        if toks[i] == "$":
+            i += 1
+            if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
+                i += 1
+        elif not toks[i].startswith("$"):
+            values.append(_unquote(toks[i]))
+            i += 1
+        else:
+            i += 1  # defensive: a glued "$name" token
     return tuple(values), i
 
 

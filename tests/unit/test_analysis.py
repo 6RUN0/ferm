@@ -232,6 +232,21 @@ def test_jump_to_chain_in_array_declaration_not_flagged() -> None:
     assert find_undefined_chain_jumps(_tree(cfg)) == []
 
 
+def test_var_member_in_array_declaration_does_not_leak_its_name() -> None:
+    # `chain ($extra FOO)`: `$extra` lexes as the token pair ("$", "extra");
+    # _declared_chains must consume BOTH tokens, or the bare name "extra"
+    # leaks as a declared literal chain and suppresses a real undefined-jump
+    # warning (a lint false negative).
+    cfg = (
+        "@def $extra = EXTRA;\n"
+        "table filter {\n"
+        "  chain ($extra FOO) { ACCEPT; }\n"
+        "  chain INPUT { jump extra; jump FOO; }\n"
+        "}\n"
+    )
+    assert find_undefined_chain_jumps(_tree(cfg)) == ["extra"]
+
+
 def test_jump_to_name_absent_from_array_declaration_is_flagged() -> None:
     # Only names IN the array are declared; a jump to a name outside it IS
     # an undefined chain jump.

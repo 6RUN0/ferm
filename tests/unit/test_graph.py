@@ -118,22 +118,22 @@ def test_header_context_policy_two_forms_and_guards() -> None:
 
 
 def test_header_context_skips_nonliteral_domain_table() -> None:
-    # $var lexes as two tokens '$','t'; the '$' name is skipped (no phantom
-    # cluster, F4) and the run stops at the trailing 't' (it is not a header
-    # keyword), leaving it as the inline tail.
+    # $var lexes as the token PAIR '$','t'; both tokens are consumed as one
+    # non-literal value (no phantom cluster, F4), so there is no context
+    # update and the bare name does not leak into the inline tail.
     assert _header_context(("domain", "$", "t")) == (
         None,
         None,
         None,
         None,
-        ("t",),
+        (),
     )
     assert _header_context(("table", "$", "t")) == (
         None,
         None,
         None,
         None,
-        ("t",),
+        (),
     )
 
 
@@ -716,12 +716,26 @@ def test_header_context_truncated_spans_do_not_index_error() -> None:
 
 
 def test_header_context_array_var_member_is_dropped() -> None:
-    # a `$var` member inside a `(...)` array value is non-literal and must be
-    # dropped, leaving only the literal member (no phantom `$` cluster).
+    # a `$var` member inside a `(...)` array value lexes as the token pair
+    # '$','t' and must be consumed WHOLE: the bare name neither becomes a
+    # phantom domain nor leaks into the tail.
     assert _header_context(("domain", "(", "$", "t", ")")) == (
-        ("t",),
         None,
         None,
+        None,
+        None,
+        (),
+    )
+
+
+def test_header_context_var_value_does_not_desync_the_run() -> None:
+    # `domain $d chain INPUT`: consuming only the `$` sigil left the bare
+    # `d` to stop the location run, so the chain was never harvested and
+    # `d` leaked into the inline tail. The pair is consumed whole now.
+    assert _header_context(("domain", "$", "d", "chain", "INPUT")) == (
+        None,
+        None,
+        ("INPUT",),
         None,
         (),
     )

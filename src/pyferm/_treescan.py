@@ -176,20 +176,35 @@ def _chain_decls(toks: Sequence[str]) -> Iterator[str]:
             i += 1
             if i < len(toks) and toks[i] == "(":
                 # array form ``chain (A B ...)``: collect names up to ')'.
+                # A ``$var`` member lexes as the pair ("$", name); consume
+                # BOTH so the bare name is not leaked as a literal chain.
                 i += 1
                 while i < len(toks) and toks[i] != ")":
-                    name = toks[i]
+                    if toks[i] == "$":
+                        i += 1
+                        if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
+                            i += 1
+                        continue
+                    if toks[i].startswith("$"):
+                        i += 1  # defensive: a glued "$name" token
+                        continue
+                    yield _unquote(toks[i])
                     i += 1
-                    if not name.startswith("$"):
-                        yield _unquote(name)
                 if i < len(toks) and toks[i] == ")":
                     i += 1
             elif i < len(toks) and toks[i] not in _CHAIN_VALUE_BOUNDARY:
-                # bare form: exactly ONE name, even one spelled like a keyword.
-                name = toks[i]
-                i += 1
-                if not name.startswith("$"):
-                    yield _unquote(name)
+                # bare form: exactly ONE name, even one spelled like a
+                # keyword. A ``$var`` name is the pair ("$", name); consume
+                # both and yield nothing (non-literal, eval-free contract).
+                if toks[i] == "$":
+                    i += 1
+                    if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
+                        i += 1
+                elif not toks[i].startswith("$"):
+                    yield _unquote(toks[i])
+                    i += 1
+                else:
+                    i += 1  # defensive: a glued "$name" token
             continue
         if tok in _SUBCHAIN_KW:
             i += 1
