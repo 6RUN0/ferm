@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final
 
 from pyferm.errors import internal_error
 from pyferm.values import Deferred, Value, contains_deferred, realize_deferred
@@ -235,9 +235,11 @@ def mkrules2(domain: str, chain_rules: list[RenderedRule], rule: Rule) -> None:
     """
     before = len(chain_rules)
     unfold: list[Option] = []
+    array_values: list[list[Value]] = []
     for option in rule.options:
         if isinstance(option.value, list):
             unfold.append(option)
+            array_values.append(option.value)
         else:
             option.chosen = option.value
 
@@ -247,10 +249,10 @@ def mkrules2(domain: str, chain_rules: list[RenderedRule], rule: Rule) -> None:
     # cardinality).  With no deferred values the unfold is a pure cartesian
     # product, so the rule count is the product of the array lengths
     # (deferred excluded -- their length is known only after realize).
-    if unfold and not any(
-        contains_deferred(*cast("list[Value]", o.value)) for o in unfold
+    if array_values and not any(
+        contains_deferred(*values) for values in array_values
     ):
-        expected = math.prod(len(cast("list[Value]", o.value)) for o in unfold)
+        expected = math.prod(len(values) for values in array_values)
         if len(chain_rules) - before != expected:
             raise internal_error(
                 f"unfold produced {len(chain_rules) - before} rules, "

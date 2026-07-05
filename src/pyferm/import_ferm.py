@@ -135,7 +135,7 @@ class Rule:
     cur: list[MatchEntry] | None = field(default=None, repr=False)
 
 
-def ferm_escape(value: object) -> str:
+def ferm_escape(value: Value) -> str:
     r"""
     Quote a token unless it is a bare ferm word (Perl ``ferm_escape``).
 
@@ -150,7 +150,7 @@ def ferm_escape(value: object) -> str:
     return text
 
 
-def format_array(value: object) -> str:
+def format_array(value: Value) -> str:
     """
     Render a scalar or array value (Perl ``format_array``, ``:83``).
 
@@ -161,10 +161,7 @@ def format_array(value: object) -> str:
     if isinstance(value, Multi):
         items: list[Value] = value.values
     elif isinstance(value, list):
-        # Perl "deref any ref as an array": the input is deliberately typed
-        # object, so isinstance narrows only to list[Unknown]; the cast
-        # asserts the element type the walker cannot recover.  Load-bearing.
-        items = cast("list[Value]", value)
+        items = value
     else:
         return ferm_escape(value)
     if len(items) == 1:
