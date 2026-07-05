@@ -162,7 +162,11 @@ def _declared_chains(span: Sequence[object]) -> Iterator[str]:
     colliding with a header keyword is still harvested. Also yields a quoted
     ``@subchain "NAME"`` declaration. $var names are skipped (literal-only).
     """
-    toks = list(_str_tokens(span))
+    yield from _chain_decls(list(_str_tokens(span)))
+
+
+def _chain_decls(toks: Sequence[str]) -> Iterator[str]:
+    """Scan pre-filtered string tokens (:func:`_declared_chains` core)."""
     i = 0
     while i < len(toks):
         tok = toks[i]
@@ -202,7 +206,11 @@ def _subchain_names(span: Sequence[object]) -> Iterator[str]:
     from its enclosing rule, so these names are reached without any
     literal jump/goto/realgoto token.
     """
-    toks = list(_str_tokens(span))
+    yield from _subchain_decls(list(_str_tokens(span)))
+
+
+def _subchain_decls(toks: Sequence[str]) -> Iterator[str]:
+    """Scan pre-filtered string tokens (:func:`_subchain_names` core)."""
     for i, tok in enumerate(toks):
         if tok in _SUBCHAIN_KW and i + 1 < len(toks):
             candidate = toks[i + 1]
@@ -212,9 +220,20 @@ def _subchain_names(span: Sequence[object]) -> Iterator[str]:
 
 def _jump_targets(span: Sequence[object]) -> Iterator[str]:
     """Yield literal jump/goto/realgoto targets in a span ($var skipped)."""
-    toks = list(_str_tokens(span))
+    for _kw, target in _jump_pairs(list(_str_tokens(span))):
+        yield target
+
+
+def _jump_pairs(toks: Sequence[str]) -> Iterator[tuple[str, str]]:
+    """
+    Yield (keyword, literal target) per jump/goto/realgoto token pair.
+
+    The shared core of :func:`_jump_targets` and the graph's edge scan
+    (which additionally maps the keyword to an edge kind); $var targets
+    are skipped and quotes are stripped, byte-identically for both.
+    """
     for i, tok in enumerate(toks):
         if tok in _JUMP_KW and i + 1 < len(toks):
             target = toks[i + 1]
             if not target.startswith("$"):
-                yield _unquote(target)
+                yield tok, _unquote(target)

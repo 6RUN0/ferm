@@ -14,6 +14,7 @@ No eval, kernel, resolver, or previous-ruleset I/O (see spec §1).
 from __future__ import annotations
 
 import enum
+import functools
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -21,9 +22,11 @@ from typing import TYPE_CHECKING
 from ._treescan import (
     _CHAIN_VALUE_BOUNDARY,
     _JUMP_KW,
+    _chain_decls,
     _child_blocks,
-    _declared_chains,
+    _jump_pairs,
     _str_tokens,
+    _subchain_decls,
     _subchain_names,
     _unquote,
 )
@@ -40,7 +43,7 @@ from .tree import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _ID_SAFE = frozenset(
@@ -204,14 +207,10 @@ _KIND_BY_JUMP_KW = {
 }
 
 
-def _jump_edges(span: object) -> Iterator[tuple[EdgeKind, str]]:
+def _jump_edges(toks: Sequence[str]) -> Iterator[tuple[EdgeKind, str]]:
     """Yield (kind, literal target) for each jump/goto/realgoto in a span."""
-    toks = list(_str_tokens(span))  # type: ignore[arg-type]
-    for i, tok in enumerate(toks):
-        if tok in _KIND_BY_JUMP_KW and i + 1 < len(toks):
-            target = toks[i + 1]
-            if not target.startswith("$"):
-                yield _KIND_BY_JUMP_KW[tok], _unquote(target)
+    for kw, target in _jump_pairs(toks):
+        yield _KIND_BY_JUMP_KW[kw], target
 
 
 def _fold_family(domain: str) -> str:
@@ -219,8 +218,15 @@ def _fold_family(domain: str) -> str:
     return "ip" if domain == "ip6" else domain
 
 
+@functools.cache
 def _family_targets(family: str) -> frozenset[str]:
-    """Recognised verdict tokens of a family: core targets + module targets."""
+    """
+    Recognised verdict tokens of a family: core targets + module targets.
+
+    Cached: called per (span, domain) in _scan_verdicts and per node in
+    _classify, over a handful of distinct families per run; the registry
+    is immutable after import.
+    """
     return frozenset(_CORE_TARGETS) | frozenset(TARGET_DEFS.get(family, {}))
 
 
@@ -265,7 +271,7 @@ def _acc_for(
     )
 
 
-def _scan_verdicts(span: object, family: str) -> list[str]:
+def _scan_verdicts(toks: Sequence[str], family: str) -> list[str]:
     """
     Recognised verdict target tokens in a span, with FP suppression.
 
@@ -277,7 +283,6 @@ def _scan_verdicts(span: object, family: str) -> list[str]:
     """
     targets = _family_targets(family)
     params_keys = _KW_HAS_PARAMS.get(family, frozenset())
-    toks = list(_str_tokens(span))  # type: ignore[arg-type]
     out: list[str] = []
     i = 0
     while i < len(toks):
@@ -358,12 +363,15 @@ def _emit_span(
     span: object,
 ) -> None:
     """Emit jump/goto/subchain/verdict edges from a rule/def/subchain span."""
-    jumps = list(_jump_edges(span))
-    subs = list(_subchain_names(span))  # type: ignore[arg-type]
-    declared_here = list(_declared_chains(span))  # type: ignore[arg-type]
+    # one materialized token list feeds all four scanners (and the
+    # per-domain verdict scan) instead of each re-filtering the span
+    toks = list(_str_tokens(span))  # type: ignore[arg-type]
+    jumps = list(_jump_edges(toks))
+    subs = list(_subchain_decls(toks))
+    declared_here = list(_chain_decls(toks))
     for domain in domains:
         family = _fold_family(domain)
-        verdicts = _scan_verdicts(span, family)
+        verdicts = _scan_verdicts(toks, family)
         for table in tables:
             ca = _acc_for(acc, domain, table)
             for name in declared_here:
@@ -491,7 +499,8 @@ _DOT_NODE_ATTR = {
 }
 
 
-def _dot_quote(name: str) -> str:
+def _quote_ident(name: str) -> str:
+    """Quote an escaped identifier for both renderers (DOT and d2)."""
     return f'"{_escape_ident(name)}"'
 
 
@@ -507,10 +516,12 @@ def render_dot(graph: ChainGraph) -> str:
         lines.append(f'    label="{label}";')
         for name, kind in cluster.nodes:
             attr = _DOT_NODE_ATTR.get(kind, "")
-            lines.append(f"    {_dot_quote(name)}{attr};")
+            lines.append(f"    {_quote_ident(name)}{attr};")
         for src, dst, edge_kind in cluster.edges:
             label = f' [label="{edge_kind}"]' if edge_kind else ""
-            lines.append(f"    {_dot_quote(src)} -> {_dot_quote(dst)}{label};")
+            lines.append(
+                f"    {_quote_ident(src)} -> {_quote_ident(dst)}{label};"
+            )
         lines.append("  }")
     lines.append("}")
     return "\n".join(lines) + "\n"
@@ -521,10 +532,6 @@ _D2_NODE_STYLE = {
     NodeKind.UNDEFINED: "style.stroke-dash: 3",
     NodeKind.VERDICT: "shape: oval",
 }
-
-
-def _d2_quote(name: str) -> str:
-    return f'"{_escape_ident(name)}"'
 
 
 def render_d2(graph: ChainGraph) -> str:
@@ -545,11 +552,13 @@ def render_d2(graph: ChainGraph) -> str:
         for name, kind in cluster.nodes:
             style = _D2_NODE_STYLE.get(kind)
             if style:
-                lines.append(f"  {_d2_quote(name)}: {{ {style} }}")
+                lines.append(f"  {_quote_ident(name)}: {{ {style} }}")
             else:
-                lines.append(f"  {_d2_quote(name)}")
+                lines.append(f"  {_quote_ident(name)}")
         for src, dst, edge_kind in cluster.edges:
             label = f": {edge_kind}" if edge_kind else ""
-            lines.append(f"  {_d2_quote(src)} -> {_d2_quote(dst)}{label}")
+            lines.append(
+                f"  {_quote_ident(src)} -> {_quote_ident(dst)}{label}"
+            )
         lines.append("}")
     return "\n".join(lines) + "\n"

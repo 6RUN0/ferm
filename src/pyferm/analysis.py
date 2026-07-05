@@ -281,8 +281,18 @@ def find_undefined_chain_jumps(root: Block) -> list[str]:
     namespace is flattened to one global set, so a jump to a chain defined
     only in another (domain, table) is not reported.
     """
+    return _undefined_targets(_collect_chains(root))
+
+
+def _collect_chains(root: Block) -> _ChainCollector:
+    """Run one full-tree _ChainCollector pass and return the collector."""
     collector = _ChainCollector()
     _walk_all(root, collector)
+    return collector
+
+
+def _undefined_targets(collector: _ChainCollector) -> list[str]:
+    """Jump targets with no declaration, sorted."""
     return sorted({t for t in collector.jumps if t not in collector.declared})
 
 
@@ -370,13 +380,20 @@ def _unused_definition_findings(root: Block) -> list[Finding]:
 
 def _undefined_jump_findings(root: Block) -> list[Finding]:
     """Adapt find_undefined_chain_jumps to the Finding model."""
+    return _undefined_jump_findings_from(_collect_chains(root))
+
+
+def _undefined_jump_findings_from(
+    collector: _ChainCollector,
+) -> list[Finding]:
+    """Finding-model view of one collector's undefined jump targets."""
     return [
         Finding(
             Severity.WARNING,
             "undefined-jump",
             f"jump to undefined chain: {name}",
         )
-        for name in find_undefined_chain_jumps(root)
+        for name in _undefined_targets(collector)
     ]
 
 
@@ -395,8 +412,11 @@ def find_unreachable_chains(root: Block) -> list[Finding]:
     find_jump_cycles); a chain reached only through ``jump $var`` is a
     documented false positive (literal-name contract).
     """
-    collector = _ChainCollector()
-    _walk_all(root, collector)
+    return _unreachable_findings_from(_collect_chains(root))
+
+
+def _unreachable_findings_from(collector: _ChainCollector) -> list[Finding]:
+    """Finding-model view of one collector's unreachable chains."""
     reached = set(collector.jumps) | collector.subchains
     return [
         Finding(
@@ -625,9 +645,17 @@ def run_analysis(root: Block) -> list[Finding]:
     registration_index = {
         code: index for index, (code, _, _) in enumerate(ANALYZERS)
     }
+    # The two chain analyzers share ONE _ChainCollector pass here (their
+    # public find_* entry points stay standalone for direct callers), so
+    # the tree is not traversed twice for the same collection.
+    chains = _collect_chains(root)
+    shared: dict[str, list[Finding]] = {
+        "undefined-jump": _undefined_jump_findings_from(chains),
+        "unreachable-chain": _unreachable_findings_from(chains),
+    }
     findings: set[Finding] = set()
-    for _code, _severity, analyzer in ANALYZERS:
-        findings.update(analyzer(root))
+    for code, _severity, analyzer in ANALYZERS:
+        findings.update(shared[code] if code in shared else analyzer(root))
     # A KeyError on a foreign f.code is intentional: every emitted code
     # must be a registered analyzer code.
     return sorted(
