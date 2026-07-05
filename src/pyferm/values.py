@@ -202,7 +202,7 @@ def join_value(expr: str, value: Value) -> Value:
     if not _is_ref(value):
         return value
     if isinstance(value, list):
-        return expr.join(str(item) for item in value)
+        return expr.join(stringify(item) for item in value)
     if isinstance(value, Negated):
         return Negated(join_value(expr, value.value))
     if isinstance(value, SetRef):

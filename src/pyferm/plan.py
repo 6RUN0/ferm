@@ -445,13 +445,11 @@ def canonicalize_nft_rule(body: str, *, family: str) -> str:
                 reject_type = tokens[index + 4]
                 # check whether this is the family default
                 default_fam = _NFT_REJECT_DEFAULTS.get(family)
+                out.append("reject")
                 if (
-                    fam_token == default_fam
-                    and reject_type == _NFT_REJECT_DEFAULT_TYPE
+                    fam_token != default_fam
+                    or reject_type != _NFT_REJECT_DEFAULT_TYPE
                 ):
-                    out.append("reject")
-                else:
-                    out.append("reject")
                     out.append("with")
                     out.append(fam_token)
                     out.append(reject_type)
@@ -1190,8 +1188,10 @@ def _emit_set_changes(
         elif sc.kind == SetChangeKind.MODIFY:
             live = current_sets[sc.name].elements
             desired_elements = sc.elements
-            removed = [e for e in live if e not in desired_elements]
-            added = [e for e in desired_elements if e not in live]
+            desired_membership = set(desired_elements)
+            live_membership = set(live)
+            removed = [e for e in live if e not in desired_membership]
+            added = [e for e in desired_elements if e not in live_membership]
             if removed:
                 out.append(
                     f"delete element {prefix} {sc.name} "

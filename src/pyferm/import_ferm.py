@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TextIO, cast
 
-from pyferm.errors import FermError
+from pyferm.errors import FermError, internal_error
 from pyferm.modules import (
     MATCH_DEFS,
     PORT_PROTOCOLS,
@@ -262,7 +262,7 @@ def _canon(value: object) -> object:
                 )
             ),
         )
-    raise FermError("internal error: uncanonicalizable value")
+    raise internal_error("uncanonicalizable value")
 
 
 def _canon_rule(rule: Rule, match: list[MatchEntry]) -> object:
@@ -752,7 +752,7 @@ class Importer:
         if self.domain is not None:
             self._flush_domain()
         if self.indent != 0:
-            raise FermError("internal error: unbalanced indentation")
+            raise internal_error("unbalanced indentation")
 
     def _process_line(self, line: str) -> None:
         """Dispatch one save-file line to its handler (the ``while`` body)."""

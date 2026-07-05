@@ -735,30 +735,6 @@ _IFACE_KEYWORD: Final[dict[str, str]] = {
 }
 #: port option names; the nft keyword equals the ferm name.
 _PORT_KEYWORD: Final[dict[str, str]] = {"sport": "sport", "dport": "dport"}
-#: Selectors that may carry an anonymous set (the collapse allow-list).
-#: ``ip protocol`` is intentionally absent: the backend emits protocol as
-#: ``meta l4proto``, so a separate ``ip protocol`` selector is never produced.
-_SET_ELIGIBLE_SELECTORS: Final[frozenset[str]] = frozenset(
-    {
-        "tcp dport",
-        "tcp sport",
-        "udp dport",
-        "udp sport",
-        "udplite dport",
-        "udplite sport",
-        "dccp dport",
-        "dccp sport",
-        "sctp dport",
-        "sctp sport",
-        "ip saddr",
-        "ip daddr",
-        "ip6 saddr",
-        "ip6 daddr",
-        "meta l4proto",
-        "iifname",
-        "oifname",
-    }
-)
 
 
 def _op(neg: bool) -> str:

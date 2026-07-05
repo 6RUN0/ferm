@@ -362,10 +362,7 @@ def test_translate_match_uncovered_is_error() -> None:
 # ---------------------------------------------------------------------------
 # translate_match structured split (_translate_match_parts)
 # ---------------------------------------------------------------------------
-from pyferm.backend.nft import (  # noqa: E402
-    _SET_ELIGIBLE_SELECTORS,
-    _translate_match_parts,
-)
+from pyferm.backend.nft import _translate_match_parts  # noqa: E402
 
 
 def test_match_parts_port_is_eligible() -> None:
@@ -407,13 +404,6 @@ def test_match_parts_expr_matches_translate_match_wrapper() -> None:
     assert _translate_match_parts(Family.IP, opt, "tcp")[0] == translate_match(
         Family.IP, opt, "tcp"
     )
-
-
-def test_set_eligible_selectors_are_documented() -> None:
-    assert "tcp dport" in _SET_ELIGIBLE_SELECTORS
-    assert "ip saddr" in _SET_ELIGIBLE_SELECTORS
-    assert "meta l4proto" in _SET_ELIGIBLE_SELECTORS
-    assert "ip protocol" not in _SET_ELIGIBLE_SELECTORS  # never emitted
 
 
 # ---------------------------------------------------------------------------
