@@ -368,8 +368,8 @@ def _set_type_and_elements(
     else:
         raise FermError(f"named set selector '{selector}' not supported")
     flags_interval = any(
-        classify(element)[0] == RANK_INTERVAL
-        or (classify(element)[0] == RANK_ADDRESS and "/" in element)
+        (rank := classify(element)[0]) == RANK_INTERVAL
+        or (rank == RANK_ADDRESS and "/" in element)
         for element in elements
     )
     return type_, flags_interval, sort_set_elements(elements)
@@ -741,25 +741,23 @@ def _translate_match_parts(
     scalar, neg = unwrap_value(option.value)
     if name in _ADDR_KEYWORD:
         addr = _validate_address(scalar)
-        key = f"{domain} {_ADDR_KEYWORD[name]}"
+        key = _match_selector(domain, name, protocol)
         expr = f"{key} {_op(neg)}{addr}"
         return (expr, None, None) if neg else (expr, key, addr)
     if name in _IFACE_KEYWORD:
         # An interface is an nft quoted string (it may carry a `*` wildcard,
         # preserved inside the quotes), so escape rather than validate.
         quoted = _nft_quote_string(scalar)
-        key = _IFACE_KEYWORD[name]
+        key = _match_selector(domain, name, protocol)
         expr = f"{key} {_op(neg)}{quoted}"
         # The element is the quoted form ('"eth0"'): a folded set renders
         # iifname { "eth0", "eth1" } which is valid nft syntax.
         return (expr, None, None) if neg else (expr, key, quoted)
     if name in _PORT_KEYWORD:
-        if protocol not in _PORT_PROTOCOLS:
-            raise FermError(
-                f"option '{name}' needs a tcp/udp protocol for the nft backend"
-            )
+        # _match_selector carries the tcp/udp guard; it must fire before
+        # the port operand is validated (error-order contract).
+        key = _match_selector(domain, name, protocol)
         port = _validate_port(scalar)
-        key = f"{protocol} {_PORT_KEYWORD[name]}"
         expr = f"{key} {_op(neg)}{port}"
         return (expr, None, None) if neg else (expr, key, port)
     if name == "state":
@@ -782,13 +780,16 @@ def translate_match(
     return _translate_match_parts(domain, option, protocol)[0]
 
 
-def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
+def _match_selector(domain: str, name: str, protocol: str | None) -> str:
     """
-    Return the nft selector left of a set reference (@name).
+    Return the nft selector text for an address/interface/port keyword.
 
-    Mirrors the key computation in :func:`_translate_match_parts` but without
-    an operand.  Used in :func:`translate_rule` when the option value is a
-    :class:`~pyferm.values.SetRef`.
+    The single source of the selector for :func:`_translate_match_parts`
+    (which appends an operand) and :func:`_setref_selector` (which appends
+    a set reference) -- previously two mirrored computations that could
+    drift.  The port arm carries the shared tcp/udp guard.  Callers vet
+    ``name`` against the keyword maps first; an unknown name here is an
+    internal error.
     """
     if name in _ADDR_KEYWORD:
         return f"{domain} {_ADDR_KEYWORD[name]}"
@@ -800,7 +801,23 @@ def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
                 f"option '{name}' needs a tcp/udp protocol for the nft backend"
             )
         return f"{protocol} {_PORT_KEYWORD[name]}"
-    raise FermError(f"option '{name}' cannot reference a named set")
+    raise internal_error()
+
+
+def _setref_selector(domain: str, name: str, protocol: str | None) -> str:
+    """
+    Return the nft selector left of a set reference (@name).
+
+    Used in :func:`translate_rule` when the option value is a
+    :class:`~pyferm.values.SetRef`.
+    """
+    if (
+        name not in _ADDR_KEYWORD
+        and name not in _IFACE_KEYWORD
+        and name not in _PORT_KEYWORD
+    ):
+        raise FermError(f"option '{name}' cannot reference a named set")
+    return _match_selector(domain, name, protocol)
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +933,52 @@ def _reject_for(domain: str, scalar: str) -> str:
     return spec
 
 
+def _nat_to_ports(
+    verb: str,
+    companions: dict[str, RenderedOption],
+    *,
+    has_transport: bool,
+) -> NftVerdict:
+    """
+    MASQUERADE/REDIRECT shape: an OPTIONAL ``to-ports`` companion.
+
+    Without one the bare verb is a complete statement (unlike the
+    SNAT/DNAT shape, which raises); with one, a transport match is
+    required first (nft would reject the applied script).
+    """
+    comp = companions.get("to-ports")
+    if comp is not None:
+        if not has_transport:
+            raise FermError(_NAT_PORT_NEEDS_PROTO)
+        port = _validate_port(first_scalar(comp.value))
+        return NftVerdict(f"{verb} to :{port}")
+    return NftVerdict(verb)
+
+
+def _nat_to_addr(
+    verb: str,
+    target: str,
+    comp_key: str,
+    domain: str,
+    companions: dict[str, RenderedOption],
+    *,
+    has_transport: bool,
+) -> NftVerdict:
+    """
+    SNAT/DNAT shape: a MANDATORY address companion (raises without one).
+
+    A port-bearing address mapping additionally requires a transport
+    match, mirroring the to-ports shape's guard.
+    """
+    comp = companions.get(comp_key)
+    if comp is None:
+        raise FermError(f"{target} target not yet supported by nft backend")
+    addr = _validate_address(first_scalar(comp.value))
+    if _nat_has_port(domain, addr) and not has_transport:
+        raise FermError(_NAT_PORT_NEEDS_PROTO)
+    return NftVerdict(f"{verb} to {addr}")
+
+
 def build_verdict(
     domain: str,
     table: str,
@@ -941,21 +1004,13 @@ def build_verdict(
     if target_value in _VERDICT_TARGET:
         return NftVerdict(_VERDICT_TARGET[target_value])
     if target_value == "MASQUERADE":
-        comp = companions.get("to-ports")
-        if comp is not None:
-            if not has_transport:
-                raise FermError(_NAT_PORT_NEEDS_PROTO)
-            port = _validate_port(first_scalar(comp.value))
-            return NftVerdict(f"masquerade to :{port}")
-        return NftVerdict("masquerade")
+        return _nat_to_ports(
+            "masquerade", companions, has_transport=has_transport
+        )
     if target_value == "REDIRECT":
-        comp = companions.get("to-ports")
-        if comp is not None:
-            if not has_transport:
-                raise FermError(_NAT_PORT_NEEDS_PROTO)
-            port = _validate_port(first_scalar(comp.value))
-            return NftVerdict(f"redirect to :{port}")
-        return NftVerdict("redirect")
+        return _nat_to_ports(
+            "redirect", companions, has_transport=has_transport
+        )
     if target_value == "LOG":
         comp = companions.get("log-prefix")
         if comp is not None:
@@ -969,21 +1024,23 @@ def build_verdict(
         scalar, _ = unwrap_value(comp.value)
         return NftVerdict(_reject_for(domain, scalar))
     if target_value == "SNAT":
-        comp = companions.get("to-source")
-        if comp is None:
-            raise FermError("SNAT target not yet supported by nft backend")
-        addr = _validate_address(first_scalar(comp.value))
-        if _nat_has_port(domain, addr) and not has_transport:
-            raise FermError(_NAT_PORT_NEEDS_PROTO)
-        return NftVerdict(f"snat to {addr}")
+        return _nat_to_addr(
+            "snat",
+            "SNAT",
+            "to-source",
+            domain,
+            companions,
+            has_transport=has_transport,
+        )
     if target_value == "DNAT":
-        comp = companions.get("to-destination")
-        if comp is None:
-            raise FermError("DNAT target not yet supported by nft backend")
-        addr = _validate_address(first_scalar(comp.value))
-        if _nat_has_port(domain, addr) and not has_transport:
-            raise FermError(_NAT_PORT_NEEDS_PROTO)
-        return NftVerdict(f"dnat to {addr}")
+        return _nat_to_addr(
+            "dnat",
+            "DNAT",
+            "to-destination",
+            domain,
+            companions,
+            has_transport=has_transport,
+        )
     # A jump/goto to a chain in the same iptables table.  nft forbids
     # jumping to a base chain (one with a hook), so a jump/goto whose
     # target is a built-in chain has NO nft equivalent -> a plain ferm
