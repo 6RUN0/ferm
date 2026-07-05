@@ -63,6 +63,31 @@ def test_reject_icmpv6_type_default_collapses_for_ip6() -> None:
     assert out == "reject"
 
 
+def test_reject_no_type_word_default_collapses() -> None:
+    # The already-'type'-less form of the family default still collapses to
+    # bare reject.  A leading match keeps the reject token mid-rule so the
+    # index advance past the collapsed tokens is exercised too.
+    body = "ct state new reject with icmp port-unreachable"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "ct state new reject"
+
+
+def test_reject_with_fam_but_no_message_left_verbatim() -> None:
+    # 'reject with icmp' has no message token to inspect, so the collapse
+    # lookahead must stay in bounds and leave the run verbatim.
+    body = "reject with icmp"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "reject with icmp"
+
+
+def test_reject_no_type_word_non_default_left_verbatim() -> None:
+    # A 'type'-less reject that is NOT the family default is kept verbatim
+    # (safe-bias): only the exact default port-unreachable collapses.
+    body = "reject with icmp host-unreachable"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "reject with icmp host-unreachable"
+
+
 def test_reject_tcp_reset_unchanged() -> None:
     body = "reject with tcp reset"
     out = canonicalize_nft_rule(body, family="ip")
@@ -369,6 +394,23 @@ def test_set_braces_inside_comment_not_reordered() -> None:
         'tcp dport 22 accept comment "p { 22, 80 }"', family="ip"
     )
     assert a != b
+
+
+def test_set_after_closing_comment_is_still_normalized() -> None:
+    # The quote-state machine must CLOSE the comment quote so a set that
+    # follows the quoted comment is still recognized and canonicalized.
+    body = 'tcp dport 22 accept comment "hi" tcp dport {80,22}'
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == 'tcp dport 22 accept comment "hi" tcp dport { 22, 80 }'
+
+
+def test_comment_span_kept_byte_faithful() -> None:
+    # A quoted comment span is emitted verbatim, including its closing quote
+    # and last character -- the slice must not drop or duplicate a byte, and
+    # the surrounding pieces are joined with nothing.
+    body = 'tcp dport 22 accept comment "abcd"'
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == body
 
 
 def test_canon_unicode_in_comment_braces_does_not_crash() -> None:

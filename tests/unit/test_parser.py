@@ -235,6 +235,16 @@ def test_if_false_without_else_drops_body() -> None:
     assert tables is None or "filter" not in tables.tables
 
 
+def test_if_false_keeps_following_non_else_statement() -> None:
+    # When @if is false and the token after the swallowed then-block is a
+    # normal statement (not @else), that statement must stream unchanged --
+    # the @else shim only consumes a literal ``@else`` token.
+    parser = _parse("@if 0 { chain INPUT ACCEPT; } chain OUTPUT DROP;")
+    chains = parser.domains["ip"].tables["filter"].chains
+    assert "INPUT" not in chains
+    assert _options(chains["OUTPUT"].rules[0]) == [("jump", "DROP", "target")]
+
+
 # -- negation --------------------------------------------------------------
 
 
@@ -694,3 +704,130 @@ def test_enter_sequential_replays_release_depth() -> None:
     )
     parser = _parse(source)
     assert parser._block_depth == 0
+
+
+# -- mutation-hardening (killed mutmut survivors) --------------------------
+
+
+def test_chain_name_too_long_message_text() -> None:
+    """The over-long-chain diagnostic keeps its 'Chain name too long' text."""
+    with pytest.raises(FermError, match=r"^Chain name too long, must be "):
+        _parse(f"chain {'x' * 30} ACCEPT;")
+
+
+def test_collect_filenames_skips_dpkg_but_keeps_later_file(
+    tmp_path: Path,
+) -> None:
+    """A dpkg backup is 'continue'-skipped; a following real file survives."""
+    (tmp_path / "a.dpkg-old").write_text("", encoding="utf-8")
+    (tmp_path / "b.ferm").write_text("", encoding="utf-8")
+    parent = str(tmp_path / "main.ferm")
+    assert collect_filenames(parent, [f"{tmp_path}/"]) == [
+        str(tmp_path / "b.ferm")
+    ]
+
+
+def test_collect_filenames_trailing_slash_non_directory_rejected(
+    tmp_path: Path,
+) -> None:
+    """A trailing-slash include on a missing path is 'is not a directory'."""
+    parent = str(tmp_path / "main.ferm")
+    with pytest.raises(FermError, match="is not a directory"):
+        collect_filenames(parent, [f"{tmp_path}/nope/"])
+
+
+def test_collect_filenames_bare_directory_suggests_slash(
+    tmp_path: Path,
+) -> None:
+    """A bare directory path suggests the trailing '/' form at text end."""
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    parent = str(tmp_path / "main.ferm")
+    with pytest.raises(FermError, match=r"to include a directory\?$"):
+        collect_filenames(parent, [str(subdir)])
+
+
+def test_collect_filenames_non_file_rejected(tmp_path: Path) -> None:
+    """A plain path that is not a regular file is 'is not a file'."""
+    parent = str(tmp_path / "main.ferm")
+    with pytest.raises(FermError, match="is not a file"):
+        collect_filenames(parent, [str(tmp_path / "missing")])
+
+
+def test_ipv6_base_match_keyword_recognized() -> None:
+    """ip6 folds to the 'ip' family so base match keywords like saddr parse."""
+    parser = _parse("domain ip6 { chain INPUT saddr ::1 ACCEPT; }")
+    rules = _rules(parser, "ip6", "filter", "INPUT")
+    assert ("source", "::1", "option") in _options(rules[0])
+
+
+def test_domain_filter_flat_form_skips_rest_of_statement() -> None:
+    """A --domain-filtered flat ``domain`` drops the whole statement."""
+    parser = _parse(
+        "domain ip6 chain INPUT ACCEPT;",
+        options=Options(test=True, domain="ip"),
+    )
+    assert not any(
+        chain.rules
+        for domain in parser.domains.values()
+        for table in domain.tables.values()
+        for chain in table.chains.values()
+    )
+
+
+def test_gotosubchain_emits_goto_target() -> None:
+    """@gotosubchain routes via 'goto' (keyword startswith '@go')."""
+    parser = _parse('chain INPUT proto tcp @gotosubchain "foo" { ACCEPT; }')
+    rules = _rules(parser, "ip", "filter", "INPUT")
+    assert ("goto", "foo", "target") in _options(rules[0])
+
+
+def test_new_subchain_name_does_not_warn(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A first-seen sub-chain is created silently (``subchain in chains`` is
+    False), with no 'already exists' warning."""
+    _parse('chain INPUT proto tcp @subchain "fresh" { ACCEPT; }')
+    assert "already exists" not in capsys.readouterr().err
+
+
+def test_duplicate_subchain_name_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A second sub-chain of the same name warns 'already exists'."""
+    _parse(
+        'chain INPUT { proto tcp @subchain "dup" { ACCEPT; } '
+        'proto udp @subchain "dup" { DROP; } }'
+    )
+    assert "Chain dup already exists" in capsys.readouterr().err
+
+
+def test_function_multi_token_arg_realigns_later_param() -> None:
+    """A multi-token array arg is parenthesised (``len(tokens) != 1``) before
+    splicing so ``dport`` sees ``(22 80)`` and a later ``$b`` still binds."""
+    parser = _parse(
+        "@def &two($a, $b) = proto tcp dport $a sport $b ACCEPT;"
+        "chain INPUT &two((22 80), 53);"
+    )
+    pairs = {
+        (
+            {o.name: o.value for o in rule.options}.get("dport"),
+            {o.name: o.value for o in rule.options}.get("sport"),
+        )
+        for rule in _rules(parser, "ip", "filter", "INPUT")
+    }
+    assert pairs == {("22", "53"), ("80", "53")}
+
+
+def test_def_two_param_function_accepts_comma_separator() -> None:
+    """A ',' between params is required (``token != ','`` guard) to parse."""
+    parser = _parse(
+        "@def &two($a, $b) = proto tcp dport $a sport $b ACCEPT;"
+        "chain INPUT &two(22, 53);"
+    )
+    options = {
+        o.name: o.value
+        for o in _rules(parser, "ip", "filter", "INPUT")[0].options
+    }
+    assert options["dport"] == "22"
+    assert options["sport"] == "53"

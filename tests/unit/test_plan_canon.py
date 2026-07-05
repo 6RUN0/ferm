@@ -63,3 +63,43 @@ def test_mark_value_not_treated_as_host_mask() -> None:
     # /32 after --mark must survive: not scoped to -s/-d
     out = canon("-m mark --mark 0x1/0x32 -j ACCEPT", "/32")
     assert "0x1/0x32" in out
+
+
+def test_implied_m_kept_when_proto_differs() -> None:
+    # -m tcp is dropped ONLY when it equals -p's proto.  With -p udp the
+    # tcp match is a real, distinct match and must survive verbatim.
+    out = canon("-p udp -m tcp --dport 22", "/32")
+    assert out == "-p udp -m tcp --dport 22"
+
+
+def test_proto_read_only_from_dash_p() -> None:
+    # Without a -p option there is no implied proto, so a lone -m tcp is
+    # never mistaken for the injected match and stays.
+    out = canon("-m tcp --dport 22", "/32")
+    assert out == "-m tcp --dport 22"
+
+
+def test_implied_m_dropped_when_m_is_second_to_last_token() -> None:
+    # The '-m <module>' lookahead must reach the module even when '-m' is
+    # the second-to-last token: '-m tcp' after '-p tcp' still collapses away.
+    out = canon("-p tcp -m tcp", "/32")
+    assert out == "-p tcp"
+
+
+def test_host_mask_only_stripped_for_source_dest() -> None:
+    # A '/32' operand belongs to -s/-d only; after --mark it must survive.
+    out = canon("--mark 0x1/32 -j ACCEPT", "/32")
+    assert "0x1/32" in out
+
+
+def test_host_mask_stripped_when_source_is_second_to_last() -> None:
+    # The -s/-d operand lookahead must reach the operand even when -s is
+    # the second-to-last token.
+    out = canon("-j ACCEPT -s 1.2.3.4/32", "/32")
+    assert out == "-j ACCEPT -s 1.2.3.4"
+
+
+def test_bare_counter_line_collapses_to_empty() -> None:
+    # A leading '-c pkts bytes' counter of exactly three tokens is stripped
+    # whole, leaving nothing.
+    assert canon("-c 5 100", "/32") == ""

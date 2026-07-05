@@ -288,3 +288,37 @@ def test_envelope_only_desired_emits_delete_chain_delta() -> None:
     delta = build_nft_delta(previous, desired_save, family="ip")
     assert delta is not None
     assert "delete chain ip ferm oldchain" in delta
+
+
+def test_parse_error_carries_line_number_and_excerpt() -> None:
+    """A non-'add' verb raises a parse error naming the 1-based line number
+    and echoing the offending line text."""
+    text = "add table ip ferm\nbogus line here\n"
+    with pytest.raises(FermError) as exc:
+        parse_nft_script(text)
+    message = str(exc.value)
+    assert "line 2" in message
+    assert "bogus line here" in message
+
+
+def test_rule_for_unknown_chain_reports_line_and_excerpt() -> None:
+    """A rule referencing a chain that was never declared raises a parse
+    error carrying its line number and text."""
+    text = "add table ip ferm\nadd rule ip ferm NOPE accept\n"
+    with pytest.raises(FermError) as exc:
+        parse_nft_script(text)
+    message = str(exc.value)
+    assert "line 2" in message
+    assert "NOPE" in message
+
+
+def test_minimal_six_part_rule_is_accepted() -> None:
+    """A rule line of exactly six whitespace tokens (single-token body) is a
+    valid rule, not a parse error: the length gate is '>=', not '>'."""
+    text = (
+        "add table ip ferm\n"
+        "add chain ip ferm INPUT\n"
+        "add rule ip ferm INPUT accept\n"
+    )
+    tables = parse_nft_script(text)
+    assert tables["ferm"].chains["INPUT"].rules == ["accept"]

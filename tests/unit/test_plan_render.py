@@ -1,9 +1,12 @@
 from pyferm.plan import (
+    ChainRebuild,
+    DesuetChain,
     ForeignChain,
     Plan,
     PlanDiff,
     PolicyChange,
     RuleChange,
+    SetChange,
     render_plan,
     render_structured,
     render_unified,
@@ -124,3 +127,127 @@ def test_structured_noflush_note_warns_about_reappend_undercount() -> None:
     assert "note: noflush -- existing built-in/undeclared rules kept" in out
     assert "note: noflush -- counts are the net positional diff" in out
     assert "duplicated" in out
+
+
+def _first_index(text: str, *needles: str) -> list[int]:
+    return [text.index(n) for n in needles]
+
+
+def test_structured_policy_changes_sorted_by_chain() -> None:
+    # Two policy changes given out of order must render sorted by chain, and
+    # the sort key must be present (an absent key raises on the dataclass).
+    diff = PlanDiff(
+        policy_changes=[
+            PolicyChange("filter", "OUTPUT", "ACCEPT", "DROP"),
+            PolicyChange("filter", "INPUT", "ACCEPT", "DROP"),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    a, b = _first_index(out, "policy filter/INPUT", "policy filter/OUTPUT")
+    assert a < b
+
+
+def test_structured_rules_removed_sorted_by_chain() -> None:
+    diff = PlanDiff(
+        rules_removed=[
+            RuleChange("filter", "OUTPUT", "-j A"),
+            RuleChange("filter", "INPUT", "-j B"),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert out.index("-j B") < out.index("-j A")
+
+
+def test_structured_rules_added_sorted_by_chain() -> None:
+    diff = PlanDiff(
+        rules_added=[
+            RuleChange("filter", "OUTPUT", "-j A"),
+            RuleChange("filter", "INPUT", "-j B"),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert out.index("-j B") < out.index("-j A")
+
+
+def test_structured_foreign_chains_sorted_by_chain() -> None:
+    diff = PlanDiff(
+        foreign_chains=[
+            ForeignChain("filter", "ZULU"),
+            ForeignChain("filter", "ALFA"),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert out.index("ALFA") < out.index("ZULU")
+
+
+def test_structured_desuet_chains_sorted_by_chain() -> None:
+    diff = PlanDiff(
+        desuet_chains=[
+            DesuetChain("filter", "ZULU"),
+            DesuetChain("filter", "ALFA"),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert out.index("ALFA") < out.index("ZULU")
+
+
+def test_structured_chain_rebuilds_sorted_by_chain() -> None:
+    diff = PlanDiff(
+        chain_rebuilds=[
+            ChainRebuild("filter", "ZULU", "0", "10"),
+            ChainRebuild("filter", "ALFA", "0", "10"),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert out.index("ALFA") < out.index("ZULU")
+
+
+def test_structured_set_changes_sorted_by_name() -> None:
+    diff = PlanDiff(
+        set_changes=[
+            SetChange("filter", "zeta", "add", ["1"]),
+            SetChange("filter", "alfa", "add", ["2"]),
+        ]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert out.index("alfa") < out.index("zeta")
+
+
+def test_structured_set_add_lists_elements_joined_by_comma() -> None:
+    diff = PlanDiff(
+        set_changes=[SetChange("filter", "ssh", "add", ["80", "22"])]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert "+ set filter/ssh { 80, 22 }" in out
+
+
+def test_structured_set_modify_lists_elements_joined_by_comma() -> None:
+    diff = PlanDiff(
+        set_changes=[SetChange("filter", "ssh", "modify", ["80", "22"])]
+    )
+    out = render_structured(Plan(families={"ip": diff}))
+    assert "~ set filter/ssh { 80, 22 }" in out
+
+
+def test_structured_set_remove_renders_minus_line() -> None:
+    # A removed set renders as a bare '- set' line, never the '~ set { ... }'
+    # modify form.
+    diff = PlanDiff(set_changes=[SetChange("filter", "ssh", "remove", [])])
+    out = render_structured(Plan(families={"ip": diff}))
+    assert "- set filter/ssh" in out
+    assert "~ set filter/ssh" not in out
+
+
+def test_unified_includes_desuet_chain_in_its_table() -> None:
+    # A desuet (removed base) chain must appear in the unified current side
+    # under its own table, never filtered out by a table mismatch.
+    diff = PlanDiff(desuet_chains=[DesuetChain("filter", "INPUT")])
+    out = render_unified(Plan(families={"ip": diff}))
+    assert "base chain INPUT removed" in out
+
+
+def test_unified_includes_set_change_in_its_table() -> None:
+    # A set change must be emitted under its own table in the unified diff.
+    diff = PlanDiff(set_changes=[SetChange("filter", "ssh", "add", ["22"])])
+    out = render_unified(Plan(families={"ip": diff}))
+    assert "add set filter ssh" in out

@@ -270,3 +270,14 @@ def test_extra_close_brace_after_table_raises() -> None:
     """A stray '}' after the table block closes raises FermError."""
     with pytest.raises(FermError):
         parse_nft_list("table ip ferm {\n}\n}\n", family="ip")
+
+
+def test_parse_error_carries_line_number_and_excerpt() -> None:
+    """A parse error inside the table block names the 1-based line number
+    and echoes the offending text, so a malformed snapshot is diagnosable."""
+    text = "table ip ferm {\nnotachain foo\n}\n"
+    with pytest.raises(FermError) as exc:
+        parse_nft_list(text, family="ip")
+    message = str(exc.value)
+    assert "line 2" in message
+    assert "notachain foo" in message
