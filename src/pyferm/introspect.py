@@ -263,6 +263,21 @@ BUILTINS: Final[dict[str, Builtin]] = dict(
             "match the protocol (alias: protocol)",
         ),
         _builtin("protocol", "rule", "protocol PROTOCOL", "alias of 'proto'"),
+        # sport/dport are parser-level port switches (no module keyword
+        # table carries them): they map to --sport/--dport of the active
+        # tcp/udp protocol, so they are describable only here.
+        _builtin(
+            "sport",
+            "rule",
+            "sport PORT[:PORT]",
+            "match the source port (needs proto tcp/udp)",
+        ),
+        _builtin(
+            "dport",
+            "rule",
+            "dport PORT[:PORT]",
+            "match the destination port (needs proto tcp/udp)",
+        ),
         _builtin(
             "mod",
             "rule",

@@ -28,8 +28,7 @@ from pyferm.parser import DEPRECATED_KEYWORDS
 #: Dispatch variables whose string comparisons the scan harvests.
 _SCAN_NAMES: Final = frozenset({"keyword", "token", "lead", "tok"})
 
-#: Collected tokens that need no BUILTINS entry (assert 1), each with a
-#: reason: punctuation, or keywords documented elsewhere.
+#: Collected-but-not-a-keyword tokens (assert 1), each with a reason.
 _INTROSPECT_IGNORED: Final = frozenset(
     {
         ";",  # statement terminator, not a keyword
@@ -42,8 +41,6 @@ _INTROSPECT_IGNORED: Final = frozenset(
         ")",  # tuple/array close
         "=",  # @def assignment
         ",",  # list separator
-        "sport",  # port switch; documented as a tcp/udp module keyword
-        "dport",  # same
     }
 )
 

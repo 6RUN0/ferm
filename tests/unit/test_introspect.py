@@ -182,6 +182,23 @@ def test_describe_connlimit_golden() -> None:
     )
 
 
+def test_describe_port_switches_golden() -> None:
+    # sport/dport live in no module keyword table (the parser handles
+    # them as special port switches), so BUILTINS is their only
+    # describable home; pinned after the gap went unnoticed behind a
+    # regex the completeness gate could not scan.
+    assert describe("sport") == (
+        "built-in rule keyword 'sport':\n"
+        "  sport PORT[:PORT] -- match the source port "
+        "(needs proto tcp/udp)\n"
+    )
+    assert describe("dport") == (
+        "built-in rule keyword 'dport':\n"
+        "  dport PORT[:PORT] -- match the destination port "
+        "(needs proto tcp/udp)\n"
+    )
+
+
 _LIST_MODULES_GOLDEN = """\
 protocol modules (ip/ip6):
   dccp  icmp  mh    sctp  tcp   udp
@@ -248,9 +265,9 @@ built-in keywords:
   @ne            @not           @preserve      @resolve       @set
   @subchain      @substr        ACCEPT         DROP           NOP
   QUEUE          RETURN         chain          def            domain
-  goto           hook           include        jump           mod
-  module         policy         priority       proto          protocol
-  subchain       table
+  dport          goto           hook           include        jump
+  mod            module         policy         priority       proto
+  protocol       sport          subchain       table
 
 Use --describe NAME for details on a module, option or keyword.
 """
