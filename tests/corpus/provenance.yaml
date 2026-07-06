@@ -1,8 +1,11 @@
 # Provenance manifest for the wild-config corpus.
 #
-# One entry per tests/corpus/configs/*.ferm file. This is the single
-# source of truth for where each harvested config came from; it replaces
-# the old source table that used to live in the corpus README.
+# One entry per vendored file: the flat tests/corpus/configs/*.ferm
+# configs plus, for multi-file entries (a directory per config), every
+# file inside that directory, keyed by its configs/-relative path. This
+# is the single source of truth for where each harvested file came
+# from; it replaces the old source table that used to live in the
+# corpus README.
 #
 # Consumed only by test_provenance.py via yaml.safe_load. The commit
 # field is a best-effort revision pin: the last commit that touched the
@@ -136,18 +139,32 @@
     - table nat
     - interface
 
-- file: grnet-synnefo.ferm
+# Multi-file entry: the vendored masq.ferm include is live; the two
+# includes absent from the repo at the pinned commit stay commented.
+- file: grnet-synnefo/grnet-synnefo.ferm
   repo: grnet/synnefo
   path: snf-deploy/files/etc/ferm/ferm.conf
   commit: da63a4213fe6632bdcf054b413028d9643652ec0
   license: GPL-3.0
   features:
     - "@include"
-    - mod state
-    - ip6/dual-stack
-    - interface
   sanitized:
-    - "@include lines commented out"
+    - "@include lines for files absent upstream commented out"
+
+- file: grnet-synnefo/masq.ferm
+  repo: grnet/synnefo
+  path: snf-deploy/files/etc/ferm/masq.ferm
+  commit: da63a4213fe6632bdcf054b413028d9643652ec0
+  license: GPL-3.0
+  features:
+    - "@hook"
+    - "@if/@else"
+    - domain eb
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+  sanitized:
+    - deploy-template %VAR% placeholders replaced with literals
+    - backtick command substitution replaced with a literal MAC
 
 - file: himdel-dotfiles.ferm
   repo: himdel/dotfiles
@@ -227,22 +244,103 @@
     - mod state
     - interface
 
-- file: rootnode-lxc.ferm
+# Multi-file entry: both directory includes are live and vendored below
+# (the whole lxc/ferm tree at the pinned commit). The entry point is
+# verbatim upstream.
+- file: rootnode-lxc/rootnode-lxc.ferm
   repo: lukaszx0/rootnode-legacy
   path: lxc/ferm/ferm.conf
   commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
   license: NOASSERTION
   features:
-    - "@def"
     - "@include"
+    - "@include directory"
     - mod state
     - SNAT/DNAT/MASQUERADE
     - LOG
     - table nat
     - interface
+
+- file: rootnode-lxc/conf.d/network.conf
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/conf.d/network.conf
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - "@def"
   sanitized:
-    - "@include lines commented out"
-    - variables from removed @include stubbed (documentation-range)
+    - "'CHANGEME' placeholders replaced (documentation-range addresses)"
+
+- file: rootnode-lxc/ferm.d/dns
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/dns
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+
+- file: rootnode-lxc/ferm.d/ftp
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/ftp
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+
+- file: rootnode-lxc/ferm.d/mysql
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/mysql
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+
+- file: rootnode-lxc/ferm.d/pam
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/pam
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+
+- file: rootnode-lxc/ferm.d/proxy
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/proxy
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+
+- file: rootnode-lxc/ferm.d/satan
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/satan
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
+
+- file: rootnode-lxc/ferm.d/smtp
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/smtp
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - table filter
+
+- file: rootnode-lxc/ferm.d/vhost
+  repo: lukaszx0/rootnode-legacy
+  path: lxc/ferm/ferm.d/vhost
+  commit: 2a53bfb0e0062ca0a39ce60eef6c0a5132f7d2d2
+  license: NOASSERTION
+  features:
+    - SNAT/DNAT/MASQUERADE
+    - table nat
 
 - file: rwthctf2012-vpn.ferm
   repo: oldeurope/rwthctf2012

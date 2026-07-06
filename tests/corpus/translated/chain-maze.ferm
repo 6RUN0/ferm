@@ -1,0 +1,70 @@
+# Chain-dispatch labyrinth translated from a hand-grown iptables edge
+# firewall: per-interface, then per-protocol, then per-service user
+# chains; a shared log-and-drop leaf reached by goto from every branch;
+# RETURN short-circuits; the same subtree entered from both INPUT and
+# FORWARD; an @subchain nested inside a jumped-to chain.
+# Origin: iptables user-chain dispatch patterns (fail2ban/sshguard-era
+# edge boxes), hand-rewritten into ferm for the differential corpus.
+
+domain (ip ip6) table filter {
+    chain INPUT {
+        policy DROP;
+        interface lo ACCEPT;
+        mod state state INVALID goto bad;
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+        @if @eq($DOMAIN, ip) proto icmp mod limit limit 10/second ACCEPT;
+        interface eth0 jump from_wan;
+        interface eth1 jump from_lan;
+        goto bad;
+    }
+
+    chain FORWARD {
+        policy DROP;
+        mod state state INVALID goto bad;
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+        # the LAN subtree serves both INPUT and FORWARD
+        interface eth1 outerface eth0 jump from_lan;
+        goto bad;
+    }
+
+    chain from_wan {
+        proto tcp jump wan_tcp;
+        proto udp jump wan_udp;
+        RETURN;
+    }
+
+    chain wan_tcp {
+        mod state state NEW proto tcp dport 22 jump ssh_guard;
+        proto tcp dport (80 443) ACCEPT;
+        proto tcp dport (137 138 139 445) goto bad;
+        RETURN;
+    }
+
+    chain wan_udp {
+        proto udp dport (500 4500) ACCEPT;
+        proto udp dport 33434:33523 REJECT reject-with icmp-port-unreachable;
+        goto bad;
+    }
+
+    chain ssh_guard {
+        mod recent rcheck seconds 60 hitcount 4 name SSH goto bad;
+        # a target-less iptables rule needs an explicit NOP in ferm
+        mod recent set name SSH NOP;
+        proto tcp dport 22 ACCEPT;
+    }
+
+    chain from_lan {
+        proto tcp @subchain "lan_tcp" {
+            proto tcp dport (22 80 443 3128) ACCEPT;
+            proto tcp dport 25 goto bad;
+            RETURN;
+        }
+        proto udp dport (53 123) ACCEPT;
+        RETURN;
+    }
+
+    chain bad {
+        mod limit limit 5/minute LOG log-prefix "maze-drop: " log-level warning;
+        DROP;
+    }
+}

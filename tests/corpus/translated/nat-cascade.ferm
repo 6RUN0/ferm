@@ -1,0 +1,57 @@
+# Multi-stage NAT translated to ferm from classic iptables home-router
+# recipes: interface-dispatched DNAT chains shared between WAN ingress
+# and LAN hairpin, port-rewriting DNAT, transparent-proxy REDIRECT, 1:1
+# NETMAP for a DMZ block, per-source SNAT tiers behind a jump, and
+# localhost DNAT in nat/OUTPUT.
+# Origin: netfilter port-forwarding/hairpin-NAT HOWTO patterns,
+# hand-rewritten into ferm for the differential corpus.
+
+@def $WAN = eth0;
+@def $LAN = eth1;
+@def $DMZ = eth2;
+@def $PUB_IP  = 198.51.100.10;
+@def $LAN_NET = 192.168.10.0/24;
+@def $DMZ_NET = 192.0.2.0/24;
+@def $DMZ_MAP = 10.66.0.0/24;
+@def $WEB  = 192.168.10.80;
+@def $MAIL = 192.168.10.25;
+
+domain ip table nat {
+    chain PREROUTING {
+        interface $WAN goto dnat_public;
+        # hairpin: LAN clients hitting the public address take the same
+        # DNAT map as WAN traffic
+        interface $LAN daddr $PUB_IP goto dnat_public;
+        # 1:1 map of the routable DMZ block onto its private twin
+        interface $WAN daddr $DMZ_MAP NETMAP to $DMZ_NET;
+    }
+
+    chain dnat_public {
+        proto tcp dport 80 DNAT to $WEB;
+        proto tcp dport 8080 DNAT to "$WEB:80";
+        proto tcp dport (25 465 587) DNAT to $MAIL;
+        proto tcp dport 2222 DNAT to "192.168.10.22:22";
+        proto udp dport 6000:6100 DNAT to 192.168.10.60;
+        proto tcp dport 3128 REDIRECT to-ports 8118;
+    }
+
+    chain POSTROUTING {
+        # hairpin second stage: rewrite the LAN client source so replies
+        # come back through the router
+        source $LAN_NET destination $WEB proto tcp dport 80 SNAT to $PUB_IP;
+        # reverse half of the DMZ 1:1 map
+        outerface $WAN saddr $DMZ_NET NETMAP to $DMZ_MAP;
+        outerface $WAN jump snat_tiers;
+    }
+
+    chain snat_tiers {
+        source $DMZ_NET SNAT to 198.51.100.11;
+        source $LAN_NET SNAT to $PUB_IP;
+        MASQUERADE to-ports "1024-65535";
+    }
+
+    chain OUTPUT {
+        # router-local resolver redirect
+        proto (tcp udp) daddr 203.0.113.53 dport 53 DNAT to "127.0.0.1:5353";
+    }
+}

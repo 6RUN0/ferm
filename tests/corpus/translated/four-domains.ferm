@@ -1,0 +1,66 @@
+# The whole zoo in one file: ip, ip6, arp and eb domains together,
+# including the least popular chain that exists (eb broute/BROUTING),
+# arptables header mangling, and NPTv6 prefix translation with HL
+# rewriting on the ip6 side.
+# Origin: bridge-firewall and NPTv6 recipes (ebtables brouter HOWTO,
+# RFC 6296 deployments), hand-rewritten into ferm for the corpus.
+
+domain ip {
+    table filter {
+        chain FORWARD {
+            proto tcp tcp-flags (SYN RST) SYN TCPMSS clamp-mss-to-pmtu;
+        }
+    }
+}
+
+domain ip6 {
+    table mangle {
+        chain PREROUTING {
+            DNPT src-pfx "2001:db8:1::/64" dst-pfx "fd00:1::/64";
+        }
+        chain POSTROUTING {
+            SNPT src-pfx "fd00:1::/64" dst-pfx "2001:db8:1::/64";
+            HL hl-set 64;
+        }
+    }
+    table filter {
+        chain INPUT {
+            proto ipv6-icmp icmpv6-type neighbour-solicitation ACCEPT;
+            proto ipv6-icmp icmpv6-type 136 ACCEPT;
+            proto ipv6-icmp mod limit limit 20/second ACCEPT;
+        }
+    }
+}
+
+domain arp {
+    table filter {
+        chain INPUT {
+            opcode 1 interface eth0 ACCEPT;
+            source-mac 00:11:22:33:44:55 DROP;
+        }
+        chain OUTPUT {
+            # arptables header mangling: -j mangle is spelled as a jump
+            # to the "mangle" target chain, mangle-target is an option
+            mangle-ip-s 192.0.2.1 mangle-target ACCEPT jump mangle;
+        }
+    }
+}
+
+domain eb {
+    table broute {
+        chain BROUTING {
+            # classic brouter: route this port instead of bridging it
+            interface eth0 redirect redirect-target DROP;
+        }
+    }
+    table filter {
+        chain FORWARD {
+            interface eth1 outerface eth2 ACCEPT;
+        }
+    }
+    table nat {
+        chain PREROUTING {
+            interface eth0 dnat to-destination 'aa:bb:cc:00:11:22' dnat-target ACCEPT;
+        }
+    }
+}

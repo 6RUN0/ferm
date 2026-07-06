@@ -1,0 +1,27 @@
+@hook post  "echo 1 > /proc/sys/net/ipv4/ip_forward";
+@hook flush "echo 0 > /proc/sys/net/ipv4/ip_forward";
+
+@def $PUBLIC_IFACE = eth0;         # [corpus: %PUBLIC_IFACE% placeholder replaced]
+@def $IFACE = br0;                 # [corpus: %IFACE% placeholder replaced]
+@def $SUBNET = 192.0.2.0/24;       # [corpus: %SUBNET% placeholder replaced]
+@def $MAC = 'aa:bb:cc:00:11:22';   # [corpus: backtick command replaced with literal]
+@def $ROUTER = 1;                  # [corpus: %ROUTER% placeholder replaced]
+
+
+domain ip {
+  table nat {
+    chain POSTROUTING {
+      @if $ROUTER outerface $PUBLIC_IFACE saddr $SUBNET MASQUERADE;
+    }
+  }
+}
+
+
+domain eb {
+  table nat {
+      chain POSTROUTING {
+         # MAC SNAT for networks
+          outerface $IFACE snat to-source $MAC;
+      }
+  }
+}

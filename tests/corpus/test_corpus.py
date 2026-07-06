@@ -34,6 +34,7 @@ from tests.corpus.canon import canonicalize
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
 CONFIGS = _HERE / "configs"
+TRANSLATED = _HERE / "translated"
 EXAMPLES = REPO_ROOT / "reference" / "examples"
 
 #: ``examples/resolve.ferm`` is excluded in place: its mock zonefile must
@@ -46,12 +47,24 @@ _ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
 def _corpus_configs() -> list[Path]:
     wild = sorted(CONFIGS.glob("*.ferm"))
+    # Multi-file entries: a directory per config, entry point named after
+    # it, vendored @include targets beside it (resolved relative to the
+    # entry file by both implementations).
+    nested = sorted(
+        path / f"{path.name}.ferm"
+        for path in CONFIGS.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    )
+    # Hand-translated adversarial configs (see translated/ headers):
+    # real-world iptables/nft setups rewritten into ferm to stress
+    # unusual structure -- chain mazes, multi-stage NAT, raw/mangle.
+    translated = sorted(TRANSLATED.glob("*.ferm"))
     upstream = sorted(
         path
         for path in EXAMPLES.glob("*.ferm")
         if path.name not in _EXCLUDED_EXAMPLES
     )
-    return wild + upstream
+    return wild + nested + translated + upstream
 
 
 def _compile(

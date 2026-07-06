@@ -1,0 +1,40 @@
+# Cartesian-product stress translated from "zone matrix" firewall
+# generators: interface, protocol, source, destination and port lists
+# multiply inside nested inheritance blocks, and a @def function with
+# a block body is expanded from three call sites -- a handful of
+# config lines unfolding into over a thousand emitted rules.
+# Origin: enterprise zone-matrix iptables generators (shorewall-style
+# shell loops), hand-rewritten into ferm for the differential corpus.
+
+@def $ZONES_A = (10.1.0.0/24 10.2.0.0/24 10.3.0.0/24 10.4.0.0/24);
+@def $ZONES_B = (172.16.1.0/24 172.16.2.0/24 172.16.3.0/24);
+@def $WEB_PORTS = (80 443 8080 8443);
+@def $DB_PORTS = (3306 5432 6379);
+
+@def &MATRIX($src, $dst, $ports) = {
+    proto (tcp udp) saddr $src daddr $dst dport $ports ACCEPT;
+    proto tcp saddr $src daddr $dst dport $ports mod state state NEW
+        mod limit limit 50/second LOG log-prefix "matrix: ";
+}
+
+domain ip table filter {
+    chain FORWARD {
+        policy DROP;
+        interface (eth0 eth1) {
+            outerface (eth2 eth3) {
+                &MATRIX($ZONES_A, $ZONES_B, $WEB_PORTS);
+                &MATRIX($ZONES_B, $ZONES_A, $DB_PORTS);
+            }
+        }
+        # flattened list concatenation multiplies once more
+        &MATRIX(($ZONES_A $ZONES_B), 192.0.2.0/24, ($WEB_PORTS $DB_PORTS));
+    }
+
+    chain INPUT {
+        interface (eth0 eth1 eth2 eth3)
+            proto (tcp udp)
+            saddr ($ZONES_A $ZONES_B)
+            dport (22 53 123 161 443)
+            mod state state NEW ACCEPT;
+    }
+}

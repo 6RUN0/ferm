@@ -1,0 +1,35 @@
+# Rare surface of the ferm language itself: the ferm 1.1 'realgoto'
+# spelling and bare 'hook' (both remapped with a deprecation warning --
+# the differential pins the warning bytes on stderr), long keyword
+# aliases (protocol/module), the 'dports' multiport shortcut, value
+# negation and negated lists, service names from /etc/services next to
+# numeric ports, hex and decimal spellings of the same mark, and an
+# interface wildcard.
+# Origin: forms scattered across the ferm(1) man page and the ferm 1.x
+# compatibility notes, collected into one config by hand.
+
+hook post "true";
+
+table filter {
+    chain INPUT {
+        policy DROP;
+        protocol tcp module state state ESTABLISHED ACCEPT;
+        proto tcp dports (22 80 443) ACCEPT;
+        proto tcp dport !22 NOP;
+        saddr !192.0.2.1 proto tcp dport ssh ACCEPT;
+        # A negated array is a parse error in both implementations
+        # ("it is not possible to negate an array"), so negation stays
+        # per-value here.
+        saddr !198.51.100.0/25 daddr !203.0.113.7 proto udp dport domain ACCEPT;
+        interface eth+ mod mark mark 0x2a NOP;
+        interface (lo docker0) mod mark mark 42 NOP;
+    }
+    chain SINK {
+        DROP;
+    }
+    chain OUTPUT {
+        proto tcp dport 9100 realgoto SINK;
+    }
+}
+
+domain ip table filter chain FORWARD policy DROP;

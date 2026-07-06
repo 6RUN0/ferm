@@ -1,0 +1,97 @@
+# Deep nesting: a twelve-level match-block tower in FORWARD, @subchain
+# four levels inside @subchain, a helper function chain six calls deep,
+# an @if ladder three levels deep, variable shadowing across nested
+# scopes, and a list built from nested lists (duplicates included).
+# Origin: the "flattened include tree" shape of Puppet/Chef-generated
+# enterprise rulesets, exaggerated by hand for the corpus.
+
+@def $DEPTH_PORT = 80;
+@def $INNER_PORTS = (22 80);
+@def $OUTER_PORTS = ($INNER_PORTS 443 ($INNER_PORTS 8080));
+
+@def &LEAF($port) = {
+    proto tcp dport $port ACCEPT;
+}
+@def &L5($port) = { mod state state NEW { &LEAF($port); } }
+@def &L4($port) = { mod limit limit 5/second { &L5($port); } }
+@def &L3($port) = { saddr 10.0.0.0/8 { &L4($port); } }
+@def &L2($port) = { interface eth0 { &L3($port); } }
+@def &L1($port) = { mod mark mark 7 { &L2($port); } }
+
+@def $EDGE = 1;
+@def $LAB = 0;
+
+table filter {
+    chain FORWARD {
+        policy DROP;
+        interface eth0 {
+            outerface eth1 {
+                proto tcp {
+                    mod multiport destination-ports (80 443) {
+                        mod state state (NEW ESTABLISHED) {
+                            saddr 10.0.0.0/8 {
+                                daddr 172.16.0.0/12 {
+                                    mod mark mark 1 {
+                                        mod tos tos 0x10 {
+                                            mod limit limit 10/second {
+                                                mod length length 64:1500 {
+                                                    mod ttl ttl-gt 1 {
+                                                        ACCEPT;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    chain INPUT {
+        policy DROP;
+        mod state state NEW @subchain "lvl1" {
+            saddr 192.0.2.0/24 @subchain "lvl2" {
+                proto tcp @subchain "lvl3" {
+                    dport 22 @subchain "lvl4" {
+                        mod state state NEW ACCEPT;
+                    }
+                }
+            }
+        }
+        &L1(8443);
+        proto tcp dport $OUTER_PORTS mod state state NEW ACCEPT;
+        proto tcp dport $DEPTH_PORT ACCEPT;
+        proto udp {
+            @def $DEPTH_PORT = 53;
+            dport $DEPTH_PORT ACCEPT;
+        }
+        proto tcp sport $DEPTH_PORT DROP;
+    }
+    @if $EDGE {
+        @if @not($LAB) {
+            @if @eq(@length(edge), 4) {
+                chain DEEP_IF {
+                    proto tcp dport 3128 RETURN;
+                }
+                chain INPUT {
+                    proto tcp dport 3128 jump DEEP_IF;
+                }
+            } @else {
+                chain INPUT {
+                    proto tcp dport 3129 DROP;
+                }
+            }
+        } @else {
+            chain INPUT {
+                proto tcp dport 3130 DROP;
+            }
+        }
+    } @else {
+        chain INPUT {
+            proto tcp dport 3131 DROP;
+        }
+    }
+}

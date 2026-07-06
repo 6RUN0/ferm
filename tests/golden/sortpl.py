@@ -8,8 +8,9 @@ each group's internal line order intact.  The ``z``-suffixes in the keys
 force ``*table`` headers, rule lines and ``COMMIT`` into a deterministic
 relative order within one table.
 
-The behaviour mirrors the Perl original line for line; see that file for
-the authoritative reference.
+The behaviour mirrors the Perl original line for line -- with a single
+documented deviation for multi-table ebtables runs (see ``_EB_ATOMIC``);
+see that file for the authoritative reference.
 """
 
 from __future__ import annotations
@@ -34,7 +35,11 @@ _TABLE = re.compile(r"^\*(\S+)")
 _CHAIN = re.compile(r"^(:)(\S+)")
 _APPEND = re.compile(r"^-(A) (\S+)")
 # "ebtables -t <table> --atomic-file <path> <rest>" — atomic-file commands
-# are grouped by their atomic-file path (the second capture).
+# are grouped by atomic-file path AND table. Deliberate deviation from
+# the Perl original (which keys by path alone): ferm emits eb tables in
+# Perl-hash order, so a run whose atomic file spans several tables is
+# not comparable across implementations without folding the table into
+# the group key. Intra-table command order is preserved either way.
 _EB_ATOMIC = re.compile(r"^ebtables -t (\w+) --atomic-file (\S+) [^\n]+")
 
 
@@ -101,7 +106,7 @@ def sort_output(text: str) -> str:
 
         eb = _EB_ATOMIC.match(line)
         if eb:
-            rules.setdefault(eb.group(2), []).append(line)
+            rules.setdefault(f"{eb.group(2)} {eb.group(1)}", []).append(line)
             continue
 
         raise ValueError(f"sort.pl: unrecognized line: {line!r}")

@@ -1,0 +1,33 @@
+# raw-table and TPROXY edge cases translated from high-throughput DNS
+# and transparent-proxy recipes: conntrack bypass via NOTRACK and via
+# CT notrack in raw PREROUTING/OUTPUT, the paired UNTRACKED accept in
+# filter, squid-style TPROXY with a mark in mangle/PREROUTING, and a
+# pkttype broadcast drop -- all dual-stack.
+# Origin: conntrack-bypass and squid TPROXY iptables recipes,
+# hand-rewritten into ferm for the differential corpus.
+
+domain (ip ip6) {
+    table raw {
+        chain PREROUTING {
+            proto udp dport 53 NOTRACK;
+            proto tcp dport 53 CT notrack;
+        }
+        chain OUTPUT {
+            proto udp sport 53 NOTRACK;
+        }
+    }
+
+    table mangle {
+        chain PREROUTING {
+            proto tcp dport 3129 TPROXY on-port 3129 tproxy-mark "0x1/0x1";
+            mod pkttype pkt-type broadcast DROP;
+        }
+    }
+
+    table filter {
+        chain INPUT {
+            mod state state UNTRACKED proto udp dport 53 ACCEPT;
+            proto tcp dport 53 mod statistic mode nth every 10 packet 0 LOG log-prefix "dns-sample: ";
+        }
+    }
+}

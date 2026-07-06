@@ -1,0 +1,94 @@
+# DSL torture: nothing here is exotic iptables -- the pain aims at the
+# ferm language itself. Nested @if/@else ladders, string builtins
+# composed inside each other, variable interpolation into DNAT
+# arguments, anonymous and nested @subchain blocks, functions calling
+# functions, and the same tables and chains re-opened far apart.
+# Origin: ferm mailing-list snippets and config-generator output
+# patterns, hand-rewritten (and worsened) for the differential corpus.
+
+@def $ROLE = edge;
+@def $WEB = 192.168.7.80;
+@def $WEB_PORT = 8080;
+@def $LOG_TAG = @cat(@substr(firewalling, 0, 4), '-', @length(firewalling));
+@def $CONF_DIR = @dirname('/etc/ferm/ferm.conf');
+@def $CONF_NAME = @basename('/etc/ferm/ferm.conf');
+@def $JOINED = @join('-', (alpha beta gamma));
+
+@def &INNER($port) = {
+    proto tcp dport $port mod state state NEW ACCEPT;
+}
+@def &OUTER($port) = {
+    &INNER($port);
+    proto udp dport $port DROP;
+}
+
+# first opening of filter
+table filter {
+    chain INPUT {
+        policy DROP;
+        interface lo ACCEPT;
+    }
+}
+
+table nat {
+    chain PREROUTING {
+        # interpolation builds the DNAT argument out of two variables
+        proto tcp dport 80 DNAT to "$WEB:$WEB_PORT";
+    }
+}
+
+# second opening of filter, same chain continued
+table filter {
+    chain INPUT {
+        mod state state (ESTABLISHED RELATED) ACCEPT;
+        @if @eq($ROLE, core) {
+            proto tcp dport 179 ACCEPT;
+        } @else {
+            @if @eq($ROLE, edge) {
+                proto tcp dport 22 jump guarded;
+            } @else {
+                proto tcp dport 22 DROP;
+            }
+        }
+    }
+
+    chain guarded {
+        # anonymous subchain: the name is generated
+        proto tcp @subchain {
+            saddr 192.0.2.0/24 ACCEPT;
+            RETURN;
+        }
+        # named subchain nesting another subchain
+        proto tcp @subchain "outer_guard" {
+            proto tcp dport 22 @subchain "inner_guard" {
+                mod limit limit 3/minute ACCEPT;
+                DROP;
+            }
+        }
+    }
+}
+
+# third opening: nat again
+table nat {
+    chain PREROUTING {
+        proto tcp dport 8443 DNAT to "$WEB:443";
+    }
+}
+
+# fourth opening: filter INPUT yet again, plus function fan-out
+table filter {
+    chain INPUT {
+        &OUTER(123);
+        &OUTER(161);
+        mod comment comment "tag=$LOG_TAG conf=$CONF_DIR/$CONF_NAME join=$JOINED"
+            proto tcp dport 9999 REJECT;
+    }
+}
+
+# fifth opening: a chain first referenced by the @if above
+table filter {
+    chain guarded {
+        LOG log-prefix "$LOG_TAG: ";
+        RETURN;
+    }
+}

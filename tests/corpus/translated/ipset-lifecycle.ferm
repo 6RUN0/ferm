@@ -1,0 +1,37 @@
+# ipset lifecycle driven entirely from rules, against sets created
+# outside ferm (ipset restore at boot, fail2ban style): dual-stack
+# match-set with a domain-interpolated set name, direction flags,
+# feeding a set from a honeypot port with a timeout, pruning it, and
+# return-nomatch inversion.
+# Origin: fail2ban/ipset blocklist recipes and honeypot auto-ban
+# iptables snippets, hand-rewritten into ferm for the corpus.
+
+domain (ip ip6) table filter {
+    chain INPUT {
+        # the set name varies per family through interpolation
+        mod set match-set "blocklist-$DOMAIN" src DROP;
+
+        # honeypot: anyone touching 2222 lands in the scanners set
+        proto tcp dport 2222
+            SET add-set scanners src timeout 3600;
+        proto tcp dport 2222 DROP;
+
+        # a later good deed removes the entry again
+        proto tcp dport 443 mod set match-set friendly src
+            SET del-set scanners src;
+
+        mod set match-set scanners src goto quarantine;
+
+        # direction flags: both source and destination must be listed
+        mod set match-set peered (src dst) ACCEPT;
+    }
+
+    chain quarantine {
+        mod limit limit 1/minute LOG log-prefix "quarantined: ";
+        DROP;
+    }
+
+    chain FORWARD {
+        mod set match-set transit (src dst) mod state state NEW ACCEPT;
+    }
+}

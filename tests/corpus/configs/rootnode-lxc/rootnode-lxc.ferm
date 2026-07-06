@@ -1,5 +1,3 @@
-@def $LXC_NET = 10.0.3.0/24; # [corpus: stub for removed include]
-@def $PUBLIC_IP = 198.51.100.7; # [corpus: stub for removed include]
 # -*- shell-script -*-
 #
 # Firewall rules
@@ -11,10 +9,10 @@
 #
 
 # Server configuration
-# [corpus: @include removed] @include 'conf.d/';
+@include 'conf.d/';
 
 # Container configuraion
-# [corpus: @include removed] @include 'ferm.d/';
+@include 'ferm.d/';
 
 table filter {
     chain INPUT {

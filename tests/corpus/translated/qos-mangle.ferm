@@ -1,0 +1,44 @@
+# QoS marking cascade translated from LARTC/wondershaper-era iptables
+# recipes: CONNMARK restore in mangle/PREROUTING, classification of
+# still-unmarked flows in a user chain (port tiers, packet length,
+# DSCP re-match), CONNMARK save, TCPMSS clamping on FORWARD, CLASSIFY
+# plus DSCP/TOS rewriting in POSTROUTING, TTL normalization.
+# Origin: LARTC traffic-shaping mark chains, hand-rewritten into ferm
+# for the differential corpus.
+
+domain ip table mangle {
+    chain PREROUTING {
+        CONNMARK restore-mark;
+        mod mark mark 0 jump classify;
+        mod dscp dscp-class EF MARK set-mark 1;
+        TTL ttl-set 64;
+    }
+
+    chain classify {
+        proto tcp dport (22 53) MARK set-mark 1;
+        proto udp dport 53 MARK set-mark 1;
+        proto tcp dport (80 443) mod length length 0:512 MARK set-mark 2;
+        proto tcp dport (80 443) MARK set-mark 3;
+        proto tcp sport 1194 MARK set-xmark "0x4/0xff";
+        mod mark mark 0 MARK set-mark 5;
+        CONNMARK save-mark;
+    }
+
+    chain FORWARD {
+        proto tcp tcp-flags (SYN RST) SYN TCPMSS clamp-mss-to-pmtu;
+    }
+
+    chain POSTROUTING {
+        mod mark mark 1 CLASSIFY set-class "1:10";
+        mod mark mark 2 CLASSIFY set-class "1:20";
+        mod mark mark 3 CLASSIFY set-class "1:30";
+        mod mark mark 5 CLASSIFY set-class "1:50";
+        mod mark mark 1 DSCP set-dscp-class EF;
+        mod mark mark 3 TOS set-tos Maximize-Throughput;
+    }
+
+    chain OUTPUT {
+        CONNMARK restore-mark;
+        mod mark mark 0 jump classify;
+    }
+}

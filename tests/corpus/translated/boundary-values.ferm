@@ -1,0 +1,68 @@
+# Boundary values: every number here is the last one iptables still
+# accepts -- one step further and the ruleset is rejected. Ports 0 and
+# 65535 and the full 0:65535 range, a 32-bit mark with a full mask,
+# DSCP 63, multiport filled to its 15-slot cap, TTL/HL 0 and 255,
+# prefixes /0 and /32 (/128 for the v6 twin), packet length extremes,
+# NFQUEUE queue number 65535. Pins pass-through fidelity at the edges
+# of the value ranges.
+# Origin: documented ranges from iptables-extensions(8) and the
+# netfilter kernel sources, condensed by hand for the corpus.
+
+domain ip {
+    table filter {
+        chain INPUT {
+            policy DROP;
+            proto tcp dport 0 DROP;
+            proto tcp dport 65535 ACCEPT;
+            proto tcp dport 0:65535 NOP;
+            proto udp sport 1024:65535 dport (0 65535) RETURN;
+            saddr 0.0.0.0/0 daddr 192.0.2.255/32 proto icmp icmp-type 255 DROP;
+            proto tcp mod multiport destination-ports (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15) ACCEPT;
+            mod length length 0:65535 NOP;
+            mod ttl ttl-eq 0 DROP;
+            mod ttl ttl-gt 254 NOP;
+            mod ttl ttl-lt 1 NOP;
+            mod mark mark "0xffffffff/0xffffffff" NFQUEUE queue-num 65535;
+            mod connmark mark "0x80000000/0x80000000" DROP;
+            mod limit limit 10000/second limit-burst 10000 ACCEPT;
+        }
+    }
+    table mangle {
+        chain PREROUTING {
+            MARK set-xmark "0xffffffff/0xffffffff";
+            proto tcp dport 65535 CLASSIFY set-class "ffff:ffff";
+            DSCP set-dscp 63;
+            TTL ttl-set 255;
+        }
+        chain POSTROUTING {
+            proto tcp tcp-flags (SYN RST) SYN TCPMSS set-mss 65535;
+        }
+        chain OUTPUT {
+            TTL ttl-set 1;
+        }
+    }
+}
+
+domain ip6 {
+    table filter {
+        chain INPUT {
+            policy DROP;
+            saddr ::/0 daddr ::1/128 proto ipv6-icmp DROP;
+            proto tcp dport 0 DROP;
+            proto tcp dport 65535 ACCEPT;
+            mod hl hl-eq 255 NOP;
+            mod hl hl-gt 254 NOP;
+            mod hl hl-lt 1 NOP;
+            mod length length 0:65535 NOP;
+        }
+    }
+    table mangle {
+        chain PREROUTING {
+            HL hl-set 255;
+            MARK set-xmark "0xffffffff/0xffffffff";
+        }
+        chain POSTROUTING {
+            proto tcp tcp-flags (SYN RST) SYN TCPMSS set-mss 65535;
+        }
+    }
+}

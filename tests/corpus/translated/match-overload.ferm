@@ -1,0 +1,58 @@
+# Kitchen-sink rules translated from "one rule to end them all"
+# iptables snippets: eight-plus match modules stacked on a single
+# rule, SYNPROXY with its conntrack companion, TEE mirroring behind a
+# statistic sample, HMARK with the full option set, NFQUEUE balancing
+# -- everything the emitter has to order correctly within one rule.
+# Origin: DDoS-mitigation and IDS-mirroring iptables recipes,
+# hand-rewritten into ferm for the differential corpus.
+
+domain ip {
+    table raw {
+        chain PREROUTING {
+            # SYNPROXY stage 1: keep SYNs out of conntrack
+            proto tcp dport 80 tcp-flags (FIN SYN RST ACK) SYN NOTRACK;
+        }
+    }
+
+    table filter {
+        chain INPUT {
+            # SYNPROXY stage 2
+            proto tcp dport 80 mod conntrack ctstate (INVALID UNTRACKED)
+                SYNPROXY sack-perm timestamp wscale 7 mss 1460;
+
+            # the kitchen sink: office-hours HTTPS budget
+            proto tcp dport 443
+                mod time timestart 09:00 timestop 18:00
+                    weekdays (Mon Tue Wed Thu Fri) kerneltz
+                mod connbytes connbytes 1048576: connbytes-dir both
+                    connbytes-mode bytes
+                mod connlimit connlimit-above 20 connlimit-mask 24
+                mod hashlimit hashlimit-above 5/second hashlimit-burst 10
+                    hashlimit-mode (srcip dstport) hashlimit-name https_flood
+                    hashlimit-htable-size 4096 hashlimit-htable-expire 30000
+                mod comment comment "kitchen sink"
+                REJECT reject-with tcp-reset;
+
+            # byte-level and payload matching
+            proto udp mod u32 u32 "6&0xFF=17 && 40&0xFFFF=0x1234" DROP;
+            proto tcp mod string algo bm from 40 to 1500
+                string "GET /admin" LOG log-prefix "probe: ";
+            proto tcp mod string algo kmp hex-string "|de ad be ef|" DROP;
+            mod quota quota 1000000 ACCEPT;
+            proto tcp mod osf genre Linux ttl 2 log 0 ACCEPT;
+        }
+    }
+
+    table mangle {
+        chain PREROUTING {
+            # mirror a 1% sample to the IDS box
+            mod statistic mode random probability 0.01
+                TEE gateway 192.0.2.254;
+            HMARK hmark-tuple "src,dst,sport,dport" hmark-mod 4
+                hmark-offset 100 hmark-rnd 0xcafe;
+        }
+        chain POSTROUTING {
+            mod mark mark 3 NFQUEUE queue-balance 0:3 queue-bypass;
+        }
+    }
+}

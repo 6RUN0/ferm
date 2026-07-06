@@ -1,0 +1,14 @@
+table filter {
+	chain FORWARD {
+	}
+}
+
+table nat {
+        chain PREROUTING {
+        }
+
+	chain POSTROUTING {
+		# Route outgoing connections to service IP
+		source $SATAN_IP destination ! $LXC_NET SNAT to $SERVICE_IP;
+	}
+}

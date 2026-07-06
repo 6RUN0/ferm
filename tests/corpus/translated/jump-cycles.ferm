@@ -1,0 +1,76 @@
+# Jump-graph pathologies translated from broken-in-the-wild iptables
+# setups: a three-chain jump ring, a self-referencing chain, a goto
+# ring, a diamond with a rate-limited back edge, a jump into a builtin
+# chain, and a forward reference to a chain defined at the bottom.
+# ferm emits all of this verbatim: loop detection is the kernel's job
+# at apply time (iptables-restore fails with "Loop found in table"),
+# so the differential pins both compilers to stay equally naive under
+# --noexec.
+# Origin: netfilter-list chain-loop bug reports and iptables
+# user-chain spaghetti, hand-rewritten into ferm for the corpus.
+
+domain ip table filter {
+    chain INPUT {
+        policy DROP;
+        # forward reference: the target chain is defined last
+        proto tcp dport 9100 jump late_bound;
+        jump ring_a;
+    }
+
+    # three-chain jump ring: a -> b -> c -> a
+    chain ring_a {
+        mod comment comment "ring a->b" jump ring_b;
+    }
+    chain ring_b {
+        mod comment comment "ring b->c" jump ring_c;
+    }
+    chain ring_c {
+        mod comment comment "ring c->a" jump ring_a;
+    }
+
+    # self-loop
+    chain narcissus {
+        proto tcp syn jump narcissus;
+    }
+
+    # goto ring: goto pushes no return frame, so the loop is pure
+    chain moebius_in {
+        goto moebius_out;
+    }
+    chain moebius_out {
+        goto moebius_in;
+    }
+
+    # diamond with a back edge: top -> left/right -> bottom -> top
+    chain diamond_top {
+        proto tcp jump diamond_left;
+        proto udp jump diamond_right;
+    }
+    chain diamond_left {
+        jump diamond_bottom;
+    }
+    chain diamond_right {
+        jump diamond_bottom;
+    }
+    chain diamond_bottom {
+        mod limit limit 1/second jump diamond_top;
+        RETURN;
+    }
+
+    # jumping into a builtin chain: iptables refuses it at apply time,
+    # the compilers happily emit "-j INPUT"
+    chain escher {
+        proto tcp dport 631 jump INPUT;
+    }
+
+    chain FORWARD {
+        jump diamond_top;
+        jump narcissus;
+        jump moebius_in;
+        jump escher;
+    }
+
+    chain late_bound {
+        proto tcp dport 9100 ACCEPT;
+    }
+}

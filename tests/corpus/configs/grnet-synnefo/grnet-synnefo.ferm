@@ -50,6 +50,6 @@
 #    }
 #}
 
-# [corpus: @include removed] @include 'masq.ferm';
-# [corpus: @include removed] @include 'snf-network.ferm';
-# [corpus: @include removed] @include 'nfdhcpd.ferm';
+@include 'masq.ferm';
+# [corpus: @include removed, file absent upstream] @include 'snf-network.ferm';
+# [corpus: @include removed, file absent upstream] @include 'nfdhcpd.ferm';
