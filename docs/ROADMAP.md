@@ -487,8 +487,9 @@ pulled into Phase 1.
 Status: the AST refactor, the linter (`--lint`, `--lint-strict`,
 `--lint-fail-level`; six analyzers), the introspection modes
 (`--list-modules`, `--describe`), the visualisation mode (`--graph`,
-`--graph-format {d2,dot}`) and the golden-guarded simplification pass
-shipped.
+`--graph-format {d2,dot}`), the golden-guarded simplification pass and
+the table-driven keyword dispatch (the parser and the introspection
+gate share one source of truth) shipped.
 
 Deferred debts, recorded when the lint and introspection slices were
 scoped (YAGNI at the time, still on the table):
@@ -504,9 +505,6 @@ scoped (YAGNI at the time, still on the table):
 - **Introspection:** `--format=json`; one-line prose for modules (POD
   extraction or hand-written); a dedicated `--list-keywords` flag;
   shell completion generated from the registries.
-- **Simplification pass:** table-driven keyword dispatch in the parser,
-  letting the parser and introspection share one source of truth —
-  golden-guarded, high parity risk, a slice of its own.
 
 ### Phase 8 — Ecosystem & alternative front end
 
