@@ -27,7 +27,7 @@ import glob as globlib
 import re
 import subprocess
 from collections import deque
-from typing import TYPE_CHECKING, Final, TypeAlias
+from typing import TYPE_CHECKING, ClassVar, Final, TypeAlias
 
 from pyferm.errors import ERR_STRING_EXPECTED, error, internal_error
 from pyferm.modules import PROTO_DEFS
@@ -598,56 +598,10 @@ class Evaluator:
 
     def _call_builtin(self, token: str) -> Value:
         """Dispatch a ferm ``@`` built-in function (Perl ``:1522``)."""
-        if token == "@defined":
-            return self._builtin_defined()
-        if token == "@eq":
-            params = self._params("@eq(a, b)", 2)
-            return format_bool(_perl_eq(params[0], params[1]))
-        if token == "@ne":
-            params = self._params("@ne(a, b)", 2)
-            return format_bool(not _perl_eq(params[0], params[1]))
-        if token == "@not":
-            params = self._params("@not(a)", 1)
-            return format_bool(not perl_true(params[0]))
-        if token == "@cat":
-            params = self.get_function_params()
-            if contains_deferred(*params):
-                return Deferred(deferred_cat, params)
-            return cat(*params)
-        if token == "@join":
-            params = self.get_function_params()
-            if not params:
-                return ""
-            separator = stringify(params[0])
-            return join_value(separator, flatten(*params[1:]))
-        if token == "@substr":
-            params = self._params("@substr(string, num, num)", 3)
-            if any(_is_ref(p) for p in params):
-                error(ERR_STRING_EXPECTED)
-            return _perl_substr(
-                stringify(params[0]),
-                _perl_substr_index(stringify(params[1])),
-                _perl_substr_index(stringify(params[2])),
-            )
-        if token == "@length":
-            return str(len(self._string_param("@length(string)")))
-        if token == "@basename":
-            return splitpath_file(self._string_param("@basename(path)"))
-        if token == "@dirname":
-            return splitpath_dir(self._string_param("@dirname(path)"))
-        if token == "@glob":
-            return self._builtin_glob()
-        if token == "@resolve":
-            params = self.get_function_params()
-            if len(params) not in (1, 2):
-                error("Usage: @resolve((hostname ...), [type])")
-            return Deferred(resolve, params)
-        if token == "@ipfilter":
-            params = self.get_function_params()
-            if len(params) != 1:
-                error("Usage: @ipfilter((ip1 ip2 ...))")
-            return Deferred(ipfilter, params)
-        return error("unknown ferm built-in function")
+        handler = self.BUILTIN_FUNCTIONS.get(token)
+        if handler is None:
+            return error("unknown ferm built-in function")
+        return handler(self)
 
     def _params(self, usage: str, count: int) -> list[Value]:
         """Read a fixed-arity argument list, erroring with ``usage``."""
@@ -698,6 +652,93 @@ class Evaluator:
             # not fit a faithful port here.
             result.extend(sorted(globlib.glob(path)))  # noqa: PTH207
         return result[0] if len(result) == 1 else result
+
+    def _builtin_eq(self) -> Value:
+        """``@eq(a, b)``: Perl ``eq`` string equality as a ferm bool."""
+        params = self._params("@eq(a, b)", 2)
+        return format_bool(_perl_eq(params[0], params[1]))
+
+    def _builtin_ne(self) -> Value:
+        """``@ne(a, b)``: negated ``@eq``."""
+        params = self._params("@ne(a, b)", 2)
+        return format_bool(not _perl_eq(params[0], params[1]))
+
+    def _builtin_not(self) -> Value:
+        """``@not(a)``: Perl boolean negation as a ferm bool."""
+        params = self._params("@not(a)", 1)
+        return format_bool(not perl_true(params[0]))
+
+    def _builtin_cat(self) -> Value:
+        """``@cat(...)``: concatenate, deferred if any argument is."""
+        params = self.get_function_params()
+        if contains_deferred(*params):
+            return Deferred(deferred_cat, params)
+        return cat(*params)
+
+    def _builtin_join(self) -> Value:
+        """``@join(sep, ...)``: join the flattened tail with ``sep``."""
+        params = self.get_function_params()
+        if not params:
+            return ""
+        separator = stringify(params[0])
+        return join_value(separator, flatten(*params[1:]))
+
+    def _builtin_substr(self) -> Value:
+        """``@substr(string, offset, length)``: Perl substr semantics."""
+        params = self._params("@substr(string, num, num)", 3)
+        if any(_is_ref(p) for p in params):
+            error(ERR_STRING_EXPECTED)
+        return _perl_substr(
+            stringify(params[0]),
+            _perl_substr_index(stringify(params[1])),
+            _perl_substr_index(stringify(params[2])),
+        )
+
+    def _builtin_length(self) -> Value:
+        """``@length(string)``: string length as a decimal string."""
+        return str(len(self._string_param("@length(string)")))
+
+    def _builtin_basename(self) -> Value:
+        """``@basename(path)``: the file part of ``path``."""
+        return splitpath_file(self._string_param("@basename(path)"))
+
+    def _builtin_dirname(self) -> Value:
+        """``@dirname(path)``: the directory part of ``path``."""
+        return splitpath_dir(self._string_param("@dirname(path)"))
+
+    def _builtin_resolve(self) -> Value:
+        """``@resolve((hostname ...), [type])``: a deferred DNS lookup."""
+        params = self.get_function_params()
+        if len(params) not in (1, 2):
+            error("Usage: @resolve((hostname ...), [type])")
+        return Deferred(resolve, params)
+
+    def _builtin_ipfilter(self) -> Value:
+        """``@ipfilter((ip1 ip2 ...))``: a deferred per-family filter."""
+        params = self.get_function_params()
+        if len(params) != 1:
+            error("Usage: @ipfilter((ip1 ip2 ...))")
+        return Deferred(ipfilter, params)
+
+    #: ferm ``@`` built-ins: token -> handler (Perl ``:1522-1617``).  The
+    #: single source of truth for the built-in function names; the
+    #: introspection completeness gate keys off this table.  In-class with
+    #: bare names so the private methods stay private to the class.
+    BUILTIN_FUNCTIONS: ClassVar[dict[str, Callable[[Evaluator], Value]]] = {
+        "@defined": _builtin_defined,
+        "@eq": _builtin_eq,
+        "@ne": _builtin_ne,
+        "@not": _builtin_not,
+        "@cat": _builtin_cat,
+        "@join": _builtin_join,
+        "@substr": _builtin_substr,
+        "@length": _builtin_length,
+        "@basename": _builtin_basename,
+        "@dirname": _builtin_dirname,
+        "@glob": _builtin_glob,
+        "@resolve": _builtin_resolve,
+        "@ipfilter": _builtin_ipfilter,
+    }
 
     # -- keyword-parameter parsers (:498-615) ----------------------------
 

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 import pyferm.functions
 import pyferm.parser
+from pyferm.functions import Evaluator
 from pyferm.introspect import BUILTINS
 from pyferm.parser import DEPRECATED_KEYWORDS, STMT_TABLE
 
@@ -155,7 +156,11 @@ def test_every_scanned_keyword_is_describable() -> None:
 
 
 def test_every_builtin_is_scan_found_or_manual() -> None:
-    known = _scanned_words() | frozenset(STMT_TABLE)
+    known = (
+        _scanned_words()
+        | frozenset(STMT_TABLE)
+        | frozenset(Evaluator.BUILTIN_FUNCTIONS)
+    )
     missing = set(BUILTINS) - known - _INTROSPECT_MANUAL
     assert not missing, (
         "BUILTINS entries the scan cannot find (typo or dead entry?): "
@@ -169,5 +174,15 @@ def test_every_stmt_table_keyword_is_describable() -> None:
     undocumented = frozenset(STMT_TABLE) - set(BUILTINS)
     assert not undocumented, (
         "STMT_TABLE keys unknown to introspect.BUILTINS: "
+        f"{sorted(undocumented)}"
+    )
+
+
+def test_every_builtin_function_is_describable() -> None:
+    # @-function dispatch reads Evaluator.BUILTIN_FUNCTIONS directly, so
+    # BUILTINS must document every key -- a plain subset check.
+    undocumented = frozenset(Evaluator.BUILTIN_FUNCTIONS) - set(BUILTINS)
+    assert not undocumented, (
+        "BUILTIN_FUNCTIONS keys unknown to introspect.BUILTINS: "
         f"{sorted(undocumented)}"
     )
