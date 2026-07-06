@@ -179,7 +179,7 @@ def _builtin(
 
 BUILTINS: Final[dict[str, Builtin]] = dict(
     (
-        # -- location headers (_HEADER_KEYWORDS, parser.py:316)
+        # -- location headers (the parser.STMT_TABLE HEADER rows)
         _builtin(
             "domain",
             BuiltinCategory.LOCATION,
@@ -344,7 +344,7 @@ BUILTINS: Final[dict[str, Builtin]] = dict(
             "module MODULE [MODULE ...]",
             "alias of 'mod'",
         ),
-        # -- core targets (rules.py:52; manual entries, not scanned)
+        # -- core targets (rules.CORE_TARGETS)
         _builtin(
             "ACCEPT",
             BuiltinCategory.TARGET,
