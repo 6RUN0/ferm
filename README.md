@@ -34,8 +34,14 @@ applies it atomically via `nft -f -`. The default backend stays
 `--nft` is passed. `--nft` is opt-in and experimental: it carries
 documented semantic differences (a `policy DROP` shift under the own-table
 model, `@preserve` unsupported) and has golden + `nft -c` coverage but no
-Perl-oracle differential test. The roadmap lives in
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+Perl-oracle differential test.
+
+Later phases built on this base: packaged distributions (PyPI,
+`.deb`/`.rpm`/`.apk`, a standalone binary), operational safety (`--plan`,
+incremental `--nft` delta-apply, etckeeper-backed rollback), nft-native
+sets and verdict maps, and read-only tooling (`--lint`, `--graph`,
+`--list-modules` / `--describe`) — all documented below. The roadmap
+lives in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Branches
 
@@ -276,6 +282,22 @@ Be careful not to lock yourself out of a remote machine — use the
 interactive mode (`--interactive`, `-i`) often. It installs the new
 ruleset, then rolls back to the previous one unless you confirm in time.
 
+### Reviewing changes before applying (`--plan`)
+
+`ferm --plan` computes the ruleset and reports what would change against
+the live kernel without applying anything, for both the default
+`iptables` backend and `--nft`. `--plan-format` selects a `structured`
+summary (default) or a unified `diff`. The run is exit-coded: `0` when
+nothing would change, non-zero otherwise. A modified named set is shown
+with both its current and desired elements. `@preserve` is reported as
+unsupported under `--plan`.
+
+```sh
+ferm --plan /etc/ferm/ferm.conf                     # what would change?
+ferm --plan --plan-format diff /etc/ferm/ferm.conf  # as a unified diff
+ferm --plan --nft /etc/ferm/ferm.conf               # against the nft backend
+```
+
 ### Config history and rollback (etckeeper)
 
 When [etckeeper](https://etckeeper.branchable.com/) manages `/etc`, every
@@ -350,6 +372,11 @@ pass `--nft`:
 ferm --noexec --lines --nft /etc/ferm/ferm.conf   # inspect
 sudo ferm --nft /etc/ferm/ferm.conf               # apply
 ```
+
+An apply computes an incremental delta against the live ruleset and
+commits only the changed sets, chains and rules in one atomic `nft -f -`
+transaction, preserving the counters of untouched rules; pass
+`--full-reload` to force a full flush-and-rebuild instead.
 
 To make the **systemd** service use it, add a drop-in override with
 `sudo systemctl edit ferm` (the empty assignments clear the unit's values

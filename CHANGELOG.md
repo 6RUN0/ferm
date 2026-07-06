@@ -60,6 +60,40 @@ For the history of the original Perl implementation, see
   variable used only through string interpolation, or a chain declared
   only in another domain/table).
 
+### Changed
+
+- **A modified-set diff under `--plan --nft` shows both sides.** A changed
+  named set now renders its current (live) elements alongside the desired
+  ones, so the diff shows what the elements change *from*, not only what
+  they change *to*.
+
+### Fixed
+
+- **`--nft` translates a trailing `+` interface wildcard to `*`.** nft
+  treats `+` in an interface name as a literal byte, so an untranslated
+  `eth+` silently matched nothing while `nft -c` still accepted the rule.
+  A trailing `+` now renders as nft's `*` in both the match and the
+  named-set element; an interior `+` stays literal. A named interface set
+  holding such a prefix element also gains `flags interval`, which nft
+  requires for wildcard elements.
+- **`--plan --nft` converges on sets with quoted elements.** Sets whose
+  elements render quoted (interface-name sets like `"eth0"`) previously
+  kept config order while nft reads sets back lexically, so any
+  non-lexical config order produced a phantom diff on every run —
+  `--plan` never reported clean, and each delta apply rebuilt the chain
+  and reset its counters. Quoted elements are now canonicalized and
+  sorted like the other element kinds.
+- **`ferm rollback` refuses `--interactive` without a terminal.** Run
+  non-interactively, the rollback previously checked out the old config
+  in git while the kernel confirmation read EOF and rolled the ruleset
+  back, leaving the worktree and the kernel out of step. The same tty
+  guard as the apply path now runs before any git or kernel action,
+  covering both the bare and the `--to` forms.
+- **`@resolve()` reports unparsable AAAA record data as a ferm error**
+  instead of escaping with a bare `AddressValueError` traceback. (The
+  Perl oracle silently mangles such bytes and exits 0; the clean error
+  is a sanctioned divergence.)
+
 ## [0.1.0a6] - 2026-06-30
 
 ### Added

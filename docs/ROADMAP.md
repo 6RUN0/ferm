@@ -12,9 +12,10 @@ documented DROP-policy and `@preserve` differences. Phase 3 (packaging) has
 shipped a first alpha to PyPI (`ferm`), with `.deb`/`.rpm`/`.apk` packages
 and a standalone binary. Phases 4 (operational safety: `--plan`, delta-apply,
 etckeeper rollback) and 5 (nft-native sets, interval sets, verdict maps,
-native `reject-with`) are implemented on the `python-port` branch but not yet
-released. The default backend stays `iptables`. See
-[`CHANGELOG.md`](../CHANGELOG.md).
+native `reject-with`) shipped in `0.1.0a6`. Phase 7 (tooling / DX: the AST
+refactor, `--lint`, `--list-modules` / `--describe`, `--graph`) is
+implemented on the `python-port` branch but not yet released. The default
+backend stays `iptables`. See [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Guiding principle: one variable per phase
 
