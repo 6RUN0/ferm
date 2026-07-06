@@ -284,10 +284,12 @@ class Scope:
     """
     The parser's scope stack and auto-chain counter (Perl globals).
 
-    Mirrors ``@stack`` (``unshift``/``shift`` at the front, so index ``0`` is
-    the innermost level and ``-1`` the global one) and ``$auto_chain``.  Name
-    and function lookups walk :attr:`stack` from the top; ``functions.py``
-    owns that traversal, this class only owns the storage and frame churn.
+    Mirrors ``@stack``, but top-at-end: index ``-1`` is the innermost level
+    and ``0`` the global one (Perl ``unshift``/``shift`` at the front, so
+    its notation is inverted -- Perl ``$stack[0]`` is ``stack[-1]`` here).
+    Name and function lookups walk :attr:`stack` from the top;
+    ``functions.py`` owns that traversal, this class only owns the storage
+    and frame churn.
     """
 
     def __init__(self) -> None:
@@ -297,21 +299,21 @@ class Scope:
 
     @property
     def top(self) -> Frame:
-        """The innermost frame (Perl ``$stack[0]``)."""
-        return self.stack[0]
+        """The innermost frame (Perl ``$stack[0]``, inverted here)."""
+        return self.stack[-1]
 
     @property
     def globals(self) -> Frame:
-        """The outermost/global frame (Perl ``$stack[-1]``)."""
-        return self.stack[-1]
+        """The outermost/global frame (Perl ``$stack[-1]``, inverted here)."""
+        return self.stack[0]
 
     def push(self, frame: Frame) -> None:
         """Enter a new scope level (Perl ``unshift @stack, $frame``)."""
-        self.stack.insert(0, frame)
+        self.stack.append(frame)
 
     def pop(self) -> Frame:
         """Leave the innermost scope level (Perl ``shift @stack``)."""
-        return self.stack.pop(0)
+        return self.stack.pop()
 
     def next_auto_chain(self) -> str:
         """

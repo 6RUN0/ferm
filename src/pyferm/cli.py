@@ -1152,7 +1152,8 @@ def _apply_config(
     )
 
     # Scope: the global frame (Perl ``:618``) holds --def vars; the script
-    # frame (Perl ``:751``) sits above it and carries the auto-variables.
+    # frame (Perl ``:751``) is pushed on top of it (innermost) and carries
+    # the auto-variables.
     scope = Scope()
     scope.push(Frame())
 

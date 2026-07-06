@@ -291,9 +291,10 @@ class Evaluator:
         Look up a variable, then a pseudo-variable (Perl ``:1221``).
 
         ``LINE`` resolves to the current input line; otherwise the stack is
-        walked from the top, falling back to the top (innermost) frame's
-        ``auto`` pseudo-variables (Perl ``$stack[0]{auto}``).  Returns
-        ``None`` when undefined.
+        walked from the top (innermost first, so the stack list reverses),
+        falling back to the top frame's ``auto`` pseudo-variables (Perl
+        ``$stack[0]{auto}``, ``stack[-1]`` here).  Returns ``None`` when
+        undefined.
         """
         if name == "LINE":
             # No script while evaluating --def: fall through to undefined,
@@ -303,11 +304,11 @@ class Evaluator:
             if script is None:
                 return None
             return str(script.line)
-        for frame in self.scope.stack:
+        for frame in reversed(self.scope.stack):
             if name in frame.vars:
                 return frame.vars[name]
         if self.scope.stack:
-            top = self.scope.stack[0]
+            top = self.scope.stack[-1]
             if name in top.auto:
                 return top.auto[name]
         return None
@@ -327,7 +328,7 @@ class Evaluator:
         for the parser's ``Function`` -- ``functions`` sits below ``parser``
         in the import layering and cannot name it directly.
         """
-        for frame in self.scope.stack:
+        for frame in reversed(self.scope.stack):
             if name in frame.functions:
                 return frame.functions[name]
         return None
