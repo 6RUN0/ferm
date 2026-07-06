@@ -520,13 +520,17 @@ def test_address_magic_realizes_resolve() -> None:
 def test_address_magic_resolves_via_injected_provider() -> None:
     # An evaluator-scoped provider serves @resolve without the process-wide
     # seam: the module global stays untouched, so nothing can leak into
-    # later tests even when an assertion fires mid-test.
+    # later tests even when an assertion fires mid-test.  Snapshot rather
+    # than expect None: under xdist an earlier in-process _apply_config run
+    # may have left the worker-global provider installed, and this test only
+    # claims it does not touch that global, not that it starts clean.
     import pyferm.resolver as resolver_mod
 
+    global_provider = resolver_mod._provider
     zone = ZonefileResolver.from_text("v4.example.com. IN A 192.0.2.1\n")
     ev = _evaluator("@resolve(v4.example.com)", resolver_provider=lambda: zone)
     assert ev.address_magic(Rule(domain="ip")) == ["192.0.2.1"]
-    assert resolver_mod._provider is None
+    assert resolver_mod._provider is global_provider
 
 
 # -- cgroup_classid ----------------------------------------------------------
