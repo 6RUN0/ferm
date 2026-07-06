@@ -89,11 +89,15 @@ def selfcheck_frozen() -> int:
 
 def select_main(argv0: str) -> Callable[[], int]:
     """Return the CLI ``main`` for the invoked basename."""
+    # distinct local names: the two mains agree on the no-argument call
+    # this module makes but not on their full (keyword-seam) signatures
     if Path(argv0).name == "import-ferm":
-        from pyferm.import_ferm import main
-    else:
-        from pyferm.cli import main
-    return main
+        from pyferm.import_ferm import main as import_ferm_main
+
+        return import_ferm_main
+    from pyferm.cli import main as ferm_main
+
+    return ferm_main
 
 
 def _invoked_name() -> str:

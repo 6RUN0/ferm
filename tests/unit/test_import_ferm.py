@@ -23,6 +23,7 @@ from pyferm.import_ferm import (
     MatchEntry,
     Rule,
     _array_matches,
+    _choose_input_source,
     _gather_input,
     _iptables_save_lines,
     _optimize,
@@ -523,6 +524,56 @@ def test_main_unknown_option_prints_usage_to_stderr(
     captured = capsys.readouterr()
     assert "Usage:" in captured.err
     assert captured.out == ""
+
+
+def test_choose_input_source_routes_tty_options_and_files() -> None:
+    # Perl's top-level (:500-507): a bare run on a terminal reads the live
+    # save tool, an option-looking argument is a usage error, anything else
+    # (files, piped stdin) goes through the <> operator.
+    assert _choose_input_source([], stdin_is_tty=True) == "save"
+    assert _choose_input_source([], stdin_is_tty=False) == "files"
+    assert _choose_input_source(["-x"], stdin_is_tty=True) == "usage"
+    assert _choose_input_source(["dump"], stdin_is_tty=True) == "files"
+
+
+_TTY_SAVE = ["*filter", ":INPUT DROP [0:0]", "COMMIT"]
+
+
+def test_main_tty_without_args_uses_save_reader(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A bare `import-ferm` on a terminal asks the live iptables-save
+    # (Perl :500-502); the injected reader proves the routing without a
+    # tty or a spawned process.
+    assert main([], save_reader=lambda: _TTY_SAVE, stdin_is_tty=True) == 0
+    assert "chain INPUT policy DROP;" in capsys.readouterr().out
+
+
+def test_main_file_argument_bypasses_save_reader(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A file argument goes through _gather_input even on a terminal; the
+    # exploding reader proves the save tool is never consulted.
+    dump = tmp_path / "dump"
+    dump.write_text("*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n", encoding="utf-8")
+
+    def explode() -> list[str]:
+        raise AssertionError("save reader must not run for a file argument")
+
+    assert main([str(dump)], save_reader=explode, stdin_is_tty=True) == 0
+    assert "chain INPUT policy ACCEPT;" in capsys.readouterr().out
+
+
+def test_main_ferm_domain_env_selects_importer_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # FERM_DOMAIN=ip6 targets the importer at the ip6 family (Perl :512),
+    # so the emitted config opens `domain ip6`.
+    monkeypatch.setenv("FERM_DOMAIN", "ip6")
+    assert main([], save_reader=lambda: _TTY_SAVE, stdin_is_tty=True) == 0
+    assert "domain ip6 {" in capsys.readouterr().out
 
 
 # --- _gather_input latin-1 file read ---------------------------------------

@@ -39,7 +39,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TextIO
+from typing import TYPE_CHECKING, Final, Literal, TextIO
 
 from pyferm.errors import FermError, internal_error
 from pyferm.modules import (
@@ -70,7 +70,7 @@ from pyferm.values import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 #: import-ferm's own short-flag aliases (Perl ``%aliases``, ``:61``).  These
 #: are the single-letter iptables options, unrelated to ferm's keyword
@@ -815,8 +815,36 @@ def _iptables_save_lines() -> list[str]:
     return proc.stdout.splitlines()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the import-ferm CLI (the script's top-level, ``:495``)."""
+def _choose_input_source(
+    args: list[str], *, stdin_is_tty: bool
+) -> Literal["save", "usage", "files"]:
+    """
+    Pick where the save dump comes from (Perl ``:500-507``).
+
+    ``"save"``: no arguments on a terminal, so ask the live save tool
+    directly; ``"usage"``: an option-looking argument is a usage error;
+    ``"files"``: read the named files, or piped stdin when none.
+    """
+    if not args and stdin_is_tty:
+        return "save"
+    if any(re.match(r"-.", arg) for arg in args):
+        return "usage"
+    return "files"
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    save_reader: Callable[[], list[str]] = _iptables_save_lines,
+    stdin_is_tty: bool | None = None,
+) -> int:
+    """
+    Run the import-ferm CLI (the script's top-level, ``:495``).
+
+    ``save_reader``/``stdin_is_tty`` are test seams for the no-argument
+    terminal path; the defaults spawn ``iptables-save`` and probe the
+    real stdin.
+    """
     # before any write: argparse renders usage/errors through these streams
     reconfigure_latin1(sys.stdout, errors=HUMAN_STREAM_ERRORS)
     reconfigure_latin1(sys.stderr, errors=HUMAN_STREAM_ERRORS)
@@ -827,14 +855,15 @@ def main(argv: list[str] | None = None) -> int:
 
     domain = os.environ.get("FERM_DOMAIN") or "ip"
     importer = Importer(sys.stdout, domain)
+    is_tty = sys.stdin.isatty() if stdin_is_tty is None else stdin_is_tty
+    source = _choose_input_source(args, stdin_is_tty=is_tty)
+    if source == "usage":
+        sys.stderr.write(_USAGE)
+        return 1
     try:
-        if not args and sys.stdin.isatty():
-            lines: Iterable[str] = _iptables_save_lines()
-        elif any(re.match(r"-.", arg) for arg in args):
-            sys.stderr.write(_USAGE)
-            return 1
-        else:
-            lines = _gather_input(args)
+        lines: Iterable[str] = (
+            save_reader() if source == "save" else _gather_input(args)
+        )
         importer.run(lines)
     except FermError as exc:
         sys.stderr.write(f"{exc}\n")
