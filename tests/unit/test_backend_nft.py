@@ -506,11 +506,11 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
     # the companion and emit a jump to a chain that never exists.
     comp = {"to-source": _opt("to-source", "aa:bb:cc:00:11:22")}
     with pytest.raises(
-        FermError, match=r"^eb target 'snat' not yet supported"
+        FermError, match=r"^eb target 'snat' \(or jump to a chain"
     ):
         build_verdict(Family.EB, "nat", "jump", "snat", comp)
     with pytest.raises(
-        FermError, match=r"^eb target 'redirect' not yet supported"
+        FermError, match=r"^eb target 'redirect' \(or jump to a chain"
     ):
         build_verdict(Family.EB, "broute", "jump", "redirect", {})
     # an actual user chain in the eb domain still translates

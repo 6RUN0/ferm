@@ -1056,8 +1056,12 @@ def build_verdict(
     # swallow the companion and emit a jump to a chain that never exists
     # -- a silently-broken script instead of a clean refusal.
     if domain is Family.EB and target_value in _EB_TARGETS:
+        # The keyword alone cannot tell the built-in target from a user
+        # chain that happens to share its name, so the message names
+        # both readings.
         raise FermError(
-            f"eb target '{target_value}' not yet supported by nft backend"
+            f"eb target '{target_value}' (or jump to a chain of that "
+            f"name) not yet supported by nft backend"
         )
     # A jump/goto to a chain in the same iptables table.  nft forbids
     # jumping to a base chain (one with a hook), so a jump/goto whose
