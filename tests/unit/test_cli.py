@@ -384,6 +384,42 @@ def test_execute_returns_status_of_plain_command() -> None:
     assert execute("false") == 1
 
 
+def test_execute_signal_death_reports_and_returns_one(
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Perl maps a signal-killed child ($? & 0x7f) to 'child died with
+    # signal N' and a status of 1 (:2906-2908); subprocess models the
+    # same child as a negative returncode.
+    from pyferm.cli import _make_io
+
+    monkeypatch.setattr(subprocess, "run", _RunRecorder(returncode=-9))
+    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
+    assert execute("iptables -A INPUT") == 1
+    assert capfd.readouterr().err == "child died with signal 9\n"
+
+
+def test_execute_routes_metachar_commands_through_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Perl system() (:2901) hands a metachar command to /bin/sh verbatim
+    # but execs a plain one directly: the shell branch must keep the raw
+    # string, the direct branch must split the argv.
+    from pyferm.cli import _make_io
+
+    recorder = _RunRecorder(returncode=0)
+    monkeypatch.setattr(subprocess, "run", recorder)
+    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
+    assert execute("a | b") is None
+    assert execute("iptables -L") is None
+    (piped_argv,), piped_kwargs = recorder.calls[0]
+    (plain_argv,), plain_kwargs = recorder.calls[1]
+    assert piped_argv == "a | b"
+    assert piped_kwargs["shell"] is True
+    assert plain_argv == ["iptables", "-L"]
+    assert plain_kwargs["shell"] is False
+
+
 HELP_SNIPPET = " --domain {ip|ip6} Handle only the specified domain"
 
 
@@ -1698,6 +1734,60 @@ def test_no_flush_retains_pre_and_post_hooks(
     assert "echo pre" in executed
     assert "echo post" in executed
     assert "echo flush" not in executed
+
+
+class _TwoDomainParser(_SeededParser):
+    """A _SeededParser exposing two enabled domains (ip and ip6)."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        from pyferm.domains import DomainInfo
+
+        super().__init__(*args, **kwargs)
+        self.domains = {
+            "ip": DomainInfo(enabled=True, tools={}),
+            "ip6": DomainInfo(enabled=True, tools={}),
+        }
+
+
+def test_post_hooks_run_after_all_domain_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Perl runs @post_hooks only after the domain loop (:776-793): a post
+    # hook (say, reloading fail2ban) must observe every family's new
+    # ruleset, not just the first one committed.
+    import pyferm.cli as cli_mod
+    from pyferm.cli import _apply_config
+
+    events: list[str] = []
+
+    class _RecordingBackend(_ApplyBackend):
+        def commit(self, *args: object, **kwargs: object) -> int | None:
+            events.append(f"commit:{args[0]}")
+            return super().commit(*args, **kwargs)
+
+    def record_hook(command: str, *_args: object, **_kwargs: object) -> None:
+        events.append(f"hook:{command}")
+
+    _patch_apply_seam(monkeypatch, commit_result=None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_select_backend",
+        lambda _o: _RecordingBackend(commit_result=None),
+    )
+    monkeypatch.setattr(cli_mod, "Parser", _TwoDomainParser)
+    monkeypatch.setattr(cli_mod, "_run_hook", record_hook)
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert (
+        _apply_config(str(conf), Options(flush=False), sys.stdout, defs=[])
+        == 0
+    )
+    assert events == [
+        "hook:echo pre",
+        "commit:ip",
+        "commit:ip6",
+        "hook:echo post",
+    ]
 
 
 # --- ferm rollback subcommand ----------------------------------------------
