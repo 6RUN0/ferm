@@ -705,6 +705,23 @@ def test_hook_records_command() -> None:
     assert parser.post_hooks == []
 
 
+def test_bare_hook_warns_verbatim_and_still_runs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The wording is byte-parity with the oracle (Perl ``:2211``), NOT the
+    # DEPRECATED_KEYWORDS "please use ... instead" template.
+    parser = _parse('hook pre "echo x";')
+    assert "'hook' is deprecated, use '@hook'" in capsys.readouterr().err
+    assert parser.pre_hooks == ["echo x"]
+
+
+def test_negated_bare_hook_reports_the_remapped_keyword() -> None:
+    # The dispatcher remaps shown_keyword to '@hook', so the leftover
+    # negation names the canonical form, as the oracle does.
+    with pytest.raises(FermError, match="Doesn't support negation: @hook"):
+        _parse('! hook pre "echo x";')
+
+
 # -- error diagnostics -----------------------------------------------------
 
 

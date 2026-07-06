@@ -35,13 +35,14 @@ field -- they exist for the Phase 2 nft translator.
 
 from __future__ import annotations
 
+import enum
 import io
 import re
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, TypeAlias, cast
 
 from pyferm.domains import (
     DEFAULT_TABLE,
@@ -134,38 +135,94 @@ DEPRECATED_KEYWORDS: Final[dict[str, str]] = {"realgoto": "goto"}
 #: ``!`` prefix, so the shim path needs no negation.
 _NON_RULE_LEADING: Final = frozenset({";", "}", "@else"})
 
-#: Rule keywords that themselves consume a following ``{ ... }`` block, so a
-#: top-level ``{`` after one is the subchain body (part of the rule), not a
-#: nested match block that would end the rule span.
-_SUBCHAIN_KEYWORDS: Final = frozenset(
-    {"subchain", "@subchain", "@gotosubchain"}
-)
 
+class StmtKind(enum.StrEnum):
+    """Routing kind of a promoted statement keyword (:data:`STMT_TABLE`)."""
+
+    #: A ``;``-terminated directive, built via ``spec.node(pos, span)``.
+    DIRECTIVE = "directive"
+    #: A block header; its value runs to a top-level ``{`` or ``;``.
+    HEADER = "header"
+    #: A subchain rule keyword; the node carries the keyword form.
+    SUBCHAIN = "subchain"
+
+
+#: Factory building a directive/subchain node as ``node(pos, span)`` -- the
+#: exact two-argument shape _StructuralParser calls.  HeaderNode has a
+#: different constructor, so HEADER rows carry ``node=None`` and headers are
+#: built explicitly (:meth:`Parser._visit_stmt_node` / ``_parse_header``).
+_NodeFactory: TypeAlias = "Callable[[SourcePosition, tuple[Token, ...]], Node]"
+
+
+@dataclass(frozen=True)
+class StmtSpec:
+    """One :data:`STMT_TABLE` row: node factory plus routing attributes."""
+
+    #: Directive/subchain node factory; ``None`` iff ``kind`` is HEADER.
+    node: _NodeFactory | None
+    kind: StmtKind
+    #: Names a location (domain/table/chain) as opposed to
+    #: ``policy``/``priority``; feeds :data:`_LOCATION_KEYWORDS`, the
+    #: routing set graph.py consumes.
+    is_location: bool = False
+    #: Deprecated spelling: warn -- verbatim ``'X' is deprecated, use 'Y'``
+    #: (Perl ``:2211``), NOT the :data:`DEPRECATED_KEYWORDS` template -- and
+    #: remap ``walker.shown_keyword`` to the replacement before visiting.
+    warn_replacement: str | None = None
+
+
+#: Every promoted statement keyword and how it dispatches -- the single
+#: source of truth: the routing sets below are derived views, and the
+#: introspection completeness gate keys off this table.
+STMT_TABLE: Final[dict[str, StmtSpec]] = {
+    "@def": StmtSpec(DefNode, StmtKind.DIRECTIVE),
+    "def": StmtSpec(DefNode, StmtKind.DIRECTIVE),
+    "@set": StmtSpec(SetNode, StmtKind.DIRECTIVE),
+    "@include": StmtSpec(IncludeNode, StmtKind.DIRECTIVE),
+    "include": StmtSpec(IncludeNode, StmtKind.DIRECTIVE),
+    "@preserve": StmtSpec(PreserveNode, StmtKind.DIRECTIVE),
+    "@hook": StmtSpec(HookNode, StmtKind.DIRECTIVE),
+    "hook": StmtSpec(HookNode, StmtKind.DIRECTIVE, warn_replacement="@hook"),
+    "domain": StmtSpec(None, StmtKind.HEADER, is_location=True),
+    "table": StmtSpec(None, StmtKind.HEADER, is_location=True),
+    "chain": StmtSpec(None, StmtKind.HEADER, is_location=True),
+    "policy": StmtSpec(None, StmtKind.HEADER),
+    # 'priority' negated routing stays a literal in _route_resolved_keyword
+    # (the single special case); no flag here.
+    "priority": StmtSpec(None, StmtKind.HEADER),
+    "@subchain": StmtSpec(SubchainNode, StmtKind.SUBCHAIN),
+    "subchain": StmtSpec(SubchainNode, StmtKind.SUBCHAIN),
+    "@gotosubchain": StmtSpec(SubchainNode, StmtKind.SUBCHAIN),
+}
 
 #: Every promoted non-block statement keyword. Routed to its typed node both
 #: as a raw leading token (_dispatch_leading) and after a leading ``!``
 #: resolves to it (``! def``): the oracle runs the keyword then reports the
 #: leftover negation, so the resolved keyword must not reach the leaf handle.
-#: Kept self-contained (no forward ref to _HEADER_KEYWORDS, defined later).
-_STMT_KEYWORDS: Final = frozenset(
-    {
-        "@def",
-        "def",
-        "@set",
-        "@include",
-        "include",
-        "@preserve",
-        "@hook",
-        "hook",
-        "domain",
-        "table",
-        "chain",
-        "policy",
-        "priority",
-        "subchain",
-        "@subchain",
-        "@gotosubchain",
-    }
+_STMT_KEYWORDS: Final = frozenset(STMT_TABLE)
+
+#: Block-header keywords whose value runs up to a top-level ``{`` or ``;``.
+_HEADER_KEYWORDS: Final = frozenset(
+    k for k, s in STMT_TABLE.items() if s.kind is StmtKind.HEADER
+)
+
+#: Rule keywords that themselves consume a following ``{ ... }`` block, so a
+#: top-level ``{`` after one is the subchain body (part of the rule), not a
+#: nested match block that would end the rule span.
+_SUBCHAIN_KEYWORDS: Final = frozenset(
+    k for k, s in STMT_TABLE.items() if s.kind is StmtKind.SUBCHAIN
+)
+
+#: Leading keywords of ``;``-terminated directive statements and the node
+#: each becomes; every other leading keyword is a plain rule.
+_STMT_NODES: Final[dict[str, _NodeFactory]] = {
+    k: s.node for k, s in STMT_TABLE.items() if s.node is not None
+}
+
+#: Header keywords that name a location (domain/table/chain), as opposed to
+#: ``policy``/``priority`` which graph.py handles separately.
+_LOCATION_KEYWORDS: Final[frozenset[str]] = frozenset(
+    k for k, s in STMT_TABLE.items() if s.is_location
 )
 
 #: Hard ceiling on nested-block recursion in :meth:`Parser.enter`.  Real
@@ -325,41 +382,12 @@ class NegatedFlag:
     active: bool
 
 
-#: Header keywords that name a location (domain/table/chain), as opposed to
-#: ``policy``/``priority`` which graph.py handles separately.
-_LOCATION_KEYWORDS: Final[frozenset[str]] = frozenset(
-    {"domain", "table", "chain"}
-)
-
-#: Block-header keywords whose value runs up to a top-level ``{`` or ``;``.
-_HEADER_KEYWORDS: Final = _LOCATION_KEYWORDS | frozenset(
-    {"policy", "priority"}
-)
-
 #: Raised wherever a rule/chain keyword is used before a chain is set.
 _ERR_CHAIN_REQUIRED: Final[str] = "Chain must be specified"
 
 #: Perl-verbatim wording (ungrammatical in the original, ``:2093``) --
 #: raised when a rule already has a jump/goto/verdict target.
 _ERR_ACTION_ALREADY_SET: Final[str] = "There can only one action per rule"
-
-#: Leading keywords of ``;``-terminated directive statements and the node
-#: each becomes; every other leading keyword is a plain rule.
-_STMT_NODES: Final[
-    dict[str, Callable[[SourcePosition, tuple[Token, ...]], Node]]
-] = {
-    "@def": DefNode,
-    "def": DefNode,
-    "@set": SetNode,
-    "@include": IncludeNode,
-    "include": IncludeNode,
-    "@preserve": PreserveNode,
-    "@hook": HookNode,
-    "hook": HookNode,
-    "@subchain": SubchainNode,
-    "subchain": SubchainNode,
-    "@gotosubchain": SubchainNode,
-}
 
 
 class _StructuralParser:
@@ -1328,35 +1356,33 @@ class Parser:
         (``! def``, consumed by getvar) so it reaches its typed path instead of
         the leaf handle. Returns None if ``keyword`` is not a promoted kind.
         """
+        if not isinstance(keyword, str):
+            return None
+        spec = STMT_TABLE.get(keyword)
+        if spec is None:
+            return None
         pos = self._script_position()
-        if keyword in ("@def", "def"):
-            return walker.visit(DefNode(source_pos=pos, span=()))
-        if keyword == "@set":
-            return walker.visit(SetNode(source_pos=pos, span=()))
-        if keyword in ("@include", "include"):
-            return walker.visit(IncludeNode(source_pos=pos, span=()))
-        if keyword == "@preserve":
-            return walker.visit(PreserveNode(source_pos=pos, span=()))
-        if keyword in ("@hook", "hook"):
-            if keyword == "hook":
-                warning("'hook' is deprecated, use '@hook'")
-                # match handle()'s remap so a leftover-negation names @hook.
-                walker.shown_keyword = "@hook"
-            return walker.visit(HookNode(source_pos=pos, span=()))
-        if keyword in _HEADER_KEYWORDS:
+        if spec.warn_replacement is not None:
+            warning(
+                f"'{keyword}' is deprecated, use '{spec.warn_replacement}'"
+            )
+            # remap so a leftover-negation names the canonical form.
+            walker.shown_keyword = spec.warn_replacement
+        if spec.kind is StmtKind.HEADER:
             return walker.visit(
                 HeaderNode(
                     source_pos=pos,
-                    keyword=str(keyword),
+                    keyword=keyword,
                     value_span=(),
                     body=None,
                 )
             )
-        if keyword in _SUBCHAIN_KEYWORDS:
+        if spec.kind is StmtKind.SUBCHAIN:
             return walker.visit(
-                SubchainNode(source_pos=pos, span=(), keyword=str(keyword))
+                SubchainNode(source_pos=pos, span=(), keyword=keyword)
             )
-        return None
+        assert spec.node is not None  # None only on a HEADER row
+        return walker.visit(spec.node(pos, ()))
 
     def _route_resolved_keyword(
         self, walker: Walker, keyword: object

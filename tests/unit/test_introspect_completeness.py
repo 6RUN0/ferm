@@ -1,13 +1,14 @@
 """
 Completeness gate: curated BUILTINS vs the parser's keyword dispatch.
 
-parser.py/functions.py dispatch built-in keywords via string compares
-(if-chains), so nothing enforces that pyferm.introspect.BUILTINS keeps
-up.  This gate AST-scans both sources for string literals compared
-against the dispatch variables and fails when a word appears that
-BUILTINS does not know (or vice versa).  Same shape and limitations as
-test_visitor_completeness.py: compares through variables or regexes are
-invisible and live in the documented manual/ignore lists.
+Statement keywords come straight from ``pyferm.parser.STMT_TABLE`` (the
+dispatch reads that table, so equality with it is exact).  The remaining
+if-chain dispatch in parser.py/functions.py is AST-scanned for string
+literals compared against the dispatch variables; the gate fails when a
+word appears that BUILTINS does not know (or vice versa).  Same shape
+and limitations as test_visitor_completeness.py: compares through
+variables or regexes are invisible and live in the documented
+manual/ignore lists.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 import pyferm.functions
 import pyferm.parser
 from pyferm.introspect import BUILTINS
-from pyferm.parser import DEPRECATED_KEYWORDS
+from pyferm.parser import DEPRECATED_KEYWORDS, STMT_TABLE
 
 #: Dispatch variables whose string comparisons the scan harvests.
 _SCAN_NAMES: Final = frozenset({"keyword", "token", "lead", "tok"})
@@ -154,8 +155,19 @@ def test_every_scanned_keyword_is_describable() -> None:
 
 
 def test_every_builtin_is_scan_found_or_manual() -> None:
-    missing = set(BUILTINS) - _scanned_words() - _INTROSPECT_MANUAL
+    known = _scanned_words() | frozenset(STMT_TABLE)
+    missing = set(BUILTINS) - known - _INTROSPECT_MANUAL
     assert not missing, (
         "BUILTINS entries the scan cannot find (typo or dead entry?): "
         f"{sorted(missing)}"
+    )
+
+
+def test_every_stmt_table_keyword_is_describable() -> None:
+    # The statement dispatch reads STMT_TABLE directly, so BUILTINS must
+    # document every key -- a plain subset check, no scan involved.
+    undocumented = frozenset(STMT_TABLE) - set(BUILTINS)
+    assert not undocumented, (
+        "STMT_TABLE keys unknown to introspect.BUILTINS: "
+        f"{sorted(undocumented)}"
     )
