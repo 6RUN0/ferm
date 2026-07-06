@@ -133,7 +133,7 @@ class Rule:
 
     keywords: dict[str, Keyword] = field(default_factory=dict[str, Keyword])
     match: list[MatchEntry] = field(default_factory=list[MatchEntry])
-    mod: dict[str, int] = field(default_factory=dict[str, int])
+    mod: set[str] = field(default_factory=set[str])
     proto: Value | None = None
     jump: str | None = None
     goto: str | None = None
@@ -594,7 +594,7 @@ class Importer:
             if not tokens:
                 raise self._die()
             param = tokens.pop(0)
-            rule.mod[param] = 1
+            rule.mod.add(param)
             proto = rule.proto
             # We don't need a ``mod`` entry when the protocol already named
             # this module (or the ipv6-icmp/icmp6 spelling).
