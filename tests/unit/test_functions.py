@@ -464,6 +464,22 @@ def test_backtick_exec_failure_message(
         _evaluator("`true`").getvalues()
 
 
+def test_backtick_signal_death_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Perl maps a signal-killed backtick child ($? & 0x7f) to 'child died
+    # with signal N' (:1463); subprocess models the same child as a
+    # negative returncode.
+    import subprocess
+
+    def killed(*_args: object, **_kwargs: object) -> object:
+        return subprocess.CompletedProcess("true", -15, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", killed)
+    with pytest.raises(FermError, match="child died with signal 15"):
+        _evaluator("`true`").getvalues()
+
+
 # -- address_magic -----------------------------------------------------------
 
 
