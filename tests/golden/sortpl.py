@@ -8,9 +8,12 @@ each group's internal line order intact.  The ``z``-suffixes in the keys
 force ``*table`` headers, rule lines and ``COMMIT`` into a deterministic
 relative order within one table.
 
-The behaviour mirrors the Perl original line for line -- with a single
-documented deviation for multi-table ebtables runs (see ``_EB_ATOMIC``);
-see that file for the authoritative reference.
+The behaviour mirrors the Perl original line for line; see that file
+for the authoritative reference.  The reference Makefile diffs
+``sort.pl(committed .result)`` against the UNSORTED fresh ebtables
+output, so on eb result files the sort must stay an identity transform
+-- the cross-implementation corpus suite opts into a stronger grouping
+via ``eb_group_by_table`` instead (see :func:`sort_output`).
 """
 
 from __future__ import annotations
@@ -35,19 +38,25 @@ _TABLE = re.compile(r"^\*(\S+)")
 _CHAIN = re.compile(r"^(:)(\S+)")
 _APPEND = re.compile(r"^-(A) (\S+)")
 # "ebtables -t <table> --atomic-file <path> <rest>" — atomic-file commands
-# are grouped by atomic-file path AND table. Deliberate deviation from
-# the Perl original (which keys by path alone): ferm emits eb tables in
-# Perl-hash order, so a run whose atomic file spans several tables is
-# not comparable across implementations without folding the table into
-# the group key. Intra-table command order is preserved either way.
+# are grouped by their atomic-file path (the second capture), exactly as
+# the Perl original keys them; ``eb_group_by_table`` folds the table into
+# the key for cross-implementation runs (see sort_output).
 _EB_ATOMIC = re.compile(r"^ebtables -t (\w+) --atomic-file (\S+) [^\n]+")
 
 
-def sort_output(text: str) -> str:
+def sort_output(text: str, *, eb_group_by_table: bool = False) -> str:
     """Canonicalize ferm output the way ``sort.pl`` does.
 
     Raises ``ValueError`` on any line the Perl original would ``die`` on,
     so harness drift surfaces loudly instead of silently dropping lines.
+
+    ``eb_group_by_table`` additionally folds the ebtables table name
+    into the atomic-file group key -- a deliberate deviation from the
+    Perl original for the corpus/fuzzer differentials, where the two
+    implementations emit multiple eb tables in different orders.
+    Intra-table command order is preserved either way.  The golden
+    suite must keep the default: the reference Makefile relies on
+    sort.pl being an identity transform on eb result files.
     """
     rules: dict[str, list[str]] = {}
     table: str | None = None
@@ -106,7 +115,12 @@ def sort_output(text: str) -> str:
 
         eb = _EB_ATOMIC.match(line)
         if eb:
-            rules.setdefault(f"{eb.group(2)} {eb.group(1)}", []).append(line)
+            key = (
+                f"{eb.group(2)} {eb.group(1)}"
+                if eb_group_by_table
+                else eb.group(2)
+            )
+            rules.setdefault(key, []).append(line)
             continue
 
         raise ValueError(f"sort.pl: unrecognized line: {line!r}")

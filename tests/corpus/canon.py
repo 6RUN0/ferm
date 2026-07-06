@@ -21,7 +21,11 @@ def canonicalize(text: str) -> str:
     block: list[str] = []
 
     def flush_block() -> None:
-        out.append(sort_output("".join(block)))
+        # eb_group_by_table: the implementations emit multiple ebtables
+        # tables in different orders, so the cross-implementation diff
+        # needs the table folded into the atomic-file group key (the
+        # golden suite must NOT do this -- see tests.golden.sortpl).
+        out.append(sort_output("".join(block), eb_group_by_table=True))
         block.clear()
 
     for line in text.splitlines(keepends=True):
