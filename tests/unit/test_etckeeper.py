@@ -309,6 +309,28 @@ def test_rollback_clean_revert_sequence(
     ]
 
 
+def test_rollback_injected_runner_replaces_subprocess() -> None:
+    # The runner parameter (the capture_previous convention) carries the
+    # whole git sequence: no monkeypatching of module state, so a failing
+    # assertion cannot leak a patched subprocess.run into later tests.
+    recorder = _Recorder([_ok(), _ok(), _ok()])
+    etckeeper.rollback("deadbeef", "ferm", runner=recorder)
+    assert recorder.calls == [
+        [
+            "etckeeper",
+            "vcs",
+            "rm",
+            "-r",
+            "--cached",
+            "--ignore-unmatch",
+            "--",
+            "ferm",
+        ],
+        ["etckeeper", "vcs", "checkout", "deadbeef", "--", "ferm"],
+        ["etckeeper", "vcs", "clean", "-f", "-d", "--", "ferm"],
+    ]
+
+
 def test_rollback_includes_clean_step_removing_post_sha_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

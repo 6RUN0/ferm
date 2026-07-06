@@ -502,16 +502,25 @@ class Evaluator:
             )
         return wordlist[0] if len(wordlist) == 1 else wordlist
 
-    def _run_shell(self, command: str) -> Value:
+    def _run_shell(
+        self,
+        command: str,
+        *,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    ) -> Value:
         """
         Run a backtick command and tokenize its output (Perl ``:1455``).
 
         Only stdout is captured, as with Perl backticks: the child's
         stderr reaches the terminal, so a failing command's diagnostics
-        are not swallowed.
+        are not swallowed.  ``runner`` is the spawn seam (the
+        ``capture_previous`` convention); ``None`` -- the backtick path --
+        binds ``subprocess.run`` late, so monkeypatching still works.
         """
+        if runner is None:
+            runner = subprocess.run
         try:
-            result = subprocess.run(
+            result = runner(
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,

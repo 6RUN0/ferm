@@ -22,11 +22,18 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeAlias
 
 from pyferm.errors import FermError
 from pyferm.streams import BYTE_ENCODING
+
+#: The ``subprocess.run``-shaped seam every spawn site accepts (the
+#: ``capture_previous`` convention): tests inject a recorder, production
+#: passes ``None`` and ``subprocess.run`` is bound late (so
+#: monkeypatching the module-qualified name keeps working).
+CommandRunner: TypeAlias = Callable[..., subprocess.CompletedProcess[str]]
 
 #: How many path-scoped revisions to read to find the one before the current
 #: state: the current config plus the previous one.
@@ -70,7 +77,7 @@ def find_etckeeper() -> str | None:
     return shutil.which("etckeeper")
 
 
-def commit(message: str) -> None:
+def commit(message: str, *, runner: CommandRunner | None = None) -> None:
     """
     Best-effort commit of all of ``/etc`` through the configured VCS.
 
@@ -78,8 +85,10 @@ def commit(message: str) -> None:
     is a side effect.  A spawn error or a nonzero exit writes a single warning
     line to stderr and returns ``None``.
     """
+    if runner is None:
+        runner = subprocess.run
     try:
-        completed = subprocess.run(
+        completed = runner(
             ["etckeeper", "commit", message],
             capture_output=True,
             encoding=BYTE_ENCODING,
@@ -94,7 +103,9 @@ def commit(message: str) -> None:
         )
 
 
-def _vcs(args: list[str], *, action: str) -> subprocess.CompletedProcess[str]:
+def _vcs(
+    args: list[str], *, action: str, runner: CommandRunner | None = None
+) -> subprocess.CompletedProcess[str]:
     """
     Run ``etckeeper vcs <args>`` and return the completed process.
 
@@ -103,8 +114,10 @@ def _vcs(args: list[str], *, action: str) -> subprocess.CompletedProcess[str]:
     nonzero exit (read-only callers raise, :func:`rollback_available` does
     not).
     """
+    if runner is None:
+        runner = subprocess.run
     try:
-        return subprocess.run(
+        return runner(
             ["etckeeper", "vcs", *args],
             capture_output=True,
             encoding=BYTE_ENCODING,
@@ -126,7 +139,7 @@ def _stdout_or_raise(
     return completed.stdout
 
 
-def rollback_available() -> bool:
+def rollback_available(*, runner: CommandRunner | None = None) -> bool:
     """
     Return ``True`` when ``/etc`` is under etckeeper *and* the VCS is git.
 
@@ -134,13 +147,19 @@ def rollback_available() -> bool:
     fail it, so a clean exit doubles as the git probe.
     """
     try:
-        completed = _vcs(["rev-parse", "--show-toplevel"], action="rev-parse")
+        completed = _vcs(
+            ["rev-parse", "--show-toplevel"],
+            action="rev-parse",
+            runner=runner,
+        )
     except FermError:
         return False
     return completed.returncode == 0
 
 
-def repo_relative_subpath(config_path: str) -> str:
+def repo_relative_subpath(
+    config_path: str, *, runner: CommandRunner | None = None
+) -> str:
     """
     Return ``config_path``'s directory relative to the etckeeper repo root.
 
@@ -149,7 +168,9 @@ def repo_relative_subpath(config_path: str) -> str:
     lives outside the repository yields a ``..`` escape, which is rejected --
     rolling back outside the versioned tree is unsupported.
     """
-    completed = _vcs(["rev-parse", "--show-toplevel"], action="rev-parse")
+    completed = _vcs(
+        ["rev-parse", "--show-toplevel"], action="rev-parse", runner=runner
+    )
     root = _stdout_or_raise(completed, "rev-parse").strip()
     config_dir = Path(config_path).resolve().parent
     relative = os.path.relpath(config_dir, root)
@@ -172,13 +193,21 @@ def repo_relative_subpath(config_path: str) -> str:
     return relative
 
 
-def list_history(config_subpath: str) -> str:
+def list_history(
+    config_subpath: str, *, runner: CommandRunner | None = None
+) -> str:
     """Return ``git log --oneline`` scoped to the ferm config (read-only)."""
-    completed = _vcs(["log", "--oneline", "--", config_subpath], action="log")
+    completed = _vcs(
+        ["log", "--oneline", "--", config_subpath],
+        action="log",
+        runner=runner,
+    )
     return _stdout_or_raise(completed, "log")
 
 
-def previous_revision(config_subpath: str) -> str:
+def previous_revision(
+    config_subpath: str, *, runner: CommandRunner | None = None
+) -> str:
     """
     Return the sha of the previous ferm revision (read-only).
 
@@ -198,6 +227,7 @@ def previous_revision(config_subpath: str) -> str:
             config_subpath,
         ],
         action="log",
+        runner=runner,
     )
     output = _stdout_or_raise(completed, "log")
     revisions = [line for line in output.splitlines() if line.strip()]
@@ -206,14 +236,22 @@ def previous_revision(config_subpath: str) -> str:
     return revisions[1]
 
 
-def diff_revision(sha: str, config_subpath: str) -> str:
+def diff_revision(
+    sha: str, config_subpath: str, *, runner: CommandRunner | None = None
+) -> str:
     """Return the config diff against ``sha`` (read-only, for the operator)."""
     _validate_revision(sha)
-    completed = _vcs(["diff", sha, "--", config_subpath], action="diff")
+    completed = _vcs(
+        ["diff", sha, "--", config_subpath], action="diff", runner=runner
+    )
     return _stdout_or_raise(completed, "diff")
 
 
-def working_tree_dirty(config_subpath: str | None = None) -> bool:
+def working_tree_dirty(
+    config_subpath: str | None = None,
+    *,
+    runner: CommandRunner | None = None,
+) -> bool:
     """
     Return ``True`` when there are uncommitted changes.
 
@@ -225,11 +263,13 @@ def working_tree_dirty(config_subpath: str | None = None) -> bool:
     args = ["status", "--porcelain"]
     if config_subpath is not None:
         args += ["--", config_subpath]
-    completed = _vcs(args, action="status")
+    completed = _vcs(args, action="status", runner=runner)
     return bool(_stdout_or_raise(completed, "status").strip())
 
 
-def rollback(sha: str, config_subpath: str) -> None:
+def rollback(
+    sha: str, config_subpath: str, *, runner: CommandRunner | None = None
+) -> None:
     """
     Revert ONLY ``config_subpath`` to revision ``sha``, cleanly.
 
@@ -256,7 +296,7 @@ def rollback(sha: str, config_subpath: str) -> None:
         (["clean", "-f", "-d", "--", config_subpath], "clean"),
     )
     for args, action in steps:
-        completed = _vcs(args, action=action)
+        completed = _vcs(args, action=action, runner=runner)
         if completed.returncode != 0:
             raise FermError(
                 f"rollback {action} failed: {_describe_failure(completed)}"

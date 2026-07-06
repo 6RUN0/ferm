@@ -74,9 +74,13 @@ from pyferm.values import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from pyferm.config import Options
+
+    #: The ``subprocess.run``-shaped seam of the restore spawn site (the
+    #: ``capture_previous`` convention); the save text travels as bytes.
+    RestoreRunner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 #: A token needing no quoting (Perl ``:1809``); ``$`` allows a trailing
 #: newline exactly as Perl's ``$`` does.
@@ -461,14 +465,22 @@ def rules_to_save(
 
 
 def restore_domain(
-    domain_info: DomainInfo, save: str, options: Options
+    domain_info: DomainInfo,
+    save: str,
+    options: Options,
+    *,
+    runner: RestoreRunner | None = None,
 ) -> None:
     """
     Pipe a save text to ``*-restore`` (Perl ``:3103``).
 
     The live execution seam; raises :class:`FermError` (Perl ``die``) if the
     tool cannot be run or exits non-zero.  Never reached under ``--noexec``.
+    ``runner`` is the spawn seam; ``None`` binds ``subprocess.run`` late,
+    so monkeypatching still works.
     """
+    if runner is None:
+        runner = subprocess.run
     path = domain_info.tools[TOOL_RESTORE]
     args = [path]
     if options.noflush:
@@ -478,9 +490,7 @@ def restore_domain(
         # the path comes from find_tool; no shell is used
         # latin-1: one byte per char, reproducing the config bytes exactly
         # (default utf-8 would turn U+0080-U+00FF into two bytes each)
-        completed = subprocess.run(
-            args, input=save.encode(BYTE_ENCODING), check=False
-        )
+        completed = runner(args, input=save.encode(BYTE_ENCODING), check=False)
     except OSError as exc:
         raise FermError(f"Failed to run {path}: {exc}") from exc
     if completed.returncode != 0:

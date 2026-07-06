@@ -801,10 +801,20 @@ def _gather_input(files: list[str]) -> list[str]:
     return lines
 
 
-def _iptables_save_lines() -> list[str]:
-    """Run ``iptables-save`` and return its output lines (Perl ``:502``)."""
+def _iptables_save_lines(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> list[str]:
+    """
+    Run ``iptables-save`` and return its output lines (Perl ``:502``).
+
+    ``runner`` is the spawn seam; ``None`` binds ``subprocess.run`` late,
+    so monkeypatching the module-qualified name still works.
+    """
+    if runner is None:
+        runner = subprocess.run
     try:
-        proc = subprocess.run(
+        proc = runner(
             ["iptables-save"],
             capture_output=True,
             encoding=BYTE_ENCODING,
