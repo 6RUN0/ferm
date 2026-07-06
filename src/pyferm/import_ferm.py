@@ -19,9 +19,15 @@ Perl tool -- only round-trip equivalent after the golden sorter runs.
 Rule structures are modelled as :class:`Rule`/:class:`MatchEntry` dataclasses
 (the Perl ``%line`` hash and its ``[option, value]`` match pairs).  The
 ``optimize`` pass compares whole rules for equality; Perl does this with
-``Data::Dumper`` (``$Data::Dumper::Sortkeys = 1``), which this port reproduces
-with :func:`_canon` -- a structural canonical form that, like Dumper, tags
-blessed values by class and collapses every coderef to one sentinel.
+``Data::Dumper`` (``$Data::Dumper::Sortkeys = 1``), which structural dataclass
+``==`` reproduces: blessed values are frozen dataclasses whose ``__eq__``
+requires the class to match (Dumper's class tag), dict equality is
+order-independent (Dumper's sorted keys), and transient parse state
+(:attr:`Rule.cur`) is excluded via ``compare=False``.  One deliberate
+tightening: ``ParamFunction`` equality compares the carried function name,
+where Dumper rendered every coderef identically -- harmless here because
+import-ferm reads only the ip-family registries, where each option name maps
+to a single function.
 """
 
 from __future__ import annotations
@@ -31,9 +37,9 @@ import re
 import subprocess
 import sys
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TextIO, cast
+from typing import TYPE_CHECKING, Final, TextIO
 
 from pyferm.errors import FermError, internal_error
 from pyferm.modules import (
@@ -118,9 +124,11 @@ class Rule:
 
     ``cur`` aliases either :attr:`match` or :attr:`target` during parsing so
     that, like Perl's ``$line->{cur}``, pushed options land in the current
-    section.  Optional fields default to ``None`` to mirror Perl ``exists``:
-    a block node created by :func:`_optimize` sets only :attr:`match` and
-    :attr:`block`.
+    section.  It is transient parse state -- always ``None`` again by the
+    time :func:`_optimize` compares rules -- so equality excludes it
+    (``compare=False``).  Optional fields default to ``None`` to mirror Perl
+    ``exists``: a block node created by :func:`_optimize` sets only
+    :attr:`match` and :attr:`block`.
     """
 
     keywords: dict[str, Keyword] = field(default_factory=dict[str, Keyword])
@@ -132,7 +140,9 @@ class Rule:
     target: list[MatchEntry] | None = None
     match_keywords: dict[str, Keyword] | None = None
     block: list[Rule] | None = None
-    cur: list[MatchEntry] | None = field(default=None, repr=False)
+    cur: list[MatchEntry] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def ferm_escape(value: Value) -> str:
@@ -200,108 +210,12 @@ def _match_option(token: str) -> str | None:
     return None if match is None else match.group(1)
 
 
-# --- Data::Dumper-equivalent structural canonicalization -------------
-
-
-def _canon(value: object) -> object:
-    """
-    Canonicalize a value for equality (Perl's ``Dumper`` comparison).
-
-    Produces nested tuples that compare equal exactly when Perl's
-    ``Data::Dumper`` (with ``Sortkeys``) would emit equal strings: blessed
-    values carry their class tag, hash keys sort, and every coderef collapses
-    to one sentinel (Dumper renders all coderefs identically by default).
-    """
-    if value is None:
-        return ("undef",)
-    if isinstance(value, bool):
-        return ("num", int(value))
-    if isinstance(value, int):
-        return ("num", value)
-    if isinstance(value, str):
-        return ("str", value)
-    if isinstance(value, MatchEntry):
-        return ("entry", value.name, _canon(value.value))
-    if isinstance(value, Negated):
-        return ("negated", _canon(value.value))
-    if isinstance(value, PreNegated):
-        return ("pre_negated", _canon(value.value))
-    if isinstance(value, Multi):
-        return ("multi", tuple(_canon(item) for item in value.values))
-    if isinstance(value, Params):
-        return ("params", tuple(_canon(item) for item in value.values))
-    if isinstance(value, ParamFunction):
-        return ("code",)
-    if isinstance(value, Keyword):
-        return (
-            "kw",
-            value.name,
-            _canon(value.params),
-            value.negation,
-            value.pre_negation,
-            value.ferm_name,
-        )
-    if isinstance(value, Rule):
-        return _canon_rule(value, value.match)
-    # _canon walks heterogeneous Perl-shaped data (Data::Dumper-style); the
-    # input is genuinely object, so these casts merely name the element types
-    # isinstance cannot recover.  A structured input type would only relocate
-    # them to the data boundary, not remove them -- kept by design.
-    if isinstance(value, list):
-        return (
-            "array",
-            tuple(_canon(item) for item in cast("list[object]", value)),
-        )
-    if isinstance(value, dict):
-        return (
-            "hash",
-            tuple(
-                sorted(
-                    (key, _canon(val))
-                    for key, val in cast("dict[str, object]", value).items()
-                )
-            ),
-        )
-    raise internal_error("uncanonicalizable value")
-
-
-def _canon_rule(rule: Rule, match: list[MatchEntry]) -> object:
-    """
-    Canonicalize a rule with an explicit ``match`` list.
-
-    Includes only the keys Perl's hash would hold (optional fields appear
-    only when set), so that two rules compare equal iff their Dumper strings
-    would.  ``_array_matches`` passes ``rule.match[1:]`` to drop the first
-    option before comparing the remainder.
-    """
-    items: dict[str, object] = {
-        "keywords": rule.keywords,
-        "match": match,
-        "mod": rule.mod,
-    }
-    if rule.proto is not None:
-        items["proto"] = rule.proto
-    if rule.jump is not None:
-        items["jump"] = rule.jump
-    if rule.goto is not None:
-        items["goto"] = rule.goto
-    if rule.target is not None:
-        items["target"] = rule.target
-    if rule.match_keywords is not None:
-        items["match_keywords"] = rule.match_keywords
-    if rule.block is not None:
-        items["block"] = rule.block
-    return _canon(items)
-
-
 # --- the optimize pass -----------------------------------------------
 
 
 def _prefix_matches(first: Rule, other: Rule) -> bool:
     """Whether ``other`` shares ``first``'s leading match (Perl ``:115``)."""
-    return bool(other.match) and _canon(first.match[0]) == _canon(
-        other.match[0]
-    )
+    return bool(other.match) and first.match[0] == other.match[0]
 
 
 def _prefix_match_count(prefix: Rule, rules: Iterable[Rule]) -> int:
@@ -324,6 +238,17 @@ def _is_merging_array_member(value: Value) -> bool:
     return value is not None and isinstance(value, (str, list))
 
 
+def _tail(rule: Rule) -> Rule:
+    """
+    Return a shallow copy of ``rule`` without its first match.
+
+    Shares the ``keywords``/``mod``/``target``/``block`` references of the
+    original, so it is safe only as an ephemeral read-only operand of ``==``
+    -- never feed it to the mutating :func:`_optimize` passes.
+    """
+    return replace(rule, match=rule.match[1:])
+
+
 def _array_matches(rule1: Rule, rule2: Rule) -> bool:
     """Whether two rules differ only in their first match (Perl ``:138``)."""
     if not rule1.match or not rule2.match:
@@ -334,9 +259,7 @@ def _array_matches(rule1: Rule, rule2: Rule) -> bool:
         return False
     if rule1.match[0].name != rule2.match[0].name:
         return False
-    return _canon_rule(rule1, rule1.match[1:]) == _canon_rule(
-        rule2, rule2.match[1:]
-    )
+    return _tail(rule1) == _tail(rule2)
 
 
 def _array_match_count(first: Rule, rules: Iterable[Rule]) -> int:

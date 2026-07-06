@@ -1,9 +1,9 @@
 """Unit tests for :mod:`pyferm.import_ferm`.
 
-Covers the pure helpers (``ferm_escape``, ``format_array``, the tokenizer and
-the ``Data::Dumper``-equivalent ``_canon``), the two-pass ``optimize`` merge
-(common-prefix block and array combine), and an end-to-end ``Importer.run``
-over a small ``iptables-save`` snippet.
+Covers the pure helpers (``ferm_escape``, ``format_array``, the tokenizer),
+the structural rule equality feeding the merge tests, the two-pass
+``optimize`` merge (common-prefix block and array combine), and an
+end-to-end ``Importer.run`` over a small ``iptables-save`` snippet.
 """
 
 from __future__ import annotations
@@ -22,10 +22,11 @@ from pyferm.import_ferm import (
     Importer,
     MatchEntry,
     Rule,
-    _canon,
+    _array_matches,
     _gather_input,
     _iptables_save_lines,
     _optimize,
+    _prefix_matches,
     _tokenize,
     ferm_escape,
     format_array,
@@ -89,68 +90,68 @@ def test_tokenize_quotes_bang_and_words() -> None:
     assert _tokenize('--comment "a b c"') == ["--comment", "a b c"]
 
 
-def test_canon_distinguishes_negation_tag() -> None:
-    # A negated value differs from the bare scalar and from a plain array.
-    assert _canon(Negated("x")) != _canon("x")
-    assert _canon(Negated("x")) != _canon(["x"])
-    assert _canon(Negated("x")) == _canon(Negated("x"))
+def test_rule_equality_distinguishes_negation_tag() -> None:
+    # A negated value differs from the bare scalar and from a plain array:
+    # the frozen value dataclasses require the class to match (the Perl
+    # Dumper blessed tag), so negated options never merge with plain ones.
+    assert MatchEntry("s", Negated("x")) != MatchEntry("s", "x")
+    assert MatchEntry("s", Negated("x")) != MatchEntry("s", ["x"])
+    assert MatchEntry("s", Negated("x")) == MatchEntry("s", Negated("x"))
 
 
-def test_canon_preserves_collection_element_content() -> None:
-    # Two collections differing only in an element must canonicalize
-    # differently; collapsing the element to a sentinel would let _optimize
-    # merge genuinely distinct rules.
-    assert _canon(["a"]) != _canon(["b"])
-    assert _canon(Multi(["a"])) != _canon(Multi(["b"]))
-    assert _canon(Negated("a")) != _canon(Negated("b"))
-    assert _canon(Keyword("x", "1")) != _canon(Keyword("x", "2"))
+def test_rule_equality_preserves_collection_element_content() -> None:
+    # Two values differing only in an element must compare unequal;
+    # collapsing the element would let _optimize merge genuinely distinct
+    # rules.
+    assert MatchEntry("s", ["a"]) != MatchEntry("s", ["b"])
+    assert MatchEntry("s", Multi(["a"])) != MatchEntry("s", Multi(["b"]))
+    assert MatchEntry("s", PreNegated("a")) != MatchEntry("s", PreNegated("b"))
+    assert MatchEntry("s", Params(["a"])) != MatchEntry("s", Params(["b"]))
+    assert Keyword("x", "1") != Keyword("x", "2")
 
 
-def test_canon_rule_preserves_optional_fields() -> None:
-    # Optional rule fields feed the merge-equality test (_array_matches); two
-    # rules differing only in one such field must not canonicalize equal,
-    # whether the field is dropped or its presence test is inverted.
-    assert _canon(Rule(target=[MatchEntry("-j", "A")])) != _canon(
-        Rule(target=[MatchEntry("-j", "B")])
+def test_rule_equality_covers_optional_fields() -> None:
+    # Optional rule fields feed the merge-equality test (_array_matches);
+    # two rules differing only in one such field must not compare equal.
+    assert Rule(target=[MatchEntry("-j", "A")]) != Rule(
+        target=[MatchEntry("-j", "B")]
     )
-    assert _canon(Rule(jump="A")) != _canon(Rule(jump="B"))
-
-
-def test_canon_rule_preserves_goto_match_keywords_and_block() -> None:
-    # The remaining optional fields (goto, match_keywords, block) equally gate
-    # merge-equality: dropping one, or inverting its "is not None" presence
-    # test, would collapse two genuinely distinct rules.
-    assert _canon(Rule(goto="A")) != _canon(Rule(goto="B"))
-    assert _canon(Rule(match_keywords={"x": Keyword("x", "1")})) != _canon(
-        Rule(match_keywords={"x": Keyword("x", "2")})
+    assert Rule(jump="A") != Rule(jump="B")
+    assert Rule(goto="A") != Rule(goto="B")
+    assert Rule(match_keywords={"x": Keyword("x", "1")}) != Rule(
+        match_keywords={"x": Keyword("x", "2")}
     )
-    assert _canon(Rule(block=[Rule(jump="A")])) != _canon(
-        Rule(block=[Rule(jump="B")])
+    assert Rule(block=[Rule(jump="A")]) != Rule(block=[Rule(jump="B")])
+    assert Rule(match=[MatchEntry("saddr", "1")]) != Rule(
+        match=[MatchEntry("saddr", "2")]
     )
 
 
-def test_canon_rule_preserves_match_list() -> None:
-    # _canon's Rule branch feeds rule.match into _canon_rule; substituting None
-    # there would let two rules differing only in their match compare equal.
-    assert _canon(Rule(match=[MatchEntry("saddr", "1")])) != _canon(
-        Rule(match=[MatchEntry("saddr", "2")])
-    )
+def test_rule_equality_ignores_cur() -> None:
+    # cur is transient parse state, always None again by optimize time; it
+    # is excluded from comparison (compare=False) so a stray alias could
+    # never block a merge.
+    entry = MatchEntry("proto", "tcp")
+    aliased = Rule(match=[entry])
+    aliased.cur = aliased.match
+    assert aliased == Rule(match=[MatchEntry("proto", "tcp")])
 
 
-def test_canon_bool_canonicalizes_as_numeric() -> None:
-    # A bool travels through the numeric branch as int(value); the two bools
-    # must land on distinct canonical forms (and int() must keep its argument).
-    assert _canon(True) == ("num", 1)
-    assert _canon(False) == ("num", 0)
+def test_prefix_matches_requires_other_match() -> None:
+    # A bare "-A INPUT -j ACCEPT" parses to match=[]; the bool(other.match)
+    # guard must reject it instead of raising IndexError.
+    prefix = Rule(match=[MatchEntry("proto", "tcp")])
+    assert not _prefix_matches(prefix, Rule())
 
 
-def test_canon_preserves_prenegated_and_params_content() -> None:
-    # PreNegated and Params must recurse into their payload: collapsing the
-    # content (or dropping the recursion) would merge distinct values, and a
-    # bare tuple(None) for Params would raise instead of canonicalizing.
-    assert _canon(PreNegated("a")) != _canon(PreNegated("b"))
-    assert _canon(Params(["a"])) != _canon(Params(["b"]))
-    assert _canon(Params(["a"])) == ("params", (("str", "a"),))
+def test_array_matches_leaves_operands_intact() -> None:
+    # The tail comparison works on ephemeral shallow copies; the operands
+    # must keep their full match lists for the later merge passes.
+    rule1 = Rule(match=[MatchEntry("saddr", "1"), MatchEntry("proto", "tcp")])
+    rule2 = Rule(match=[MatchEntry("saddr", "2"), MatchEntry("proto", "tcp")])
+    assert _array_matches(rule1, rule2)
+    assert [entry.name for entry in rule1.match] == ["saddr", "proto"]
+    assert [entry.name for entry in rule2.match] == ["saddr", "proto"]
 
 
 def test_optimize_factors_common_prefix_block() -> None:
