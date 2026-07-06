@@ -104,6 +104,10 @@ def test_sink_absence() -> None:
             # truncated, which only ever hides a sink, never invents one.
             code = line.split("#", 1)[0]
             assert "`" not in code, name
+            # Deliberately stricter than the translated/ gate below: a
+            # legitimate hex-string payload literal ends in '|"', but no
+            # wild config vendors one today, so the simpler pipe-include
+            # check stays until one does (then relax it the same way).
             assert '|"' not in code, name
             if "@include" not in code:
                 continue

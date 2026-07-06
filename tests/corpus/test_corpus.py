@@ -49,7 +49,9 @@ def _corpus_configs() -> list[Path]:
     wild = sorted(CONFIGS.glob("*.ferm"))
     # Multi-file entries: a directory per config, entry point named after
     # it, vendored @include targets beside it (resolved relative to the
-    # entry file by both implementations).
+    # entry file by both implementations).  A directory without its
+    # same-named entry file fails loudly downstream (FileNotFoundError),
+    # by design -- never silently skipped.
     nested = sorted(
         path / f"{path.name}.ferm"
         for path in CONFIGS.iterdir()

@@ -86,6 +86,9 @@ _NFT_LINE = re.compile(r"^(add|create|delete|insert|flush|replace) ")
 
 def _corpus_owned_configs() -> list[Path]:
     flat = sorted(CONFIGS.glob("*.ferm"))
+    # Same multi-file convention as test_corpus._corpus_configs: each
+    # directory must hold a same-named entry file, and a missing one
+    # fails loudly downstream (FileNotFoundError), never skips.
     nested = sorted(
         path / f"{path.name}.ferm"
         for path in CONFIGS.iterdir()
