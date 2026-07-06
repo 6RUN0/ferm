@@ -1765,11 +1765,12 @@ class Parser:
         if function.block:
             self.tokenizer.expect_token(";")
 
-        tokens: list[Token] = list(function.tokens)
-        index = 0
-        while index < len(tokens):
-            token = tokens[index]
-            following = tokens[index + 1] if index + 1 < len(tokens) else None
+        result: list[Token] = []
+        i = 0
+        src = function.tokens
+        while i < len(src):
+            token = src[i]
+            following = src[i + 1] if i + 1 < len(src) else None
             if (
                 token == "$"
                 and isinstance(following, str)
@@ -1782,24 +1783,31 @@ class Parser:
                 expanded = cast(
                     "list[Token]", list(to_array(variables[following]))
                 )
-                if len(tokens) != 1:
-                    expanded = ["(", *expanded, ")"]
-                tokens[index : index + 2] = expanded
-                index += len(expanded) - 2
+                # Parens unconditionally: entering this branch requires a
+                # following name token, so the body always holds >= 2
+                # tokens and Perl's "unless @tokens == 1" guard was
+                # identically true.
+                result.extend(["(", *expanded, ")"])
+                i += 2
             elif isinstance(token, str) and _DQUOTE_RE.fullmatch(token):
-                tokens[index] = _DVAR_RE.sub(
-                    lambda match: (
-                        stringify(variables[match.group(1)])
-                        if match.group(1) in variables
-                        else f"${match.group(1)}"
-                    ),
-                    token,
+                result.append(
+                    _DVAR_RE.sub(
+                        lambda match: (
+                            stringify(variables[match.group(1)])
+                            if match.group(1) in variables
+                            else f"${match.group(1)}"
+                        ),
+                        token,
+                    )
                 )
-            index += 1
+                i += 1
+            else:
+                result.append(token)
+                i += 1
 
         # extendleft inserts in reverse, so pre-reverse to prepend in order
         self.tokenizer.script.tokens.extendleft(
-            reversed([*tokens, line_token])
+            reversed([*result, line_token])
         )
 
     def _parse_preserve(self, rule: Rule) -> None:
