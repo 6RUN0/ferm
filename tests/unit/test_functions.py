@@ -23,7 +23,11 @@ from pyferm.functions import (
     realize_protocol,
     realize_protocol_keyword,
 )
-from pyferm.resolver import ZonefileResolver, set_resolver_provider
+from pyferm.resolver import (
+    ResolverProvider,
+    ZonefileResolver,
+    set_resolver_provider,
+)
 from pyferm.scope import Frame, FunctionLike, Rule, Scope
 from pyferm.tokenizer import Script, Token, Tokenizer
 from pyferm.values import Deferred, Negated, SetRef, Value, realize_deferred
@@ -50,6 +54,7 @@ def _evaluator(
     variables: dict[str, Value] | None = None,
     functions: dict[str, FunctionLike] | None = None,
     auto: dict[str, Value] | None = None,
+    resolver_provider: ResolverProvider | None = None,
 ) -> Evaluator:
     tokenizer = Tokenizer(Script(filename="t.ferm", handle=io.StringIO(text)))
     scope = Scope()
@@ -60,7 +65,7 @@ def _evaluator(
             auto=dict(auto or {}),
         )
     )
-    return Evaluator(tokenizer, scope)
+    return Evaluator(tokenizer, scope, resolver_provider=resolver_provider)
 
 
 # -- _run_shell --------------------------------------------------------------
@@ -510,6 +515,18 @@ def test_address_magic_realizes_resolve() -> None:
         assert ev.address_magic(Rule(domain="ip")) == ["192.0.2.1"]
     finally:
         set_resolver_provider(None)
+
+
+def test_address_magic_resolves_via_injected_provider() -> None:
+    # An evaluator-scoped provider serves @resolve without the process-wide
+    # seam: the module global stays untouched, so nothing can leak into
+    # later tests even when an assertion fires mid-test.
+    import pyferm.resolver as resolver_mod
+
+    zone = ZonefileResolver.from_text("v4.example.com. IN A 192.0.2.1\n")
+    ev = _evaluator("@resolve(v4.example.com)", resolver_provider=lambda: zone)
+    assert ev.address_magic(Rule(domain="ip")) == ["192.0.2.1"]
+    assert resolver_mod._provider is None
 
 
 # -- cgroup_classid ----------------------------------------------------------

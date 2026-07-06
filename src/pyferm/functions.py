@@ -57,6 +57,8 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from pyferm.resolver import ResolverProvider
+
 _NAME_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 _DVAR_RE: Final[re.Pattern[str]] = re.compile(r"\$(\w+)")
 _QUOTED_RE: Final[dict[str, re.Pattern[str]]] = {
@@ -277,10 +279,23 @@ class Evaluator:
     ``@stack`` globals, exposing the readers ``enter`` drives.
     """
 
-    def __init__(self, tokenizer: Tokenizer, scope: Scope) -> None:
-        """Bind the evaluator to a tokenizer and a scope stack."""
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        scope: Scope,
+        *,
+        resolver_provider: ResolverProvider | None = None,
+    ) -> None:
+        """
+        Bind the evaluator to a tokenizer and a scope stack.
+
+        ``resolver_provider`` scopes ``@resolve`` lookups to this evaluator;
+        ``None`` (the CLI path) falls back to the process-wide provider
+        installed with :func:`pyferm.resolver.set_resolver_provider`.
+        """
         self.tokenizer = tokenizer
         self.scope = scope
+        self._resolver_provider = resolver_provider
         #: Current value-reader recursion depth (see :data:`MAX_VALUE_DEPTH`).
         self._value_depth = 0
 
@@ -711,7 +726,17 @@ class Evaluator:
         params = self.get_function_params()
         if len(params) not in (1, 2):
             error("Usage: @resolve((hostname ...), [type])")
-        return Deferred(resolve, params)
+        provider = self._resolver_provider
+        if provider is None:
+            return Deferred(resolve, params)
+
+        # The closure captures only the injected provider, never the
+        # evaluator: a deferred is realized after the token position has
+        # moved on (see the module docstring's free-function rule).
+        def resolve_with_provider(domain: str, *args: Value) -> list[Value]:
+            return resolve(domain, *args, resolver=provider())
+
+        return Deferred(resolve_with_provider, params)
 
     def _builtin_ipfilter(self) -> Value:
         """``@ipfilter((ip1 ip2 ...))``: a deferred per-family filter."""
