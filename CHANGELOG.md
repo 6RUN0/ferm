@@ -69,6 +69,13 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- **`--nft` refuses ebtables target keywords instead of mistranslating
+  them.** In the `eb` domain the `snat`/`dnat`/`redirect`/`arpreply`
+  targets share companion option names with the inet NAT targets, so
+  the nft backend silently rendered them as a jump to a chain that was
+  never created and dropped the MAC rewrite (`nft -c` then rejected the
+  script). They now fail up front with a clean "not yet supported"
+  error, like every other untranslatable construct.
 - **`--nft` translates a trailing `+` interface wildcard to `*`.** nft
   treats `+` in an interface name as a literal byte, so an untranslated
   `eth+` silently matched nothing while `nft -c` still accepted the rule.

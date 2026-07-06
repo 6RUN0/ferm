@@ -499,6 +499,25 @@ def test_build_verdict_uncovered_target_is_error() -> None:
         build_verdict(Family.IP, "nat", "jump", "DNAT", {})
 
 
+def test_build_verdict_eb_target_keywords_are_refused() -> None:
+    # The ebtables target keywords share companion names with the inet
+    # NAT targets (to-source/to-destination), so without the explicit
+    # guard they would fall through to the user-chain branch, swallow
+    # the companion and emit a jump to a chain that never exists.
+    comp = {"to-source": _opt("to-source", "aa:bb:cc:00:11:22")}
+    with pytest.raises(
+        FermError, match=r"^eb target 'snat' not yet supported"
+    ):
+        build_verdict(Family.EB, "nat", "jump", "snat", comp)
+    with pytest.raises(
+        FermError, match=r"^eb target 'redirect' not yet supported"
+    ):
+        build_verdict(Family.EB, "broute", "jump", "redirect", {})
+    # an actual user chain in the eb domain still translates
+    verdict = build_verdict(Family.EB, "filter", "jump", "mychain", {})
+    assert verdict.to_text() == "jump mychain"
+
+
 def test_build_verdict_unsupported_reject_with_is_error() -> None:
     comp = {
         "reject-with": _opt("reject-with", "bogus-reject", module="REJECT")

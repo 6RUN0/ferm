@@ -846,6 +846,12 @@ def _setref_selector(domain: Family, name: str, protocol: str | None) -> str:
 _VERDICT_TARGET: Final[dict[str, str]] = {
     target: target.lower() for target in CORE_TARGETS
 }
+#: ebtables target keywords (``modules.py`` ``target_x("eb", ...)``):
+#: they are targets, never user chains, and have no nft bridge-family
+#: translation yet, so :func:`build_verdict` refuses them explicitly.
+_EB_TARGETS: Final[frozenset[str]] = frozenset(
+    {"arpreply", "dnat", "redirect", "snat", "MARK"}
+)
 #: iptables ``reject-with`` canonical name -> nft reject spec, ip family.
 #: Covers every type ``iptables -j REJECT`` accepts; the short aliases
 #: (``net-unreach`` ...) resolve to these keys via :data:`_REJECT_ALIAS`.
@@ -1043,6 +1049,15 @@ def build_verdict(
             domain,
             companions,
             has_transport=has_transport,
+        )
+    # The ebtables target keywords share companion option names with the
+    # inet NAT targets (snat/to-source, dnat/to-destination), so without
+    # this guard they would fall through to the user-chain branch below,
+    # swallow the companion and emit a jump to a chain that never exists
+    # -- a silently-broken script instead of a clean refusal.
+    if domain is Family.EB and target_value in _EB_TARGETS:
+        raise FermError(
+            f"eb target '{target_value}' not yet supported by nft backend"
         )
     # A jump/goto to a chain in the same iptables table.  nft forbids
     # jumping to a base chain (one with a hook), so a jump/goto whose
