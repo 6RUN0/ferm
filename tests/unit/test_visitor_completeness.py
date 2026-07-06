@@ -119,7 +119,7 @@ def test_chain_collector_covers_or_ignores_every_node_class() -> None:
 # -- GATE: _visit_stmt_node routes every _STMT_NODES key --------------------
 
 #: Sentinel returned by _RecordingWalker.visit, distinct from any real
-#: visit_* return value (a "next"/"return" str), so a stray string match
+#: visit_* return value (a closes-level bool), so a stray value match
 #: cannot pass the routed-through assertion by accident.
 _ROUTED: Final = object()
 

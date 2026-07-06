@@ -10,9 +10,10 @@ and ``collect_filenames`` (``:1099``).
 ``enter`` reads tokens one keyword at a time and dispatches on each.  The Perl
 source wraps the dispatch in a ``for ($keyword) { ... }`` once-loop whose
 ``next`` falls through to a trailing ``error("Doesn't support negation")``
-check; this port models that with an inner :func:`handle` returning ``"next"``
-(fall through to the negation check, then continue the read loop) or
-``"return"`` (the ``}`` handler, which exits ``enter`` outright).
+check; this port models that with an inner :func:`handle` returning a bool
+that tells whether the statement closes the level: ``False`` falls through
+to the negation check and continues the read loop, ``True`` (only the ``}``
+handler) exits ``enter`` outright.
 
 State Perl keeps in globals is gathered on the :class:`Parser`: the token
 stream and variable stack come from the injected
@@ -1420,7 +1421,7 @@ class Parser:
         # cannot desync from a preceding shim statement's matches.
         walker = Walker(self, level, prev, base_level)
 
-        def handle(keyword: object, negated: NegatedFlag) -> str:
+        def handle(keyword: object, negated: NegatedFlag) -> bool:
             walker.shown_keyword = keyword
 
             # effectuation operator
@@ -1434,14 +1435,14 @@ class Parser:
                 walker.rule.script = self._script_position()
                 self.mkrules(walker.rule)
                 walker.rule = new_level(prev)
-                return "next"
+                return False
 
             # @if is promoted to a typed IfNode (see Walker.visit_IfNode);
             # only a leftover @else after a true @if still reaches the shim.
             if keyword == "@else":
                 # a leftover "else" from a true "if": drop its body
                 self.evaluator.collect_tokens()
-                return "next"
+                return False
 
             # hook/@hook -> HookNode, { -> BlockNode, @if -> IfNode, and every
             # header/@include/@preserve/@def/@set/@subchain is promoted to its
@@ -1452,7 +1453,7 @@ class Parser:
                     error('Unmatched "}"')
                 if walker.rule.non_empty:
                     error('Missing semicolon before "}"')
-                return "return"
+                return True
 
             # something not inherited by the parent closure
             walker.rule.non_empty = True
@@ -1464,7 +1465,7 @@ class Parser:
 
             if keyword == "&":
                 self._call_function(walker.rule)
-                return "next"
+                return False
 
             # domain/table/chain/policy/priority (headers) and
             # @subchain/subchain/@gotosubchain are promoted to typed nodes
@@ -1479,7 +1480,7 @@ class Parser:
             # extended parameters: module load
             if isinstance(keyword, str) and keyword in ("mod", "module"):
                 self._load_match_modules(walker.rule)
-                return "next"
+                return False
 
             # shortcuts
             if (
@@ -1495,7 +1496,7 @@ class Parser:
                 self.parse_option(
                     walker.rule.keywords[keyword], walker.rule, negated
                 )
-                return "next"
+                return False
 
             # actions
             if keyword in ("jump", "goto"):
@@ -1503,17 +1504,17 @@ class Parser:
                 if isinstance(target, str):
                     _check_chain_name(target)
                 self.set_target(walker.rule, keyword, target)
-                return "next"
+                return False
 
             if isinstance(keyword, str) and is_netfilter_core_target(keyword):
                 self.set_target(walker.rule, "jump", keyword)
-                return "next"
+                return False
 
             if keyword == "NOP":
                 if walker.rule.has_action:
                     error(_ERR_ACTION_ALREADY_SET)
                 walker.rule.has_action = True
-                return "next"
+                return False
 
             if isinstance(keyword, str):
                 defs = is_netfilter_module_target(
@@ -1521,12 +1522,12 @@ class Parser:
                 )
                 if defs is not None:
                     self.set_module_target(walker.rule, keyword, defs)
-                    return "next"
+                    return False
 
             # protocol specific options
             if keyword in ("proto", "protocol"):
                 self._parse_protocol(walker.rule, negated)
-                return "next"
+                return False
 
             # port switches
             if isinstance(keyword, str) and keyword in ("sport", "dport"):
@@ -1545,7 +1546,7 @@ class Parser:
                     keyword,
                     self.evaluator.getvalues(allow_negation=True),
                 )
-                return "next"
+                return False
 
             return error(f"Unrecognized keyword: {keyword}")
 
@@ -1587,7 +1588,7 @@ class Parser:
                             span=self._capture_rule_span(),
                         )
                     )
-            if result == "return":
+            if result:
                 return
 
         if level > base_level:

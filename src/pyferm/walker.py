@@ -75,8 +75,9 @@ class Walker(NodeVisitor):
         self.base_level = base_level
         self.rule: Rule = new_level(prev)
         self.shown_keyword: object = ""
-        #: Bound to this block's handle() right after it is defined.
-        self.dispatch: Callable[[object, NegatedFlag], str] | None = None
+        #: Bound to this block's handle() right after it is defined; the
+        #: bool result tells whether the statement closes the level.
+        self.dispatch: Callable[[object, NegatedFlag], bool] | None = None
         #: Bound to Parser._resolve_keyword: negation + deprecated remap of a
         #: leading token (kept off the Walker to avoid a parser import cycle).
         self.resolve: Callable[[object], tuple[object, NegatedFlag]] | None = (
@@ -93,7 +94,7 @@ class Walker(NodeVisitor):
         #: reaches its typed path instead of the (now def-less) leaf handle.
         self.route_resolved: Callable[[object], object | None] | None = None
 
-    def visit_BlockNode(self, node: BlockNode) -> str:  # noqa: ARG002
+    def visit_BlockNode(self, node: BlockNode) -> bool:  # noqa: ARG002
         """
         Enter a nested block, inheriting the current pending rule as context.
 
@@ -107,9 +108,9 @@ class Walker(NodeVisitor):
         with parser._scoped_frame(Frame(auto=dict(parser.scope.top.auto))):
             parser.enter(self.level + 1, self.rule)
         self.rule = new_level(self.prev)
-        return "next"
+        return False
 
-    def visit_IfNode(self, node: IfNode) -> str:  # noqa: ARG002
+    def visit_IfNode(self, node: IfNode) -> bool:  # noqa: ARG002
         """
         Evaluate an @if condition first, then stream the taken branch.
 
@@ -130,9 +131,9 @@ class Walker(NodeVisitor):
                 parser.tokenizer.require_next_token()
             else:
                 self.rule = new_level(self.prev)
-        return "next"
+        return False
 
-    def visit_RuleNode(self, node: RuleNode) -> str:
+    def visit_RuleNode(self, node: RuleNode) -> bool:
         """
         Slice a captured rule span into keyword args on the walk.
 
@@ -189,41 +190,41 @@ class Walker(NodeVisitor):
                         error(
                             f"Doesn't support negation: {self.shown_keyword}"
                         )
-                if result == "return":
-                    return "return"
+                if result:
+                    return True
         finally:
             script.tokens = old_tokens
             script.handle = old_handle
             script.line = old_line
-        return "next"
+        return False
 
-    def visit_DefNode(self, node: DefNode) -> str:  # noqa: ARG002
+    def visit_DefNode(self, node: DefNode) -> bool:  # noqa: ARG002
         """Define a variable or function (@def), reading operands live."""
         self.parser._parse_def(self.rule)
-        return "next"
+        return False
 
-    def visit_SetNode(self, node: SetNode) -> str:  # noqa: ARG002
+    def visit_SetNode(self, node: SetNode) -> bool:  # noqa: ARG002
         """Declare a named nft set (@set), reading operands live."""
         self.parser._parse_set(self.rule)
-        return "next"
+        return False
 
-    def visit_IncludeNode(self, node: IncludeNode) -> str:  # noqa: ARG002
+    def visit_IncludeNode(self, node: IncludeNode) -> bool:  # noqa: ARG002
         """Include another file/glob/pipe (@include), resolved at runtime."""
         self.parser._parse_include(self.rule, self.level)
-        return "next"
+        return False
 
-    def visit_PreserveNode(self, node: PreserveNode) -> str:  # noqa: ARG002
+    def visit_PreserveNode(self, node: PreserveNode) -> bool:  # noqa: ARG002
         """Preserve matching live rules (@preserve), then reset the level."""
         self.parser._parse_preserve(self.rule)
         self.rule = new_level(self.prev)
-        return "next"
+        return False
 
-    def visit_HookNode(self, node: HookNode) -> str:  # noqa: ARG002
+    def visit_HookNode(self, node: HookNode) -> bool:  # noqa: ARG002
         """Register a pre/post/flush shell hook (@hook)."""
         self.parser._parse_hook(self.rule)
-        return "next"
+        return False
 
-    def visit_HeaderNode(self, node: HeaderNode) -> str:
+    def visit_HeaderNode(self, node: HeaderNode) -> bool:
         """
         Enter a domain/table/chain/policy/priority header.
 
@@ -234,12 +235,12 @@ class Walker(NodeVisitor):
         self.rule = self.parser._parse_header(
             node.keyword, self.rule, self.prev
         )
-        return "next"
+        return False
 
-    def visit_SubchainNode(self, node: SubchainNode) -> str:
+    def visit_SubchainNode(self, node: SubchainNode) -> bool:
         """Declare and enter an inline subchain (@subchain/@gotosubchain)."""
         self.rule.non_empty = True
         self.rule = self.parser._parse_subchain(
             node.keyword, self.rule, self.prev, self.level
         )
-        return "next"
+        return False
