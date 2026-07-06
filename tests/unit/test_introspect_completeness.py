@@ -1,188 +1,35 @@
 """
-Completeness gate: curated BUILTINS vs the parser's keyword dispatch.
+Completeness gate: curated BUILTINS vs the parser's dispatch tables.
 
-Statement keywords come straight from ``pyferm.parser.STMT_TABLE`` (the
-dispatch reads that table, so equality with it is exact).  The remaining
-if-chain dispatch in parser.py/functions.py is AST-scanned for string
-literals compared against the dispatch variables; the gate fails when a
-word appears that BUILTINS does not know (or vice versa).  Same shape
-and limitations as test_visitor_completeness.py: compares through
-variables or regexes are invisible and live in the documented
-manual/ignore lists.
+Every fixed keyword the parser or evaluator dispatches now lives in a
+table -- ``STMT_TABLE``, the staged leaf tables on :class:`Parser`,
+``Evaluator.BUILTIN_FUNCTIONS`` -- or in ``CORE_TARGETS``, so the gate
+is a plain set equality; the AST scan this file used to run (and its
+manual ignore/known lists) died with the if-chains it scanned.
+``@if``/``@else`` stay literal branches with unique constructors and
+are named explicitly; the punctuation control tokens (``;`` ``}`` ``$``
+``&``) are dispatch, not documented keywords, so the union simply
+leaves ``_LEAF_CONTROL``/``_LEAF_SIGILS`` out.
 """
 
 from __future__ import annotations
 
-import ast
-import re
-from pathlib import Path
-from typing import TYPE_CHECKING, Final
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-import pyferm.functions
-import pyferm.parser
 from pyferm.functions import Evaluator
 from pyferm.introspect import BUILTINS
-from pyferm.parser import DEPRECATED_KEYWORDS, STMT_TABLE
-
-#: Dispatch variables whose string comparisons the scan harvests.
-_SCAN_NAMES: Final = frozenset({"keyword", "token", "lead", "tok"})
-
-#: Collected-but-not-a-keyword tokens (assert 1), each with a reason.
-_INTROSPECT_IGNORED: Final = frozenset(
-    {
-        ";",  # statement terminator, not a keyword
-        "}",  # block close, not a keyword
-        "{",  # block open, not a keyword
-        "$",  # variable sigil
-        "&",  # function sigil
-        "!",  # negation token
-        "(",  # tuple/array open
-        ")",  # tuple/array close
-        "=",  # @def assignment
-        ",",  # list separator
-    }
-)
-
-#: BUILTINS keys the scan cannot find (assert 2), each with a reason.
-_INTROSPECT_MANUAL: Final = frozenset(
-    {
-        "ACCEPT",  # core target, lives in rules.py (not scanned)
-        "DROP",  # core target
-        "RETURN",  # core target
-        "QUEUE",  # core target
-    }
-)
+from pyferm.parser import _LEAF_MODULE_LOAD, STMT_TABLE, Parser
+from pyferm.rules import CORE_TARGETS
 
 
-def _module_constants(tree: ast.Module) -> dict[str, set[str]]:
-    """Module-level NAME = frozenset({...}) string members."""
-    consts: dict[str, set[str]] = {}
-    for node in tree.body:
-        target = None
-        value = (
-            node.value
-            if isinstance(node, (ast.Assign, ast.AnnAssign))
-            else None
-        )
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-        elif isinstance(node, ast.AnnAssign):
-            target = node.target
-        if not (isinstance(target, ast.Name) and value is not None):
-            continue
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "frozenset"
-            and len(value.args) == 1
-            and isinstance(value.args[0], (ast.Set, ast.Tuple, ast.List))
-        ):
-            members = {
-                elt.value
-                for elt in value.args[0].elts
-                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-            }
-            if members:
-                consts[target.id] = members
-    return consts
-
-
-#: mutmut mutant bodies (x_<name>__mutmut_<N>); the original survives
-#: as x_<name>__mutmut_orig, so pruning these keeps the harvest equal
-#: to the unmutated source when the suite runs from <repo>/mutants/.
-_MUTANT_DEF_RE: Final = re.compile(r"__mutmut_\d+$")
-
-
-def _walk_skipping_mutants(tree: ast.Module) -> Iterator[ast.AST]:
-    stack: list[ast.AST] = [tree]
-    while stack:
-        node = stack.pop()
-        if isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef)
-        ) and _MUTANT_DEF_RE.search(node.name):
-            continue
-        yield node
-        stack.extend(ast.iter_child_nodes(node))
-
-
-def _collect_keywords(source_path: Path) -> set[str]:
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    consts = _module_constants(tree)
-    words: set[str] = set()
-    for node in _walk_skipping_mutants(tree):
-        if not isinstance(node, ast.Compare):
-            continue
-        left = node.left
-        if not (isinstance(left, ast.Name) and left.id in _SCAN_NAMES):
-            continue
-        for comp in node.comparators:
-            if isinstance(comp, ast.Constant) and isinstance(comp.value, str):
-                words.add(comp.value)
-            elif isinstance(comp, (ast.Tuple, ast.Set, ast.List)):
-                words.update(
-                    elt.value
-                    for elt in comp.elts
-                    if isinstance(elt, ast.Constant)
-                    and isinstance(elt.value, str)
-                )
-            elif isinstance(comp, ast.Name) and comp.id in consts:
-                words.update(consts[comp.id])
-    return words
-
-
-def _scanned_words() -> set[str]:
-    words: set[str] = set()
-    for module in (pyferm.parser, pyferm.functions):
-        assert module.__file__ is not None, f"{module} has no source file"
-        words |= _collect_keywords(Path(module.__file__))
-    words |= set(DEPRECATED_KEYWORDS)
-    return words
-
-
-def test_every_scanned_keyword_is_describable() -> None:
-    unknown = (
-        _scanned_words()
-        - set(BUILTINS)
-        - set(DEPRECATED_KEYWORDS)
-        - _INTROSPECT_IGNORED
+def test_builtins_cover_exactly_the_dispatch_tables() -> None:
+    documented = (
+        frozenset(STMT_TABLE)
+        | frozenset(_LEAF_MODULE_LOAD)
+        | Parser._LEAF_ACTIONS.keys()
+        # @if -> IfNode in _dispatch_leading; @else -- a _LEAF_CONTROL
+        # key, but (unlike ";"/"}") a documented builtin, hence named
+        # explicitly.
+        | {"@if", "@else"}
+        | frozenset(CORE_TARGETS)
+        | Evaluator.BUILTIN_FUNCTIONS.keys()
     )
-    assert not unknown, (
-        "parser dispatches keywords unknown to introspect.BUILTINS "
-        f"(add entries or documented ignores): {sorted(unknown)}"
-    )
-
-
-def test_every_builtin_is_scan_found_or_manual() -> None:
-    known = (
-        _scanned_words()
-        | frozenset(STMT_TABLE)
-        | frozenset(Evaluator.BUILTIN_FUNCTIONS)
-    )
-    missing = set(BUILTINS) - known - _INTROSPECT_MANUAL
-    assert not missing, (
-        "BUILTINS entries the scan cannot find (typo or dead entry?): "
-        f"{sorted(missing)}"
-    )
-
-
-def test_every_stmt_table_keyword_is_describable() -> None:
-    # The statement dispatch reads STMT_TABLE directly, so BUILTINS must
-    # document every key -- a plain subset check, no scan involved.
-    undocumented = frozenset(STMT_TABLE) - set(BUILTINS)
-    assert not undocumented, (
-        "STMT_TABLE keys unknown to introspect.BUILTINS: "
-        f"{sorted(undocumented)}"
-    )
-
-
-def test_every_builtin_function_is_describable() -> None:
-    # @-function dispatch reads Evaluator.BUILTIN_FUNCTIONS directly, so
-    # BUILTINS must document every key -- a plain subset check.
-    undocumented = frozenset(Evaluator.BUILTIN_FUNCTIONS) - set(BUILTINS)
-    assert not undocumented, (
-        "BUILTIN_FUNCTIONS keys unknown to introspect.BUILTINS: "
-        f"{sorted(undocumented)}"
-    )
+    assert documented == BUILTINS.keys()

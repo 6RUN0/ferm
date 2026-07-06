@@ -21,7 +21,9 @@ from pyferm.config import Options
 from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.functions import Evaluator
+from pyferm.modules import TARGET_DEFS
 from pyferm.parser import MAX_BLOCK_DEPTH, Parser, collect_filenames
+from pyferm.rules import CORE_TARGETS
 from pyferm.scope import Frame, OptionKind, Scope
 from pyferm.tokenizer import Script, Tokenizer
 from pyferm.values import Multi, Negated, Params, PreNegated
@@ -743,6 +745,16 @@ def test_missing_semicolon_at_eof_errors() -> None:
 def test_unrecognized_keyword_errors() -> None:
     with pytest.raises(FermError, match="Unrecognized keyword"):
         _parse("chain INPUT florble ACCEPT;")
+
+
+def test_leaf_actions_disjoint_from_target_namespaces() -> None:
+    # The staged _LEAF_ACTIONS table sits above the core-target and
+    # module-target predicates in handle(), lifting NOP/proto/protocol/
+    # sport/dport over them; that reorder is equivalent only while the
+    # key sets stay disjoint.
+    assert not Parser._LEAF_ACTIONS.keys() & set(CORE_TARGETS)
+    module_names = {name for family in TARGET_DEFS.values() for name in family}
+    assert not Parser._LEAF_ACTIONS.keys() & module_names
 
 
 def test_two_actions_error() -> None:

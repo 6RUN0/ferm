@@ -42,7 +42,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
 
 from pyferm.domains import (
     DEFAULT_TABLE,
@@ -128,12 +128,16 @@ if TYPE_CHECKING:
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS: Final[dict[str, str]] = {"realgoto": "goto"}
 
-#: Control tokens that lead a statement but are not promoted to a node: the
-#: statement terminator, the block terminator, and a leftover @else. They go
-#: to the streaming shim (the leaf dispatch); every other non-rule statement
-#: keyword is now a typed node (routed by _dispatch_leading). None carries a
-#: ``!`` prefix, so the shim path needs no negation.
-_NON_RULE_LEADING: Final = frozenset({";", "}", "@else"})
+#: Rule keywords loading an iptables match module (``mod``/``module``) --
+#: stage 2 of the leaf dispatch, between the chain guard and the shortcut
+#: resolution.
+_LEAF_MODULE_LOAD: Final = frozenset({"mod", "module"})
+
+#: Signature shared by every leaf-dispatch handler (the staged tables on
+#: :class:`Parser`): the parser, the block's walker, the dispatched keyword
+#: and the negation flag; the bool tells whether the statement closes the
+#: level.
+_LeafHandler: TypeAlias = "Callable[[Parser, Walker, str, NegatedFlag], bool]"
 
 
 class StmtKind(enum.StrEnum):
@@ -1450,48 +1454,24 @@ class Parser:
         def handle(keyword: object, negated: NegatedFlag) -> bool:
             walker.shown_keyword = keyword
 
-            # effectuation operator
-            if keyword == ";":
-                if not walker.rule.non_empty:
-                    error('Empty rule before ";" not allowed')
-                if walker.rule.has_rule and not walker.rule.has_action:
-                    error('No action defined; did you mean "NOP"?')
-                if walker.rule.chain is None:
-                    error("No chain defined")
-                walker.rule.script = self._script_position()
-                self.mkrules(walker.rule)
-                walker.rule = new_level(prev)
-                return False
-
-            # @if is promoted to a typed IfNode (see Walker.visit_IfNode);
-            # only a leftover @else after a true @if still reaches the shim.
-            if keyword == "@else":
-                # a leftover "else" from a true "if": drop its body
-                self.evaluator.collect_tokens()
-                return False
-
-            # hook/@hook -> HookNode, { -> BlockNode, @if -> IfNode, and every
-            # header/@include/@preserve/@def/@set/@subchain is promoted to its
-            # typed node (routed by _dispatch_leading); only the closing } (to
-            # end the level) and the leaf rule keywords still reach this shim.
-            if keyword == "}":
-                if level <= base_level:
-                    error('Unmatched "}"')
-                if walker.rule.non_empty:
-                    error('Missing semicolon before "}"')
-                return True
+            # stage 0: control tokens (; @else }), before any rule side
+            # effect.  The isinstance guard is load-bearing on every staged
+            # lookup: the non-str Token kinds are unhashable, and a bare
+            # .get would raise instead of falling through as the equality
+            # chain this replaces did.
+            if isinstance(keyword, str) and (
+                control := self._LEAF_CONTROL.get(keyword)
+            ):
+                return control(self, walker, keyword, negated)
 
             # something not inherited by the parent closure
             walker.rule.non_empty = True
 
-            if keyword == "$":
-                error(
-                    "variable references are only allowed as keyword parameter"
-                )
-
-            if keyword == "&":
-                self._call_function(walker.rule)
-                return False
+            # stage 1: sigils ($ &)
+            if isinstance(keyword, str) and (
+                sigil := self._LEAF_SIGILS.get(keyword)
+            ):
+                return sigil(self, walker, keyword, negated)
 
             # domain/table/chain/policy/priority (headers) and
             # @subchain/subchain/@gotosubchain are promoted to typed nodes
@@ -1503,8 +1483,8 @@ class Parser:
             # everything else is part of a "real" rule
             walker.rule.has_rule = True
 
-            # extended parameters: module load
-            if isinstance(keyword, str) and keyword in ("mod", "module"):
+            # stage 2: extended parameters -- module load
+            if isinstance(keyword, str) and keyword in _LEAF_MODULE_LOAD:
                 self._load_match_modules(walker.rule)
                 return False
 
@@ -1516,7 +1496,9 @@ class Parser:
                 keyword = self._resolve_shortcut(walker.rule, keyword)
                 walker.shown_keyword = keyword
 
-            # keywords from rule.keywords
+            # keywords from rule.keywords -- a module option shadows a
+            # same-named fixed action key, so this lookup stays above the
+            # action table.
             if isinstance(keyword, str) and keyword in walker.rule.keywords:
                 realize_protocol_keyword(walker.rule, keyword)
                 self.parse_option(
@@ -1524,22 +1506,18 @@ class Parser:
                 )
                 return False
 
-            # actions
-            if keyword in ("jump", "goto"):
-                target = self.evaluator.getvar()
-                if isinstance(target, str):
-                    _check_chain_name(target)
-                self.set_target(walker.rule, keyword, target)
-                return False
+            # stage 3: fixed action/option keywords.  The table sits at the
+            # old jump/goto position, lifting NOP/proto/protocol/sport/dport
+            # above the target predicates below -- equivalent because the
+            # key sets are disjoint (pinned by
+            # test_leaf_actions_disjoint_from_target_namespaces).
+            if isinstance(keyword, str) and (
+                action := self._LEAF_ACTIONS.get(keyword)
+            ):
+                return action(self, walker, keyword, negated)
 
             if isinstance(keyword, str) and is_netfilter_core_target(keyword):
                 self.set_target(walker.rule, "jump", keyword)
-                return False
-
-            if keyword == "NOP":
-                if walker.rule.has_action:
-                    error(_ERR_ACTION_ALREADY_SET)
-                walker.rule.has_action = True
                 return False
 
             if isinstance(keyword, str):
@@ -1549,30 +1527,6 @@ class Parser:
                 if defs is not None:
                     self.set_module_target(walker.rule, keyword, defs)
                     return False
-
-            # protocol specific options
-            if keyword in ("proto", "protocol"):
-                self._parse_protocol(walker.rule, negated)
-                return False
-
-            # port switches
-            if isinstance(keyword, str) and keyword in ("sport", "dport"):
-                proto = realize_protocol(walker.rule)
-                valid = proto is not None and any(
-                    isinstance(p, str) and p in PORT_PROTOCOLS
-                    for p in to_array(proto)
-                )
-                if not valid:
-                    error(
-                        "To use sport or dport, you have to specify "
-                        '"proto tcp" or "proto udp" first'
-                    )
-                append_option(
-                    walker.rule,
-                    keyword,
-                    self.evaluator.getvalues(allow_negation=True),
-                )
-                return False
 
             return error(f"Unrecognized keyword: {keyword}")
 
@@ -1602,7 +1556,7 @@ class Parser:
 
             result = self._dispatch_leading(walker, lead)
             if result is None:
-                if isinstance(lead, str) and lead in _NON_RULE_LEADING:
+                if isinstance(lead, str) and lead in self._NON_RULE_LEADING:
                     result = handle(
                         self.tokenizer.next_token(),
                         NegatedFlag(active=False),
@@ -1623,6 +1577,146 @@ class Parser:
             error("Missing semicolon before end of file")
 
     # -- enter() sub-handlers (kept off the monolith for readability) ----
+
+    def _leaf_finish_rule(
+        self, walker: Walker, _keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """Effectuate the pending rule at ``;`` (the effectuation operator)."""
+        if not walker.rule.non_empty:
+            error('Empty rule before ";" not allowed')
+        if walker.rule.has_rule and not walker.rule.has_action:
+            error('No action defined; did you mean "NOP"?')
+        if walker.rule.chain is None:
+            error("No chain defined")
+        walker.rule.script = self._script_position()
+        self.mkrules(walker.rule)
+        walker.rule = new_level(walker.prev)
+        return False
+
+    def _leaf_drop_else(
+        self, _walker: Walker, _keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """
+        Drop the body of a leftover ``@else``.
+
+        @if is promoted to a typed IfNode (see Walker.visit_IfNode); only a
+        leftover @else after a true @if still reaches the shim.
+        """
+        self.evaluator.collect_tokens()
+        return False
+
+    def _leaf_close_level(
+        self, walker: Walker, _keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """
+        Close the level at ``}``, the only statement that does.
+
+        hook/@hook -> HookNode, { -> BlockNode, @if -> IfNode, and every
+        header/@include/@preserve/@def/@set/@subchain is promoted to its
+        typed node (routed by _dispatch_leading); only this closing ``}``
+        and the leaf rule keywords still reach the shim.
+        """
+        if walker.level <= walker.base_level:
+            error('Unmatched "}"')
+        if walker.rule.non_empty:
+            error('Missing semicolon before "}"')
+        return True
+
+    def _leaf_reject_variable(
+        self, _walker: Walker, _keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """Reject a ``$`` leading a rule (values only)."""
+        error("variable references are only allowed as keyword parameter")
+
+    def _leaf_splice_function(
+        self, walker: Walker, _keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """Splice a ``&function()`` call into the pending rule."""
+        self._call_function(walker.rule)
+        return False
+
+    def _leaf_set_target(
+        self, walker: Walker, keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """Set the rule's ``jump``/``goto`` target chain."""
+        target = self.evaluator.getvar()
+        if isinstance(target, str):
+            _check_chain_name(target)
+        self.set_target(walker.rule, keyword, target)
+        return False
+
+    def _leaf_nop(
+        self, walker: Walker, _keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """Mark the explicit no-target action ``NOP``."""
+        if walker.rule.has_action:
+            error(_ERR_ACTION_ALREADY_SET)
+        walker.rule.has_action = True
+        return False
+
+    def _leaf_protocol(
+        self, walker: Walker, _keyword: str, negated: NegatedFlag
+    ) -> bool:
+        """Parse ``proto``/``protocol`` (protocol specific options)."""
+        self._parse_protocol(walker.rule, negated)
+        return False
+
+    def _leaf_ports(
+        self, walker: Walker, keyword: str, _negated: NegatedFlag
+    ) -> bool:
+        """Parse the ``sport``/``dport`` port switches."""
+        proto = realize_protocol(walker.rule)
+        valid = proto is not None and any(
+            isinstance(p, str) and p in PORT_PROTOCOLS for p in to_array(proto)
+        )
+        if not valid:
+            error(
+                "To use sport or dport, you have to specify "
+                '"proto tcp" or "proto udp" first'
+            )
+        append_option(
+            walker.rule,
+            keyword,
+            self.evaluator.getvalues(allow_negation=True),
+        )
+        return False
+
+    #: Stage-0 control tokens of the leaf dispatch: the statement
+    #: terminator, a leftover ``@else`` and the block terminator, handled
+    #: before any rule side effect.
+    _LEAF_CONTROL: ClassVar[dict[str, _LeafHandler]] = {
+        ";": _leaf_finish_rule,
+        "@else": _leaf_drop_else,
+        "}": _leaf_close_level,
+    }
+
+    #: Control tokens that lead a statement but are not promoted to a node:
+    #: exactly the stage-0 keys.  One knowledge, not a coincidence: the read
+    #: loop routes a leading token to the leaf handle() iff it is one of
+    #: these, and handle() marks the rule non-empty for everything else.
+    #: None carries a ``!`` prefix, so the shim path needs no negation.
+    _NON_RULE_LEADING: ClassVar[frozenset[str]] = frozenset(_LEAF_CONTROL)
+
+    #: Stage-1 sigil tokens, dispatched after the rule is marked non-empty
+    #: but before the chain guard.
+    _LEAF_SIGILS: ClassVar[dict[str, _LeafHandler]] = {
+        "$": _leaf_reject_variable,
+        "&": _leaf_splice_function,
+    }
+
+    #: Stage-3 fixed action/option keywords, dispatched after the dynamic
+    #: rule.keywords lookup and above the core/module target predicates;
+    #: safe only while disjoint from those target namespaces (pinned by
+    #: test_leaf_actions_disjoint_from_target_namespaces).
+    _LEAF_ACTIONS: ClassVar[dict[str, _LeafHandler]] = {
+        "jump": _leaf_set_target,
+        "goto": _leaf_set_target,
+        "NOP": _leaf_nop,
+        "proto": _leaf_protocol,
+        "protocol": _leaf_protocol,
+        "sport": _leaf_ports,
+        "dport": _leaf_ports,
+    }
 
     def _include_file(self, filename: str, level: int, prev: Rule) -> None:
         """
