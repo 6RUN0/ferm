@@ -26,6 +26,7 @@ Examples::
     uv run nox -s crashfuzz          # atheris crash fuzzing of the parsers
     uv run nox -s lockout            # containerized anti-lockout e2e (docker)
     uv run nox -s nft_e2e            # containerized nft backend e2e (docker)
+    uv run nox -s nft_readback_e2e   # kernel readback-canon pin (docker)
     uv run nox -s nft_conformance   # nft canonicalizer conformance (network)
 """
 
@@ -353,6 +354,29 @@ def nft_e2e(session: nox.Session) -> None:
         "tests/e2e/test_nft_e2e.py",
         *session.posargs,
         env={"FERM_NFT_E2E": "1"},
+    )
+
+
+@nox.session
+def nft_readback_e2e(session: nox.Session) -> None:
+    """
+    Containerized pin of the nft readback canon (needs docker).
+
+    Re-derives, against a real kernel inside a throwaway container
+    network namespace, the readback spelling the nft backend's
+    QoS/addrtype vocabulary emits: the fib type names and their RTN
+    list order, the 64-codepoint dscp name map, and the ``meta
+    priority`` normalisation.  Fails when a kernel or nft bump changes
+    that spelling -- the signal to re-capture the emission maps.
+    Opt-in (needs the docker daemon; the test skips itself when docker
+    is absent) and deliberately absent from ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_nft_readback_e2e.py",
+        *session.posargs,
+        env={"FERM_NFT_READBACK_E2E": "1"},
     )
 
 

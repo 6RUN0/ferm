@@ -1,0 +1,282 @@
+"""
+Kernel-readback canon pin for the nft QoS/addrtype vocabulary -- runs
+INSIDE the container.
+
+The nft backend must emit the exact spelling ``nft list ruleset`` prints
+back, or ``--plan``/delta-apply show a phantom diff forever.  The tables
+this driver pins were captured live (nft v1.1.6, 2026-07-09) while
+designing the match-set/addrtype/QoS slice; the containerized nft
+(v1.1.3, alpine) was verified byte-identical before pinning.  If a base
+image bump makes this driver fail, the emission maps in the backend must
+be re-captured against the new nft, not the test relaxed.
+
+The checks:
+
+1. ``fib ... type`` accepts exactly the nine RTN names the backend will
+   translate and rejects ``throw``/``nat``/``xresolve``;
+2. a type-list readback is re-sorted into kernel RTN order -- including
+   the negated-list form, which the kernel accepts;
+3. ``fib daddr . iif type local`` and the negations spell back verbatim
+   in both ip and ip6; the ``. iif`` qualifier composes with plain and
+   negated lists; ``. oif`` works in an output hook and spells back
+   verbatim, but in an input hook the kernel refuses it at COMMIT time
+   while ``nft -c`` still passes -- a pre-check cannot catch it;
+4. the dscp value->name readback map over all 64 codepoints, identical
+   for the match and ``set`` forms and for ip and ip6 (includes the
+   ``lephb``/``va`` names absent from the iptables class table);
+5. ``meta priority`` (CLASSIFY) readback strips leading zeros and
+   renders the tc-special handles ``ffff:ffff`` -> ``root`` and ``0:0``
+   -> ``none``; a 5-hex-digit half is rejected.
+
+Prints ``NFT-READBACK-PASS`` only after every check has passed.  Stdlib
+only: it runs under the container's system ``python3`` and imports
+nothing from the test deps.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+
+#: RTN route types nft's fib expression accepts, in kernel RTN order
+#: (RTN_UNSPEC=0 ... RTN_PROHIBIT=8); list readback re-sorts into this
+#: order, so the backend must emit literals pre-sorted the same way.
+FIB_ACCEPTED = [
+    "unspec",
+    "unicast",
+    "local",
+    "broadcast",
+    "anycast",
+    "multicast",
+    "blackhole",
+    "unreachable",
+    "prohibit",
+]
+
+#: iptables addrtype values with no fib equivalent -- the backend
+#: refuses them, and nft itself must keep rejecting them.
+FIB_REJECTED = ["throw", "nat", "xresolve"]
+
+#: dscp codepoints nft prints by name; every other value reads back as
+#: 0x%02x hex.  Note lephb (0x01) and va (0x2c): nft knows them, the
+#: iptables --dscp-class table does not.
+DSCP_NAMES = {
+    0x00: "cs0",
+    0x01: "lephb",
+    0x08: "cs1",
+    0x0A: "af11",
+    0x0C: "af12",
+    0x0E: "af13",
+    0x10: "cs2",
+    0x12: "af21",
+    0x14: "af22",
+    0x16: "af23",
+    0x18: "cs3",
+    0x1A: "af31",
+    0x1C: "af32",
+    0x1E: "af33",
+    0x20: "cs4",
+    0x22: "af41",
+    0x24: "af42",
+    0x26: "af43",
+    0x28: "cs5",
+    0x2C: "va",
+    0x2E: "ef",
+    0x30: "cs6",
+    0x38: "cs7",
+}
+
+
+def _sh(
+    *cmd: str, input_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _fail(label: str, detail: str) -> None:
+    print(f"FAIL: {label}\n{detail}")
+    sys.exit(1)
+
+
+def _load_and_list(script: str) -> str:
+    """Replace the ruleset with *script* and return its kernel readback."""
+    _sh("nft", "flush", "ruleset")
+    load = _sh("nft", "-f", "-", input_text=script)
+    if load.returncode != 0:
+        _fail("nft -f rejected the fixture script", load.stderr)
+    return _sh("nft", "list", "ruleset").stdout
+
+
+def _rule_lines(readback: str) -> list[str]:
+    return [line.strip() for line in readback.splitlines()]
+
+
+def check_fib_type_acceptance() -> None:
+    for rtn_type in FIB_ACCEPTED + FIB_REJECTED:
+        script = (
+            "table ip t {\n chain c {\n"
+            " type filter hook input priority 0;\n"
+            f" fib daddr type {rtn_type} drop\n }}\n}}\n"
+        )
+        result = _sh("nft", "-c", "-f", "-", input_text=script)
+        accepted = result.returncode == 0
+        if rtn_type in FIB_ACCEPTED and not accepted:
+            _fail(f"fib type {rtn_type} should be accepted", result.stderr)
+        if rtn_type in FIB_REJECTED and accepted:
+            _fail(f"fib type {rtn_type} should be rejected", "accepted")
+
+
+def check_fib_readback() -> None:
+    # nft accepts a newline after a set-literal comma, so the scrambled
+    # input list stays under the line limit without changing semantics.
+    script = """\
+table ip t {
+  chain c {
+    type filter hook input priority 0;
+    fib daddr type { broadcast, multicast,
+      unspec, prohibit, blackhole, local } drop
+    fib saddr type != { broadcast, local, unspec } drop
+    fib daddr . iif type local drop
+    fib daddr . iif type { broadcast, local } drop
+    fib daddr . iif type != { broadcast, local, unspec } drop
+    fib saddr type != local drop
+  }
+  chain co {
+    type filter hook output priority 0;
+    fib saddr . oif type local drop
+  }
+}
+table ip6 t6 {
+  chain c {
+    type filter hook input priority 0;
+    fib daddr type local drop
+    fib daddr . iif type local drop
+    fib saddr type != { broadcast, local } drop
+  }
+}
+"""
+    expected = [
+        # Input order above is scrambled on purpose: the kernel re-sorts
+        # into RTN order, negated lists included.
+        "fib daddr type { unspec, local, broadcast, multicast,"
+        " blackhole, prohibit } drop",
+        "fib saddr type != { unspec, local, broadcast } drop",
+        "fib daddr . iif type local drop",
+        "fib daddr . iif type { local, broadcast } drop",
+        "fib daddr . iif type != { unspec, local, broadcast } drop",
+        "fib saddr . oif type local drop",
+        "fib saddr type != local drop",
+        "fib saddr type != { local, broadcast } drop",
+    ]
+    lines = _rule_lines(_load_and_list(script))
+    for want in expected:
+        if want not in lines:
+            _fail(f"fib readback line missing: {want}", "\n".join(lines))
+
+
+def check_fib_oif_hook_constraint() -> None:
+    # fib oif needs a hook with an output interface (parity with
+    # iptables, where --limit-iface-out is likewise restricted to
+    # output-side chains): committing it in an input hook must fail.
+    # Whether ``nft -c`` catches it first is VERSION-DEPENDENT -- 1.1.3
+    # rejects at -c, 1.1.6 passes -c and fails only at commit -- so only
+    # the commit failure is pinned and a pre-check pipeline must not be
+    # trusted to catch the mistake.
+    script = (
+        "table ip t {\n chain c {\n"
+        " type filter hook input priority 0;\n"
+        " fib saddr . oif type local drop\n }\n}\n"
+    )
+    _sh("nft", "flush", "ruleset")
+    load = _sh("nft", "-f", "-", input_text=script)
+    if load.returncode == 0:
+        _fail("fib oif in input hook should fail at commit", "accepted")
+
+
+def check_dscp_map() -> None:
+    for family, selector in (("ip", "ip"), ("ip6", "ip6")):
+        for form in ("", "set "):
+            rules = "\n".join(
+                f"    {selector} dscp {form}0x{value:02x} accept"
+                for value in range(64)
+            )
+            script = f"table {family} t {{\n  chain c {{\n{rules}\n  }}\n}}\n"
+            readback = _load_and_list(script)
+            got = re.findall(rf"{selector} dscp {form}(\S+) accept", readback)
+            want = [
+                DSCP_NAMES.get(value, f"0x{value:02x}") for value in range(64)
+            ]
+            if got != want:
+                # strict=False on purpose: a truncated readback should
+                # still report the per-value diff, not a ValueError.
+                diff = [
+                    f"0x{value:02x}: want {w} got {g}"
+                    for value, (w, g) in enumerate(
+                        zip(want, got, strict=False)
+                    )
+                    if w != g
+                ]
+                _fail(
+                    f"dscp {form.strip() or 'match'} map diverged ({family})",
+                    "\n".join(diff) or readback,
+                )
+
+
+def check_classify_readback() -> None:
+    script = """\
+table ip t {
+  chain c {
+    meta priority set 0001:0020 accept
+    meta priority set abcd:ffff accept
+    meta priority set ffff:ffff accept
+    meta priority set 0:0 accept
+    meta priority set 00ff:0abc accept
+  }
+}
+"""
+    expected = [
+        "meta priority set 1:20 accept",
+        "meta priority set abcd:ffff accept",
+        "meta priority set root accept",
+        "meta priority set none accept",
+        "meta priority set ff:abc accept",
+    ]
+    lines = _rule_lines(_load_and_list(script))
+    for want in expected:
+        if want not in lines:
+            _fail(f"classify readback line missing: {want}", "\n".join(lines))
+
+    bad = _sh(
+        "nft",
+        "-c",
+        "-f",
+        "-",
+        input_text=(
+            "table ip t {\n chain c {\n"
+            " meta priority set abcde:1 accept\n }\n}\n"
+        ),
+    )
+    if bad.returncode == 0:
+        _fail("5-hex-digit tc handle should be rejected", "accepted")
+
+
+def main() -> None:
+    version = _sh("nft", "--version").stdout.strip()
+    print(f"driver nft: {version}")
+    check_fib_type_acceptance()
+    check_fib_readback()
+    check_fib_oif_hook_constraint()
+    check_dscp_map()
+    check_classify_readback()
+    print("NFT-READBACK-PASS")
+
+
+if __name__ == "__main__":
+    main()
