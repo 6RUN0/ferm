@@ -88,6 +88,15 @@ def test_parse_nft_list_rejects_bad_set_name() -> None:
         parse_nft_list(text, family="ip")
 
 
+def test_parse_nft_list_accepts_dashed_chain_name() -> None:
+    # A chain may carry an interior dash (the backend emits fail2ban-style
+    # names since 2026-07-09); a set never can -- its name comes from a
+    # ferm variable -- so the rejection above stays.
+    text = "table ip ferm {\n\tchain fail2ban-ssh {\n\t}\n}\n"
+    tables = parse_nft_list(text, family="ip")
+    assert "fail2ban-ssh" in tables["ferm"].chains
+
+
 def test_diff_set_type_change_is_remove_plus_add() -> None:
     current = _table_with_set(
         "s", ParsedSet("s", ["22"], type_="inet_service")

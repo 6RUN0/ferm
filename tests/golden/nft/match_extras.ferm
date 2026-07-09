@@ -1,0 +1,22 @@
+# The 2026-07-09 vocabulary batch: ctstate, multiport (service names
+# resolve to numbers, colon ranges to dashes), limit unit expansion and
+# burst pairing, packet/ct mark (hex respell), MARK target, LOG level
+# (warn is nft's dropped default), NFLOG, dash-named chain.
+domain ip table filter {
+    chain INPUT {
+        mod conntrack ctstate (ESTABLISHED RELATED) ACCEPT;
+        proto tcp mod multiport destination-ports (http https 8000:8080) ACCEPT;
+        proto udp mod multiport source-ports domain ACCEPT;
+        proto tcp dport ssh ACCEPT;
+        mod limit limit 10/min limit-burst 30 ACCEPT;
+        mod limit limit-burst 7 ACCEPT;
+        mod mark mark 2 ACCEPT;
+        mod connmark mark !0x10 DROP;
+        LOG log-prefix "in: " log-level info;
+        LOG log-prefix "dropped: " log-level warning;
+        NFLOG nflog-group 2 nflog-prefix "nf: " nflog-threshold 20;
+        jump fail2ban-ssh;
+    }
+    chain fail2ban-ssh RETURN;
+    chain marker MARK set-mark 0x2;
+}

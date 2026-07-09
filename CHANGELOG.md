@@ -11,6 +11,70 @@ For the history of the original Perl implementation, see
 
 ## [Unreleased]
 
+### Added
+
+- **nft backend: `icmp-type` / `icmpv6-type` match.** Named types
+  translate per family (including the iptables aliases `ping`/`pong`/
+  `ttl-exceeded` and the ip6 `neighbour-solicitation` → nft
+  `nd-neighbor-solicit` respell), numeric types respell to the
+  kernel-readback name so `--plan` converges, and the numeric
+  `type/code` pair emits `icmp type X icmp code Y` (which even
+  `iptables-translate` cannot express). A rule with an icmp-type match
+  drops the redundant `meta l4proto`, matching the kernel readback.
+- **nft backend vocabulary batch** (driven by corpus refusal
+  frequency): `mod conntrack ctstate`, `mod multiport
+  source-ports`/`destination-ports` (anonymous sets, colon ranges),
+  `mod limit limit-burst` (paired into one `limit rate ... burst N
+  packets` statement; a burst alongside several `limit` matches in one
+  rule refuses — the pairing is ambiguous), `LOG log-level`, the `NFLOG` target (`log group
+  N` with prefix/queue-threshold), `mod mark`/`mod connmark` matches
+  and the `MARK set-mark` target (marks respell to the readback's
+  8-digit hex), and dash-named chains (`fail2ban-ssh`). Wild-corpus
+  coverage under `--nft` rises from 12/31 to 23/31 configs.
+- **nft backend vocabulary, second batch.** `tcp-flags` (emitted in the
+  kernel-readback bitwise form `tcp flags & (fin | syn) == syn`,
+  including `ALL` and the `NONE` flag-absence form) and `!syn`;
+  `TCPMSS` (`set-mss`, `clamp-mss-to-pmtu` → `tcp option maxseg size
+  set rt mtu`); `mod owner` `uid-owner`/`gid-owner` (names resolve to
+  the ids the readback prints) → `meta skuid`/`skgid`; `mod length` →
+  `meta length`; `mod ttl` (`ttl-gt`/`ttl-lt` read back as `>`/`<`) →
+  `ip ttl`; `mod mac mac-source` → `ether saddr` (lowercased); a
+  full-mask `mark/0xffffffff` now matches as the plain equality it is;
+  `TEE gateway` → `dup to`; `NOTRACK` → `notrack`; `TRACE` →
+  `meta nftrace set 1`; `CONNMARK` `set-mark`/`save-mark`/
+  `restore-mark` → `ct mark set ...`/`meta mark set ct mark`; arp
+  `opcode` (numeric respell to `arp operation` names) and arp
+  `source-mac`/`destination-mac` → `arp saddr/daddr ether`. A
+  value-shape refusal now names the offending option (`option
+  'match-set': multi-value ...`).
+
+### Fixed
+
+- **nft backend: registered targets no longer fall through to chain
+  jumps.** An extension target with no nft translation (`TARPIT`,
+  `MIRROR`, `AUDIT`, ...) used to emit `jump TARPIT` — a jump to a
+  chain that never exists, rejected only by the apply-time `nft -c`
+  while `--test`/`--noexec --lines` reported success. Any registered
+  target keyword without a translation is now a clean translate-time
+  refusal, like the eb-target guard.
+- **nft backend: `--plan` convergence for limit rates and service
+  ports.** Abbreviated xt_limit units (`10/min`, `10/m`, bare `5`)
+  expand to nft's full spelling instead of emitting a script `nft -f`
+  rejects, and service-named ports (`ssh`, `http`) resolve to the
+  numbers the kernel readback prints (a named port previously left
+  `--plan` diffing an applied ruleset forever).
+
+### Testing
+
+- New nft-backend gates formalizing the review probes: a dichotomy
+  sweep over the full synthetic module matrix (translate cleanly or
+  refuse cleanly, never a jump to a registered target), a unit sweep
+  asserting no registered target ever emits as a chain jump, and an
+  opt-in live suite (`unshare -rn` + `nft`) validating the whole
+  translated vocabulary against `nft -c` and pinning `--plan`
+  convergence after a real apply. Golden pairs `icmp_types`,
+  `flags_targets` and `match_extras` pin the emitted text.
+
 ## [0.1.0a7] - 2026-07-06
 
 ### Added

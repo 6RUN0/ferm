@@ -1,0 +1,20 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT icmp type echo-request accept
+add rule ip ferm INPUT icmp type echo-request accept
+add rule ip ferm INPUT icmp type time-exceeded accept
+add rule ip ferm INPUT icmp type echo-request accept
+add rule ip ferm INPUT icmp type 42 accept
+add rule ip ferm INPUT icmp type destination-unreachable icmp code 1 accept
+add rule ip ferm INPUT icmp type != echo-request drop
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add rule ip6 ferm INPUT icmpv6 type nd-neighbor-solicit accept
+add rule ip6 ferm INPUT icmpv6 type nd-router-advert accept
+add rule ip6 ferm INPUT icmpv6 type nd-redirect accept
+add rule ip6 ferm INPUT icmpv6 type echo-request accept
+add rule ip6 ferm INPUT icmpv6 type destination-unreachable icmpv6 code 4 accept

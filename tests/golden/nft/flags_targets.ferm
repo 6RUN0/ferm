@@ -1,0 +1,43 @@
+# The batch-2 vocabulary: tcp-flags (bitwise readback form, ALL/NONE),
+# syn, owner (names resolve to ids), length, ttl (gt reads back as >),
+# mac-source, full-mask mark, TCPMSS, CONNMARK, TEE, NOTRACK, TRACE,
+# arp opcode + MAC selectors.
+domain ip {
+    table filter {
+        chain INPUT {
+            proto tcp tcp-flags (SYN RST) SYN ACCEPT;
+            proto tcp tcp-flags ALL (SYN ACK) DROP;
+            proto tcp tcp-flags (FIN SYN) NONE ACCEPT;
+            proto tcp !syn DROP;
+            mod length length 100:200 DROP;
+            mod ttl ttl-eq 64 ACCEPT;
+            mod ttl ttl-gt 128 DROP;
+            mod mac mac-source AA:BB:CC:DD:EE:FF ACCEPT;
+            mod mark mark 2/0xffffffff ACCEPT;
+        }
+        chain OUTPUT {
+            mod owner uid-owner root ACCEPT;
+            mod owner uid-owner !1000 DROP;
+        }
+    }
+    table mangle {
+        chain FORWARD {
+            proto tcp tcp-flags (SYN RST) SYN TCPMSS clamp-mss-to-pmtu;
+            proto tcp tcp-flags (SYN RST) SYN TCPMSS set-mss 1400;
+        }
+        chain PREROUTING {
+            CONNMARK save-mark;
+            CONNMARK restore-mark;
+            CONNMARK set-mark 5;
+            TEE gateway 10.0.0.2;
+        }
+    }
+    table raw chain PREROUTING {
+        NOTRACK;
+        TRACE;
+    }
+}
+domain arp table filter chain INPUT {
+    opcode 1 ACCEPT;
+    opcode 2 source-mac aa:bb:cc:dd:ee:ff DROP;
+}

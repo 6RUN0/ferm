@@ -842,11 +842,16 @@ _NFT_LIST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"^type\s+\S+\s+hook\s+\S+\s+priority\b"
 )
 # nft bare-word identifier grammar (mirrors the backend's _NFT_CHAIN_RE /
-# _NFT_SET_NAME_RE).  Names from a LIVE snapshot are synthesized back into
-# 'delete chain'/'delete set' lines, so reject anything nft could not have
-# legitimately created -- fail-closed defense-in-depth (no real injection
-# vector: the grammar already forbids whitespace/metacharacters).
-_NFT_LIST_IDENT_RE: Final[re.Pattern[str]] = re.compile(
+# _NFT_SET_NAME_RE, which differ: a chain may carry an interior dash --
+# fail2ban-style names -- while a ferm set name never can, since it comes
+# from a ferm variable).  Names from a LIVE snapshot are synthesized back
+# into 'delete chain'/'delete set' lines, so reject anything nft could not
+# have legitimately created -- fail-closed defense-in-depth (no real
+# injection vector: the grammar already forbids whitespace/metacharacters).
+_NFT_LIST_CHAIN_IDENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[A-Za-z][A-Za-z0-9_-]*\Z"
+)
+_NFT_LIST_SET_IDENT_RE: Final[re.Pattern[str]] = re.compile(
     r"\A[A-Za-z][A-Za-z0-9_]*\Z"
 )
 
@@ -933,7 +938,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
             m_set = _NFT_LIST_SET_RE.match(line)
             if m_set:
                 set_name = m_set.group(1)
-                if not _NFT_LIST_IDENT_RE.match(set_name):
+                if not _NFT_LIST_SET_IDENT_RE.match(set_name):
                     raise _parse_error(lineno, raw)
                 current_set = ParsedSet(set_name)
                 tables[NFT_TABLE_NAME].sets[current_set.name] = current_set
@@ -943,7 +948,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
             if not m:
                 raise _parse_error(lineno, raw)
             chain_name = m.group(1)
-            if not _NFT_LIST_IDENT_RE.match(chain_name):
+            if not _NFT_LIST_CHAIN_IDENT_RE.match(chain_name):
                 raise _parse_error(lineno, raw)
             # policy will be set when the first body line arrives
             current_chain = ParsedChain(policy="-")

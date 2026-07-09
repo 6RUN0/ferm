@@ -1,0 +1,20 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add chain ip ferm fail2ban-ssh
+add chain ip ferm marker
+add rule ip ferm INPUT ct state established,related accept
+add rule ip ferm INPUT tcp dport { 80, 443, 8000-8080 } accept
+add rule ip ferm INPUT udp sport 53 accept
+add rule ip ferm INPUT tcp dport 22 accept
+add rule ip ferm INPUT limit rate 10/minute burst 30 packets accept
+add rule ip ferm INPUT limit rate 3/hour burst 7 packets accept
+add rule ip ferm INPUT meta mark 0x00000002 accept
+add rule ip ferm INPUT ct mark != 0x00000010 drop
+add rule ip ferm INPUT log prefix "in: " level info
+add rule ip ferm INPUT log prefix "dropped: "
+add rule ip ferm INPUT log prefix "nf: " group 2 queue-threshold 20
+add rule ip ferm INPUT jump fail2ban-ssh
+add rule ip ferm fail2ban-ssh return
+add rule ip ferm marker meta mark set 0x00000002

@@ -1,6 +1,7 @@
 # tests/unit/test_backend_nft.py
 from __future__ import annotations
 
+import socket
 from typing import TYPE_CHECKING
 
 import pytest
@@ -213,6 +214,21 @@ def test_nft_chain_name_disambiguates_non_filter() -> None:
     assert (chain.hook, chain.priority) == ("input", -150)
 
 
+def test_nft_chain_name_accepts_dashes() -> None:
+    # nft's bare-word grammar allows an interior dash (verified against
+    # nft v1.1.6: `add chain ip t fail2ban-ssh` and `jump fail2ban-ssh`
+    # both apply); fail2ban-style names are common in the wild corpus.
+    from pyferm.backend.nft import nft_chain_name
+
+    assert nft_chain_name("filter", "fail2ban-ssh") == "fail2ban-ssh"
+    assert nft_chain_name("nat", "pre-routing-x") == "nat_pre-routing-x"
+    # whitespace/metacharacters (and a leading dash, which nft would
+    # parse as an option) still refuse
+    for bad in ("has space", "semi;colon", "-leading", "1leading"):
+        with pytest.raises(FermError, match="not a valid nft identifier"):
+            nft_chain_name("filter", bad)
+
+
 # ---------------------------------------------------------------------------
 # unwrap_value + first_scalar
 # ---------------------------------------------------------------------------
@@ -325,6 +341,45 @@ def test_translate_match_port_without_protocol_errors() -> None:
         translate_match(Family.IP, _opt("dport", "22"), None)
 
 
+def _host_resolves_services() -> bool:
+    """Whether the host /etc/services (netbase) can resolve names."""
+    try:
+        socket.getservbyname("ssh")
+    except OSError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not _host_resolves_services(),
+    reason="host /etc/services cannot resolve service names",
+)
+def test_translate_match_service_names_resolve_to_numbers() -> None:
+    # nft resolves a service name at parse time and the kernel readback
+    # prints the number, so a named port emitted verbatim leaves --plan
+    # diffing forever; resolve through the same /etc/services database.
+    assert (
+        translate_match(Family.IP, _opt("dport", "ssh"), "tcp")
+        == "tcp dport 22"
+    )
+    assert (
+        translate_match(Family.IP, _opt("sport", "domain"), "udp")
+        == "udp sport 53"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("destination-ports", "http,https", module="multiport"),
+            "tcp",
+        )
+        == "tcp dport { 80, 443 }"
+    )
+    with pytest.raises(
+        FermError, match=r"^unknown service name 'frobnicate-svc'"
+    ):
+        translate_match(Family.IP, _opt("dport", "frobnicate-svc"), "tcp")
+
+
 def test_translate_match_negation() -> None:
     assert (
         translate_match(Family.IP, _opt("source", Negated("10.0.0.1")), None)
@@ -353,9 +408,684 @@ def test_translate_match_state_and_limit() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("scalar", "expected"),
+    [
+        # xt_limit accepts any unit prefix, case-insensitively, and nft
+        # wants the full spelling (upstream reference: iptables-translate)
+        ("10/min", "limit rate 10/minute"),
+        ("10/m", "limit rate 10/minute"),
+        ("3/sec", "limit rate 3/second"),
+        ("1/h", "limit rate 1/hour"),
+        ("2/DAY", "limit rate 2/day"),
+        # a bare number is per-second in xt_limit
+        ("5", "limit rate 5/second"),
+    ],
+)
+def test_translate_match_limit_rate_normalization(
+    scalar: str, expected: str
+) -> None:
+    assert (
+        translate_match(Family.IP, _opt("limit", scalar, module="limit"), None)
+        == expected
+    )
+
+
+def test_translate_match_limit_bad_unit_is_error() -> None:
+    with pytest.raises(FermError, match=r"^invalid rate '5/fortnight'"):
+        translate_match(
+            Family.IP, _opt("limit", "5/fortnight", module="limit"), None
+        )
+
+
 def test_translate_match_uncovered_is_error() -> None:
     with pytest.raises(FermError, match="not yet supported"):
         translate_match(Family.IP, _opt("totally-unknown", "x"), None)
+
+
+@pytest.mark.parametrize(
+    ("domain", "scalar", "expected"),
+    [
+        # ip: nft reuses the iptables top-level type names verbatim
+        (Family.IP, "echo-request", "icmp type echo-request"),
+        (Family.IP, "echo-reply", "icmp type echo-reply"),
+        (
+            Family.IP,
+            "destination-unreachable",
+            "icmp type destination-unreachable",
+        ),
+        (Family.IP, "time-exceeded", "icmp type time-exceeded"),
+        (Family.IP, "router-advertisement", "icmp type router-advertisement"),
+        # ip aliases (iptables spellings)
+        (Family.IP, "ping", "icmp type echo-request"),
+        (Family.IP, "pong", "icmp type echo-reply"),
+        (Family.IP, "ttl-exceeded", "icmp type time-exceeded"),
+        # ip6: the shared names keep their spelling...
+        (Family.IP6, "echo-request", "icmpv6 type echo-request"),
+        (Family.IP6, "packet-too-big", "icmpv6 type packet-too-big"),
+        # ...while the ND family is respelled to nft's nd-* vocabulary
+        (Family.IP6, "router-solicitation", "icmpv6 type nd-router-solicit"),
+        (Family.IP6, "router-advertisement", "icmpv6 type nd-router-advert"),
+        (
+            Family.IP6,
+            "neighbour-solicitation",
+            "icmpv6 type nd-neighbor-solicit",
+        ),
+        (
+            Family.IP6,
+            "neighbor-advertisement",
+            "icmpv6 type nd-neighbor-advert",
+        ),
+        (Family.IP6, "redirect", "icmpv6 type nd-redirect"),
+        # numeric operands respell to the kernel-readback name (else the
+        # applied rule reads back differently and --plan never converges);
+        # a number nft knows no name for stays numeric
+        (Family.IP, "8", "icmp type echo-request"),
+        (Family.IP, "15", "icmp type info-request"),
+        (Family.IP, "42", "icmp type 42"),
+        (Family.IP, "3/1", "icmp type destination-unreachable icmp code 1"),
+        (Family.IP6, "128", "icmpv6 type echo-request"),
+        (Family.IP6, "143", "icmpv6 type mld2-listener-report"),
+        (Family.IP6, "100", "icmpv6 type 100"),
+        (
+            Family.IP6,
+            "1/4",
+            "icmpv6 type destination-unreachable icmpv6 code 4",
+        ),
+    ],
+)
+def test_translate_match_icmp_type(
+    domain: Family, scalar: str, expected: str
+) -> None:
+    assert (
+        translate_match(
+            domain, _opt("icmp-type", scalar, module="icmp"), "icmp"
+        )
+        == expected
+    )
+
+
+def test_translate_match_icmp_type_negation() -> None:
+    assert (
+        translate_match(
+            Family.IP, _opt("icmp-type", Negated("echo-request")), "icmp"
+        )
+        == "icmp type != echo-request"
+    )
+    assert (
+        translate_match(Family.IP6, _opt("icmp-type", Negated("128")), "icmp")
+        == "icmpv6 type != echo-request"
+    )
+    # !(type==3 && code==1) has no infix nft equivalent -- refuse, never
+    # emit the wrong De Morgan reading `type != 3 code != 1`.
+    with pytest.raises(
+        FermError, match=r"^negated icmp type/code match cannot be"
+    ):
+        translate_match(Family.IP, _opt("icmp-type", Negated("3/1")), "icmp")
+
+
+def test_translate_match_icmp_type_unknown_or_invalid_is_error() -> None:
+    # an iptables subtype name (type 3 + code) is not translated yet
+    with pytest.raises(
+        FermError,
+        match=r"^icmp-type 'network-unreachable' not yet supported",
+    ):
+        translate_match(
+            Family.IP, _opt("icmp-type", "network-unreachable"), "icmp"
+        )
+    # ip-only name in the ip6 family
+    with pytest.raises(
+        FermError, match=r"^icmp-type 'source-quench' not yet supported"
+    ):
+        translate_match(Family.IP6, _opt("icmp-type", "source-quench"), "icmp")
+    # a type is one octet
+    with pytest.raises(FermError, match=r"^invalid icmp type '300'"):
+        translate_match(Family.IP, _opt("icmp-type", "300"), "icmp")
+    with pytest.raises(FermError, match=r"^invalid icmp type '3/999'"):
+        translate_match(Family.IP, _opt("icmp-type", "3/999"), "icmp")
+
+
+from pyferm.values import Params, PreNegated  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("mask", "comp", "expected"),
+    [
+        # the kernel readback prints the BITWISE form, not the
+        # iptables-translate slash form
+        ("SYN,RST", "SYN", "tcp flags & (syn | rst) == syn"),
+        # input order does not matter: flags sort into header bit order
+        ("ACK,SYN", "SYN", "tcp flags & (syn | ack) == syn"),
+        # a single-flag mask is unparenthesized in the readback
+        ("SYN", "SYN", "tcp flags & syn == syn"),
+        # a multi-flag comparison prints WITHOUT parentheses
+        (
+            "ALL",
+            "SYN,ACK",
+            "tcp flags & (fin | syn | rst | psh | ack | urg) == syn | ack",
+        ),
+        # comp NONE reads back as the flag-absence form
+        ("FIN,SYN", "NONE", "tcp flags ! fin,syn"),
+    ],
+)
+def test_translate_match_tcp_flags(
+    mask: str, comp: str, expected: str
+) -> None:
+    value = Params(values=[mask, comp])
+    assert (
+        translate_match(
+            Family.IP, _opt("tcp-flags", value, module="tcp"), "tcp"
+        )
+        == expected
+    )
+
+
+def test_translate_match_tcp_flags_negation_and_errors() -> None:
+    negated = PreNegated(Params(values=["SYN,RST", "SYN"]))
+    assert (
+        translate_match(
+            Family.IP, _opt("tcp-flags", negated, module="tcp"), "tcp"
+        )
+        == "tcp flags & (syn | rst) != syn"
+    )
+    with pytest.raises(FermError, match=r"^unknown tcp flag 'BOGUS'"):
+        translate_match(
+            Family.IP,
+            _opt(
+                "tcp-flags", Params(values=["SYN,BOGUS", "SYN"]), module="tcp"
+            ),
+            "tcp",
+        )
+    # !(flags & mask == 0) would need `!= 0x0`, which the readback
+    # respells; refuse rather than mistranslate
+    with pytest.raises(FermError, match=r"^negated tcp-flags NONE"):
+        translate_match(
+            Family.IP,
+            _opt(
+                "tcp-flags",
+                PreNegated(Params(values=["SYN", "NONE"])),
+                module="tcp",
+            ),
+            "tcp",
+        )
+
+
+def test_translate_match_syn() -> None:
+    # --syn is --tcp-flags FIN,SYN,RST,ACK SYN; the option carries no
+    # argument (value None)
+    assert (
+        translate_match(Family.IP, _opt("syn", None, module="tcp"), "tcp")
+        == "tcp flags & (fin | syn | rst | ack) == syn"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("syn", PreNegated(None), module="tcp"), "tcp"
+        )
+        == "tcp flags & (fin | syn | rst | ack) != syn"
+    )
+
+
+def test_translate_match_owner() -> None:
+    assert (
+        translate_match(
+            Family.IP, _opt("uid-owner", "1000", module="owner"), None
+        )
+        == "meta skuid 1000"
+    )
+    # a uid range passes through (readback keeps the dash form)
+    assert (
+        translate_match(
+            Family.IP, _opt("uid-owner", "1000-2000", module="owner"), None
+        )
+        == "meta skuid 1000-2000"
+    )
+    # a user name resolves to the number the readback prints
+    assert (
+        translate_match(
+            Family.IP, _opt("uid-owner", "root", module="owner"), None
+        )
+        == "meta skuid 0"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("uid-owner", PreNegated("1000"), module="owner"),
+            None,
+        )
+        == "meta skuid != 1000"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("gid-owner", "100", module="owner"), None
+        )
+        == "meta skgid 100"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("gid-owner", PreNegated("100"), module="owner"),
+            None,
+        )
+        == "meta skgid != 100"
+    )
+    with pytest.raises(FermError, match=r"^unknown user 'nosuchuser-xyz'"):
+        translate_match(
+            Family.IP,
+            _opt("uid-owner", "nosuchuser-xyz", module="owner"),
+            None,
+        )
+    with pytest.raises(FermError, match=r"^unknown group 'nosuchgroup-xyz'"):
+        translate_match(
+            Family.IP,
+            _opt("gid-owner", "nosuchgroup-xyz", module="owner"),
+            None,
+        )
+
+
+def test_translate_match_length() -> None:
+    assert (
+        translate_match(
+            Family.IP, _opt("length", "512", module="length"), None
+        )
+        == "meta length 512"
+    )
+    # the iptables colon range becomes nft's dash range
+    assert (
+        translate_match(
+            Family.IP, _opt("length", "100:200", module="length"), None
+        )
+        == "meta length 100-200"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("length", PreNegated("512"), module="length"), None
+        )
+        == "meta length != 512"
+    )
+    with pytest.raises(FermError, match=r"^invalid length 'abc'"):
+        translate_match(
+            Family.IP, _opt("length", "abc", module="length"), None
+        )
+
+
+def test_translate_match_arp_opcode() -> None:
+    # numeric opcodes respell to the kernel-readback operation name; a
+    # number nft knows no name for stays numeric
+    assert (
+        translate_match(Family.ARP, _opt("opcode", "1"), None)
+        == "arp operation request"
+    )
+    assert (
+        translate_match(Family.ARP, _opt("opcode", "2"), None)
+        == "arp operation reply"
+    )
+    assert (
+        translate_match(Family.ARP, _opt("opcode", "10"), None)
+        == "arp operation nak"
+    )
+    assert (
+        translate_match(Family.ARP, _opt("opcode", "5"), None)
+        == "arp operation 5"
+    )
+    with pytest.raises(FermError, match=r"^invalid arp opcode 'bogus'"):
+        translate_match(Family.ARP, _opt("opcode", "bogus"), None)
+
+
+def test_translate_match_ttl() -> None:
+    assert (
+        translate_match(Family.IP, _opt("ttl-eq", "64", module="ttl"), None)
+        == "ip ttl 64"
+    )
+    # the readback spells the comparators as > and <, not gt/lt
+    assert (
+        translate_match(Family.IP, _opt("ttl-gt", "64", module="ttl"), None)
+        == "ip ttl > 64"
+    )
+    assert (
+        translate_match(Family.IP, _opt("ttl-lt", "64", module="ttl"), None)
+        == "ip ttl < 64"
+    )
+    with pytest.raises(FermError, match=r"^invalid ttl 'abc'"):
+        translate_match(Family.IP, _opt("ttl-eq", "abc", module="ttl"), None)
+    # ip6 has no ttl header field (xt_ttl is ip-only; hl is its ip6 twin)
+    with pytest.raises(FermError, match=r"^option 'ttl-eq' not yet"):
+        translate_match(Family.IP6, _opt("ttl-eq", "64", module="ttl"), None)
+
+
+def test_translate_match_mac_source() -> None:
+    # the readback lowercases MAC operands
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("mac-source", "AA:BB:CC:DD:EE:FF", module="mac"),
+            None,
+        )
+        == "ether saddr aa:bb:cc:dd:ee:ff"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("mac-source", Negated("aa:bb:cc:00:11:22"), module="mac"),
+            None,
+        )
+        == "ether saddr != aa:bb:cc:00:11:22"
+    )
+    with pytest.raises(FermError, match=r"^invalid mac 'nota-mac'"):
+        translate_match(
+            Family.IP, _opt("mac-source", "nota-mac", module="mac"), None
+        )
+
+
+def test_translate_match_arp_macs() -> None:
+    # the arp family spells MAC selectors arp saddr/daddr ether, unlike
+    # mod mac's ether saddr in the ip families
+    assert (
+        translate_match(
+            Family.ARP, _opt("source-mac", "AA:BB:CC:DD:EE:FF"), None
+        )
+        == "arp saddr ether aa:bb:cc:dd:ee:ff"
+    )
+    assert (
+        translate_match(
+            Family.ARP,
+            _opt("destination-mac", Negated("aa:bb:cc:dd:ee:00")),
+            None,
+        )
+        == "arp daddr ether != aa:bb:cc:dd:ee:00"
+    )
+
+
+def test_translate_match_full_mask_mark_is_plain() -> None:
+    # (mark & 0xffffffff) == value IS the plain equality; only a partial
+    # mask has no infix nft spelling
+    assert (
+        translate_match(
+            Family.IP, _opt("mark", "2/0xffffffff", module="mark"), None
+        )
+        == "meta mark 0x00000002"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("mark", "0xffffffff/4294967295", module="connmark"),
+            None,
+        )
+        == "ct mark 0xffffffff"
+    )
+    with pytest.raises(FermError, match=r"^masked mark '2/0xff'"):
+        translate_match(Family.IP, _opt("mark", "2/0xff", module="mark"), None)
+
+
+def test_translate_match_value_shape_error_names_the_option() -> None:
+    # the bare unwrap_value message left corpus refusals anonymous
+    # ("unsupported value shape..."); the option name makes the gap
+    # actionable
+    with pytest.raises(
+        FermError, match=r"^option 'ctstate': multi-value cannot"
+    ):
+        translate_match(
+            Family.IP,
+            _opt(
+                "ctstate", Params(values=["NEW", "SNAT"]), module="conntrack"
+            ),
+            None,
+        )
+
+
+def test_build_verdict_connmark() -> None:
+    save = {"save-mark": _opt("save-mark", None, module="CONNMARK")}
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "CONNMARK", save).to_text()
+        == "ct mark set meta mark"
+    )
+    restore = {"restore-mark": _opt("restore-mark", None, module="CONNMARK")}
+    assert (
+        build_verdict(
+            Family.IP, "mangle", "jump", "CONNMARK", restore
+        ).to_text()
+        == "meta mark set ct mark"
+    )
+    setmark = {"set-mark": _opt("set-mark", "2", module="CONNMARK")}
+    assert (
+        build_verdict(
+            Family.IP, "mangle", "jump", "CONNMARK", setmark
+        ).to_text()
+        == "ct mark set 0x00000002"
+    )
+    # a mask companion changes the semantics; refuse rather than drop it
+    masked = {
+        "save-mark": _opt("save-mark", None, module="CONNMARK"),
+        "nfmask": _opt("nfmask", "0xff", module="CONNMARK"),
+    }
+    with pytest.raises(FermError, match=r"^option 'nfmask' not yet"):
+        build_verdict(Family.IP, "mangle", "jump", "CONNMARK", masked)
+    with pytest.raises(FermError, match=r"^CONNMARK target not yet supported"):
+        build_verdict(Family.IP, "mangle", "jump", "CONNMARK", {})
+
+
+def test_translate_match_mark_and_connmark() -> None:
+    # the kernel readback respells a mark as 8-digit hex; emitting any
+    # other spelling would leave --plan diffing forever
+    assert (
+        translate_match(Family.IP, _opt("mark", "2", module="mark"), None)
+        == "meta mark 0x00000002"
+    )
+    assert (
+        translate_match(Family.IP, _opt("mark", "0x10", module="mark"), None)
+        == "meta mark 0x00000010"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("mark", Negated("3"), module="mark"), None
+        )
+        == "meta mark != 0x00000003"
+    )
+    # mod connmark spells its option `mark` too; the module tells the
+    # ct mark selector apart from the packet-mark one
+    assert (
+        translate_match(Family.IP, _opt("mark", "2", module="connmark"), None)
+        == "ct mark 0x00000002"
+    )
+    with pytest.raises(FermError, match=r"^masked mark '2/0xff'"):
+        translate_match(Family.IP, _opt("mark", "2/0xff", module="mark"), None)
+    with pytest.raises(FermError, match=r"^invalid mark 'banana'"):
+        translate_match(Family.IP, _opt("mark", "banana", module="mark"), None)
+
+
+def test_build_verdict_tcpmss() -> None:
+    clamp = {
+        "clamp-mss-to-pmtu": _opt("clamp-mss-to-pmtu", None, module="TCPMSS")
+    }
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "TCPMSS", clamp).to_text()
+        == "tcp option maxseg size set rt mtu"
+    )
+    setmss = {"set-mss": _opt("set-mss", "1400", module="TCPMSS")}
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "TCPMSS", setmss).to_text()
+        == "tcp option maxseg size set 1400"
+    )
+    with pytest.raises(FermError, match=r"^TCPMSS target not yet supported"):
+        build_verdict(Family.IP, "mangle", "jump", "TCPMSS", {})
+    with pytest.raises(FermError, match=r"^invalid set-mss 'abc'"):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "TCPMSS",
+            {"set-mss": _opt("set-mss", "abc", module="TCPMSS")},
+        )
+
+
+def test_build_verdict_tee_notrack_trace() -> None:
+    tee = {"gateway": _opt("gateway", "10.0.0.2", module="TEE")}
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "TEE", tee).to_text()
+        == "dup to 10.0.0.2"
+    )
+    with pytest.raises(FermError, match=r"^TEE target not yet supported"):
+        build_verdict(Family.IP, "mangle", "jump", "TEE", {})
+    assert (
+        build_verdict(Family.IP, "raw", "jump", "NOTRACK", {}).to_text()
+        == "notrack"
+    )
+    assert (
+        build_verdict(Family.IP, "raw", "jump", "TRACE", {}).to_text()
+        == "meta nftrace set 1"
+    )
+
+
+def test_build_verdict_mark_target() -> None:
+    comp = {"set-mark": _opt("set-mark", "2", module="MARK")}
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "MARK", comp).to_text()
+        == "meta mark set 0x00000002"
+    )
+    # the bitwise variants have no single nft statement yet
+    xmark = {"set-xmark": _opt("set-xmark", "0x2/0xff", module="MARK")}
+    with pytest.raises(FermError, match=r"^option 'set-xmark' not yet"):
+        build_verdict(Family.IP, "mangle", "jump", "MARK", xmark)
+    with pytest.raises(FermError, match=r"^MARK target not yet supported"):
+        build_verdict(Family.IP, "mangle", "jump", "MARK", {})
+
+
+def test_translate_match_ctstate_reuses_ct_state() -> None:
+    # mod conntrack ctstate is the same nft `ct state` expression the
+    # state module already translates to.
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstate", "ESTABLISHED,RELATED", module="conntrack"),
+            None,
+        )
+        == "ct state established,related"
+    )
+    # SNAT/DNAT are xt_conntrack-only states with no nft ct equivalent
+    with pytest.raises(FermError, match=r"^unknown ct state 'snat'"):
+        translate_match(
+            Family.IP, _opt("ctstate", "NEW,SNAT", module="conntrack"), None
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "scalar", "protocol", "expected"),
+    [
+        (
+            "destination-ports",
+            "80,443,8000:8080",
+            "tcp",
+            "tcp dport { 80, 443, 8000-8080 }",
+        ),
+        ("destination-ports", "80", "tcp", "tcp dport 80"),
+        ("source-ports", "53,123", "udp", "udp sport { 53, 123 }"),
+    ],
+)
+def test_translate_match_multiport(
+    name: str, scalar: str, protocol: str, expected: str
+) -> None:
+    assert (
+        translate_match(
+            Family.IP, _opt(name, scalar, module="multiport"), protocol
+        )
+        == expected
+    )
+
+
+def test_translate_match_multiport_negation_and_errors() -> None:
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("destination-ports", Negated("80,443"), module="multiport"),
+            "tcp",
+        )
+        == "tcp dport != { 80, 443 }"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("source-ports", Negated("53,123"), module="multiport"),
+            "udp",
+        )
+        == "udp sport != { 53, 123 }"
+    )
+    with pytest.raises(FermError, match="needs a tcp/udp protocol"):
+        translate_match(Family.IP, _opt("destination-ports", "80,443"), None)
+    # a service NAME is a legitimate port operand (nft: `tcp dport ssh`),
+    # so the invalid member must be metacharacter-shaped
+    with pytest.raises(FermError, match=r"^invalid port"):
+        translate_match(
+            Family.IP, _opt("destination-ports", "80,bad;port"), "tcp"
+        )
+    # `ports` matches source OR destination; there is no single nft
+    # match for that disjunction
+    with pytest.raises(FermError, match=r"^option 'ports' not yet"):
+        translate_match(Family.IP, _opt("ports", "80"), "tcp")
+
+
+def test_match_parts_icmp_type_is_not_set_eligible() -> None:
+    # Bare-word elements have no canonical rank in sort_set_elements
+    # (unparsable stays in input order), so a folded { echo-request,
+    # echo-reply } set could not converge under --plan; keep the match
+    # out of the collapse pass until the canon learns that rank.
+    from pyferm.backend.nft import _translate_match_parts
+
+    expr, key, element = _translate_match_parts(
+        Family.IP, _opt("icmp-type", "echo-request"), "icmp"
+    )
+    assert (expr, key, element) == ("icmp type echo-request", None, None)
+
+
+def test_icmp_name_and_number_tables_agree() -> None:
+    # _ICMP*_TYPE_MAP (iptables name -> nft name) and
+    # _ICMP*_TYPE_BY_NUMBER (numeric operand -> readback name) are two
+    # hand-maintained dictionaries; a type reachable both ways must emit
+    # ONE canonical spelling, or `icmp-type redirect` and `icmp-type 5`
+    # translate to different text.  The IANA type numbers below are the
+    # linkage between them.
+    from pyferm.backend.nft import (
+        _ICMP6_TYPE_BY_NUMBER,
+        _ICMP6_TYPE_MAP,
+        _ICMP_TYPE_BY_NUMBER,
+        _ICMP_TYPE_MAP,
+    )
+
+    iana_v4 = {
+        "echo-reply": 0,
+        "destination-unreachable": 3,
+        "source-quench": 4,
+        "redirect": 5,
+        "echo-request": 8,
+        "router-advertisement": 9,
+        "router-solicitation": 10,
+        "time-exceeded": 11,
+        "parameter-problem": 12,
+        "timestamp-request": 13,
+        "timestamp-reply": 14,
+        "address-mask-request": 17,
+        "address-mask-reply": 18,
+    }
+    iana_v6 = {
+        "destination-unreachable": 1,
+        "packet-too-big": 2,
+        "time-exceeded": 3,
+        "parameter-problem": 4,
+        "echo-request": 128,
+        "echo-reply": 129,
+        "nd-router-solicit": 133,
+        "nd-router-advert": 134,
+        "nd-neighbor-solicit": 135,
+        "nd-neighbor-advert": 136,
+        "nd-redirect": 137,
+    }
+    for name_map, by_number, iana in (
+        (_ICMP_TYPE_MAP, _ICMP_TYPE_BY_NUMBER, iana_v4),
+        (_ICMP6_TYPE_MAP, _ICMP6_TYPE_BY_NUMBER, iana_v6),
+    ):
+        for nft_name in name_map.values():
+            assert nft_name in iana, (
+                f"extend this test's IANA linkage for '{nft_name}'"
+            )
+            assert by_number[iana[nft_name]] == nft_name, nft_name
 
 
 # ---------------------------------------------------------------------------
@@ -513,9 +1243,158 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
         FermError, match=r"^eb target 'redirect' \(or jump to a chain"
     ):
         build_verdict(Family.EB, "broute", "jump", "redirect", {})
+    # MARK is the one eb keyword that collides with the ip/ip6 MARK
+    # target handled ABOVE the eb guard; if the guard's domain check
+    # broke, this exact shape (companion present) would silently emit
+    # `meta mark set ...` instead of refusing -- and the registry sweep
+    # below cannot see that, since it passes empty companions.
+    with pytest.raises(
+        FermError, match=r"^eb target 'MARK' \(or jump to a chain"
+    ):
+        build_verdict(
+            Family.EB,
+            "filter",
+            "jump",
+            "MARK",
+            {"set-mark": _opt("set-mark", "0x2", module="MARK")},
+        )
     # an actual user chain in the eb domain still translates
     verdict = build_verdict(Family.EB, "filter", "jump", "mychain", {})
     assert verdict.to_text() == "jump mychain"
+
+
+@pytest.mark.parametrize(
+    ("domain", "target"),
+    [
+        (Family.IP, "TARPIT"),
+        (Family.IP, "MIRROR"),
+        (Family.IP, "SET"),
+        (Family.IP, "AUDIT"),
+        # ip6 folds to the "ip" registry family (parser convention)
+        (Family.IP6, "HL"),
+    ],
+)
+def test_build_verdict_extension_target_keywords_are_refused(
+    domain: Family, target: str
+) -> None:
+    # A registered target keyword with no nft translation must refuse at
+    # translate time; the user-chain fallthrough would emit a jump to a
+    # chain that never exists, which `nft -f` rejects only at apply time
+    # while --test/--noexec --lines report success.
+    with pytest.raises(
+        FermError,
+        match=rf"^target '{target}' \(or jump to a chain of that name\)"
+        r" not yet supported by nft backend$",
+    ):
+        build_verdict(domain, "filter", "jump", target, {})
+
+
+def test_build_verdict_never_jumps_to_a_registered_target() -> None:
+    # Total sweep over the target registry (the 2026-07-09 ad-hoc probe,
+    # formalized): whatever build_verdict does with a registered target
+    # keyword -- translate or refuse -- it must never emit a jump/goto
+    # carrying the keyword as a chain name.
+    from pyferm.modules import TARGET_DEFS
+
+    for defs_family, domain in (
+        ("ip", Family.IP),
+        ("ip", Family.IP6),
+        ("arp", Family.ARP),
+        ("eb", Family.EB),
+    ):
+        for target in TARGET_DEFS.get(defs_family, {}):
+            try:
+                verdict = build_verdict(domain, "filter", "jump", target, {})
+            except FermError:
+                continue
+            text = verdict.to_text()
+            assert not text.startswith(("jump ", "goto ")), (
+                f"{domain}: registered target '{target}' emitted '{text}'"
+            )
+
+
+def test_build_verdict_user_chain_named_like_no_target_still_jumps() -> None:
+    # The guard reads the target registry, not a name heuristic: an
+    # ordinary user chain keeps translating.
+    verdict = build_verdict(Family.IP, "filter", "jump", "LOGDROP", {})
+    assert verdict.to_text() == "jump LOGDROP"
+
+
+def test_build_verdict_log_level() -> None:
+    log = {
+        "log-prefix": _opt("log-prefix", "x: ", module="LOG"),
+        "log-level": _opt("log-level", "info", module="LOG"),
+    }
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "LOG", log).to_text()
+        == 'log prefix "x: " level info'
+    )
+    # iptables' syslog spellings map to nft's (error -> err); numeric
+    # levels resolve through the same syslog table
+    for scalar in ("error", "3"):
+        level = {"log-level": _opt("log-level", scalar, module="LOG")}
+        assert (
+            build_verdict(Family.IP, "filter", "jump", "LOG", level).to_text()
+            == "log level err"
+        )
+    # `warn` is nft's default and the kernel readback drops it -- emit
+    # the bare statement or --plan never converges
+    for scalar in ("warning", "4"):
+        level = {"log-level": _opt("log-level", scalar, module="LOG")}
+        assert (
+            build_verdict(Family.IP, "filter", "jump", "LOG", level).to_text()
+            == "log"
+        )
+    with pytest.raises(FermError, match=r"^log-level 'chatty' not yet"):
+        build_verdict(
+            Family.IP,
+            "filter",
+            "jump",
+            "LOG",
+            {"log-level": _opt("log-level", "chatty", module="LOG")},
+        )
+
+
+def test_build_verdict_nflog() -> None:
+    # NFLOG is nft's `log group N`; fields follow the kernel readback
+    # order of prefix, then group, then queue-threshold
+    group = {"nflog-group": _opt("nflog-group", "2", module="NFLOG")}
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFLOG", group).to_text()
+        == "log group 2"
+    )
+    full = {
+        "nflog-group": _opt("nflog-group", "2", module="NFLOG"),
+        "nflog-prefix": _opt("nflog-prefix", "y: ", module="NFLOG"),
+        "nflog-threshold": _opt("nflog-threshold", "20", module="NFLOG"),
+    }
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFLOG", full).to_text()
+        == 'log prefix "y: " group 2 queue-threshold 20'
+    )
+    # xt_NFLOG defaults to group 0 when none is given
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFLOG", {}).to_text()
+        == "log group 0"
+    )
+    # --nflog-range is accepted-but-ignored by the kernel; there is no
+    # honest nft spelling for it
+    with pytest.raises(FermError, match=r"^option 'nflog-range' not yet"):
+        build_verdict(
+            Family.IP,
+            "filter",
+            "jump",
+            "NFLOG",
+            {"nflog-range": _opt("nflog-range", "64", module="NFLOG")},
+        )
+    with pytest.raises(FermError, match=r"^invalid nflog-group 'x'"):
+        build_verdict(
+            Family.IP,
+            "filter",
+            "jump",
+            "NFLOG",
+            {"nflog-group": _opt("nflog-group", "x", module="NFLOG")},
+        )
 
 
 def test_build_verdict_unsupported_reject_with_is_error() -> None:
@@ -856,6 +1735,173 @@ def test_translate_rule_port_suppresses_redundant_proto() -> None:
     ]
 
 
+def test_translate_rule_icmp_type_suppresses_redundant_proto() -> None:
+    # `icmp type` implies the l4proto dependency, and the kernel readback
+    # omits the `meta l4proto icmp` prefix for such a rule -- emitting it
+    # would leave --plan diffing an already-applied ruleset forever (the
+    # same readback asymmetry ports handle via has_port).
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "icmp", kind=OptionKind.PROTO),
+            _opt("icmp-type", "echo-request", module="icmp"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "icmp type echo-request",
+        "accept",
+    ]
+
+
+def test_translate_rule_tcp_flags_suppresses_redundant_proto() -> None:
+    # `tcp flags` elides `meta l4proto tcp` in the kernel readback, the
+    # same asymmetry ports and icmp-type handle (verified live: a
+    # maxseg-only rule KEEPS the prefix, so only the flags match
+    # suppresses it).
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("syn", None, module="tcp"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp flags & (fin | syn | rst | ack) == syn",
+        "accept",
+    ]
+
+
+def test_translate_rule_limit_burst_pairs_with_limit() -> None:
+    # `--limit-burst` is a companion of the SAME xt_limit match, not a
+    # separate one; nft spells the pair as one statement (the kernel
+    # readback always prints an explicit burst).
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("match", "limit", kind=OptionKind.MATCH_MODULE),
+            _opt("limit", "5/second", module="limit"),
+            _opt("limit-burst", "7", module="limit"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "limit rate 5/second burst 7 packets",
+        "accept",
+    ]
+
+
+def test_translate_rule_limit_burst_without_limit_uses_default_rate() -> None:
+    # iptables' `-m limit --limit-burst 7` keeps xt_limit's default rate
+    # of 3/hour; the nft spelling makes that default explicit.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("match", "limit", kind=OptionKind.MATCH_MODULE),
+            _opt("limit-burst", "7", module="limit"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "limit rate 3/hour burst 7 packets",
+        "accept",
+    ]
+
+
+def test_translate_rule_invalid_limit_burst_is_error() -> None:
+    for bad in ("0", "abc", "-1"):
+        with pytest.raises(FermError, match=r"^invalid limit burst"):
+            translate_rule(
+                Family.IP,
+                "filter",
+                _rule(
+                    _opt("limit", "5/second", module="limit"),
+                    _opt("limit-burst", bad, module="limit"),
+                    _target("ACCEPT"),
+                ),
+            )
+
+
+def test_translate_rule_burst_with_multiple_limits_is_refused() -> None:
+    # RenderedRule flattens xt_limit instances, so a burst cannot be
+    # paired back with its own `limit`; refusing beats attaching one
+    # burst to every limit statement (which mismatches xt_limit).
+    with pytest.raises(
+        FermError,
+        match=r"^'limit-burst' with more than one 'limit' per rule",
+    ):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("limit", "3/second", module="limit"),
+                _opt("limit-burst", "5", module="limit"),
+                _opt("limit", "10/minute", module="limit"),
+                _target("ACCEPT"),
+            ),
+        )
+    with pytest.raises(
+        FermError, match=r"^more than one 'limit-burst' per rule"
+    ):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("limit", "3/second", module="limit"),
+                _opt("limit-burst", "5", module="limit"),
+                _opt("limit-burst", "8", module="limit"),
+                _target("ACCEPT"),
+            ),
+        )
+
+
+def test_translate_rule_two_limits_without_burst_translate() -> None:
+    # Two burst-less xt_limit instances AND together; the ambiguity the
+    # refusal above guards against only exists once a burst appears.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("limit", "3/second", module="limit"),
+            _opt("limit", "10/minute", module="limit"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "limit rate 3/second",
+        "limit rate 10/minute",
+        "accept",
+    ]
+
+
+def test_translate_rule_multiport_setref_is_refused() -> None:
+    # Named-set references are wired only for the flat addr/iface/port
+    # selectors; through mod multiport the reference must refuse, not
+    # fall through to a mistranslation.
+    with pytest.raises(
+        FermError,
+        match=r"^option 'destination-ports' cannot reference a named set$",
+    ):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("protocol", "tcp", kind=OptionKind.PROTO),
+                _opt(
+                    "destination-ports",
+                    SetRef("ports", ["22"]),
+                    module="multiport",
+                ),
+                _target("ACCEPT"),
+            ),
+        )
+
+
 def test_translate_rule_bare_proto_emits_l4proto() -> None:
     nft = translate_rule(
         Family.IP,
@@ -1040,7 +2086,6 @@ def test_translate_rule_goto_user_chain() -> None:
 # Additional coverage tests
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import build_verdict  # noqa: E402, F811
-from pyferm.values import PreNegated  # noqa: E402
 
 
 def test_unwrap_value_prenegated() -> None:
@@ -1673,7 +2718,10 @@ def test_render_comment_rejects_embedded_quote() -> None:
     ("given", "expected"),
     [
         ("1000:2000", "1000-2000"),
-        ("ssh:http", "ssh-http"),
+        # named halves resolve to numbers (the readback prints numbers;
+        # the dash-joined `ssh-http` spelling would not even parse as a
+        # range under nft, which reads it as one service name)
+        ("ssh:http", "22-80"),
         ("22", "22"),
         ("1000-2000", "1000-2000"),
         # numeric boundaries: the guard checks shape, not the 0..65535 range.

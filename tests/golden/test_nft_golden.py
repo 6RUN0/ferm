@@ -15,6 +15,7 @@ break the parametrized suite.
 
 from __future__ import annotations
 
+import socket
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,18 @@ _CASES = sorted(
     if ferm.with_suffix(".nft").exists()
 )
 assert _CASES, f"No golden .ferm/.nft pairs found under {_HERE / 'nft'}"
+
+#: Inputs that resolve service names through the host /etc/services
+#: (netbase); on a minimal image without it they must skip, not fail.
+_NEEDS_SERVICES_DB = frozenset({"match_extras"})
+
+
+def _host_resolves_services() -> bool:
+    try:
+        socket.getservbyname("ssh")
+    except OSError:
+        return False
+    return True
 
 
 def _skip_if_no_nft(target: FermTarget) -> None:
@@ -61,6 +74,8 @@ def _run_nft(target: FermTarget, ferm_file: Path) -> str:
 @pytest.mark.parametrize("ferm_file", _CASES, ids=lambda p: p.stem)
 def test_nft_golden(ferm_file: Path, golden_target: FermTarget) -> None:
     _skip_if_no_nft(golden_target)
+    if ferm_file.stem in _NEEDS_SERVICES_DB and not _host_resolves_services():
+        pytest.skip("host /etc/services cannot resolve service names")
     expected = ferm_file.with_suffix(".nft").read_text(encoding="utf-8")
     assert _run_nft(golden_target, ferm_file) == expected
 

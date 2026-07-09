@@ -1,0 +1,33 @@
+add table arp ferm
+delete table arp ferm
+add table arp ferm
+add chain arp ferm INPUT { type filter hook input priority 0; }
+add rule arp ferm INPUT arp operation request accept
+add rule arp ferm INPUT arp operation reply arp saddr ether aa:bb:cc:dd:ee:ff drop
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add chain ip ferm OUTPUT { type filter hook output priority 0; }
+add chain ip ferm mangle_FORWARD { type filter hook forward priority -150; }
+add chain ip ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add chain ip ferm raw_PREROUTING { type filter hook prerouting priority -300; }
+add rule ip ferm INPUT tcp flags & (syn | rst) == syn accept
+add rule ip ferm INPUT tcp flags & (fin | syn | rst | psh | ack | urg) == syn | ack drop
+add rule ip ferm INPUT tcp flags ! fin,syn accept
+add rule ip ferm INPUT tcp flags & (fin | syn | rst | ack) != syn drop
+add rule ip ferm INPUT meta length 100-200 drop
+add rule ip ferm INPUT ip ttl 64 accept
+add rule ip ferm INPUT ip ttl > 128 drop
+add rule ip ferm INPUT ether saddr aa:bb:cc:dd:ee:ff accept
+add rule ip ferm INPUT meta mark 0x00000002 accept
+add rule ip ferm OUTPUT meta skuid 0 accept
+add rule ip ferm OUTPUT meta skuid != 1000 drop
+add rule ip ferm mangle_FORWARD tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu
+add rule ip ferm mangle_FORWARD tcp flags & (syn | rst) == syn tcp option maxseg size set 1400
+add rule ip ferm mangle_PREROUTING ct mark set meta mark
+add rule ip ferm mangle_PREROUTING meta mark set ct mark
+add rule ip ferm mangle_PREROUTING ct mark set 0x00000005
+add rule ip ferm mangle_PREROUTING dup to 10.0.0.2
+add rule ip ferm raw_PREROUTING notrack
+add rule ip ferm raw_PREROUTING meta nftrace set 1

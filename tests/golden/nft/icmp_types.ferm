@@ -1,0 +1,19 @@
+# icmp-type / icmpv6-type match translation: named types (incl. the
+# iptables aliases and the ip6 nd-* respell), numeric respell to the
+# kernel-readback name, numeric type/code, negation.
+domain ip table filter chain INPUT {
+    proto icmp icmp-type echo-request ACCEPT;
+    proto icmp icmp-type ping ACCEPT;
+    proto icmp icmp-type ttl-exceeded ACCEPT;
+    proto icmp icmp-type 8 ACCEPT;
+    proto icmp icmp-type 42 ACCEPT;
+    proto icmp icmp-type 3/1 ACCEPT;
+    proto icmp icmp-type !echo-request DROP;
+}
+domain ip6 table filter chain INPUT {
+    proto ipv6-icmp icmp-type neighbour-solicitation ACCEPT;
+    proto ipv6-icmp icmp-type router-advertisement ACCEPT;
+    proto ipv6-icmp icmp-type redirect ACCEPT;
+    proto ipv6-icmp icmp-type 128 ACCEPT;
+    proto ipv6-icmp icmp-type 1/4 ACCEPT;
+}
