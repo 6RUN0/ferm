@@ -2011,6 +2011,299 @@ def test_translate_rule_legit_protocols_render() -> None:
     ]
 
 
+def _addrtype(name: str, value: Value) -> RenderedOption:
+    return _opt(name, value, module="addrtype")
+
+
+def _fib_texts(domain: Family, *options: RenderedOption) -> list[str]:
+    rule = translate_rule(domain, "filter", _rule(*options, _target("ACCEPT")))
+    return [s.to_text() for s in rule.statements]
+
+
+def test_translate_rule_addrtype_single_type() -> None:
+    # dst-type/src-type pick the daddr/saddr fib selector; the iptables
+    # LOCAL spelling reads back lowercase.
+    assert _fib_texts(Family.IP, _addrtype("dst-type", "LOCAL")) == [
+        "fib daddr type local",
+        "accept",
+    ]
+    assert _fib_texts(Family.IP, _addrtype("src-type", "LOCAL")) == [
+        "fib saddr type local",
+        "accept",
+    ]
+
+
+def test_translate_rule_addrtype_comma_list_sorts_into_rtn_order() -> None:
+    # a comma-list emits one anonymous literal pre-sorted into kernel RTN
+    # order (local=2 before broadcast=3), matching the list readback.
+    assert _fib_texts(Family.IP, _addrtype("dst-type", "BROADCAST,LOCAL")) == [
+        "fib daddr type { local, broadcast }",
+        "accept",
+    ]
+
+
+def test_translate_rule_addrtype_negation() -> None:
+    assert _fib_texts(
+        Family.IP, _addrtype("dst-type", PreNegated("LOCAL"))
+    ) == ["fib daddr type != local", "accept"]
+    # the kernel accepts a negated list and re-sorts it into RTN order too
+    assert _fib_texts(
+        Family.IP, _addrtype("src-type", PreNegated("broadcast,local,unspec"))
+    ) == ["fib saddr type != { unspec, local, broadcast }", "accept"]
+
+
+def test_translate_rule_addrtype_ip6() -> None:
+    assert _fib_texts(Family.IP6, _addrtype("dst-type", "LOCAL")) == [
+        "fib daddr type local",
+        "accept",
+    ]
+
+
+@pytest.mark.parametrize("bad", ["NAT", "throw", "xresolve", "bogus"])
+def test_translate_rule_addrtype_untranslatable_type_refused(
+    bad: str,
+) -> None:
+    with pytest.raises(
+        FermError,
+        match=rf"^address type '{bad}' has no nft fib equivalent$",
+    ):
+        _fib_texts(Family.IP, _addrtype("dst-type", bad))
+
+
+def test_translate_rule_addrtype_limit_iface_qualifies_selector() -> None:
+    assert _fib_texts(
+        Family.IP,
+        _addrtype("dst-type", "LOCAL"),
+        _addrtype("limit-iface-in", None),
+    ) == ["fib daddr . iif type local", "accept"]
+    assert _fib_texts(
+        Family.IP,
+        _addrtype("src-type", "LOCAL"),
+        _addrtype("limit-iface-out", None),
+    ) == ["fib saddr . oif type local", "accept"]
+
+
+def test_translate_rule_addrtype_both_limit_iface_flags_refused() -> None:
+    with pytest.raises(
+        FermError,
+        match=r"^'limit-iface-in' and 'limit-iface-out' are mutually",
+    ):
+        _fib_texts(
+            Family.IP,
+            _addrtype("dst-type", "LOCAL"),
+            _addrtype("limit-iface-in", None),
+            _addrtype("limit-iface-out", None),
+        )
+
+
+def test_translate_rule_addrtype_limit_iface_without_type_refused() -> None:
+    with pytest.raises(
+        FermError,
+        match=r"needs a src-type or dst-type match",
+    ):
+        _fib_texts(Family.IP, _addrtype("limit-iface-in", None))
+
+
+def test_translate_rule_addrtype_src_and_dst_type_emit_two_fibs() -> None:
+    # --src-type X --dst-type Y is one legal iptables match -> two
+    # independent fib expressions.
+    assert _fib_texts(
+        Family.IP,
+        _addrtype("src-type", "LOCAL"),
+        _addrtype("dst-type", "UNICAST"),
+    ) == [
+        "fib saddr type local",
+        "fib daddr type unicast",
+        "accept",
+    ]
+    # the limit-iface modifier applies to BOTH selectors.
+    assert _fib_texts(
+        Family.IP,
+        _addrtype("src-type", "LOCAL"),
+        _addrtype("dst-type", "UNICAST"),
+        _addrtype("limit-iface-in", None),
+    ) == [
+        "fib saddr . iif type local",
+        "fib daddr . iif type unicast",
+        "accept",
+    ]
+
+
+def test_translate_rule_addrtype_arp_keeps_generic_refusal() -> None:
+    # arp/eb have no fib translation; the type match falls through to the
+    # generic refusal untouched, not a broken `fib` emission.
+    with pytest.raises(
+        FermError, match=r"^option 'dst-type' not yet supported"
+    ):
+        _fib_texts(Family.ARP, _addrtype("dst-type", "LOCAL"))
+
+
+# ---------------------------------------------------------------------------
+# QoS: dscp match, DSCP/CLASSIFY targets, tos/TOS refusal
+# ---------------------------------------------------------------------------
+
+
+def _dscp_match(domain: Family, name: str, value: Value) -> str:
+    return translate_match(domain, _opt(name, value, module="dscp"), None)
+
+
+@pytest.mark.parametrize(
+    ("value", "spelled"),
+    [
+        ("0", "cs0"),
+        ("1", "lephb"),
+        ("0x2c", "va"),
+        ("0x3f", "0x3f"),  # unnamed codepoint stays hex
+        ("46", "ef"),  # decimal accepted via int(x, 0)
+        ("63", "0x3f"),  # boundary ok, spells as hex
+    ],
+)
+def test_translate_match_dscp_numeric_canon(value: str, spelled: str) -> None:
+    assert _dscp_match(Family.IP, "dscp", value) == f"ip dscp {spelled}"
+
+
+@pytest.mark.parametrize("bad", ["64", "-1", "0x40"])
+def test_translate_match_dscp_out_of_range_refused(bad: str) -> None:
+    with pytest.raises(FermError, match=r"dscp value .* out of range 0-63"):
+        _dscp_match(Family.IP, "dscp", bad)
+
+
+def test_translate_match_dscp_ip6_selector() -> None:
+    assert _dscp_match(Family.IP6, "dscp", "0x2c") == "ip6 dscp va"
+
+
+@pytest.mark.parametrize(
+    ("given", "spelled"),
+    [
+        ("af31", "af31"),
+        ("EF", "ef"),  # case-insensitive input
+        ("be", "cs0"),  # best-effort resolves to 0x00 -> cs0
+    ],
+)
+def test_translate_match_dscp_class_canon(given: str, spelled: str) -> None:
+    assert _dscp_match(Family.IP, "dscp-class", given) == f"ip dscp {spelled}"
+
+
+def test_translate_match_dscp_class_bogus_refused() -> None:
+    with pytest.raises(FermError, match=r"unknown dscp class 'bogus'"):
+        _dscp_match(Family.IP, "dscp-class", "bogus")
+
+
+def test_translate_match_dscp_not_set_eligible() -> None:
+    # class names have no rank in sort_set_elements, so the match must not
+    # advertise a set_key (a folded set could not converge under --plan).
+    _, set_key, element = _translate_match_parts(
+        Family.IP, _opt("dscp-class", "ef", module="dscp"), None
+    )
+    assert (set_key, element) == (None, None)
+
+
+def test_translate_match_dscp_arp_keeps_generic_refusal() -> None:
+    with pytest.raises(FermError, match=r"^option 'dscp' not yet supported"):
+        _dscp_match(Family.ARP, "dscp", "0x2c")
+
+
+def _dscp_target(domain: Family, *companions: RenderedOption) -> list[str]:
+    rule = translate_rule(
+        domain, "mangle", _rule(_target("DSCP"), *companions)
+    )
+    return [s.to_text() for s in rule.statements]
+
+
+def test_build_verdict_dscp_set_dscp_numeric() -> None:
+    # 26 decimal == 0x1a == af31.
+    assert _dscp_target(Family.IP, _opt("set-dscp", "26", module="DSCP")) == [
+        "ip dscp set af31"
+    ]
+
+
+def test_build_verdict_dscp_set_dscp_class() -> None:
+    assert _dscp_target(
+        Family.IP, _opt("set-dscp-class", "af31", module="DSCP")
+    ) == ["ip dscp set af31"]
+
+
+def test_build_verdict_dscp_ip6_selector() -> None:
+    assert _dscp_target(
+        Family.IP6, _opt("set-dscp-class", "af31", module="DSCP")
+    ) == ["ip6 dscp set af31"]
+
+
+def test_build_verdict_dscp_both_options_refused() -> None:
+    with pytest.raises(FermError, match=r"^DSCP target not yet supported"):
+        _dscp_target(
+            Family.IP,
+            _opt("set-dscp", "1", module="DSCP"),
+            _opt("set-dscp-class", "ef", module="DSCP"),
+        )
+
+
+def test_build_verdict_dscp_neither_option_refused() -> None:
+    with pytest.raises(FermError, match=r"^DSCP target not yet supported"):
+        _dscp_target(Family.IP)
+
+
+def _classify(value: str) -> list[str]:
+    rule = translate_rule(
+        Family.IP,
+        "mangle",
+        _rule(
+            _target("CLASSIFY"), _opt("set-class", value, module="CLASSIFY")
+        ),
+    )
+    return [s.to_text() for s in rule.statements]
+
+
+@pytest.mark.parametrize(
+    ("given", "spelled"),
+    [
+        ("0001:0020", "1:20"),  # leading zeros strip in both halves
+        ("abcd:ffff", "abcd:ffff"),  # already canonical, lowercase
+        ("ffff:ffff", "root"),  # tc special
+        ("0:0", "none"),  # tc special
+        ("00ff:0abc", "ff:abc"),
+    ],
+)
+def test_build_verdict_classify_readback_canon(
+    given: str, spelled: str
+) -> None:
+    assert _classify(given) == [f"meta priority set {spelled}"]
+
+
+@pytest.mark.parametrize("bad", ["1", "abcde:1", ":1", "1:"])
+def test_build_verdict_classify_bad_handle_refused(bad: str) -> None:
+    with pytest.raises(FermError, match=r"invalid tc class"):
+        _classify(bad)
+
+
+def test_build_verdict_classify_missing_option_refused() -> None:
+    rule = _rule(_target("CLASSIFY"))
+    with pytest.raises(FermError, match=r"^CLASSIFY target not yet supported"):
+        translate_rule(Family.IP, "mangle", rule)
+
+
+def test_translate_match_tos_refused_with_no_nft_equivalent() -> None:
+    with pytest.raises(
+        FermError,
+        match=r"^option 'tos' has no nft equivalent",
+    ):
+        translate_match(Family.IP, _opt("tos", "0x10", module="tos"), None)
+
+
+def test_build_verdict_tos_refused_with_no_nft_equivalent() -> None:
+    # set-tos is collected as a companion so the target fires the TOS
+    # message rather than the generic "option not supported" match refusal.
+    rule = _rule(
+        _target("TOS"),
+        _opt("set-tos", "Maximize-Throughput", module="TOS"),
+    )
+    with pytest.raises(
+        FermError,
+        match=r"^target 'TOS' has no nft equivalent",
+    ):
+        translate_rule(Family.IP, "mangle", rule)
+
+
 def test_translate_rule_reject_with_companion_order() -> None:
     nft = translate_rule(
         Family.IP,
@@ -3426,6 +3719,184 @@ def test_translate_rule_port_setref_uses_protocol_selector() -> None:
     assert match.set_selector == "tcp dport"
 
 
+# ---------------------------------------------------------------------------
+# translate_rule: mod set match-set -> named-set match
+# ---------------------------------------------------------------------------
+
+from pyferm.backend.nft import _collect_set_declarations  # noqa: E402
+
+
+def _match_set_opt(
+    operand: Value, flags: str, *, negated: bool = False
+) -> RenderedOption:
+    """Build a ``mod set match-set`` option as the ``sc`` code emits it."""
+    value: Value = Params([operand, flags])
+    if negated:
+        value = PreNegated(value)
+    return _opt("match-set", value, module="set")
+
+
+def test_translate_rule_match_set_src() -> None:
+    setref = SetRef("badguys", ["10.1.2.3"])
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(_match_set_opt(setref, "src"), _target("DROP")),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "ip saddr @badguys"
+    assert match.set_selector == "ip saddr"
+    assert match.setref == setref
+
+
+def test_translate_rule_match_set_dst() -> None:
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _match_set_opt(SetRef("badguys", ["10.1.2.3"]), "dst"),
+            _target("DROP"),
+        ),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "ip daddr @badguys"
+    assert match.set_selector == "ip daddr"
+
+
+def test_translate_rule_match_set_ip6() -> None:
+    nft = translate_rule(
+        Family.IP6,
+        "filter",
+        _rule(
+            _match_set_opt(SetRef("badguys", ["fe80::1"]), "src"),
+            _target("DROP"),
+        ),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "ip6 saddr @badguys"
+    assert match.set_selector == "ip6 saddr"
+
+
+def test_translate_rule_match_set_negated_renders_inequality() -> None:
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _match_set_opt(
+                SetRef("badguys", ["10.1.2.3"]), "dst", negated=True
+            ),
+            _target("DROP"),
+        ),
+    )
+    match = nft.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "ip daddr != @badguys"
+
+
+def test_translate_rule_match_set_external_name_refused() -> None:
+    # A bare (non-$var) name is an external ipset, unreachable from nft.
+    with pytest.raises(
+        FermError,
+        match=(
+            r"external ipset 'blocklist' cannot be referenced from nftables; "
+            r"declare it with @set \$blocklist ="
+        ),
+    ):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(_match_set_opt("blocklist", "src"), _target("DROP")),
+        )
+
+
+def test_translate_rule_match_set_multi_flag_refused() -> None:
+    # `(src dst)` arrives comma-joined; it needs a concatenated set type.
+    with pytest.raises(
+        FermError,
+        match=r"^option 'match-set': multiple set-match flags need",
+    ):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _match_set_opt(SetRef("x", ["10.1.2.3"]), "src,dst"),
+                _target("DROP"),
+            ),
+        )
+
+
+def test_translate_rule_match_set_declaration_pickup() -> None:
+    # The emitted match carries the SetRef + selector, so the later
+    # declaration pass sees the named set with no match-set awareness.
+    setref = SetRef("badguys", ["10.1.2.3"])
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(_match_set_opt(setref, "src"), _target("DROP")),
+    )
+    decls = _collect_set_declarations(Family.IP, {"INPUT": [nft]})
+    assert "badguys" in decls
+    assert decls["badguys"].elements == ["10.1.2.3"]
+
+
+def test_translate_rule_match_set_empty_set_guard_sees_nested() -> None:
+    # A family-filtered-empty set nested in Params must still trip the guard
+    # the caller relies on to drop the rule before translation.
+    rule = RenderedRule(
+        options=[
+            _match_set_opt(SetRef("x", []), "src"),
+            _target("DROP"),
+        ],
+        script=None,
+    )
+    with pytest.raises(FermError, match="internal error"):
+        translate_rule(Family.IP6, "filter", rule)
+
+
+def test_translate_rule_match_set_empty_set_guard_sees_negated_nested() -> (
+    None
+):
+    rule = RenderedRule(
+        options=[
+            _match_set_opt(SetRef("x", []), "src", negated=True),
+            _target("DROP"),
+        ],
+        script=None,
+    )
+    with pytest.raises(FermError, match="internal error"):
+        translate_rule(Family.IP6, "filter", rule)
+
+
+def test_translate_rule_match_set_second_setref_refused() -> None:
+    # The one-set-per-rule guard must count the SetRef nested in match-set.
+    with pytest.raises(FermError, match="at most one named set"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("source", SetRef("a", ["10.0.0.1"])),
+                _match_set_opt(SetRef("b", ["10.0.0.2"]), "src"),
+                _target("DROP"),
+            ),
+        )
+
+
+def test_translate_rule_match_set_second_setref_refused_when_negated() -> None:
+    with pytest.raises(FermError, match="at most one named set"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("source", SetRef("a", ["10.0.0.1"])),
+                _match_set_opt(SetRef("b", ["10.0.0.2"]), "dst", negated=True),
+                _target("DROP"),
+            ),
+        )
+
+
 def test_translate_match_negated_interface_keeps_inequality() -> None:
     # A negated interface must keep its `!=`; the shared `_op` negation prefix
     # is easy to lose on the interface arm specifically.
@@ -3516,3 +3987,16 @@ def test_set_type_and_elements_selector_typing(
     )
     assert type_ is getattr(NftSetType, type_name)
     assert flags_interval is interval
+
+
+def test_classify_target_unfolds_per_array_element(tmp_path: Path) -> None:
+    # A non-set-eligible dscp match array stays a cartesian unfold, so the
+    # CLASSIFY verdict is carried onto each resulting rule.
+    ferm = (
+        "domain ip table mangle chain OUTPUT {\n"
+        '    mod dscp dscp (0x0a 0x2e) CLASSIFY set-class "1:10";\n'
+        "}\n"
+    )
+    out = _run_apply(tmp_path, ferm, None)
+    assert "ip dscp af11 meta priority set 1:10" in out
+    assert "ip dscp ef meta priority set 1:10" in out

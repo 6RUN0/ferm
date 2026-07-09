@@ -1,0 +1,30 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add set ip ferm badguys { type ipv4_addr; flags interval; }
+add element ip ferm badguys { 10.1.2.3, 192.168.0.0/24 }
+add set ip ferm mixed { type ipv4_addr; }
+add element ip ferm mixed { 10.9.9.9 }
+add chain ip ferm FORWARD { type filter hook forward priority 0; }
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add chain ip ferm mangle_POSTROUTING { type filter hook postrouting priority -150; }
+add rule ip ferm FORWARD ip daddr @mixed drop
+add rule ip ferm INPUT ip saddr @badguys drop
+add rule ip ferm INPUT ip saddr != @badguys accept
+add rule ip ferm INPUT fib daddr type local accept
+add rule ip ferm INPUT fib daddr type { local, broadcast } accept
+add rule ip ferm INPUT fib saddr type != { unspec, local, broadcast } drop
+add rule ip ferm INPUT fib saddr . iif type local accept
+add rule ip ferm INPUT ip dscp va accept
+add rule ip ferm INPUT ip dscp cs0 accept
+add rule ip ferm mangle_POSTROUTING ip dscp set lephb
+add rule ip ferm mangle_POSTROUTING ip dscp set af31
+add rule ip ferm mangle_POSTROUTING meta priority set 1:20
+add rule ip ferm mangle_POSTROUTING meta priority set root
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add set ip6 ferm mixed { type ipv6_addr; flags interval; }
+add element ip6 ferm mixed { 2001:db8::/32 }
+add chain ip6 ferm FORWARD { type filter hook forward priority 0; }
+add rule ip6 ferm FORWARD ip6 daddr @mixed drop

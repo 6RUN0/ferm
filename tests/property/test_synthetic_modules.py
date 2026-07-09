@@ -1045,6 +1045,33 @@ _CASES: list[Case] = [
         ),
         modules=("addrtype",),
     ),
+    Case(
+        # The comma survives tokenization only when quoted (one scalar);
+        # the nft side re-sorts the literal into kernel RTN order.
+        "addrtype_type_list",
+        _block(
+            "filter",
+            "INPUT",
+            'mod addrtype dst-type "BROADCAST,LOCAL" ACCEPT',
+        ),
+        modules=("addrtype",),
+    ),
+    Case(
+        "addrtype_limit_iface_in",
+        _block(
+            "filter",
+            "INPUT",
+            "mod addrtype dst-type LOCAL limit-iface-in ACCEPT",
+        ),
+        modules=("addrtype",),
+    ),
+    Case(
+        # NAT has no fib route type: iptables accepts it, nft refuses --
+        # the dichotomy gate pins the refusal staying clean.
+        "addrtype_nat_type",
+        _block("filter", "INPUT", "mod addrtype dst-type NAT ACCEPT"),
+        modules=("addrtype",),
+    ),
     # -- connlimit match (!connlimit-upto !connlimit-above mask) -----
     # Verifies: --match connlimit --connlimit-above in output.
     Case(
@@ -1271,6 +1298,14 @@ _CASES: list[Case] = [
     Case(
         "dscp_match_class",
         _block("filter", "INPUT", "mod dscp dscp-class EF ACCEPT"),
+        modules=("dscp",),
+    ),
+    Case(
+        # --test never reaches the iptables binary, so both sides accept
+        # the out-of-range codepoint in lockstep; the nft dichotomy gate
+        # sees the range refusal instead.
+        "dscp_match_out_of_range",
+        _block("filter", "INPUT", "mod dscp dscp 64 ACCEPT"),
         modules=("dscp",),
     ),
     # -- ecn match (ecn-tcp-cwr*0 ecn-tcp-ece*0 ecn-ip-ect) ---------
@@ -1663,6 +1698,13 @@ _CASES: list[Case] = [
     Case(
         "classify_set_class",
         _block("mangle", "POSTROUTING", "CLASSIFY set-class 1:1"),
+        modules=("CLASSIFY",),
+    ),
+    Case(
+        # iptables keeps the zero-padded handle verbatim; the nft readback
+        # canon strips it to 1:20 -- both paths must stay clean.
+        "classify_leading_zeros",
+        _block("mangle", "POSTROUTING", "CLASSIFY set-class 0001:0020"),
         modules=("CLASSIFY",),
     ),
     # -- NFQUEUE target (queue-num queue-balance queue-bypass*0) -----

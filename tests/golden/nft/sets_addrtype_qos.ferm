@@ -1,0 +1,26 @@
+# match-set over ferm-owned @set (positive + negated), addrtype -> fib
+# (single, RTN-sorted list, negated list, limit-iface-in), dscp match
+# canon (va, be->cs0), DSCP/CLASSIFY targets (lephb, zero-strip, root).
+# The dual-stack block splits the mixed-family set per family.
+@set $badguys = (10.1.2.3 192.168.0.0/24);
+@set $mixed = (10.9.9.9 2001:db8::/32);
+
+table filter chain INPUT {
+    mod set match-set $badguys src DROP;
+    mod set ! match-set $badguys src ACCEPT;
+    mod addrtype dst-type LOCAL ACCEPT;
+    mod addrtype dst-type "BROADCAST,LOCAL" ACCEPT;
+    mod addrtype ! src-type "BROADCAST,LOCAL,UNSPEC" DROP;
+    mod addrtype src-type LOCAL limit-iface-in ACCEPT;
+    mod dscp dscp 0x2c ACCEPT;
+    mod dscp dscp-class be ACCEPT;
+}
+table mangle chain POSTROUTING {
+    DSCP set-dscp 0x01;
+    DSCP set-dscp-class af31;
+    CLASSIFY set-class 0001:0020;
+    CLASSIFY set-class ffff:ffff;
+}
+domain (ip ip6) table filter chain FORWARD {
+    mod set match-set $mixed dst DROP;
+}

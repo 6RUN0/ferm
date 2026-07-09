@@ -56,7 +56,15 @@ from pyferm.rules import (
 )
 from pyferm.scope import OptionKind
 from pyferm.streams import BYTE_ENCODING
-from pyferm.values import Multi, Negated, Params, PreNegated, SetRef, Value
+from pyferm.values import (
+    Multi,
+    Negated,
+    Params,
+    PreNegated,
+    SetRef,
+    Value,
+    iter_setrefs,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -922,6 +930,90 @@ _TTL_COMPARATOR: Final[dict[str, str]] = {
     "ttl-gt": "> ",
     "ttl-lt": "< ",
 }
+#: iptables addrtype value -> nft fib route type, keyed by kernel RTN
+#: number (RTN_UNSPEC=0 ... RTN_PROHIBIT=8).  A type-list readback is
+#: re-sorted into this order, so a comma-list literal must be emitted
+#: pre-sorted the same way or --plan diffs an already-applied ruleset
+#: forever.  throw/nat/xresolve carry no fib type and refuse.
+_FIB_TYPE_RANK: Final[dict[str, int]] = {
+    "unspec": 0,
+    "unicast": 1,
+    "local": 2,
+    "broadcast": 3,
+    "anycast": 4,
+    "multicast": 5,
+    "blackhole": 6,
+    "unreachable": 7,
+    "prohibit": 8,
+}
+#: addrtype option name -> the fib address selector it queries.
+_FIB_SELECTOR: Final[dict[str, str]] = {
+    "src-type": "saddr",
+    "dst-type": "daddr",
+}
+#: dscp codepoint -> the class name nft's readback prints; every other
+#: value in 0-63 reads back as 0x%02x.  Pinned by
+#: tests/e2e/readback/driver.py (nft v1.1.6); re-capture on an nft bump
+#: rather than editing by hand.  nft knows lephb (0x01) and va (0x2c),
+#: which the iptables --dscp-class input table below does not.
+_DSCP_NAMES: Final[dict[int, str]] = {
+    0x00: "cs0",
+    0x01: "lephb",
+    0x08: "cs1",
+    0x0A: "af11",
+    0x0C: "af12",
+    0x0E: "af13",
+    0x10: "cs2",
+    0x12: "af21",
+    0x14: "af22",
+    0x16: "af23",
+    0x18: "cs3",
+    0x1A: "af31",
+    0x1C: "af32",
+    0x1E: "af33",
+    0x20: "cs4",
+    0x22: "af41",
+    0x24: "af42",
+    0x26: "af43",
+    0x28: "cs5",
+    0x2C: "va",
+    0x2E: "ef",
+    0x30: "cs6",
+    0x38: "cs7",
+}
+#: iptables --dscp-class name -> codepoint (the input class table).  `be`
+#: (best effort) is 0x00, so it emits as cs0 after canonicalization.
+_DSCP_CLASS: Final[dict[str, int]] = {
+    "cs0": 0x00,
+    "cs1": 0x08,
+    "cs2": 0x10,
+    "cs3": 0x18,
+    "cs4": 0x20,
+    "cs5": 0x28,
+    "cs6": 0x30,
+    "cs7": 0x38,
+    "af11": 0x0A,
+    "af12": 0x0C,
+    "af13": 0x0E,
+    "af21": 0x12,
+    "af22": 0x14,
+    "af23": 0x16,
+    "af31": 0x1A,
+    "af32": 0x1C,
+    "af33": 0x1E,
+    "af41": 0x22,
+    "af42": 0x24,
+    "af43": 0x26,
+    "ef": 0x2E,
+    "be": 0x00,
+}
+#: max dscp codepoint (the 6-bit DSCP field).
+_DSCP_MAX: Final[int] = 0x3F
+#: tc classid handle for CLASSIFY: two 1-4 hex-digit halves.  A wider half
+#: is rejected -- the kernel refuses it too.
+_CLASSID_RE: Final = re.compile(r"\A([0-9a-fA-F]{1,4}):([0-9a-fA-F]{1,4})\Z")
+#: tc reserves handle ffff:ffff for the root qdisc (spelled ``root``).
+_TC_HANDLE_ROOT: Final[int] = 0xFFFF
 
 
 def _tcp_flag_list(scalar: str) -> list[str]:
@@ -1091,6 +1183,111 @@ def _icmp_type_expr(domain: Family, scalar: str, neg: bool) -> str:
     return f"{keyword} type {_op(neg)}{name}"
 
 
+def _fib_type_literal(scalar: str) -> str:
+    """
+    Render the fib type operand from an iptables addrtype value.
+
+    A comma-list is sorted into kernel RTN order (the readback re-sorts it,
+    negated lists included), so the emitted literal already matches what
+    ``nft list ruleset`` prints back.  A type with no fib equivalent
+    (throw/nat/xresolve, or anything unknown) refuses by name.
+    """
+    ordered: list[str] = []
+    for token in scalar.split(","):
+        lowered = token.strip().lower()
+        if lowered not in _FIB_TYPE_RANK:
+            raise FermError(
+                f"address type '{token.strip()}' has no nft fib equivalent"
+            )
+        ordered.append(lowered)
+    ordered.sort(key=lambda type_name: _FIB_TYPE_RANK[type_name])
+    if len(ordered) == 1:
+        return ordered[0]
+    return f"{{ {', '.join(ordered)} }}"
+
+
+def _fib_type_match(name: str, value: Value, iface: str) -> str:
+    """
+    Build the ``fib <selector>[ . iif|oif] type <literal>`` match.
+
+    *iface* is the routing-interface qualifier collected rule-wide from
+    addrtype's limit-iface-in/out flags ("" when absent); it applies to
+    every fib match in the rule.  fib works in both ip and ip6 with no
+    family prefix, so the selector needs no ``domain``.
+    """
+    scalar, neg = unwrap_value(value)
+    selector = _FIB_SELECTOR[name]
+    return f"fib {selector}{iface} type {_op(neg)}{_fib_type_literal(scalar)}"
+
+
+def _dscp_canon(value: int) -> str:
+    """Spell a dscp codepoint as nft's kernel readback does (name or 0xNN)."""
+    return _DSCP_NAMES.get(value, f"0x{value:02x}")
+
+
+def _dscp_value(name: str, scalar: str) -> int:
+    """Parse a numeric dscp value (``int(x, 0)``, 0-63) or refuse by name."""
+    try:
+        value = int(scalar, 0)
+    except ValueError:
+        raise FermError(
+            f"option '{name}': invalid dscp value '{scalar}' for nft backend"
+        ) from None
+    if not 0 <= value <= _DSCP_MAX:
+        raise FermError(
+            f"option '{name}': dscp value '{scalar}' out of range 0-63 "
+            f"for nft backend"
+        )
+    return value
+
+
+def _dscp_class_value(name: str, scalar: str) -> int:
+    """Resolve an iptables dscp class to its codepoint or refuse by name."""
+    value = _DSCP_CLASS.get(scalar.lower())
+    if value is None:
+        raise FermError(
+            f"option '{name}': unknown dscp class '{scalar}' for nft backend"
+        )
+    return value
+
+
+def _classify_priority(scalar: str) -> str:
+    """
+    Render a tc classid (H:M) as nft's ``meta priority`` readback spells it.
+
+    Leading zeros strip in each half and it lowercases (00ff:0abc -> ff:abc);
+    the tc specials ffff:ffff and 0:0 read back as root and none.  A half
+    wider than four hex digits is rejected, mirroring the kernel.
+    """
+    matched = _CLASSID_RE.match(scalar)
+    if matched is None:
+        raise FermError(
+            f"option 'set-class': invalid tc class '{scalar}' for nft backend"
+        )
+    major = int(matched.group(1), 16)
+    minor = int(matched.group(2), 16)
+    if major == _TC_HANDLE_ROOT and minor == _TC_HANDLE_ROOT:
+        return "root"
+    if major == 0 and minor == 0:
+        return "none"
+    return f"{major:x}:{minor:x}"
+
+
+def _tos_refusal(kind: str, name: str) -> FermError:
+    """
+    Build the shared TOS refusal (match ``tos`` and target ``TOS``).
+
+    No single nft selector spans the whole 8-bit TOS byte with a mask, so
+    silently emitting dscp alone would drop the ECN bits -- a fail-loud
+    refusal instead, phrased so it does not promise a future fix.
+    """
+    return FermError(
+        f"{kind} '{name}' has no nft equivalent (no single nft selector "
+        f"covers the full 8-bit TOS byte with a mask; nft exposes dscp "
+        f"and ecn separately)"
+    )
+
+
 def _translate_match_parts(
     domain: Family, option: RenderedOption, protocol: str | None
 ) -> tuple[str, str | None, str | None]:
@@ -1173,6 +1370,19 @@ def _translate_match_parts(
         # folded { echo-request, echo-reply } set could not converge
         # under --plan.
         return (_icmp_type_expr(domain, scalar, neg), None, None)
+    if name in ("dscp", "dscp-class") and domain in (Family.IP, Family.IP6):
+        # Not set-eligible (icmp-type precedent): class names are bare words
+        # with no rank in sort_set_elements, so a folded set could not
+        # converge under --plan; a ferm array stays a cartesian unfold.
+        # arp/eb have no dscp selector and fall through to the refusal.
+        value = (
+            _dscp_value(name, scalar)
+            if name == "dscp"
+            else _dscp_class_value(name, scalar)
+        )
+        return (f"{domain} dscp {_op(neg)}{_dscp_canon(value)}", None, None)
+    if name == "tos":
+        raise _tos_refusal("option", "tos")
     if name == "mark":
         # mod mark and mod connmark both spell their option `mark`; the
         # module tells the packet-mark selector from the ct one.
@@ -1269,6 +1479,61 @@ def _setref_selector(domain: Family, name: str, protocol: str | None) -> str:
     ):
         raise FermError(f"option '{name}' cannot reference a named set")
     return _match_selector(domain, name, protocol)
+
+
+#: ``mod set match-set`` direction flag -> nft address selector.
+_MATCH_SET_FLAG: Final[dict[str, str]] = {"src": "saddr", "dst": "daddr"}
+#: match-set's value is always ``Params([SetRef|name, flag])`` (the ``sc``
+#: keyword code), so exactly two positional elements.
+_MATCH_SET_PARAM_COUNT: Final[int] = 2
+
+
+def _translate_match_set(domain: Family, value: Value) -> NftMatch:
+    """
+    Translate ``mod set match-set $x <dir>`` to an nft named-set match.
+
+    The value is ``Params([SetRef, flag])`` (``PreNegated`` around it for the
+    ``! match-set`` form).  Only a ferm-owned ``@set`` (a :class:`SetRef`)
+    translates; a bare name is an external ipset -- a distinct kernel
+    subsystem nft cannot reference across tables -- and refuses with a
+    migration hint.  The comma-joined multi-flag form (``src,dst``) would need
+    a concatenated set type that ``@set`` never declares, so it refuses too.
+    The emitted :class:`NftMatch` carries the SetRef and its family-prefixed
+    selector, the same shape the address arm produces, so
+    :func:`_collect_set_declarations` picks up the declaration unchanged.
+    """
+    negated = False
+    if isinstance(value, (Negated, PreNegated)):
+        value = value.value
+        negated = True
+    if (
+        not isinstance(value, Params)
+        or len(value.values) != _MATCH_SET_PARAM_COUNT
+    ):
+        raise internal_error()
+    operand, flags = value.values
+    if not isinstance(operand, SetRef):
+        raise FermError(
+            f"option 'match-set': external ipset '{operand}' cannot be "
+            f"referenced from nftables; declare it with @set ${operand} = "
+            "(...) or keep the iptables backend"
+        )
+    if not isinstance(flags, str):
+        raise internal_error()
+    if "," in flags:
+        raise FermError(
+            "option 'match-set': multiple set-match flags need a "
+            "concatenated set type that @set does not declare"
+        )
+    selector_tail = _MATCH_SET_FLAG.get(flags)
+    if selector_tail is None:
+        raise FermError(
+            f"option 'match-set': unsupported set-match flag '{flags}' "
+            "for the nft backend"
+        )
+    selector = f"{domain} {selector_tail}"
+    expr = f"{selector} {_op(negated)}@{_validate_set_name(operand.name)}"
+    return NftMatch(expr, set_key=None, setref=operand, set_selector=selector)
 
 
 # ---------------------------------------------------------------------------
@@ -1625,6 +1890,29 @@ def build_verdict(
             raise FermError("MARK target not yet supported by nft backend")
         scalar, _ = unwrap_value(comp.value)
         return NftVerdict(f"meta mark set {_mark_value(scalar)}")
+    if target_value == "DSCP" and domain in (Family.IP, Family.IP6):
+        # Exactly one of set-dscp / set-dscp-class (TCPMSS/CONNMARK pattern);
+        # the selector is family-prefixed like the dscp match.  arp/eb fall
+        # through to the registry refusal below.
+        setdscp = companions.get("set-dscp")
+        setclass = companions.get("set-dscp-class")
+        if setdscp is not None and setclass is None:
+            scalar, _ = unwrap_value(setdscp.value)
+            value = _dscp_value("set-dscp", scalar)
+        elif setclass is not None and setdscp is None:
+            scalar, _ = unwrap_value(setclass.value)
+            value = _dscp_class_value("set-dscp-class", scalar)
+        else:
+            raise FermError("DSCP target not yet supported by nft backend")
+        return NftVerdict(f"{domain} dscp set {_dscp_canon(value)}")
+    if target_value == "CLASSIFY":
+        comp = companions.get("set-class")
+        if comp is None:
+            raise FermError("CLASSIFY target not yet supported by nft backend")
+        scalar, _ = unwrap_value(comp.value)
+        return NftVerdict(f"meta priority set {_classify_priority(scalar)}")
+    if target_value == "TOS":
+        raise _tos_refusal("target", "TOS")
     # The ebtables target keywords share companion option names with the
     # inet NAT targets (snat/to-source, dnat/to-destination), so without
     # this guard they would fall through to the user-chain branch below,
@@ -1694,6 +1982,15 @@ _TARGET_COMPANIONS: Final[tuple[str, ...]] = (
     "nfmask",
     "ctmask",
     "mask",
+    "set-dscp",
+    "set-dscp-class",
+    "set-class",
+    # TOS companions: collected so the target refuses with the TOS message
+    # rather than the generic "option not supported" from the match path.
+    "set-tos",
+    "and-tos",
+    "or-tos",
+    "xor-tos",
 )
 
 
@@ -1726,8 +2023,9 @@ def _references_empty_named_set(rule: RenderedRule) -> bool:
     reference plus an empty ``add set`` declaration.
     """
     return any(
-        isinstance(o.value, SetRef) and not o.value.elements
+        not setref.elements
         for o in rule.options
+        for setref in iter_setrefs(o.value)
     )
 
 
@@ -1790,6 +2088,30 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
             "'limit-burst' with more than one 'limit' per rule cannot "
             "be paired for the nft backend"
         )
+    # addrtype's --limit-iface-in/out are no-arg flags on the SAME match as
+    # src-/dst-type; each qualifies the fib selector with the routing input
+    # or output interface.  Collected rule-wide (like the burst) so the
+    # modifier reaches every fib match regardless of source order.  arp/eb
+    # have no fib translation, so their addrtype falls through to the
+    # generic refusal untouched.
+    fib_capable = domain in (Family.IP, Family.IP6)
+    fib_iface = ""
+    if fib_capable:
+        iface_in = any(o.name == "limit-iface-in" for o in rule.options)
+        iface_out = any(o.name == "limit-iface-out" for o in rule.options)
+        if iface_in and iface_out:
+            raise FermError(
+                "'limit-iface-in' and 'limit-iface-out' are mutually "
+                "exclusive for the nft backend"
+            )
+        if (iface_in or iface_out) and not any(
+            o.name in _FIB_SELECTOR for o in rule.options
+        ):
+            raise FermError(
+                "'limit-iface-in'/'limit-iface-out' needs a src-type or "
+                "dst-type match for the nft backend"
+            )
+        fib_iface = " . iif" if iface_in else " . oif" if iface_out else ""
     protocol: str | None = None
     for option in rule.options:
         if option.kind is OptionKind.PROTO:
@@ -1803,7 +2125,7 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
 
     # Guard: at most one SetRef option per rule (a second would need two
     # named-set declarations sharing one rule, which is not supported yet).
-    setref_count = sum(isinstance(o.value, SetRef) for o in rule.options)
+    setref_count = sum(1 for o in rule.options for _ in iter_setrefs(o.value))
     if setref_count > 1:
         raise FermError("at most one named set per rule in this version")
 
@@ -1848,6 +2170,19 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
             expr = f"{key} @{_validate_set_name(setref.name)}"
             matches.append(
                 NftMatch(expr, set_key=None, setref=setref, set_selector=key)
+            )
+            continue
+        if name == "match-set":
+            matches.append(_translate_match_set(domain, option.value))
+            continue
+        if fib_capable and name in ("limit-iface-in", "limit-iface-out"):
+            continue  # consumed as the fib selector modifier (first pass)
+        if fib_capable and name in _FIB_SELECTOR:
+            # Not set-eligible (set_key stays None): a bare route-type word
+            # has no rank in sort_set_elements, so a folded set could not
+            # converge under --plan; a comma-list is a single literal here.
+            matches.append(
+                NftMatch(_fib_type_match(name, option.value, fib_iface))
             )
             continue
         if name == "limit-burst":

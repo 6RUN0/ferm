@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Final, TypeAlias
 from pyferm.errors import ERR_STRING_EXPECTED, error, internal_error
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,31 @@ _REF_TYPES: Final[tuple[type, ...]] = (
 def _is_ref(value: object) -> bool:
     """Whether ``value`` is a reference in Perl's sense (``ref $value``)."""
     return isinstance(value, _REF_TYPES)
+
+
+def iter_setrefs(value: Value) -> Iterator[SetRef]:
+    """
+    Yield every :class:`SetRef` nested anywhere in ``value``.
+
+    A ``source``/``destination`` value carries its set at the top level, but
+    ``mod set match-set $x src`` buries it inside :class:`Params` (and one more
+    level under :class:`PreNegated` for the ``! match-set`` form).  Scan sites
+    that must "see the set" -- the empty-set drop, the one-set-per-rule guard,
+    the iptables pre-pass -- share this single descent so a new set-bearing
+    option cannot silently slip past one of them.  Descends negation wrappers,
+    :class:`Params`/:class:`Multi` items and plain arrays; other shapes yield
+    nothing.
+    """
+    if isinstance(value, SetRef):
+        yield value
+    elif isinstance(value, (Negated, PreNegated)):
+        yield from iter_setrefs(value.value)
+    elif isinstance(value, (Params, Multi)):
+        for item in value.values:
+            yield from iter_setrefs(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from iter_setrefs(item)
 
 
 def stringify(value: object) -> str:

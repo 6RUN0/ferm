@@ -6,7 +6,9 @@ The unit layer pins the emitted *text*; this suite pins that the text is
 
 * ``nft -c`` must accept a config exercising every translated construct
   (the full icmp/icmpv6 type maps, numeric respell, multiport sets,
-  limit units and burst, log level/NFLOG shapes, mark, dashed chains);
+  limit units and burst, log level/NFLOG shapes, mark, dashed chains,
+  addrtype fib types with RTN-ordered lists and limit-iface qualifiers,
+  the dscp name canon, DSCP/CLASSIFY targets with tc-handle respell);
 * applying it inside a rootless network namespace and re-running
   ``--plan`` must report convergence -- the readback-canonicality
   contract (kernel respells marks to hex, drops default log levels,
@@ -39,6 +41,7 @@ _NFT_LINE = re.compile(r"^(add|create|delete|insert|flush|replace) ")
 
 #: One config exercising every construct the nft backend translates.
 _VOCABULARY = """\
+@set $BADGUYS = (10.66.6.6 192.168.66.0/24);
 @def $ICMP_V4 = (
     echo-reply pong destination-unreachable source-quench redirect
     echo-request ping router-advertisement router-solicitation
@@ -80,11 +83,23 @@ domain ip table filter {
         mod ttl ttl-gt 128 DROP;
         mod mac mac-source AA:BB:CC:DD:EE:FF ACCEPT;
         mod mark mark 2/0xffffffff ACCEPT;
+        mod addrtype dst-type LOCAL ACCEPT;
+        mod addrtype dst-type (BROADCAST MULTICAST) DROP;
+        mod addrtype dst-type "BROADCAST,LOCAL" ACCEPT;
+        mod addrtype ! src-type "BROADCAST,LOCAL,UNSPEC" DROP;
+        mod addrtype src-type LOCAL limit-iface-in ACCEPT;
+        mod dscp dscp 0x2c ACCEPT;
+        mod dscp dscp 46 ACCEPT;
+        mod dscp dscp 0x3f ACCEPT;
+        mod dscp dscp-class be ACCEPT;
+        mod set match-set $BADGUYS src DROP;
+        mod set ! match-set $BADGUYS src ACCEPT;
         jump fail2ban-ssh;
     }
     chain OUTPUT {
         mod owner uid-owner root ACCEPT;
         mod owner uid-owner !1000 DROP;
+        mod addrtype dst-type UNICAST limit-iface-out ACCEPT;
     }
     chain fail2ban-ssh RETURN;
     chain mangle-ish {
@@ -100,6 +115,12 @@ domain ip table filter {
         proto tcp tcp-flags (SYN RST) SYN TCPMSS clamp-mss-to-pmtu;
         proto tcp tcp-flags (SYN RST) SYN TCPMSS set-mss 1400;
     }
+    chain qos-ish {
+        DSCP set-dscp-class af31;
+        DSCP set-dscp 0x01;
+        CLASSIFY set-class 0001:0020;
+        CLASSIFY set-class ffff:ffff;
+    }
 }
 domain arp table filter chain INPUT {
     opcode 1 ACCEPT;
@@ -107,6 +128,8 @@ domain arp table filter chain INPUT {
 }
 domain ip6 table filter chain INPUT {
     proto ipv6-icmp icmp-type $ICMP_V6 ACCEPT;
+    mod addrtype dst-type LOCAL ACCEPT;
+    mod dscp dscp-class af21 ACCEPT;
 }
 """
 

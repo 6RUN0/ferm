@@ -10,7 +10,7 @@ import pytest
 from pyferm.errors import FermError
 from pyferm.parser import Parser
 from pyferm.scope import Option, Rule
-from pyferm.values import SetRef
+from pyferm.values import Params, PreNegated, SetRef
 
 
 def _run(
@@ -261,5 +261,74 @@ def test_expand_setrefs_rejects_two_sets_in_one_rule() -> None:
     rule = Rule()
     rule.options.append(Option(name="saddr", value=SetRef("a", ["10.0.0.1"])))
     rule.options.append(Option(name="daddr", value=SetRef("b", ["10.0.0.2"])))
+    with pytest.raises(FermError, match="at most one named set"):
+        Parser._expand_setrefs_for_iptables(rule)
+
+
+# ---------------------------------------------------------------------------
+# match-set names an @set: no iptables expansion exists (ipset != nft set).
+# ---------------------------------------------------------------------------
+
+
+def test_match_set_setref_refused_under_iptables_cli() -> None:
+    """`match-set $var` under the default backend refuses cleanly."""
+    proc = _run(
+        "@set $badguys = (10.1.2.3);\n"
+        "domain ip table filter chain INPUT "
+        "{ mod set match-set $badguys src DROP; }\n",
+    )
+    assert proc.returncode != 0, "expected match-set @set refusal"
+    assert "@set cannot back an ipset name under the iptables backend" in (
+        proc.stderr
+    ), f"expected the match-set iptables message, got:\n{proc.stderr}"
+
+
+def test_negated_match_set_setref_refused_under_iptables_cli() -> None:
+    """The `! match-set $var` (PreNegated) form refuses the same way."""
+    proc = _run(
+        "@set $friends = (172.16.0.1);\n"
+        "domain ip table filter chain INPUT "
+        "{ mod set ! match-set $friends dst DROP; }\n",
+    )
+    assert proc.returncode != 0, "expected negated match-set @set refusal"
+    assert "@set cannot back an ipset name under the iptables backend" in (
+        proc.stderr
+    ), f"expected the match-set iptables message, got:\n{proc.stderr}"
+
+
+def test_expand_setrefs_refuses_params_nested_setref() -> None:
+    """A SetRef buried in Params (match-set) refuses, does not expand."""
+    rule = Rule()
+    rule.options.append(
+        Option(
+            name="match-set", value=Params([SetRef("x", ["10.0.0.1"]), "src"])
+        )
+    )
+    with pytest.raises(FermError, match="cannot back an ipset name"):
+        Parser._expand_setrefs_for_iptables(rule)
+
+
+def test_expand_setrefs_refuses_prenegated_params_nested_setref() -> None:
+    """The PreNegated(Params([...])) form is refused too."""
+    rule = Rule()
+    rule.options.append(
+        Option(
+            name="match-set",
+            value=PreNegated(Params([SetRef("x", ["10.0.0.1"]), "dst"])),
+        )
+    )
+    with pytest.raises(FermError, match="cannot back an ipset name"):
+        Parser._expand_setrefs_for_iptables(rule)
+
+
+def test_expand_setrefs_counts_nested_setref_for_one_set_guard() -> None:
+    """The one-set-per-rule count descends into the match-set Params."""
+    rule = Rule()
+    rule.options.append(Option(name="saddr", value=SetRef("a", ["10.0.0.1"])))
+    rule.options.append(
+        Option(
+            name="match-set", value=Params([SetRef("b", ["10.0.0.2"]), "src"])
+        )
+    )
     with pytest.raises(FermError, match="at most one named set"):
         Parser._expand_setrefs_for_iptables(rule)

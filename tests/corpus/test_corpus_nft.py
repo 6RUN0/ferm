@@ -51,7 +51,6 @@ _EXPECTED_NFT_REFUSALS = frozenset(
         "ivansible-natmss",
         "rwthctf2012-vpn",
         "stuart-ha-server",
-        "unexicon",
         # translated adversarial set
         "boundary-values",
         "chain-maze",

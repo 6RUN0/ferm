@@ -60,6 +60,7 @@ from pyferm.domains import (
 from pyferm.errors import FermError, error, internal_error, warning
 from pyferm.functions import (
     Evaluator,
+    ipfilter,
     realize_protocol,
     realize_protocol_keyword,
     splitpath_dir,
@@ -112,6 +113,7 @@ from pyferm.values import (
     Value,
     contains_deferred,
     flatten,
+    iter_setrefs,
     negate_value,
     realize_deferred,
     stringify,
@@ -869,7 +871,7 @@ class Parser:
             collected: list[Value] = []
             for code in params:
                 if code == "s":
-                    collected.append(self.evaluator.getvar())
+                    collected.append(self._getvar_family_filtered(rule))
                 elif code == "c":
                     items = to_array(self.evaluator.getvalues(non_empty=True))
                     collected.append(
@@ -925,6 +927,25 @@ class Parser:
             self.tokenizer.require_next_token()
             return True
         return local_negated
+
+    def _getvar_family_filtered(self, rule: Rule) -> Value:
+        """
+        Read an ``s``-code scalar, filtering a named set to the rule's family.
+
+        A ``$var`` bound to a dual-family ``@set`` reaches ``match-set`` with
+        both v4 and v6 elements; on a ``domain (ip ip6)`` rule each family must
+        see only its own, exactly as :meth:`Evaluator.address_magic` filters an
+        address set.  A bare ipset name (a plain string) and a single-family
+        rule pass through unchanged.
+        """
+        value = self.evaluator.getvar()
+        if isinstance(value, SetRef) and rule.domain_both:
+            family = rule.domain if isinstance(rule.domain, str) else ""
+            filtered = ipfilter(
+                family, realize_deferred(family, *value.elements)
+            )
+            return SetRef(value.name, filtered)
+        return value
 
     def parse_option(
         self, keyword: Keyword, rule: Rule, negated: NegatedFlag
@@ -1003,21 +1024,21 @@ class Parser:
         would leak a bare SetRef through the unfold path into
         ``shell_escape``.
         """
-        if sum(isinstance(o.value, SetRef) for o in rule.options) > 1:
+        if sum(1 for o in rule.options for _ in iter_setrefs(o.value)) > 1:
             error("at most one named set per rule in this version")
         for option in rule.options:
             value = option.value
             if isinstance(value, SetRef):
                 option.value = list(value.elements)
-            elif isinstance(value, list) and any(
-                isinstance(item, SetRef) for item in value
-            ):
-                # Defense-in-depth: unreachable under the current parser
-                # because _read_array rejects a mixed literal+set before this
-                # point; kept in case a future call path bypasses _read_array.
+            elif next(iter_setrefs(value), None) is not None:
+                # A SetRef below the top level reaches here only via
+                # `mod set match-set $x ...`, which buries it in Params (or
+                # PreNegated(Params) when negated): match-set names an ipset,
+                # a kernel subsystem distinct from @set, so there is nothing
+                # to splice.  Refuse rather than leak a bare SetRef into
+                # shell_escape as an internal error.
                 error(
-                    "a named set cannot be mixed with other values "
-                    "in one selector"
+                    "@set cannot back an ipset name under the iptables backend"
                 )
 
     # -- token-stream block replay (domain/table/chain arrays) -----------

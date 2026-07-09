@@ -26,8 +26,9 @@ For the history of the original Perl implementation, see
   source-ports`/`destination-ports` (anonymous sets, colon ranges),
   `mod limit limit-burst` (paired into one `limit rate ... burst N
   packets` statement; a burst alongside several `limit` matches in one
-  rule refuses — the pairing is ambiguous), `LOG log-level`, the `NFLOG` target (`log group
-  N` with prefix/queue-threshold), `mod mark`/`mod connmark` matches
+  rule refuses — the pairing is ambiguous), `LOG log-level`, the
+  `NFLOG` target (`log group N` with prefix/queue-threshold),
+  `mod mark`/`mod connmark` matches
   and the `MARK set-mark` target (marks respell to the readback's
   8-digit hex), and dash-named chains (`fail2ban-ssh`). Wild-corpus
   coverage under `--nft` rises from 12/31 to 23/31 configs.
@@ -47,6 +48,26 @@ For the history of the original Perl implementation, see
   `source-mac`/`destination-mac` → `arp saddr/daddr ether`. A
   value-shape refusal now names the offending option (`option
   'match-set': multi-value ...`).
+- **nft backend vocabulary, third batch: addrtype, QoS, match-set.**
+  `mod addrtype` translates to `fib saddr|daddr type` (comma-lists emit
+  as anonymous literals pre-sorted into kernel RTN order so `--plan`
+  converges; negated lists translate too; `limit-iface-in`/`-out`
+  qualify the selector with `. iif`/`. oif`; `throw`/`nat`/`xresolve`
+  refuse by name — they have no fib equivalent). `mod dscp` and the
+  `DSCP` target translate with the value respelled to the kernel
+  readback's class name (including `lephb`/`va`, which the iptables
+  class table does not know; unnamed codepoints stay hex); `CLASSIFY
+  set-class` emits `meta priority set` in the readback canon (leading
+  zeros stripped, `ffff:ffff` → `root`, `0:0` → `none`). `mod set
+  match-set $var` now translates when `$var` is a ferm-owned `@set`
+  (dual-stack rules filter the set per family; the negated form emits
+  `!=`); a bare ipset name refuses with a migration hint — nftables
+  cannot reference external ipsets — and under the iptables backend a
+  `@set`-backed `match-set` now refuses cleanly instead of dying with
+  an internal error. `mod tos` / `TOS` refusals state the honest
+  reason (no single nft selector covers the 8-bit TOS byte with a
+  mask; nft exposes dscp and ecn separately). Wild-corpus coverage
+  under `--nft` rises from 23/31 to 24/31 configs.
 
 ### Fixed
 
