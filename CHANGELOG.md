@@ -175,6 +175,38 @@ For the history of the original Perl implementation, see
   nft CLI cannot call xt targets), and `mod time`'s `monthday` (no meta
   selector), `kerneltz`, and `contiguous` (local-time and cross-midnight
   semantics nft's UTC-anchored evaluation cannot mirror).
+- **nft backend vocabulary, seventh batch: connbytes, connlimit, quota,
+  iprange, mark arithmetic.** `mod connbytes` becomes a `ct [original|
+  reply] bytes|packets|avgpkt` counter match with the kernel-readback
+  comparison spelling (`>=`/`<`, not iptables-translate's `ge`/`lt`): an
+  open `N:` bound (and a bare `N`, which xt reads as `N:`) is `>= N`, `:M`
+  the closed `0-M` interval, `N:M` the `N-M` interval, and negation flips
+  `>=` to `<` or prefixes `!=`. `mod connlimit` translates to an implicit
+  **per-rule** dynamic set plus `ct count [over] N`
+  (`connlimit-upto` → `count N`, `connlimit-above` → `count over N`, each
+  negating to the other; `connlimit-mask` narrows the `ip|ip6 saddr|daddr`
+  key with `& <netmask>`, `connlimit-daddr` picks the destination side) —
+  each rule owns its set (xt allocates one `nf_conncount` tree per rule),
+  named by a stable content hash so inserting an unrelated rule never
+  renames it. `mod quota` becomes a `quota <n> <unit>` statement with the
+  kernel's unit canon (the largest of `bytes`/`kbytes`/`mbytes` that
+  divides evenly; there is no `gbytes`, so 2³⁰ reads back as `1024
+  mbytes`, and an indivisible count stays in bytes). `mod iprange`
+  `src-range`/`dst-range` become `ip|ip6 saddr|daddr A-B` address ranges
+  (negated with `!=`; a bound of the wrong family refuses). The `MARK` and
+  `CONNMARK` targets gain full masked mark arithmetic: `set-xmark v/m`
+  folds to the readback and/or canon (`meta mark`/`ct mark` register),
+  `set-mark v/m` uses xt's effective mask `m' = v|m` (so `0xff/0x0f` is
+  legal), and `and-mark`/`or-mark`/`xor-mark` emit the bitwise register
+  rewrite (`&`/`|`/`^`). connbytes/connlimit/quota/iprange are stateful or
+  interval statements kept off the collapse/vmap passes, so two rules'
+  counters never merge.
+
+  Deliberate refusals (no faithful nft equivalent): `CONNMARK`
+  `save-mark`/`restore-mark` with `--nfmask`/`--ctmask`/`--mask` (moving
+  bits between the packet and ct registers under two independent masks,
+  which nft's grammar cannot express and iptables-translate mistranslates
+  into a form the kernel silently collapses).
 
 ### Changed
 

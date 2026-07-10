@@ -1,0 +1,15 @@
+# mod quota -> quota <n> <unit> with the kernel's unit canon (largest of
+# bytes/kbytes/mbytes that divides evenly; no gbytes, so 2^30 is 1024
+# mbytes; an indivisible count stays in bytes), and mod iprange -> address
+# ranges (saddr/daddr, negated with !=, ip6 range).
+table filter chain INPUT {
+    mod quota quota 1048576 ACCEPT;
+    mod quota quota 2048 DROP;
+    mod quota quota 1500000 ACCEPT;
+    mod quota quota 1073741824 ACCEPT;
+    mod iprange src-range 10.0.0.1-10.0.0.5 ACCEPT;
+    mod iprange ! dst-range 192.168.0.1-192.168.0.10 DROP;
+}
+domain ip6 table filter chain INPUT {
+    mod iprange src-range 2001:db8::1-2001:db8::ff ACCEPT;
+}

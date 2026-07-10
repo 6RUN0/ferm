@@ -11,7 +11,9 @@ The unit layer pins the emitted *text*; this suite pins that the text is
   the dscp name canon, DSCP/CLASSIFY targets with tc-handle respell,
   ct status forms with bang negation, NFQUEUE queue-to shapes, SYNPROXY,
   TTL/HL rewrites, masked marks, set-xmark, mod hl, NETMAP prefix maps,
-  statistic random/nth samplers, pkttype meta classes, TCPOPTSTRIP resets);
+  statistic random/nth samplers, pkttype meta classes, TCPOPTSTRIP resets,
+  connbytes ct counters, per-rule connlimit sets, quota unit canon, iprange
+  address ranges, MARK/CONNMARK mark arithmetic);
 * applying it inside a rootless network namespace and re-running
   ``--plan`` must report convergence -- the readback-canonicality
   contract (kernel respells marks to hex, drops default log levels,
@@ -173,6 +175,42 @@ domain ip table filter {
         proto udp mod hashlimit hashlimit-upto 5/second
             hashlimit-name hl_persec hashlimit-mode dstip ACCEPT;
     }
+    chain connbytes-ish {
+        mod connbytes connbytes "1048576:" connbytes-dir both
+            connbytes-mode bytes ACCEPT;
+        mod connbytes connbytes "100:200" connbytes-dir original
+            connbytes-mode packets ACCEPT;
+        mod connbytes ! connbytes "500:" connbytes-dir reply
+            connbytes-mode avgpkt DROP;
+        mod connbytes connbytes ":5000" connbytes-dir both
+            connbytes-mode bytes ACCEPT;
+    }
+    chain quota-iprange-ish {
+        mod quota quota 1048576 ACCEPT;
+        mod quota quota 1500000 DROP;
+        mod iprange src-range 10.0.0.1-10.0.0.5 ACCEPT;
+        mod iprange ! dst-range 192.168.0.1-192.168.0.10 DROP;
+    }
+    chain connlimit-ish {
+        proto tcp dport 443 mod connlimit connlimit-above 20
+            connlimit-mask 24 DROP;
+        proto tcp dport 80 mod connlimit connlimit-above 20
+            connlimit-mask 24 DROP;
+        mod connlimit connlimit-upto 5 DROP;
+        mod connlimit connlimit-above 10 connlimit-mask 24
+            connlimit-daddr DROP;
+    }
+    chain mark-arith-ish {
+        MARK set-xmark 0x1/0xff;
+        MARK set-mark 0xff/0x0f;
+        MARK or-mark 0x4;
+        MARK and-mark 0xf0;
+        MARK xor-mark 0x8;
+        CONNMARK set-xmark 0x2/0xff;
+        CONNMARK or-mark 0x10;
+        CONNMARK and-mark 0xf0;
+        CONNMARK xor-mark 0x8;
+    }
 }
 domain ip table nat {
     chain PREROUTING {
@@ -211,6 +249,10 @@ domain ip6 {
         mod recent set name SSHV6 rdest NOP;
         proto tcp mod hashlimit hashlimit-upto 3/minute hashlimit-name hl_v6
             hashlimit-mode srcip hashlimit-srcmask 64 ACCEPT;
+        mod connbytes connbytes "1024:" connbytes-dir reply
+            connbytes-mode bytes ACCEPT;
+        proto tcp dport 22 mod connlimit connlimit-above 5
+            connlimit-mask 64 DROP;
     }
     table mangle chain PREROUTING {
         HL hl-set 255;
@@ -337,12 +379,20 @@ def test_stateful_plan_converges_with_populated_set(
     # convergence proves the guard, not an empty coincidence.
     python = shlex.quote(sys.executable)
     config = shlex.quote(str(vocabulary_config))
+    # The connlimit set name is a content hash unknown at test-write time,
+    # so it is discovered from the applied ruleset before an element (a
+    # matched packet's `add @set`) is injected -- the same guard exercise as
+    # recent/hashlimit, over a set whose stateful expression is `ct count`.
     inner = (
         f"{python} -m pyferm --nft {config} >/dev/null 2>&1; "
         "nft add element ip ferm recent_SSHV4 "
         "'{ 203.0.113.7 timeout 1m }' >/dev/null 2>&1; "
         "nft add element ip ferm hashlimit_hl_upto "
         "'{ 203.0.113.8 timeout 1m }' >/dev/null 2>&1; "
+        "CL=$(nft list sets ip ferm | "
+        "grep -o 'connlimit_[0-9a-f]*' | head -1); "
+        '[ -n "$CL" ] && nft add element ip ferm "$CL" '
+        "'{ 203.0.113.9 ct count over 20 }' >/dev/null 2>&1; "
         f"exec {python} -m pyferm --nft --plan {config}"
     )
     proc = subprocess.run(

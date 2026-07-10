@@ -1,0 +1,22 @@
+# mod connlimit via a per-rule implicit dynamic set + ct count: above/mask
+# (over N with an & netmask key), upto (count N, full mask has no &), the
+# connlimit-daddr key side, an ip6 /64 mask, and two byte-identical rules
+# that must NOT share a set (each xt_connlimit rule owns its conncount tree).
+table filter {
+    chain INPUT {
+        proto tcp dport 443 mod connlimit connlimit-above 20
+            connlimit-mask 24 DROP;
+        proto tcp dport 80 mod connlimit connlimit-above 20
+            connlimit-mask 24 DROP;
+        mod connlimit connlimit-upto 5 DROP;
+        mod connlimit connlimit-above 10 connlimit-mask 24
+            connlimit-daddr DROP;
+    }
+    chain FORWARD {
+        mod connlimit connlimit-above 20 connlimit-mask 24 DROP;
+        mod connlimit connlimit-above 20 connlimit-mask 24 DROP;
+    }
+}
+domain ip6 table filter chain INPUT {
+    proto tcp dport 22 mod connlimit connlimit-above 5 connlimit-mask 64 DROP;
+}

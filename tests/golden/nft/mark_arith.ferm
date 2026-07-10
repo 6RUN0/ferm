@@ -1,0 +1,16 @@
+# Masked mark arithmetic for MARK and CONNMARK.  set-xmark v/m folds to the
+# readback and/or canon (& ~mask|value | value); set-mark v/m uses the
+# effective mask m' = v|m (so 0xff/0x0f is legal); and/or/xor-mark emit the
+# bitwise register rewrite (&/|/^).  CONNMARK targets ct mark; the canon is a
+# fixpoint on both registers.  save/restore-mark with masks stay refusals.
+table mangle chain PREROUTING {
+    MARK set-xmark 0x1/0xff;
+    MARK set-mark 0xff/0x0f;
+    MARK or-mark 0x4;
+    MARK and-mark 0xf0;
+    MARK xor-mark 0x8;
+    CONNMARK set-xmark 0x2/0xff;
+    CONNMARK or-mark 0x10;
+    CONNMARK and-mark 0xf0;
+    CONNMARK xor-mark 0x8;
+}

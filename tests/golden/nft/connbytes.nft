@@ -1,0 +1,15 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT ct bytes >= 1048576 accept
+add rule ip ferm INPUT ct original packets 100-200 accept
+add rule ip ferm INPUT ct reply avgpkt < 500 drop
+add rule ip ferm INPUT ct bytes 0-5000 accept
+add rule ip ferm INPUT ct packets != 100-200 drop
+add rule ip ferm INPUT ct bytes >= 4096 accept
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add rule ip6 ferm INPUT ct reply bytes >= 1024 accept

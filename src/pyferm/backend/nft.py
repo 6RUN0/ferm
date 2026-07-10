@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import grp
+import hashlib
 import ipaddress
 import pwd
 import re
@@ -375,17 +376,19 @@ class NftReset(NftStatement):
 @dataclass
 class NftSetUpdate(NftStatement):
     """
-    An ``update @<name> { <key>[ timeout <t>][ limit <rate> ] }`` statement.
+    A ``<verb> @<name> { <key>[ timeout <t>][ limit <rate> ] }`` statement.
 
-    Backs ``mod recent`` / ``mod hashlimit`` via an implicit dynamic set: the
+    Backs ``mod recent`` / ``mod hashlimit`` (``verb="update"``) and
+    ``mod connlimit`` (``verb="add"``) via an implicit dynamic set: the
     statement both mutates the set (recording ``<key>``) and, through its
-    optional ``limit rate``, gates the rule's verdict.  It carries the
-    declaration facts (``set_type``; a ``timeout`` implies the
-    ``,timeout`` flag) so :func:`_collect_set_declarations` can raise the
-    matching :class:`_DynSetDecl` without re-parsing the key.  The brace order
-    is pinned to the kernel readback: key, then timeout, then limit.  Kept a
-    distinct subclass (like :class:`NftReset`) so the collapse/vmap passes --
-    which key off :class:`NftMatch`/:class:`NftVerdict` -- leave it untouched.
+    optional ``limit rate`` or an ``ct count`` tail baked into ``key_expr``,
+    gates the rule's verdict.  It carries the declaration facts (``set_type``;
+    a ``timeout`` implies the ``,timeout`` flag) so
+    :func:`_collect_set_declarations` can raise the matching
+    :class:`_DynSetDecl` without re-parsing the key.  The brace order is pinned
+    to the kernel readback: key, then timeout, then limit.  Kept a distinct
+    subclass (like :class:`NftReset`) so the collapse/vmap passes -- which key
+    off :class:`NftMatch`/:class:`NftVerdict` -- leave it untouched.
     """
 
     name: str
@@ -393,15 +396,35 @@ class NftSetUpdate(NftStatement):
     set_type: str
     timeout: str | None = None
     limit: str | None = None
+    verb: str = "update"
 
     def to_text(self) -> str:
-        """Render ``update @<name> { ... }`` in pinned brace order."""
+        """Render ``<verb> @<name> { ... }`` in pinned brace order."""
         parts = [self.key_expr]
         if self.timeout is not None:
             parts.append(f"timeout {self.timeout}")
         if self.limit is not None:
             parts.append(f"limit {self.limit}")
-        return f"update @{self.name} {{ {' '.join(parts)} }}"
+        return f"{self.verb} @{self.name} {{ {' '.join(parts)} }}"
+
+
+@dataclass
+class NftQuota(NftStatement):
+    """
+    A ``quota <n> <unit>`` statement (``mod quota``).
+
+    Kept a distinct subclass (like :class:`NftReset`) rather than an
+    :class:`NftMatch` so the collapse/vmap passes -- which key off
+    :class:`NftMatch`/:class:`NftVerdict` -- leave it linear: a quota is
+    stateful accounting per rule, and folding two rules onto one quota would
+    merge their byte counters.
+    """
+
+    expr: str
+
+    def to_text(self) -> str:
+        """Return the pre-rendered quota statement verbatim."""
+        return self.expr
 
 
 @dataclass
@@ -496,6 +519,11 @@ class _SetDecl:
 #: The kernel injects ``size 65535`` into an implicit dynamic set; emit it
 #: explicitly so ``--plan`` converges against the readback.
 _DYN_SET_SIZE: Final[int] = 65535
+
+#: Placeholder set name a connlimit ``NftSetUpdate`` carries until the
+#: per-chain post-pass assigns its content-hash name (the final name depends
+#: on the fully rendered rule text, unavailable inside ``translate_rule``).
+_CONNLIMIT_SENTINEL: Final[str] = "?"
 
 
 @dataclass
@@ -601,6 +629,14 @@ def _collect_set_declarations(
         for rule in chain_rules:
             for stmt in rule.statements:
                 if isinstance(stmt, NftSetUpdate):
+                    if stmt.name == _CONNLIMIT_SENTINEL:
+                        # The connlimit post-pass runs in render() before the
+                        # collapse pass and MUST have renamed every sentinel;
+                        # one surviving here is a wiring bug, not config error.
+                        raise internal_error(
+                            "connlimit set reached declaration collection "
+                            "with an unfinalized name"
+                        )
                     dyn = _DynSetDecl(
                         stmt.set_type,
                         stmt.key_expr,
@@ -1307,48 +1343,131 @@ def _mark_value(scalar: str) -> str:
     return f"0x{value:08x}"
 
 
-def _masked_mark_set(scalar: str) -> str:
+def _masked_mark_set(
+    scalar: str,
+    option_name: str = "tproxy-mark",
+    register: str = "meta mark",
+) -> str:
     """
-    Spell TPROXY's ``--tproxy-mark value[/mask]`` as an nft mark rewrite.
+    Spell a ``value[/mask]`` mark rewrite as an nft *register* assignment.
 
-    xt computes ``newmark = (mark & ~mask) ^ value``; the kernel
-    canonicalizes the and/xor tree to an and/or form when ``value`` lies
-    within ``mask`` (xor over zeroed bits is or), and the ``& A`` operand it
-    prints already carries the ``| V`` bits -- ``A = ~mask | value`` does,
-    so the and/or emission round-trips.  A full mask (or the xt default when
-    the mask is omitted) folds to a plain set.  A value with bits outside
-    its mask has a different canonical form that would not round-trip, and a
-    zero mask is an identity assignment; both refuse.
+    Shared by TPROXY's ``--tproxy-mark`` and the MARK/CONNMARK ``set-xmark``
+    forms (``register`` selects ``meta mark`` or ``ct mark``).  xt computes
+    ``newmark = (mark & ~mask) ^ value``; the kernel canonicalizes the and/xor
+    tree to an and/or form when ``value`` lies within ``mask`` (xor over zeroed
+    bits is or), and the ``& A`` operand it prints already carries the ``| V``
+    bits -- ``A = ~mask | value`` does, so the and/or emission round-trips.  A
+    full mask (or the xt default when the mask is omitted) folds to a plain
+    set.  A value with bits outside its mask has a different canonical form
+    that would not round-trip, and a zero mask is an identity assignment; both
+    refuse.
     """
     base, sep, mask = scalar.partition("/")
     if not sep:
-        return f"meta mark set {_mark_value(base)}"
+        return f"{register} set {_mark_value(base)}"
     try:
         value = int(base, 0)
         mask_value = int(mask, 0)
     except ValueError:
         raise FermError(
-            f"invalid tproxy-mark '{scalar}' for nft backend"
+            f"invalid {option_name} '{scalar}' for nft backend"
         ) from None
     if not (0 <= value <= _MARK_MAX and 0 <= mask_value <= _MARK_MAX):
-        raise FermError(f"invalid tproxy-mark '{scalar}' for nft backend")
+        raise FermError(f"invalid {option_name} '{scalar}' for nft backend")
     if mask_value == 0:
         raise FermError(
-            f"tproxy-mark '{scalar}' has a zero mask (a no-op) for nft backend"
+            f"{option_name} '{scalar}' has a zero mask (a no-op) for nft "
+            "backend"
         )
     if value & ~mask_value & _MARK_MAX:
         raise FermError(
-            f"tproxy-mark '{scalar}' value has bits outside its mask for "
+            f"{option_name} '{scalar}' value has bits outside its mask for "
             f"nft backend"
         )
     if mask_value == _MARK_MAX:
-        return f"meta mark set {_mark_value(base)}"
+        return f"{register} set {_mark_value(base)}"
     and_operand = (~mask_value | value) & _MARK_MAX
     if and_operand == _MARK_MAX and value != 0:
-        return f"meta mark set meta mark | 0x{value:08x}"
+        return f"{register} set {register} | 0x{value:08x}"
     if value == 0:
-        return f"meta mark set meta mark & 0x{and_operand:08x}"
-    return f"meta mark set meta mark & 0x{and_operand:08x} | 0x{value:08x}"
+        return f"{register} set {register} & 0x{and_operand:08x}"
+    return f"{register} set {register} & 0x{and_operand:08x} | 0x{value:08x}"
+
+
+def _setmark_effective(scalar: str) -> str:
+    """
+    Rewrite ``--set-mark value/mask`` to the xmark form the kernel compiles.
+
+    xt's MARK/CONNMARK ``--set-mark`` clears then sets only the masked bits
+    but does so with an EFFECTIVE mask ``m' = value | mask``, so a value with
+    bits outside the literal mask (``0xff/0x0f``) is legal and its result is
+    ``(mark & ~m') | value``.  Substituting ``m'`` before the and/or canon
+    keeps the ``value`` within its mask, so the shared ``set-mark`` path never
+    needs the ``value ⊄ mask`` guard.  A bare value (no mask) passes through
+    to the plain-set path unchanged.
+    """
+    base, sep, mask = scalar.partition("/")
+    if not sep:
+        return scalar
+    try:
+        value = int(base, 0)
+        mask_value = int(mask, 0)
+    except ValueError:
+        raise FermError(
+            f"invalid set-mark '{scalar}' for nft backend"
+        ) from None
+    if not (0 <= value <= _MARK_MAX and 0 <= mask_value <= _MARK_MAX):
+        raise FermError(f"invalid set-mark '{scalar}' for nft backend")
+    return f"0x{value:x}/0x{value | mask_value:x}"
+
+
+def _mark_arith_operand(option: RenderedOption) -> str:
+    """Validate an and/or/xor-mark operand and spell it as 8-digit hex."""
+    scalar, _ = unwrap_value(option.value)
+    return _mark_value(scalar)
+
+
+def _mark_arith_set(
+    register: str, target: str, companions: dict[str, RenderedOption]
+) -> str:
+    """
+    Spell one MARK/CONNMARK mark-arithmetic op as a *register* rewrite.
+
+    Exactly one of ``set-mark``/``set-xmark``/``and-mark``/``or-mark``/
+    ``xor-mark`` may be present (``provided != 1`` refuses with the target's
+    own message); ``set-mark``/``set-xmark`` fold to the and/or canon (via
+    :func:`_masked_mark_set`, with ``set-mark``'s effective mask applied
+    first), and the bitwise ops emit ``<reg> set <reg> <op> 0x%08x`` in the
+    kernel-readback spelling (``&``/``|``/``^``).
+    """
+    setmark = companions.get("set-mark")
+    setxmark = companions.get("set-xmark")
+    andmark = companions.get("and-mark")
+    ormark = companions.get("or-mark")
+    xormark = companions.get("xor-mark")
+    provided = sum(
+        option is not None
+        for option in (setmark, setxmark, andmark, ormark, xormark)
+    )
+    if provided != 1:
+        raise FermError(f"{target} target not yet supported by nft backend")
+    if setxmark is not None:
+        scalar, _ = unwrap_value(setxmark.value)
+        return _masked_mark_set(scalar, "set-xmark", register)
+    if setmark is not None:
+        scalar, _ = unwrap_value(setmark.value)
+        return _masked_mark_set(
+            _setmark_effective(scalar), "set-mark", register
+        )
+    if andmark is not None:
+        return f"{register} set {register} & {_mark_arith_operand(andmark)}"
+    if ormark is not None:
+        return f"{register} set {register} | {_mark_arith_operand(ormark)}"
+    if (
+        xormark is None
+    ):  # narrowed by provided == 1; keep the checker convinced
+        raise internal_error()
+    return f"{register} set {register} ^ {_mark_arith_operand(xormark)}"
 
 
 def _masked_mark_expr(selector: str, scalar: str, neg: bool) -> str | None:
@@ -1375,28 +1494,6 @@ def _masked_mark_expr(selector: str, scalar: str, neg: bool) -> str | None:
         raise FermError(f"invalid mark '{scalar}' for nft backend")
     operator = "!=" if neg else "=="
     return f"{selector} & 0x{mask_value:08x} {operator} 0x{value:08x}"
-
-
-def _xmark_full_set(scalar: str) -> str:
-    """
-    Fold ``--set-xmark value[/mask]`` to its plain-set value, else refuse.
-
-    xt writes ``(mark & ~mask) ^ value``; with a full mask (the xt
-    default when the mask is omitted) the old bits are cleared first, so
-    the result is exactly ``set value``.  A partial mask needs nft mark
-    arithmetic that is not emitted yet.
-    """
-    base, sep, mask = scalar.partition("/")
-    if sep:
-        try:
-            full_mask = int(mask, 0) == _MARK_MAX
-        except ValueError:
-            full_mask = False
-        if not full_mask:
-            raise FermError(
-                f"masked set-xmark '{scalar}' not yet supported by nft backend"
-            )
-    return base
 
 
 def _icmp_type_expr(domain: Family, scalar: str, neg: bool) -> str:
@@ -1816,6 +1913,29 @@ def _netmap_verdict(
     )
 
 
+def _iprange_bound(domain: Family, scalar: str) -> str:
+    """
+    Validate one ``mod iprange`` boundary as an address of *domain*'s family.
+
+    The bound passes the safe-operand regex (:func:`_validate_address`) and
+    must be a literal address of the rule's family -- an ip6 bound in an ip
+    rule refuses here rather than emitting a script ``nft -c`` would reject.
+    """
+    safe = _validate_address(scalar)
+    try:
+        addr = ipaddress.ip_address(safe)
+    except ValueError:
+        raise FermError(
+            f"invalid iprange bound '{scalar}' for the nft backend"
+        ) from None
+    if addr.version != (4 if domain is Family.IP else 6):
+        raise FermError(
+            f"iprange bound '{scalar}' does not match the {domain} family "
+            "for the nft backend"
+        )
+    return safe
+
+
 def _translate_match_parts(
     domain: Family, option: RenderedOption, protocol: str | None
 ) -> tuple[str, str | None, str | None]:
@@ -2010,6 +2130,24 @@ def _translate_match_parts(
         if kind is None:
             raise FermError(f"invalid pkttype '{scalar}' for nft backend")
         return (f"meta pkttype {_op(neg)}{kind}", None, None)
+    if name in ("src-range", "dst-range") and domain in (
+        Family.IP,
+        Family.IP6,
+    ):
+        # mod iprange address ranges; arp/eb have no saddr/daddr range and
+        # fall through to the generic refusal.  Not set-eligible: a range is
+        # a single interval operand, not a foldable member.
+        side = "saddr" if name == "src-range" else "daddr"
+        low, sep, high = scalar.partition("-")
+        if not sep or not low or not high:
+            raise FermError(f"invalid iprange '{scalar}' for the nft backend")
+        low_addr = _iprange_bound(domain, low)
+        high_addr = _iprange_bound(domain, high)
+        return (
+            f"{domain} {side} {_op(neg)}{low_addr}-{high_addr}",
+            None,
+            None,
+        )
     raise FermError(f"option '{name}' not yet supported by nft backend")
 
 
@@ -2455,54 +2593,41 @@ def build_verdict(
     if target_value == "TRACE":
         return NftVerdict("meta nftrace set 1")
     if target_value == "CONNMARK":
-        # a mask companion changes the semantics; refuse rather than
-        # silently drop it
-        for unsupported in (
-            "set-xmark",
-            "and-mark",
-            "or-mark",
-            "xor-mark",
-            "nfmask",
-            "ctmask",
-            "mask",
-        ):
-            if unsupported in companions:
+        # save/restore-mark with nfmask/ctmask/mask carries bits BETWEEN the
+        # packet and ct registers under two independent masks; nft's grammar
+        # has no single expression for that (iptables-translate emits a form
+        # the kernel silently collapses), so it refuses rather than mangle it.
+        for masked in ("nfmask", "ctmask", "mask"):
+            if masked in companions:
                 raise FermError(
-                    f"option '{unsupported}' not yet supported by nft backend"
+                    f"CONNMARK '{masked}' mixes two masked registers; nft "
+                    "cannot express it for the nft backend"
                 )
         has_save = "save-mark" in companions
         has_restore = "restore-mark" in companions
-        setmark = companions.get("set-mark")
-        provided = sum((has_save, has_restore, setmark is not None))
+        has_arith = any(
+            op in companions
+            for op in (
+                "set-mark",
+                "set-xmark",
+                "and-mark",
+                "or-mark",
+                "xor-mark",
+            )
+        )
+        provided = sum((has_save, has_restore, has_arith))
         if provided != 1:
             raise FermError("CONNMARK target not yet supported by nft backend")
         if has_save:
             return NftVerdict("ct mark set meta mark")
         if has_restore:
             return NftVerdict("meta mark set ct mark")
-        if setmark is None:  # narrowed above; keep the checker convinced
-            raise internal_error()
-        scalar, _ = unwrap_value(setmark.value)
-        return NftVerdict(f"ct mark set {_mark_value(scalar)}")
+        return NftVerdict(_mark_arith_set("ct mark", "CONNMARK", companions))
     # The eb-family MARK keyword stays under the eb guard below (its
     # companion spellings are ebtables-specific), so this branch handles
     # the ip/ip6/arp target only.
     if target_value == "MARK" and domain is not Family.EB:
-        for variant in ("and-mark", "or-mark", "xor-mark"):
-            if variant in companions:
-                raise FermError(
-                    f"option '{variant}' not yet supported by nft backend"
-                )
-        setmark = companions.get("set-mark")
-        setxmark = companions.get("set-xmark")
-        if setmark is not None and setxmark is None:
-            scalar, _ = unwrap_value(setmark.value)
-        elif setxmark is not None and setmark is None:
-            scalar, _ = unwrap_value(setxmark.value)
-            scalar = _xmark_full_set(scalar)
-        else:
-            raise FermError("MARK target not yet supported by nft backend")
-        return NftVerdict(f"meta mark set {_mark_value(scalar)}")
+        return NftVerdict(_mark_arith_set("meta mark", "MARK", companions))
     if target_value == "DSCP" and domain in (Family.IP, Family.IP6):
         # Exactly one of set-dscp / set-dscp-class (TCPMSS/CONNMARK pattern);
         # the selector is family-prefixed like the dscp match.  arp/eb fall
@@ -3534,6 +3659,277 @@ def _time_matches(options: dict[str, RenderedOption]) -> list[NftMatch]:
     return matches
 
 
+# ---------------------------------------------------------------------------
+# mod connbytes: ct [dir] bytes|packets|avgpkt
+# ---------------------------------------------------------------------------
+
+#: ct byte/packet counters are 64-bit; the guard is wider than quota's 2^63-1.
+_CONNBYTES_MAX: Final[int] = 2**64 - 1
+_CONNBYTES_DIRS: Final[frozenset[str]] = frozenset(
+    {"original", "reply", "both"}
+)
+_CONNBYTES_MODES: Final[frozenset[str]] = frozenset(
+    {"bytes", "packets", "avgpkt"}
+)
+
+
+def _connbytes_u64(scalar: str) -> str:
+    """Validate a connbytes bound as an unsigned 64-bit integer."""
+    if not scalar.isdigit():
+        raise FermError(
+            f"invalid connbytes value '{scalar}' for the nft backend"
+        )
+    value = int(scalar)
+    if value > _CONNBYTES_MAX:
+        raise FermError(
+            f"connbytes value '{scalar}' exceeds 2^64-1 for the nft backend"
+        )
+    return str(value)
+
+
+def _connbytes_range(selector: str, value: str, neg: bool) -> str:
+    """
+    Spell a connbytes range operand in the kernel-readback form.
+
+    xt's ``lo:hi`` window maps to the readback's comparison spelling:
+    ``N:`` (or a bare ``N``, which xt reads as ``N:``) is ``>= N``, ``:M``
+    is the closed ``0-M`` interval, and ``N:M`` is ``N-M``.  Negation flips
+    ``>=`` to ``<`` for the open lower bound and prefixes ``!=`` for the
+    interval forms -- the ``>=``/``<`` symbols are the readback spelling, not
+    iptables-translate's ``ge``/``lt``.
+    """
+    low, sep, high = value.partition(":")
+    if not sep:  # bare N -> N: (open upper bound)
+        bound = _connbytes_u64(value)
+        return f"{selector} {'<' if neg else '>='} {bound}"
+    if low and not high:  # N:
+        bound = _connbytes_u64(low)
+        return f"{selector} {'<' if neg else '>='} {bound}"
+    if not low and high:  # :M -> 0-M
+        upper = _connbytes_u64(high)
+        return f"{selector} {'!= ' if neg else ''}0-{upper}"
+    if not low and not high:  # bare ':'
+        raise FermError(
+            f"invalid connbytes range '{value}' for the nft backend"
+        )
+    lower = _connbytes_u64(low)
+    upper = _connbytes_u64(high)
+    if int(low) > int(high):
+        raise FermError(
+            f"connbytes range '{value}' has lo > hi for the nft backend"
+        )
+    return f"{selector} {'!= ' if neg else ''}{lower}-{upper}"
+
+
+def _connbytes_match(opts: dict[str, RenderedOption]) -> NftMatch:
+    """
+    Translate a rule's ``mod connbytes`` options to one ``ct`` counter match.
+
+    The three options are collected rule-wide (the ``mod time`` precedent);
+    ``connbytes-dir`` and ``connbytes-mode`` are both mandatory (xt refuses
+    without them), and neither may be negated.  ``dir both`` drops the
+    direction prefix; ``original``/``reply`` prefix the selector.
+    """
+    value_opt = opts.get("connbytes")
+    if value_opt is None:
+        raise FermError(
+            "mod connbytes needs a 'connbytes' value for the nft backend"
+        )
+    dir_opt = opts.get("connbytes-dir")
+    mode_opt = opts.get("connbytes-mode")
+    if dir_opt is None or mode_opt is None:
+        raise FermError(
+            "mod connbytes needs both 'connbytes-dir' and 'connbytes-mode' "
+            "for the nft backend"
+        )
+    direction, dir_neg = unwrap_value(dir_opt.value)
+    mode, mode_neg = unwrap_value(mode_opt.value)
+    if dir_neg or mode_neg:
+        raise FermError(
+            "mod connbytes dir/mode cannot be negated for the nft backend"
+        )
+    if direction not in _CONNBYTES_DIRS:
+        raise FermError(
+            f"invalid connbytes-dir '{direction}' for the nft backend"
+        )
+    if mode not in _CONNBYTES_MODES:
+        raise FermError(f"invalid connbytes-mode '{mode}' for the nft backend")
+    prefix = "" if direction == "both" else f"{direction} "
+    selector = f"ct {prefix}{mode}"
+    value, neg = unwrap_value(value_opt.value)
+    return NftMatch(_connbytes_range(selector, value, neg))
+
+
+# ---------------------------------------------------------------------------
+# mod quota: quota <n> <unit>
+# ---------------------------------------------------------------------------
+
+#: nft rejects a quota >= 2^63 ("Value too large"); the ceiling is narrower
+#: than connbytes' full u64.
+_QUOTA_MAX: Final[int] = 2**63 - 1
+#: The three quota units the kernel readback uses, largest first (there is no
+#: ``gbytes``; the ladder tops out at ``mbytes``).
+_QUOTA_UNITS: Final[tuple[tuple[int, str], ...]] = (
+    (1024 * 1024, "mbytes"),
+    (1024, "kbytes"),
+)
+
+
+def _quota_canon(value: int) -> str:
+    """
+    Spell a byte quota in the largest evenly-dividing kernel unit.
+
+    The readback prints ``2 kbytes`` for 2048 and ``1 mbytes`` for 2^20 but
+    keeps an indivisible count in bytes (1500000 stays ``1500000 bytes``).
+    There is no ``gbytes``, so 2^30 reads back as ``1024 mbytes``.
+    """
+    for divisor, unit in _QUOTA_UNITS:
+        if value and value % divisor == 0:
+            return f"{value // divisor} {unit}"
+    return f"{value} bytes"
+
+
+def _quota_statement(option: RenderedOption) -> NftQuota:
+    """
+    Translate a ``mod quota --quota N`` match to the nft ``quota`` statement.
+
+    The ferm ``quota=s`` keyword carries no ``!``, so the negated ``quota
+    over`` readback form cannot arise here; the value is validated against
+    nft's 2^63-1 ceiling and canonicalised to the kernel's printed unit.
+    """
+    scalar, _ = unwrap_value(option.value)
+    if not scalar.isdigit():
+        raise FermError(f"invalid quota '{scalar}' for the nft backend")
+    value = int(scalar)
+    if value > _QUOTA_MAX:
+        raise FermError(
+            f"quota '{scalar}' exceeds nft's 2^63-1 ceiling for the nft "
+            "backend"
+        )
+    return NftQuota(f"quota {_quota_canon(value)}")
+
+
+# ---------------------------------------------------------------------------
+# mod connlimit: an implicit per-rule dynamic set + ct count
+# ---------------------------------------------------------------------------
+
+#: connlimit's connection count is a 32-bit value.
+_CONNLIMIT_COUNT_MAX: Final[int] = 0xFFFFFFFF
+
+
+def _connlimit_count(scalar: str) -> str:
+    """Validate a connlimit connection count as an unsigned 32-bit integer."""
+    if not scalar.isdigit():
+        raise FermError(
+            f"invalid connlimit count '{scalar}' for the nft backend"
+        )
+    value = int(scalar)
+    if value > _CONNLIMIT_COUNT_MAX:
+        raise FermError(
+            f"connlimit count '{scalar}' exceeds 2^32-1 for the nft backend"
+        )
+    return str(value)
+
+
+def _connlimit_update(domain: Family, rule: RenderedRule) -> NftSetUpdate:
+    """
+    Translate a rule's ``mod connlimit`` to a per-rule ``add @set { ... }``.
+
+    xt_connlimit allocates one ``nf_conncount`` tree PER RULE, so every rule
+    gets its own implicit dynamic set (never shared).  The set carries the
+    address key (``ip|ip6 saddr|daddr``, narrowed by ``connlimit-mask`` to
+    ``& <netmask>``) plus a ``ct count [over] N`` stateful expression on the
+    element.  The name is a placeholder here; :func:`_finalize_connlimit_names`
+    assigns the stable content-hash name once the full rule text is known.
+    Exactly one of ``connlimit-upto``/``connlimit-above`` (upto = ``count N``,
+    above = ``count over N``; each negates to the other); ``saddr`` and
+    ``daddr`` flags together, or a zero/oversized mask, refuse.
+    """
+    if domain not in (Family.IP, Family.IP6):
+        raise FermError("mod connlimit needs the ip or ip6 family for nft")
+    opts = {o.name: o for o in rule.options if o.module == "connlimit"}
+    upto = opts.get("connlimit-upto")
+    above = opts.get("connlimit-above")
+    if (upto is not None) == (above is not None):
+        raise FermError(
+            "mod connlimit needs exactly one of connlimit-upto/"
+            "connlimit-above for the nft backend"
+        )
+    rate_option = upto if upto is not None else above
+    assert rate_option is not None  # exactly one is set (checked above)
+    count_scalar, neg = unwrap_value(rate_option.value)
+    count = _connlimit_count(count_scalar)
+    # upto = "not above"; a negated upto behaves like above and vice versa.
+    over = (above is not None) != neg
+    count_expr = f"ct count over {count}" if over else f"ct count {count}"
+    if "connlimit-saddr" in opts and "connlimit-daddr" in opts:
+        raise FermError(
+            "mod connlimit cannot combine saddr and daddr for the nft backend"
+        )
+    side = "daddr" if "connlimit-daddr" in opts else "saddr"
+    key = f"{domain} {side}"
+    mask_option = opts.get("connlimit-mask")
+    if mask_option is not None:
+        length, _ = unwrap_value(mask_option.value)
+        if not length.isdigit():
+            raise FermError(
+                f"invalid connlimit mask '{length}' for the nft backend"
+            )
+        bits = int(length)
+        max_bits = 32 if domain == Family.IP else 128
+        if bits == 0:
+            raise FermError(
+                "connlimit-mask 0 keys the whole address space as one "
+                "bucket; refused for the nft backend"
+            )
+        if bits > max_bits:
+            raise FermError(
+                f"connlimit mask '{length}' exceeds /{max_bits} for the nft "
+                "backend"
+            )
+        if bits < max_bits:  # a full mask needs no `& netmask`
+            key += f" & {_prefix_length_mask(domain, length)}"
+    set_type = "ipv4_addr" if domain == Family.IP else "ipv6_addr"
+    return NftSetUpdate(
+        _CONNLIMIT_SENTINEL, f"{key} {count_expr}", set_type, verb="add"
+    )
+
+
+def _finalize_connlimit_names(
+    domain: Family, table: str, chain: str, rules: list[NftRule]
+) -> None:
+    """
+    Assign each connlimit set a stable content-hash name, in place.
+
+    Runs per chain in ``render()`` STRICTLY BEFORE the collapse pass: the
+    name depends on the fully rendered rule text (unknown inside
+    ``translate_rule``, where siblings are invisible), so the sentinel stands
+    in until here.  The name hashes (family, table, chain, rule text with the
+    sentinel still in place -- which breaks the name<->text cycle, and an
+    ordinal that separates textually identical rules).  Ordering matters two
+    ways: distinct names give collapse distinct ``NftSetUpdate`` texts, so it
+    never folds two connlimit rules into one (which would merge their per-rule
+    counters); and the ordinal guarantees two byte-identical rules still get
+    separate sets, exactly as xt gives them separate conncount trees.
+    """
+    ordinals: dict[str, int] = {}
+    for rule in rules:
+        for stmt in rule.statements:
+            if (
+                isinstance(stmt, NftSetUpdate)
+                and stmt.name == _CONNLIMIT_SENTINEL
+            ):
+                text = " ".join(s.to_text() for s in rule.statements)
+                ordinal = ordinals.get(text, 0)
+                ordinals[text] = ordinal + 1
+                digest = hashlib.sha256(
+                    "\x00".join(
+                        (domain.value, table, chain, text, str(ordinal))
+                    ).encode(BYTE_ENCODING)
+                ).hexdigest()[:12]
+                stmt.name = f"connlimit_{digest}"
+
+
 def translate_rule(
     domain: Family,
     table: str,
@@ -3661,6 +4057,13 @@ def translate_rule(
         o.name: o for o in rule.options if o.module == "time"
     }
 
+    # mod connbytes' value/dir/mode options depend on each other and fold
+    # into one `ct` counter match, so they are collected rule-wide and
+    # emitted at the first connbytes option (the statistic/time precedent).
+    connbytes_opts: dict[str, RenderedOption] = {
+        o.name: o for o in rule.options if o.module == "connbytes"
+    }
+
     # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
     comment: str | None = None
@@ -3671,6 +4074,8 @@ def translate_rule(
     recent_emitted = False
     hashlimit_emitted = False
     time_emitted = False
+    connbytes_emitted = False
+    connlimit_emitted = False
 
     for option in rule.options:
         name, kind = option.name, option.kind
@@ -3728,6 +4133,25 @@ def translate_rule(
             if not hashlimit_emitted:
                 matches.append(_hashlimit_update(domain, rule, protocol))
                 hashlimit_emitted = True
+            continue
+        if option.module == "connbytes":
+            # One `ct` counter match per rule, at the first connbytes option
+            # so it keeps source order (the statistic/time precedent).
+            if not connbytes_emitted:
+                matches.append(_connbytes_match(connbytes_opts))
+                connbytes_emitted = True
+            continue
+        if option.module == "connlimit":
+            # One per-rule dynamic-set `add` per rule, at the first connlimit
+            # option; its set name is finalized in a post-pass (render()).
+            if not connlimit_emitted:
+                matches.append(_connlimit_update(domain, rule))
+                connlimit_emitted = True
+            continue
+        if option.module == "quota":
+            # A stateful quota statement, kept off NftMatch so collapse/vmap
+            # never fold two rules onto one byte counter.
+            matches.append(_quota_statement(option))
             continue
         if isinstance(option.value, SetRef):
             setref = option.value
@@ -4052,19 +4476,23 @@ class NftBackend(Backend):
                         f"nft chain name collision '{nft_name}' in table "
                         f"{NFT_TABLE_NAME}"
                     )
-                rules[nft_name] = _collapse_chain_rules(
-                    [
-                        translate_rule(
-                            domain,
-                            tbl,
-                            rule,
-                            chain=original,
-                            recent_specs=recent_specs,
-                        )
-                        for rule in table_info.chains[original].rules
-                        if not _references_empty_named_set(rule)
-                    ]
-                )
+                translated = [
+                    translate_rule(
+                        domain,
+                        tbl,
+                        rule,
+                        chain=original,
+                        recent_specs=recent_specs,
+                    )
+                    for rule in table_info.chains[original].rules
+                    if not _references_empty_named_set(rule)
+                ]
+                # Assign connlimit set names from the final rule text BEFORE
+                # collapse: distinct names keep collapse from folding two
+                # connlimit rules into one (which would merge per-rule
+                # conncount trees).  The order is load-bearing.
+                _finalize_connlimit_names(domain, tbl, original, translated)
+                rules[nft_name] = _collapse_chain_rules(translated)
         decls = _collect_set_declarations(domain, rules)
         save = serialize_table(
             table, chains, rules, decls, noflush=options.noflush

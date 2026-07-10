@@ -1,0 +1,23 @@
+# mod connbytes -> ct [dir] bytes|packets|avgpkt: the open lower bound (N:
+# and the bare N xt reads as N:), the closed 0-M and N-M intervals, the
+# direction prefixes (both drops it), avgpkt mode, and the negated forms
+# (< for the open bound, != for the intervals).  Symbols are the readback
+# spelling (>=/<), not iptables-translate's ge/lt.
+table filter chain INPUT {
+    mod connbytes connbytes "1048576:" connbytes-dir both
+        connbytes-mode bytes ACCEPT;
+    mod connbytes connbytes "100:200" connbytes-dir original
+        connbytes-mode packets ACCEPT;
+    mod connbytes ! connbytes "500:" connbytes-dir reply
+        connbytes-mode avgpkt DROP;
+    mod connbytes connbytes ":5000" connbytes-dir both
+        connbytes-mode bytes ACCEPT;
+    mod connbytes ! connbytes "100:200" connbytes-dir both
+        connbytes-mode packets DROP;
+    mod connbytes connbytes 4096 connbytes-dir both
+        connbytes-mode bytes ACCEPT;
+}
+domain ip6 table filter chain INPUT {
+    mod connbytes connbytes "1024:" connbytes-dir reply
+        connbytes-mode bytes ACCEPT;
+}

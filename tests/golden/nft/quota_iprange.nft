@@ -1,0 +1,15 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT quota 1 mbytes accept
+add rule ip ferm INPUT quota 2 kbytes drop
+add rule ip ferm INPUT quota 1500000 bytes accept
+add rule ip ferm INPUT quota 1024 mbytes accept
+add rule ip ferm INPUT ip saddr 10.0.0.1-10.0.0.5 accept
+add rule ip ferm INPUT ip daddr != 192.168.0.1-192.168.0.10 drop
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add rule ip6 ferm INPUT ip6 saddr 2001:db8::1-2001:db8::ff accept

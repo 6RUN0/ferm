@@ -854,12 +854,13 @@ def test_build_verdict_connmark() -> None:
         ).to_text()
         == "ct mark set 0x00000002"
     )
-    # a mask companion changes the semantics; refuse rather than drop it
+    # save/restore with a mask moves bits between two masked registers,
+    # which nft cannot express; refuse rather than drop it
     masked = {
         "save-mark": _opt("save-mark", None, module="CONNMARK"),
         "nfmask": _opt("nfmask", "0xff", module="CONNMARK"),
     }
-    with pytest.raises(FermError, match=r"^option 'nfmask' not yet"):
+    with pytest.raises(FermError, match=r"mixes two masked registers"):
         build_verdict(Family.IP, "mangle", "jump", "CONNMARK", masked)
     with pytest.raises(FermError, match=r"^CONNMARK target not yet supported"):
         build_verdict(Family.IP, "mangle", "jump", "CONNMARK", {})
@@ -972,10 +973,13 @@ def test_build_verdict_mark_target() -> None:
             build_verdict(Family.IP, "mangle", "jump", "MARK", xmark).to_text()
             == expected
         )
-    # a partial mask keeps old bits -- no single nft statement yet
+    # a partial mask now folds to the readback and/or canon (batch 7):
+    # A = ~mask | value, so the AND operand already carries the value bits
     xmark = {"set-xmark": _opt("set-xmark", "0x2/0xff", module="MARK")}
-    with pytest.raises(FermError, match=r"^masked set-xmark '0x2/0xff'"):
-        build_verdict(Family.IP, "mangle", "jump", "MARK", xmark)
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "MARK", xmark).to_text()
+        == "meta mark set meta mark & 0xffffff02 | 0x00000002"
+    )
     # both spellings at once cannot be ordered; refuse
     both = {
         "set-mark": _opt("set-mark", "2", module="MARK"),
@@ -5807,3 +5811,471 @@ def test_dynamic_set_same_key_different_limit_refused() -> None:
     rules = {"c": [_dyn_rule(a), _dyn_rule(b)]}
     with pytest.raises(FermError, match=r"conflicting declarations"):
         _collect_set_declarations(Family.IP, rules)
+
+
+# --- 2026-07-10 vocabulary batch 7: connbytes, connlimit, quota, iprange,
+# --- MARK/CONNMARK mark arithmetic.  Value spellings (>=/</&, quota units,
+# --- the mark and/or canon) are pinned against a live kernel readback in
+# --- tests/integration/test_nft_live_vocabulary.
+
+from pyferm.backend.nft import (  # noqa: E402
+    NftQuota,
+    _connlimit_update,
+    _finalize_connlimit_names,
+    _quota_canon,
+)
+
+
+def _connbytes(value: Value, direction: Value, mode: Value) -> RenderedRule:
+    return _rule(
+        _opt("connbytes", value, module="connbytes"),
+        _opt("connbytes-dir", direction, module="connbytes"),
+        _opt("connbytes-mode", mode, module="connbytes"),
+        _target("ACCEPT"),
+    )
+
+
+def test_connbytes_range_forms() -> None:
+    # exact full text (not startswith): a mutant returning `ge`/`lt` or the
+    # wrong bound must fail
+    cases = {
+        ("1048576:", "both", "bytes"): "ct bytes >= 1048576",
+        ("100:200", "original", "packets"): "ct original packets 100-200",
+        (":5000", "both", "bytes"): "ct bytes 0-5000",
+        ("4096", "both", "bytes"): "ct bytes >= 4096",
+        ("1024:", "reply", "bytes"): "ct reply bytes >= 1024",
+    }
+    for (value, direction, mode), expected in cases.items():
+        nft = translate_rule(
+            Family.IP, "filter", _connbytes(value, direction, mode)
+        )
+        assert nft.statements[0].to_text() == expected
+
+
+def test_connbytes_negated_forms() -> None:
+    # negated N: -> <, negated interval -> !=
+    nft = translate_rule(
+        Family.IP, "filter", _connbytes(PreNegated("500:"), "reply", "avgpkt")
+    )
+    assert nft.statements[0].to_text() == "ct reply avgpkt < 500"
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _connbytes(PreNegated("100:200"), "both", "packets"),
+    )
+    assert nft.statements[0].to_text() == "ct packets != 100-200"
+    # negated :M -> != 0-M (calibration pin)
+    nft = translate_rule(
+        Family.IP, "filter", _connbytes(PreNegated(":5000"), "both", "bytes")
+    )
+    assert nft.statements[0].to_text() == "ct bytes != 0-5000"
+
+
+def test_connbytes_refusals() -> None:
+    # dir and mode are both mandatory
+    with pytest.raises(FermError, match=r"needs both 'connbytes-dir'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("connbytes", "100:", module="connbytes"),
+                _opt("connbytes-dir", "both", module="connbytes"),
+                _target("ACCEPT"),
+            ),
+        )
+    with pytest.raises(FermError, match=r"invalid connbytes-dir 'sideways'"):
+        translate_rule(
+            Family.IP, "filter", _connbytes("100:", "sideways", "bytes")
+        )
+    with pytest.raises(FermError, match=r"invalid connbytes-mode 'octets'"):
+        translate_rule(
+            Family.IP, "filter", _connbytes("100:", "both", "octets")
+        )
+    with pytest.raises(FermError, match=r"cannot be negated"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _connbytes("100:", PreNegated("both"), "bytes"),
+        )
+    with pytest.raises(FermError, match=r"has lo > hi"):
+        translate_rule(
+            Family.IP, "filter", _connbytes("200:100", "both", "bytes")
+        )
+    # u64 ceiling (wider than quota's u63)
+    with pytest.raises(FermError, match=r"exceeds 2\^64-1"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _connbytes(f"{2**64}:", "both", "bytes"),
+        )
+
+
+def test_quota_unit_canon() -> None:
+    # tabular, literally these borders: the largest evenly-dividing unit, no
+    # gbytes (2^30 stays mbytes), an indivisible count in bytes
+    assert _quota_canon(1024) == "1 kbytes"
+    assert _quota_canon(1023) == "1023 bytes"
+    assert _quota_canon(1048576) == "1 mbytes"
+    assert _quota_canon(1048575) == "1048575 bytes"
+    assert _quota_canon(2**30) == "1024 mbytes"
+    assert _quota_canon(2**31) == "2048 mbytes"
+    assert _quota_canon(1500000) == "1500000 bytes"
+    assert _quota_canon(2048) == "2 kbytes"
+
+
+def _quota_rule(value: str) -> RenderedRule:
+    return _rule(_opt("quota", value, module="quota"), _target("ACCEPT"))
+
+
+def test_quota_statement_and_validation() -> None:
+    nft = translate_rule(Family.IP, "filter", _quota_rule("1048576"))
+    assert isinstance(nft.statements[0], NftQuota)
+    assert nft.statements[0].to_text() == "quota 1 mbytes"
+    with pytest.raises(FermError, match=r"invalid quota 'lots'"):
+        translate_rule(Family.IP, "filter", _quota_rule("lots"))
+    # nft's ceiling is 2^63-1 (narrower than connbytes' u64)
+    with pytest.raises(FermError, match=r"exceeds nft's 2\^63-1"):
+        translate_rule(Family.IP, "filter", _quota_rule(str(2**63)))
+
+
+def test_two_quotas_do_not_collapse() -> None:
+    # a quota is stateful accounting; folding two rules onto one quota would
+    # merge their byte counters (the tproxy-mark regression-pin shape)
+    def quota_rule(unit: str) -> NftRule:
+        return NftRule(
+            statements=[
+                NftMatch("tcp dport 22", set_key="tcp dport", element="22"),
+                NftQuota(f"quota {unit}"),
+                NftVerdict("accept"),
+            ]
+        )
+
+    out = _collapse_chain_rules(
+        [quota_rule("1 mbytes"), quota_rule("2 mbytes")]
+    )
+    assert len(out) == 2
+
+
+def _iprange(name: str, value: Value) -> RenderedRule:
+    return _rule(_opt(name, value, module="iprange"), _target("ACCEPT"))
+
+
+def test_iprange_address_ranges() -> None:
+    nft = translate_rule(
+        Family.IP, "filter", _iprange("src-range", "10.0.0.1-10.0.0.5")
+    )
+    assert nft.statements[0].to_text() == "ip saddr 10.0.0.1-10.0.0.5"
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _iprange("dst-range", PreNegated("192.168.0.1-192.168.0.10")),
+    )
+    assert (
+        nft.statements[0].to_text() == "ip daddr != 192.168.0.1-192.168.0.10"
+    )
+    nft = translate_rule(
+        Family.IP6,
+        "filter",
+        _iprange("src-range", "2001:db8::1-2001:db8::ff"),
+    )
+    assert nft.statements[0].to_text() == "ip6 saddr 2001:db8::1-2001:db8::ff"
+
+
+def test_iprange_refusals() -> None:
+    # an ip6 bound in an ip rule (wrong family) refuses before nft -c would
+    with pytest.raises(FermError, match=r"does not match the ip family"):
+        translate_rule(
+            Family.IP, "filter", _iprange("src-range", "10.0.0.1-fe80::1")
+        )
+    # a malformed range (no dash) refuses
+    with pytest.raises(FermError, match=r"invalid iprange '10.0.0.1'"):
+        translate_rule(Family.IP, "filter", _iprange("src-range", "10.0.0.1"))
+    # arp has no saddr/daddr range; falls through to the generic refusal
+    with pytest.raises(FermError, match=r"not yet supported"):
+        translate_rule(
+            Family.ARP, "filter", _iprange("src-range", "10.0.0.1-10.0.0.5")
+        )
+
+
+def _mark_comp(name: str, value: Value, target: str) -> RenderedOption:
+    return _opt(name, value, module=target)
+
+
+def test_mark_arith_canon_both_registers() -> None:
+    # the and/or canon, the bitwise ops, and set-mark's effective mask, on
+    # meta mark (MARK) and ct mark (CONNMARK)
+    for target, register in (("MARK", "meta mark"), ("CONNMARK", "ct mark")):
+        cases = {
+            ("set-xmark", "0x2/0xff"): (
+                f"{register} set {register} & 0xffffff02 | 0x00000002"
+            ),
+            ("or-mark", "0x4"): f"{register} set {register} | 0x00000004",
+            ("and-mark", "0xf0"): f"{register} set {register} & 0x000000f0",
+            ("xor-mark", "0x8"): f"{register} set {register} ^ 0x00000008",
+            # set-mark uses the effective mask m' = v|m, so 0xff/0x0f is legal
+            (
+                "set-mark",
+                "0xff/0x0f",
+            ): f"{register} set {register} | 0x000000ff",
+        }
+        for (op, value), expected in cases.items():
+            comp = {op: _mark_comp(op, value, target)}
+            assert (
+                build_verdict(
+                    Family.IP, "mangle", "jump", target, comp
+                ).to_text()
+                == expected
+            )
+
+
+def test_mark_arith_refusals() -> None:
+    # set-xmark with value bits outside its mask (set-mark's effective-mask
+    # rescue does NOT apply to set-xmark)
+    with pytest.raises(FermError, match=r"has bits outside its mask"):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "MARK",
+            {"set-xmark": _mark_comp("set-xmark", "0x3/0x1", "MARK")},
+        )
+    # a zero mask is a no-op assignment the kernel does not round-trip
+    with pytest.raises(FermError, match=r"has a zero mask"):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "MARK",
+            {"set-xmark": _mark_comp("set-xmark", "0x0/0x0", "MARK")},
+        )
+    # more than one op cannot be ordered; refuse with the target's message
+    with pytest.raises(FermError, match=r"^MARK target not yet supported"):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "MARK",
+            {
+                "or-mark": _mark_comp("or-mark", "0x4", "MARK"),
+                "and-mark": _mark_comp("and-mark", "0xf0", "MARK"),
+            },
+        )
+    # CONNMARK save/restore with a mask mixes two masked registers; refuse
+    with pytest.raises(FermError, match=r"mixes two masked registers"):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "CONNMARK",
+            {
+                "save-mark": _mark_comp("save-mark", None, "CONNMARK"),
+                "nfmask": _mark_comp("nfmask", "0xff", "CONNMARK"),
+            },
+        )
+
+
+def _connlimit(*opts: RenderedOption) -> RenderedRule:
+    return _rule(*opts, _target("DROP"))
+
+
+def _cl(name: str, value: Value = None) -> RenderedOption:
+    return _opt(name, value, module="connlimit")
+
+
+def _connlimit_name(rule: NftRule) -> str:
+    for stmt in rule.statements:
+        if isinstance(stmt, NftSetUpdate):
+            return stmt.name
+    raise AssertionError("rule carries no connlimit set update")
+
+
+def test_connlimit_update_forms() -> None:
+    # above -> count over N with an & netmask key
+    upd = _connlimit_update(
+        Family.IP,
+        _connlimit(_cl("connlimit-above", "20"), _cl("connlimit-mask", "24")),
+    )
+    assert upd.verb == "add"
+    assert upd.key_expr == "ip saddr & 255.255.255.0 ct count over 20"
+    assert upd.set_type == "ipv4_addr"
+    # upto -> count N; a full mask (absent) has no &
+    upd = _connlimit_update(Family.IP, _connlimit(_cl("connlimit-upto", "5")))
+    assert upd.key_expr == "ip saddr ct count 5"
+    # daddr side
+    upd = _connlimit_update(
+        Family.IP,
+        _connlimit(
+            _cl("connlimit-above", "10"),
+            _cl("connlimit-mask", "24"),
+            _cl("connlimit-daddr"),
+        ),
+    )
+    assert upd.key_expr == "ip daddr & 255.255.255.0 ct count over 10"
+    # ip6 mask -> shorthand netmask
+    upd = _connlimit_update(
+        Family.IP6,
+        _connlimit(_cl("connlimit-above", "5"), _cl("connlimit-mask", "64")),
+    )
+    assert upd.key_expr == "ip6 saddr & ffff:ffff:ffff:ffff:: ct count over 5"
+    assert upd.set_type == "ipv6_addr"
+    # negated upto behaves like above (upto = "not above")
+    upd = _connlimit_update(
+        Family.IP, _connlimit(_cl("connlimit-upto", PreNegated("5")))
+    )
+    assert upd.key_expr == "ip saddr ct count over 5"
+
+
+def test_connlimit_refusals() -> None:
+    # exactly one of upto/above
+    with pytest.raises(FermError, match=r"exactly one of connlimit-upto"):
+        _connlimit_update(
+            Family.IP,
+            _connlimit(
+                _cl("connlimit-above", "10"), _cl("connlimit-upto", "5")
+            ),
+        )
+    with pytest.raises(FermError, match=r"exactly one of connlimit-upto"):
+        _connlimit_update(Family.IP, _connlimit(_cl("connlimit-mask", "24")))
+    # saddr and daddr together
+    with pytest.raises(FermError, match=r"cannot combine saddr and daddr"):
+        _connlimit_update(
+            Family.IP,
+            _connlimit(
+                _cl("connlimit-above", "10"),
+                _cl("connlimit-saddr"),
+                _cl("connlimit-daddr"),
+            ),
+        )
+    # a zero mask keys the whole address space as one bucket
+    with pytest.raises(FermError, match=r"connlimit-mask 0 keys"):
+        _connlimit_update(
+            Family.IP,
+            _connlimit(
+                _cl("connlimit-above", "10"), _cl("connlimit-mask", "0")
+            ),
+        )
+    # mask out of range
+    with pytest.raises(FermError, match=r"exceeds /32"):
+        _connlimit_update(
+            Family.IP,
+            _connlimit(
+                _cl("connlimit-above", "10"), _cl("connlimit-mask", "33")
+            ),
+        )
+    # count is not a mark value (u32)
+    with pytest.raises(FermError, match=r"invalid connlimit count 'lots'"):
+        _connlimit_update(
+            Family.IP, _connlimit(_cl("connlimit-above", "lots"))
+        )
+    # arp has no address key
+    with pytest.raises(FermError, match=r"needs the ip or ip6 family"):
+        _connlimit_update(Family.ARP, _connlimit(_cl("connlimit-above", "10")))
+
+
+def _translated_connlimit(*opts: RenderedOption) -> NftRule:
+    return translate_rule(Family.IP, "filter", _connlimit(*opts))
+
+
+def test_connlimit_names_stable_and_distinct() -> None:
+    # an inserted UNRELATED rule must not rename a connlimit set (stable
+    # content hash, not a positional index)
+    unrelated = NftRule(
+        statements=[NftMatch("tcp dport 22"), NftVerdict("accept")]
+    )
+    without = [
+        translate_rule(
+            Family.IP,
+            "filter",
+            _connlimit(
+                _cl("connlimit-above", "20"), _cl("connlimit-mask", "24")
+            ),
+        )
+    ]
+    _finalize_connlimit_names(Family.IP, "filter", "INPUT", without)
+    with_extra = [
+        unrelated,
+        translate_rule(
+            Family.IP,
+            "filter",
+            _connlimit(
+                _cl("connlimit-above", "20"), _cl("connlimit-mask", "24")
+            ),
+        ),
+    ]
+    _finalize_connlimit_names(Family.IP, "filter", "INPUT", with_extra)
+    name_without = _connlimit_name(without[0])
+    name_with = _connlimit_name(with_extra[1])
+    assert name_without == name_with
+    assert name_without.startswith("connlimit_")
+
+    # different matches -> different names
+    a = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("source", "10.0.0.1"),
+            _cl("connlimit-above", "20"),
+            _cl("connlimit-mask", "24"),
+            _target("DROP"),
+        ),
+    )
+    b = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("source", "10.0.0.2"),
+            _cl("connlimit-above", "20"),
+            _cl("connlimit-mask", "24"),
+            _target("DROP"),
+        ),
+    )
+    rules = [a, b]
+    _finalize_connlimit_names(Family.IP, "filter", "INPUT", rules)
+    assert _connlimit_name(a) != _connlimit_name(b)
+
+
+def test_connlimit_identical_rules_get_distinct_ordinals() -> None:
+    # two byte-identical connlimit rules must get DIFFERENT sets (xt gives
+    # each rule its own conncount tree), and collapse must NOT fold them
+    def make() -> NftRule:
+        return translate_rule(
+            Family.IP,
+            "filter",
+            _connlimit(
+                _cl("connlimit-above", "20"), _cl("connlimit-mask", "24")
+            ),
+        )
+
+    rules = [make(), make()]
+    _finalize_connlimit_names(Family.IP, "filter", "FORWARD", rules)
+    assert _connlimit_name(rules[0]) != _connlimit_name(rules[1])
+    # finalization precedes collapse; distinct names keep collapse from
+    # merging the two per-rule counters into one
+    out = _collapse_chain_rules(rules)
+    assert len(out) == 2
+
+
+def test_connlimit_sentinel_surviving_is_internal_error() -> None:
+    # a connlimit set that reaches declaration collection unfinalized is a
+    # wiring bug (the post-pass was skipped), not a config error
+    sentinel_rule = _translated_connlimit(
+        _cl("connlimit-above", "20"), _cl("connlimit-mask", "24")
+    )
+    with pytest.raises(FermError, match=r"internal error.*unfinalized name"):
+        _collect_set_declarations(Family.IP, {"c": [sentinel_rule]})
+
+
+def test_connlimit_sets_aggregate_by_name() -> None:
+    # two connlimit rules with distinct names yield two declarations
+    a = _translated_connlimit(
+        _cl("connlimit-above", "20"), _cl("connlimit-mask", "24")
+    )
+    b = _translated_connlimit(_cl("connlimit-upto", "5"))
+    rules = [a, b]
+    _finalize_connlimit_names(Family.IP, "filter", "INPUT", rules)
+    decls = _collect_set_declarations(Family.IP, {"c": rules})
+    connlimit_decls = {
+        name: d for name, d in decls.items() if name.startswith("connlimit_")
+    }
+    assert len(connlimit_decls) == 2
+    assert all(isinstance(d, _DynSetDecl) for d in connlimit_decls.values())
