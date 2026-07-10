@@ -221,6 +221,28 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- **nft backend: `mod recent` with an effective hitcount of one no
+  longer emits `burst 0`.** A lone check rule with `hitcount 1`
+  produced `limit rate over ... burst 0 packets`, which nft rejects at
+  apply time ("packet limit burst must be > 0"), so a config legal
+  under iptables failed to install. The degenerate window now emits
+  the limitless `update @recent_...` element — "match from the first
+  in-window packet", exactly what the `B = T*H - 1` calibration
+  approaches as the burst shrinks.
+- **nft backend: `hashlimit-htable-max` is refused instead of silently
+  ignored.** The translation pins the dynamic set to the kernel's
+  implicit `size 65535` for `--plan` readback parity, so a user-set
+  entry cap was silently overridden — a deliberate memory ceiling
+  quietly grew to ~65k entries. It now refuses like the other
+  no-nft-equivalent options. `hashlimit-htable-size` and
+  `hashlimit-htable-gcinterval` (performance-tuning knobs with no
+  match semantics) remain accepted and deliberately ignored.
+- **Packaging: the shipped `ssh-throttle.conf.example` now translates
+  under `--nft`.** The example's `mod recent name SSH-THROTTLE` carried
+  a dash, which is invalid in an nft set identifier, so copying the
+  advertised drop-in into `ferm.d/` broke `--nft` installs with
+  "invalid recent name". The list is now named `SSH_THROTTLE`
+  (xt_recent names are free-form; iptables semantics unchanged).
 - **nft backend: registered targets no longer fall through to chain
   jumps.** An extension target with no nft translation (`TARPIT`,
   `MIRROR`, `AUDIT`, ...) used to emit `jump TARPIT` — a jump to a
@@ -246,6 +268,27 @@ For the history of the original Perl implementation, see
 
 ### Testing
 
+- Packaged-config gate (`tests/corpus/test_packaged_config.py`): the
+  default `/etc/ferm/ferm.conf` shipped by every package — alone and
+  composed with the advertised ssh-throttle drop-in — must compile
+  bug-for-bug with the Perl oracle on the iptables path, translate
+  cleanly under `--nft` with the security-relevant shape pinned
+  (default-drop, SSH/ICMP admission, the calibrated recent limit), and
+  pass a live `nft -c` where available.
+- Review follow-up batch: regression pins for the two fixes above,
+  mutation-driven kill tests (option-loop continuation after each
+  dynamic-set module, `_hashlimit_key` mode matrix, clock/mark/mask
+  boundary operators, HL and SNAT verdict threading), golden pairs
+  pinning array unfolding through connlimit (four distinct
+  content-hash sets) and recent (one shared set), ip6 parity checks
+  for the family-agnostic constructs, a `flags dynamic` invariant pin,
+  and full-message anchors across the recent/hashlimit/connlimit
+  refusal batteries.
+- The coverage session now measures the subprocess-driven golden
+  harness too (`COVERAGE_PROCESS_START` + `parallel` data files):
+  code exercised only through `python -m pyferm` children — the
+  entire nft golden suite — was previously invisible to the coverage
+  floor and the diff-cover patch gate.
 - New nft-backend gates formalizing the review probes: a dichotomy
   sweep over the full synthetic module matrix (translate cleanly or
   refuse cleanly, never a jump to a registered target), a unit sweep

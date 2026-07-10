@@ -30,12 +30,12 @@ domain (ip ip6) table filter chain INPUT {
         # Record every new connection's source address (set only -- no
         # update, so the window starts at the FIRST hit and ages out). NOP
         # is the no-jump pseudo-target: record and keep evaluating.
-        mod recent name SSH-THROTTLE set NOP;
+        mod recent name SSH_THROTTLE set NOP;
         # Generous margin: more than 10 new SSH connections from one source
         # within 60 seconds is almost certainly a brute-force scan. Legit
         # reconnects stay well under this.
-        mod recent name SSH-THROTTLE rcheck seconds 60 hitcount 10
+        mod recent name SSH_THROTTLE rcheck seconds 60 hitcount 10
             LOG log-prefix "ferm-ssh-throttle: ";
-        mod recent name SSH-THROTTLE rcheck seconds 60 hitcount 10 DROP;
+        mod recent name SSH_THROTTLE rcheck seconds 60 hitcount 10 DROP;
     }
 }
