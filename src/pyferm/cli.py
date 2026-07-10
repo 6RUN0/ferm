@@ -35,6 +35,7 @@ import os
 import re
 import subprocess  # live-only: run rules / hooks / *-save / *-restore
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, TextIO
 
 from . import __version__, etckeeper
@@ -49,12 +50,7 @@ from .backend.nft import TOOL_NFT, NftBackend
 from .config import Options, PlanFormat
 from .errors import FermError, internal_error
 from .functions import Evaluator, splitpath_dir, splitpath_file
-from .graph import (
-    collect_graph,
-    escape_control_chars,
-    render_d2,
-    render_dot,
-)
+from .graph import collect_graph, render_d2, render_dot
 from .introspect import describe, list_modules
 from .parser import Parser
 from .plan import (
@@ -72,6 +68,7 @@ from .streams import (
     BYTE_ENCODING,
     HUMAN_STREAM_ERRORS,
     argv_to_latin1,
+    escape_control_chars,
     reconfigure_latin1,
 )
 from .tokenizer import Script, Tokenizer, open_script, tokenize_string
@@ -229,6 +226,18 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _require_interactive_tty(interactive: bool) -> None:
+    """Raise unless both stdin and stderr are a tty when ``interactive``."""
+    if interactive and not sys.stdin.isatty():
+        raise FermError(
+            "ferm interactive mode not possible: /dev/stdin is not a tty"
+        )
+    if interactive and not sys.stderr.isatty():
+        raise FermError(
+            "ferm interactive mode not possible: /dev/stderr is not a tty"
+        )
+
+
 def _resolve_options(args: argparse.Namespace) -> Options:
     """
     Derive the settled ``%option`` values from raw switches (``:675``).
@@ -296,14 +305,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
 
     # guard order is the oracle's (ferm:691-698): tty guards first, then
     # timeout-needs-interactive, then the integer-shape check.
-    if interactive and not sys.stdin.isatty():
-        raise FermError(
-            "ferm interactive mode not possible: /dev/stdin is not a tty"
-        )
-    if interactive and not sys.stderr.isatty():
-        raise FermError(
-            "ferm interactive mode not possible: /dev/stderr is not a tty"
-        )
+    _require_interactive_tty(interactive)
     if not args.interactive and args.timeout is not None:
         raise FermError("ferm timeout has no sense without interactive mode")
     if args.timeout is not None and not _TIMEOUT_RE.match(args.timeout):
@@ -406,23 +408,30 @@ def _setup_streams(
     return lines_stream, restore
 
 
-def _make_io(
-    options: Options, lines_stream: TextIO
-) -> tuple[
-    ExecuteCommand, LineEmitter, SaveReader, RestoreDomain, ExecuteCapture
-]:
+@dataclass(frozen=True)
+class IoCallables:
+    """The injected I/O seam bound to one Options/lines_stream pair."""
+
+    execute: ExecuteCommand
+    emit_line: LineEmitter
+    read_save: SaveReader
+    restore: RestoreDomain
+    capture: ExecuteCapture
+
+
+def _make_io(options: Options, lines_stream: TextIO) -> IoCallables:
     """
     Build the five injected I/O callables bound to ``options``.
 
-    Returns ``(execute, emit_line, read_save, restore, capture)``.  ``execute``
-    is the port of ``execute_command`` (``:2894``); ``emit_line`` is the
-    ``print LINES`` sink (raw, caller supplies newlines) writing to
-    ``lines_stream`` from :func:`_setup_streams`; ``read_save`` runs a
-    ``*-save`` tool and ``capture`` runs a command capturing its stdout (the
-    nft backend's snapshot seam) -- both consumed by ``_run``'s
-    ``capture_previous`` closure over
-    :meth:`pyferm.backend.base.Backend.capture_previous`; ``restore`` adapts
-    the backend's three-argument
+    Returns an :class:`IoCallables` of ``(execute, emit_line, read_save,
+    restore, capture)``.  ``execute`` is the port of ``execute_command``
+    (``:2894``); ``emit_line`` is the ``print LINES`` sink (raw, caller
+    supplies newlines) writing to ``lines_stream`` from
+    :func:`_setup_streams`; ``read_save`` runs a ``*-save`` tool and
+    ``capture`` runs a command capturing its stdout (the nft backend's
+    snapshot seam) -- both consumed by ``_run``'s ``capture_previous``
+    closure over :meth:`pyferm.backend.base.Backend.capture_previous`;
+    ``restore`` adapts the backend's three-argument
     :func:`pyferm.backend.iptables.restore_domain` to the injected two-argument
     shape.  All but ``emit_line`` are no-ops under ``--test`` (never reached).
     """
@@ -527,7 +536,13 @@ def _make_io(
             + (completed.stderr.strip() or f"exit {completed.returncode}")
         )
 
-    return execute, emit_line, read_save, restore, capture
+    return IoCallables(
+        execute=execute,
+        emit_line=emit_line,
+        read_save=read_save,
+        restore=restore,
+        capture=capture,
+    )
 
 
 def _select_backend(options: Options) -> Backend:
@@ -1163,9 +1178,7 @@ def _apply_config(
     records the revert rather than a plain ``applied``.
     """
     filename = config
-    execute, emit_line, read_save, restore, capture = _make_io(
-        options, lines_stream
-    )
+    io = _make_io(options, lines_stream)
 
     # Scope: the global frame (Perl ``:618``) holds --def vars; the script
     # frame (Perl ``:751``) is pushed on top of it (innermost) and carries
@@ -1208,9 +1221,9 @@ def _apply_config(
             domain,
             domain_info,
             options,
-            execute=execute,
-            read_save=read_save,
-            capture=capture,
+            execute=io.execute,
+            read_save=io.read_save,
+            capture=io.capture,
         )
 
     parser = Parser(
@@ -1219,7 +1232,7 @@ def _apply_config(
         options,
         resolve_tools=backend.tool_names,
         capture_previous=capture_previous,
-        emit_line=emit_line,
+        emit_line=io.emit_line,
         shell_snapshot=backend.shell_snapshot,
     )
     # finally: close the whole include chain (innermost first) on both
@@ -1255,7 +1268,7 @@ def _apply_config(
     status: int | None = None
     try:
         for command in parser.pre_hooks:
-            _run_hook(command, options, emit_line)
+            _run_hook(command, options, io.emit_line)
 
         for domain in sorted(domains):
             domain_info = domains[domain]
@@ -1271,9 +1284,9 @@ def _apply_config(
                     domain_info,
                     rendered,
                     options,
-                    execute=execute,
-                    emit_line=emit_line,
-                    restore=restore,
+                    execute=io.execute,
+                    emit_line=io.emit_line,
+                    restore=io.restore,
                 )
             finally:
                 rendered.close()
@@ -1281,31 +1294,41 @@ def _apply_config(
                 status = result
 
         for command in [*parser.post_hooks, *parser.flush_hooks]:
-            _run_hook(command, options, emit_line)
+            _run_hook(command, options, io.emit_line)
 
         if status is not None:
             _rollback_all(
-                domains, options, backend, execute=execute, restore=restore
+                domains,
+                options,
+                backend,
+                execute=io.execute,
+                restore=io.restore,
             )
 
         # Ask the user, and roll back without confirmation (``:803-817``).
         if options.interactive:
             if options.shell:
-                emit_line("echo 'ferm has applied the new firewall rules.'\n")
-                emit_line("echo 'Please press Ctrl-C to confirm.'\n")
-                emit_line(f"sleep {options.timeout}\n")
+                io.emit_line(
+                    "echo 'ferm has applied the new firewall rules.'\n"
+                )
+                io.emit_line("echo 'Please press Ctrl-C to confirm.'\n")
+                io.emit_line(f"sleep {options.timeout}\n")
                 for domain in sorted(domains):
                     snapshot = backend.shell_snapshot(domain, domains[domain])
                     if snapshot is None:
                         continue
-                    emit_line(snapshot.restore)
+                    io.emit_line(snapshot.restore)
                 notice = backend.shell_rollback_notice()
                 if notice is not None:
-                    emit_line(notice)
+                    io.emit_line(notice)
 
             if not options.noexec and not _confirm_rules(options):
                 _rollback_all(
-                    domains, options, backend, execute=execute, restore=restore
+                    domains,
+                    options,
+                    backend,
+                    execute=io.execute,
+                    restore=io.restore,
                 )
 
         # Record the applied ruleset in /etc history (best-effort, port-only).
@@ -1373,14 +1396,7 @@ def _rollback_options(args: argparse.Namespace) -> Options:
     # without this, a non-tty --interactive rollback checks out the reverted
     # config and rolls back the kernel before failing, leaving the worktree
     # on the old config while the kernel still runs the pre-rollback rules.
-    if args.interactive and not sys.stdin.isatty():
-        raise FermError(
-            "ferm interactive mode not possible: /dev/stdin is not a tty"
-        )
-    if args.interactive and not sys.stderr.isatty():
-        raise FermError(
-            "ferm interactive mode not possible: /dev/stderr is not a tty"
-        )
+    _require_interactive_tty(args.interactive)
     return Options(
         fast=not args.slow,
         interactive=args.interactive,

@@ -13,6 +13,7 @@ an error message is unacceptable.
 from __future__ import annotations
 
 import os
+import re
 from typing import Final
 
 #: The encoding of every ferm byte boundary: a bijective byte<->char map
@@ -24,6 +25,19 @@ BYTE_ENCODING: Final[str] = "latin-1"
 #: source of chars above U+00FF is a localized OS ``strerror``; escaping it
 #: keeps an error message from crashing the very stream printing it.
 HUMAN_STREAM_ERRORS: Final[str] = "backslashreplace"
+
+_CONTROL_CHARS_RE: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def escape_control_chars(name: str) -> str:
+    r"""
+    Escape C0/C1 control bytes as ``\xNN``.
+
+    Names come verbatim from the config, and the latin-1 byte model admits
+    any byte including ESC/CR; escaping them keeps a crafted name from
+    injecting terminal-control sequences into rendered output.
+    """
+    return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
 
 
 def argv_to_latin1(value: str) -> str:

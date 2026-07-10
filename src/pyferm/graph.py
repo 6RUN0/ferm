@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import enum
 import functools
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NamedTuple
 
@@ -37,6 +36,7 @@ from .domains import DEFAULT_TABLE
 from .modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
 from .parser import _LOCATION_KEYWORDS, MAX_BLOCK_DEPTH
 from .rules import CORE_TARGETS, is_netfilter_builtin_chain
+from .streams import escape_control_chars
 from .tree import (
     Block,
     BlockNode,
@@ -49,7 +49,6 @@ from .tree import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-_CONTROL_CHARS_RE: Final[re.Pattern[str]] = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _ID_SAFE: Final[frozenset[str]] = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 )
@@ -119,17 +118,6 @@ def _san(part: str) -> str:
 def _cluster_id(domain: str, table: str) -> str:
     """Injective id: '__' delimiter never appears inside _san output."""
     return f"{_san(domain)}__{_san(table)}"
-
-
-def escape_control_chars(name: str) -> str:
-    r"""
-    Escape C0/C1 control bytes as ``\xNN``.
-
-    Names come verbatim from the config, and the latin-1 byte model admits
-    any byte including ESC/CR; escaping them keeps a crafted name from
-    injecting terminal-control sequences into rendered output.
-    """
-    return _CONTROL_CHARS_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", name)
 
 
 def _escape_ident(name: str) -> str:

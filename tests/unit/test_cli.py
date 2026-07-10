@@ -344,10 +344,8 @@ def test_read_save_keeps_output_on_nonzero_exit(tmp_path: Path) -> None:
     tool = tmp_path / "save-tool"
     tool.write_text("#!/bin/sh\necho '*filter'\nexit 1\n", encoding="utf-8")
     tool.chmod(0o755)
-    _execute, _emit, read_save, _restore, _capture = _make_io(
-        Options(), sys.stdout
-    )
-    assert read_save(str(tool)) == "*filter\n"
+    io = _make_io(Options(), sys.stdout)
+    assert io.read_save(str(tool)) == "*filter\n"
 
 
 def test_read_save_unexecutable_tool_reads_empty() -> None:
@@ -355,10 +353,8 @@ def test_read_save_unexecutable_tool_reads_empty() -> None:
     # reads EOF, so {previous} is set to the empty string, not unset.
     from pyferm.cli import _make_io
 
-    _execute, _emit, read_save, _restore, _capture = _make_io(
-        Options(), sys.stdout
-    )
-    assert read_save("/nonexistent/ferm-no-such-tool") == ""
+    io = _make_io(Options(), sys.stdout)
+    assert io.read_save("/nonexistent/ferm-no-such-tool") == ""
 
 
 def test_execute_exec_failure_is_fatal(
@@ -369,9 +365,9 @@ def test_execute_exec_failure_is_fatal(
     # (:2903-2905) -- no status bookkeeping, no rollback.
     from pyferm.cli import _make_io
 
-    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
+    io = _make_io(Options(), sys.stdout)
     with pytest.raises(SystemExit) as excinfo:
-        execute("/nonexistent/ferm-no-such-tool -A INPUT")
+        io.execute("/nonexistent/ferm-no-such-tool -A INPUT")
     assert excinfo.value.code == 1
     assert "failed to execute:" in capfd.readouterr().err
 
@@ -379,9 +375,9 @@ def test_execute_exec_failure_is_fatal(
 def test_execute_returns_status_of_plain_command() -> None:
     from pyferm.cli import _make_io
 
-    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
-    assert execute("true") is None
-    assert execute("false") == 1
+    io = _make_io(Options(), sys.stdout)
+    assert io.execute("true") is None
+    assert io.execute("false") == 1
 
 
 def test_execute_signal_death_reports_and_returns_one(
@@ -394,8 +390,8 @@ def test_execute_signal_death_reports_and_returns_one(
     from pyferm.cli import _make_io
 
     monkeypatch.setattr(subprocess, "run", _RunRecorder(returncode=-9))
-    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
-    assert execute("iptables -A INPUT") == 1
+    io = _make_io(Options(), sys.stdout)
+    assert io.execute("iptables -A INPUT") == 1
     assert capfd.readouterr().err == "child died with signal 9\n"
 
 
@@ -409,9 +405,9 @@ def test_execute_routes_metachar_commands_through_shell(
 
     recorder = _RunRecorder(returncode=0)
     monkeypatch.setattr(subprocess, "run", recorder)
-    execute, _emit, _read, _restore, _capture = _make_io(Options(), sys.stdout)
-    assert execute("a | b") is None
-    assert execute("iptables -L") is None
+    io = _make_io(Options(), sys.stdout)
+    assert io.execute("a | b") is None
+    assert io.execute("iptables -L") is None
     (piped_argv,), piped_kwargs = recorder.calls[0]
     (plain_argv,), plain_kwargs = recorder.calls[1]
     assert piped_argv == "a | b"
@@ -995,10 +991,8 @@ def test_nft_subprocesses_pin_utc_timezone(
     monkeypatch.setattr(subprocess, "run", recorder)
     restore = _make_nft_restore(Options(nft=True))
     restore(_nft_domain_info(), "add table ip ferm\n")
-    _execute, _emit, _read, _restore, capture = _make_io(
-        Options(nft=True, plan=True), sys.stdout
-    )
-    capture("nft list table ip ferm")
+    io = _make_io(Options(nft=True, plan=True), sys.stdout)
+    io.capture("nft list table ip ferm")
     commands = [call[0][0] for call in recorder.calls]
     assert ["nft", "-c", "-f", "-"] in commands
     assert ["nft", "-f", "-"] in commands
@@ -1062,10 +1056,8 @@ def test_restore_dispatch_routes_to_nft_applier(
 
     recorder = _RunRecorder(returncode=0)
     monkeypatch.setattr(subprocess, "run", recorder)
-    _execute, _emit, _read, restore, _capture = _make_io(
-        Options(nft=True), sys.stdout
-    )
-    restore(_nft_domain_info(), "add table ip ferm\n")
+    io = _make_io(Options(nft=True), sys.stdout)
+    io.restore(_nft_domain_info(), "add table ip ferm\n")
     assert [call[0][0] for call in recorder.calls] == [
         ["nft", "-c", "-f", "-"],
         ["nft", "-f", "-"],
@@ -1097,9 +1089,9 @@ def test_restore_dispatch_default_skips_nft_applier(
 
     monkeypatch.setattr(subprocess, "run", fail_run)
     options = Options()
-    _execute, _emit, _read, restore, _capture = _make_io(options, sys.stdout)
+    io = _make_io(options, sys.stdout)
     domain_info = _nft_domain_info()
-    restore(domain_info, "*filter\n")
+    io.restore(domain_info, "*filter\n")
     assert calls == [(domain_info, "*filter\n", options)]
     assert nft_called is False
 
@@ -1114,10 +1106,8 @@ def test_capture_noexec_returns_none_without_subprocess(
         raise AssertionError("capture must not spawn under --noexec")
 
     monkeypatch.setattr(subprocess, "run", fail_run)
-    _execute, _emit, _read, _restore, capture = _make_io(
-        Options(noexec=True), sys.stdout
-    )
-    assert capture("nft list ruleset") is None
+    io = _make_io(Options(noexec=True), sys.stdout)
+    assert io.capture("nft list ruleset") is None
 
 
 def test_capture_oserror_raises(
@@ -1131,9 +1121,9 @@ def test_capture_oserror_raises(
     monkeypatch.setattr(
         subprocess, "run", _RunRecorder(raises=FileNotFoundError)
     )
-    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
+    io = _make_io(Options(), sys.stdout)
     with pytest.raises(FermError, match="failed to snapshot for rollback"):
-        capture("nft list ruleset")
+        io.capture("nft list ruleset")
 
 
 def test_capture_returns_stdout_or_none(
@@ -1145,17 +1135,15 @@ def test_capture_returns_stdout_or_none(
 
     recorder = _RunRecorder(returncode=0, stdout="X")
     monkeypatch.setattr(subprocess, "run", recorder)
-    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
-    assert capture("nft list ruleset") == "X"
+    io = _make_io(Options(), sys.stdout)
+    assert io.capture("nft list ruleset") == "X"
     assert recorder.calls[0][0][0] == ["nft", "list", "ruleset"]
 
     monkeypatch.setattr(
         subprocess, "run", _RunRecorder(returncode=0, stdout="")
     )
-    _execute2, _emit2, _read2, _restore2, capture_empty = _make_io(
-        Options(), sys.stdout
-    )
-    assert capture_empty("nft list ruleset") is None
+    io2 = _make_io(Options(), sys.stdout)
+    assert io2.capture("nft list ruleset") is None
 
 
 def test_capture_absent_table_is_first_run_none(
@@ -1173,8 +1161,8 @@ def test_capture_absent_table_is_first_run_none(
             returncode=1, stdout="", stderr="Error: No such file or directory"
         ),
     )
-    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
-    assert capture("nft list table ip ferm") is None
+    io = _make_io(Options(), sys.stdout)
+    assert io.capture("nft list table ip ferm") is None
 
 
 def test_capture_genuine_failure_raises(
@@ -1192,9 +1180,9 @@ def test_capture_genuine_failure_raises(
             returncode=1, stdout="", stderr="Error: Operation not permitted"
         ),
     )
-    _execute, _emit, _read, _restore, capture = _make_io(Options(), sys.stdout)
+    io = _make_io(Options(), sys.stdout)
     with pytest.raises(FermError, match="Operation not permitted"):
-        capture("nft list table ip ferm")
+        io.capture("nft list table ip ferm")
 
 
 def test_read_save_strict_under_plan_raises_on_missing_tool() -> None:
@@ -1202,21 +1190,19 @@ def test_read_save_strict_under_plan_raises_on_missing_tool() -> None:
     # returning empty: an empty current ruleset would under-count removals
     # and produce a falsely-clean plan.
     options = Options(plan=True)
-    _execute, _emit, read_save, _restore, _capture = _make_io(
-        options, io.StringIO()
-    )
+    # local name avoids shadowing the `io` stdlib module used just above
+    bound_io = _make_io(options, io.StringIO())
     with pytest.raises(FermError, match="current ruleset"):
-        read_save("/nonexistent/iptables-save")
+        bound_io.read_save("/nonexistent/iptables-save")
 
 
 def test_read_save_lenient_without_plan_returns_empty() -> None:
     # Outside --plan the Perl pipe-open semantics are preserved: an
     # unspawnable tool returns the empty string rather than aborting.
     options = Options(plan=False)
-    _execute, _emit, read_save, _restore, _capture = _make_io(
-        options, io.StringIO()
-    )
-    assert read_save("/nonexistent/iptables-save") == ""
+    # local name avoids shadowing the `io` stdlib module used just above
+    bound_io = _make_io(options, io.StringIO())
+    assert bound_io.read_save("/nonexistent/iptables-save") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1331,19 +1317,15 @@ def test_capture_not_short_circuited_under_plan_noexec() -> None:
     # Under plan=True + noexec=True, capture() must NOT return None early --
     # it proceeds to spawn so the nft snapshot can be read.  Verify via a
     # non-existent command: the strict FermError path fires, not silent None.
-    _execute, _emit, _read, _restore, capture = _make_io(
-        Options(plan=True, noexec=True), sys.stdout
-    )
+    io = _make_io(Options(plan=True, noexec=True), sys.stdout)
     with pytest.raises(FermError, match="failed to snapshot"):
-        capture("__no_such_binary_ferm_test__")
+        io.capture("__no_such_binary_ferm_test__")
 
 
 def test_capture_still_short_circuits_when_noexec_no_plan() -> None:
     # Without plan, noexec=True still returns None immediately (no spawn).
-    _execute, _emit, _read, _restore, capture = _make_io(
-        Options(plan=False, noexec=True), sys.stdout
-    )
-    result = capture("__no_such_binary_ferm_test__")
+    io = _make_io(Options(plan=False, noexec=True), sys.stdout)
+    result = io.capture("__no_such_binary_ferm_test__")
     assert result is None
 
 
@@ -2594,10 +2576,9 @@ def test_execute_emits_command_line_under_lines() -> None:
     # execute() echoes the command followed by a newline to the lines sink
     # before (not) running it.
     buf = io.StringIO()
-    execute, _emit, _read, _restore, _capture = _make_io(
-        Options(lines=True, noexec=True), buf
-    )
-    assert execute("iptables -A INPUT") is None
+    # local name avoids shadowing the `io` stdlib module used just above
+    bound_io = _make_io(Options(lines=True, noexec=True), buf)
+    assert bound_io.execute("iptables -A INPUT") is None
     assert buf.getvalue() == "iptables -A INPUT\n"
 
 
