@@ -289,6 +289,14 @@ timeout_method = "thread"
 [tool.coverage.run]
 source = ["pyferm"]
 branch = true
+# The golden/corpus suites exercise the port through child processes
+# (``python -m pyferm``), invisible to in-process measurement.  The
+# ``coverage`` nox session sets COVERAGE_PROCESS_START so the installed
+# coverage .pth boots a coverage instance in each child; parallel mode gives
+# every process (pytest workers under xdist AND those children) a uniquely
+# suffixed data file, which pytest-cov combines at session end.  Harmless to
+# the non-coverage ``tests`` session, which never starts coverage at all.
+parallel = true
 
 [tool.coverage.report]
 show_missing = true

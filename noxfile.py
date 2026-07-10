@@ -160,17 +160,32 @@ _PATCH_COVERAGE_BASE = os.environ.get("FERM_DIFF_BASE", "origin/python-port")
 @nox.session
 def coverage(session: nox.Session) -> None:
     """Run the test suite under coverage (global floor + patch gate)."""
+    # The golden/corpus suites drive the port through child processes
+    # (``python -m pyferm``); nothing measures them unless each child boots
+    # its own coverage.  COVERAGE_PROCESS_START activates the installed
+    # coverage .pth in every child (pointing it at this config), and an
+    # absolute COVERAGE_FILE keeps their parallel data files in the repo root
+    # -- the golden runner spawns some children with cwd=reference/, so a
+    # relative data file would strand their measurements there, unseen by the
+    # session-end combine.  Confined to this session so the plain ``tests``
+    # session pays no subprocess-coverage cost.
+    repo_root = Path(__file__).parent
+    cov_env = {
+        **_GOLDEN_ENV,
+        "COVERAGE_PROCESS_START": str(repo_root / "pyproject.toml"),
+        "COVERAGE_FILE": str(repo_root / ".coverage"),
+    }
     _uv(
         session,
         "pytest",
-        # pytest-cov combines the per-worker data files automatically, so
-        # the coverage total is identical to a serial run.
+        # pytest-cov combines the per-worker AND per-subprocess data files
+        # automatically, so the coverage total is identical to a serial run.
         *_XDIST,
         "--cov",
         "--cov-report=term-missing",
         "--cov-report=xml",
         *session.posargs,
-        env=_GOLDEN_ENV,
+        env=cov_env,
     )
     # pytest-cov prints the fail_under verdict but exits zero (observed
     # with pytest-cov 7.1 / pytest 9), so the floor is enforced here:
