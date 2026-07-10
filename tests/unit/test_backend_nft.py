@@ -796,8 +796,8 @@ def test_translate_match_arp_macs() -> None:
 
 
 def test_translate_match_full_mask_mark_is_plain() -> None:
-    # (mark & 0xffffffff) == value IS the plain equality; only a partial
-    # mask has no infix nft spelling
+    # (mark & 0xffffffff) == value IS the plain equality; a partial mask
+    # spells the infix bitwise form instead
     assert (
         translate_match(
             Family.IP, _opt("mark", "2/0xffffffff", module="mark"), None
@@ -812,8 +812,10 @@ def test_translate_match_full_mask_mark_is_plain() -> None:
         )
         == "ct mark 0xffffffff"
     )
-    with pytest.raises(FermError, match=r"^masked mark '2/0xff'"):
+    assert (
         translate_match(Family.IP, _opt("mark", "2/0xff", module="mark"), None)
+        == "meta mark & 0x000000ff == 0x00000002"
+    )
 
 
 def test_translate_match_value_shape_error_names_the_option() -> None:
@@ -886,10 +888,30 @@ def test_translate_match_mark_and_connmark() -> None:
         translate_match(Family.IP, _opt("mark", "2", module="connmark"), None)
         == "ct mark 0x00000002"
     )
-    with pytest.raises(FermError, match=r"^masked mark '2/0xff'"):
-        translate_match(Family.IP, _opt("mark", "2/0xff", module="mark"), None)
+    # a partial mask spells the infix bitwise form (readback canon:
+    # 8-digit hex on both operands, `!=` under negation)
+    assert (
+        translate_match(
+            Family.IP, _opt("mark", "2/0xff", module="connmark"), None
+        )
+        == "ct mark & 0x000000ff == 0x00000002"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("mark", Negated("0x1/0x3"), module="mark"), None
+        )
+        == "meta mark & 0x00000003 != 0x00000001"
+    )
     with pytest.raises(FermError, match=r"^invalid mark 'banana'"):
         translate_match(Family.IP, _opt("mark", "banana", module="mark"), None)
+    with pytest.raises(FermError, match=r"^invalid mark 'banana/0xff'"):
+        translate_match(
+            Family.IP, _opt("mark", "banana/0xff", module="mark"), None
+        )
+    with pytest.raises(FermError, match=r"^invalid mark '0x1ffffffff/0xff'"):
+        translate_match(
+            Family.IP, _opt("mark", "0x1ffffffff/0xff", module="mark"), None
+        )
 
 
 def test_build_verdict_tcpmss() -> None:
@@ -941,10 +963,26 @@ def test_build_verdict_mark_target() -> None:
         build_verdict(Family.IP, "mangle", "jump", "MARK", comp).to_text()
         == "meta mark set 0x00000002"
     )
-    # the bitwise variants have no single nft statement yet
+    # --set-xmark with a full mask (or none: the xt default) clears the
+    # old bits first, so the xor writes the value verbatim
+    for scalar in ("0xffffffff/0xffffffff", "0x2/0xffffffff", "0x2"):
+        xmark = {"set-xmark": _opt("set-xmark", scalar, module="MARK")}
+        expected = f"meta mark set 0x{int(scalar.partition('/')[0], 0):08x}"
+        assert (
+            build_verdict(Family.IP, "mangle", "jump", "MARK", xmark).to_text()
+            == expected
+        )
+    # a partial mask keeps old bits -- no single nft statement yet
     xmark = {"set-xmark": _opt("set-xmark", "0x2/0xff", module="MARK")}
-    with pytest.raises(FermError, match=r"^option 'set-xmark' not yet"):
+    with pytest.raises(FermError, match=r"^masked set-xmark '0x2/0xff'"):
         build_verdict(Family.IP, "mangle", "jump", "MARK", xmark)
+    # both spellings at once cannot be ordered; refuse
+    both = {
+        "set-mark": _opt("set-mark", "2", module="MARK"),
+        "set-xmark": _opt("set-xmark", "3", module="MARK"),
+    }
+    with pytest.raises(FermError, match=r"^MARK target not yet supported"):
+        build_verdict(Family.IP, "mangle", "jump", "MARK", both)
     with pytest.raises(FermError, match=r"^MARK target not yet supported"):
         build_verdict(Family.IP, "mangle", "jump", "MARK", {})
 
@@ -960,10 +998,22 @@ def test_translate_match_ctstate_reuses_ct_state() -> None:
         )
         == "ct state established,related"
     )
-    # SNAT/DNAT are xt_conntrack-only states with no nft ct equivalent
-    with pytest.raises(FermError, match=r"^unknown ct state 'snat'"):
+    # SNAT/DNAT are ct STATUS bits; alone they translate, but a list
+    # mixing them with real states is one OR across both registers,
+    # which no single nft rule can spell
+    assert (
+        translate_match(
+            Family.IP, _opt("ctstate", "DNAT", module="conntrack"), None
+        )
+        == "ct status dnat"
+    )
+    with pytest.raises(FermError, match=r"mixing connection states"):
         translate_match(
             Family.IP, _opt("ctstate", "NEW,SNAT", module="conntrack"), None
+        )
+    with pytest.raises(FermError, match=r"^unknown ct state 'banana'"):
+        translate_match(
+            Family.IP, _opt("ctstate", "NEW,BANANA", module="conntrack"), None
         )
 
 
@@ -1270,8 +1320,10 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
         (Family.IP, "MIRROR"),
         (Family.IP, "SET"),
         (Family.IP, "AUDIT"),
-        # ip6 folds to the "ip" registry family (parser convention)
-        (Family.IP6, "HL"),
+        # HL translates only under ip6 (its xt family); the ip pass must
+        # keep refusing via the folded "ip" registry (parser convention)
+        (Family.IP, "HL"),
+        (Family.IP6, "TARPIT"),
     ],
 )
 def test_build_verdict_extension_target_keywords_are_refused(
@@ -2958,14 +3010,28 @@ def test_translate_match_state_rejects_unknown_keyword() -> None:
 
 
 def test_translate_match_state_negated_multivalue_is_valid() -> None:
-    # COR-2: negated comma-state is valid nft (anonymous-set negation).
+    # A negated multi-state match must use the masked bang form ("none
+    # of the bits"): the `!=` spelling compares the WHOLE register
+    # against the OR of the bits -- true for nearly every packet --
+    # which is not what iptables' `! --state a,b` means (verified
+    # against the netlink bytecode 2026-07-10).  A single member keeps
+    # `!=` (one state bit at a time makes it faithful, and it is the
+    # pre-existing canon).
     assert (
         translate_match(
             Family.IP,
             _opt("state", Negated("ESTABLISHED,RELATED"), module="state"),
             None,
         )
-        == "ct state != established,related"
+        == "ct state ! established,related"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("state", Negated("INVALID"), module="state"),
+            None,
+        )
+        == "ct state != invalid"
     )
 
 
@@ -4000,3 +4066,356 @@ def test_classify_target_unfolds_per_array_element(tmp_path: Path) -> None:
     out = _run_apply(tmp_path, ferm, None)
     assert "ip dscp af11 meta priority set 1:10" in out
     assert "ip dscp ef meta priority set 1:10" in out
+
+
+# --- 2026-07-10 vocabulary batch: ct status, NFQUEUE, TTL/HL, SYNPROXY,
+# --- NETMAP, masked mark, mod hl.  Emission spellings pinned against a
+# --- live kernel readback (see tests/integration/test_nft_live_vocabulary).
+
+
+def test_translate_match_ctstate_nat_pseudo_states_are_ct_status() -> None:
+    # the kernel readback prints status bits deduplicated in ascending
+    # IPS_* bit order (snat 0x10 before dnat 0x20)
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstate", "DNAT,SNAT,DNAT", module="conntrack"),
+            None,
+        )
+        == "ct status snat,dnat"
+    )
+    # negation is the masked bang form even for a single member: the
+    # status register holds MANY bits, so whole-value `!=` would match
+    # nearly everything instead of "bit not set"
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstate", Negated("DNAT"), module="conntrack"),
+            None,
+        )
+        == "ct status ! dnat"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstate", Negated("DNAT,SNAT"), module="conntrack"),
+            None,
+        )
+        == "ct status ! snat,dnat"
+    )
+
+
+def test_translate_match_ct_state_list_is_bit_sorted() -> None:
+    # kernel readback re-sorts a state list into bit order; emitting the
+    # source order left --plan diffing an applied ruleset forever
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("state", "RELATED,ESTABLISHED", module="state"),
+            None,
+        )
+        == "ct state established,related"
+    )
+
+
+def test_translate_match_ctstatus() -> None:
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstatus", "CONFIRMED,ASSURED", module="conntrack"),
+            None,
+        )
+        == "ct status assured,confirmed"
+    )
+    # xt spells the bit SEEN_REPLY; nft spells it seen-reply
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstatus", "SEEN_REPLY", module="conntrack"),
+            None,
+        )
+        == "ct status seen-reply"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("ctstatus", Negated("EXPECTED"), module="conntrack"),
+            None,
+        )
+        == "ct status ! expected"
+    )
+    # NONE is an empty status mask with no nft ct status spelling
+    with pytest.raises(FermError, match=r"^ct status 'none' not yet"):
+        translate_match(
+            Family.IP, _opt("ctstatus", "NONE", module="conntrack"), None
+        )
+    with pytest.raises(FermError, match=r"^ct status 'banana' not yet"):
+        translate_match(
+            Family.IP, _opt("ctstatus", "BANANA", module="conntrack"), None
+        )
+
+
+def test_translate_match_hl_comparators() -> None:
+    # mod hl is xt_ttl's ip6 twin; readback prints `>`/`<`
+    assert (
+        translate_match(Family.IP6, _opt("hl-eq", "255", module="hl"), None)
+        == "ip6 hoplimit 255"
+    )
+    assert (
+        translate_match(Family.IP6, _opt("hl-gt", "254", module="hl"), None)
+        == "ip6 hoplimit > 254"
+    )
+    assert (
+        translate_match(Family.IP6, _opt("hl-lt", "1", module="hl"), None)
+        == "ip6 hoplimit < 1"
+    )
+    assert (
+        translate_match(
+            Family.IP6, _opt("hl-eq", Negated("64"), module="hl"), None
+        )
+        == "ip6 hoplimit != 64"
+    )
+    with pytest.raises(FermError, match=r"^invalid hl 'banana'"):
+        translate_match(Family.IP6, _opt("hl-eq", "banana", module="hl"), None)
+    # ip6t_hl is ip6-only; the ip pass falls through to the refusal
+    with pytest.raises(FermError, match=r"^option 'hl-eq' not yet"):
+        translate_match(Family.IP, _opt("hl-eq", "255", module="hl"), None)
+
+
+def test_build_verdict_nfqueue() -> None:
+    # the kernel reads `queue num N` back as `queue [flags ...] to N`
+    # and a bare NFQUEUE as `queue to 0`
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFQUEUE", {}).to_text()
+        == "queue to 0"
+    )
+    num = {"queue-num": _opt("queue-num", "65535", module="NFQUEUE")}
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFQUEUE", num).to_text()
+        == "queue to 65535"
+    )
+    balance = {"queue-balance": _opt("queue-balance", "0:3", module="NFQUEUE")}
+    assert (
+        build_verdict(
+            Family.IP, "filter", "jump", "NFQUEUE", balance
+        ).to_text()
+        == "queue to 0-3"
+    )
+    bypass = {
+        "queue-num": _opt("queue-num", "1", module="NFQUEUE"),
+        "queue-bypass": _opt("queue-bypass", None, module="NFQUEUE"),
+    }
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFQUEUE", bypass).to_text()
+        == "queue flags bypass to 1"
+    )
+    # flags print in bypass,fanout order regardless of source order
+    fanout = {
+        "queue-cpu-fanout": _opt("queue-cpu-fanout", None, module="NFQUEUE"),
+        "queue-balance": _opt("queue-balance", "0:3", module="NFQUEUE"),
+        "queue-bypass": _opt("queue-bypass", None, module="NFQUEUE"),
+    }
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "NFQUEUE", fanout).to_text()
+        == "queue flags bypass,fanout to 0-3"
+    )
+
+
+def test_build_verdict_nfqueue_refusals() -> None:
+    both = {
+        "queue-num": _opt("queue-num", "1", module="NFQUEUE"),
+        "queue-balance": _opt("queue-balance", "0:3", module="NFQUEUE"),
+    }
+    with pytest.raises(FermError, match=r"mutually exclusive"):
+        build_verdict(Family.IP, "filter", "jump", "NFQUEUE", both)
+    # xt_NFQUEUE itself refuses --queue-cpu-fanout without --queue-balance
+    lone_fanout = {
+        "queue-cpu-fanout": _opt("queue-cpu-fanout", None, module="NFQUEUE")
+    }
+    with pytest.raises(FermError, match=r"needs 'queue-balance'"):
+        build_verdict(Family.IP, "filter", "jump", "NFQUEUE", lone_fanout)
+    for bad in ("65536", "banana", "-1"):
+        num = {"queue-num": _opt("queue-num", bad, module="NFQUEUE")}
+        with pytest.raises(FermError, match=r"^invalid queue-num"):
+            build_verdict(Family.IP, "filter", "jump", "NFQUEUE", num)
+    for bad in ("0", "3:banana", "0-3"):
+        balance = {
+            "queue-balance": _opt("queue-balance", bad, module="NFQUEUE")
+        }
+        with pytest.raises(FermError, match=r"^invalid queue-balance"):
+            build_verdict(Family.IP, "filter", "jump", "NFQUEUE", balance)
+
+
+def test_build_verdict_ttl_and_hl_set() -> None:
+    ttl = {"ttl-set": _opt("ttl-set", "42", module="TTL")}
+    assert (
+        build_verdict(Family.IP, "mangle", "jump", "TTL", ttl).to_text()
+        == "ip ttl set 42"
+    )
+    hl = {"hl-set": _opt("hl-set", "255", module="HL")}
+    assert (
+        build_verdict(Family.IP6, "mangle", "jump", "HL", hl).to_text()
+        == "ip6 hoplimit set 255"
+    )
+    # nft's payload-set grammar has no arithmetic form
+    inc = {"ttl-inc": _opt("ttl-inc", "1", module="TTL")}
+    with pytest.raises(FermError, match=r"^option 'ttl-inc' not yet"):
+        build_verdict(Family.IP, "mangle", "jump", "TTL", inc)
+    dec = {"hl-dec": _opt("hl-dec", "1", module="HL")}
+    with pytest.raises(FermError, match=r"^option 'hl-dec' not yet"):
+        build_verdict(Family.IP6, "mangle", "jump", "HL", dec)
+    with pytest.raises(FermError, match=r"^TTL target not yet supported"):
+        build_verdict(Family.IP, "mangle", "jump", "TTL", {})
+    bad = {"ttl-set": _opt("ttl-set", "256", module="TTL")}
+    with pytest.raises(FermError, match=r"^invalid ttl-set '256'"):
+        build_verdict(Family.IP, "mangle", "jump", "TTL", bad)
+    # TTL is ip-only: the ip6 pass falls through to the registry refusal
+    with pytest.raises(FermError, match=r"^target 'TTL'"):
+        build_verdict(Family.IP6, "mangle", "jump", "TTL", ttl)
+
+
+def test_build_verdict_synproxy() -> None:
+    def comp(**names: str | None) -> dict[str, RenderedOption]:
+        return {
+            key.replace("_", "-"): _opt(
+                key.replace("_", "-"), value, module="SYNPROXY"
+            )
+            for key, value in names.items()
+        }
+
+    # readback order is fixed: mss, wscale, timestamp, sack-perm
+    full = comp(sack_perm=None, timestamp=None, wscale="7", mss="1460")
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "SYNPROXY", full).to_text()
+        == "synproxy mss 1460 wscale 7 timestamp sack-perm"
+    )
+    # mss/wscale read back as a PAIR whenever either is given (the nft
+    # frontend raises both kernel flags; the absent one prints as 0)
+    assert (
+        build_verdict(
+            Family.IP, "filter", "jump", "SYNPROXY", comp(mss="1460")
+        ).to_text()
+        == "synproxy mss 1460 wscale 0"
+    )
+    assert (
+        build_verdict(
+            Family.IP6, "filter", "jump", "SYNPROXY", comp(wscale="7")
+        ).to_text()
+        == "synproxy mss 0 wscale 7"
+    )
+    assert (
+        build_verdict(
+            Family.IP, "filter", "jump", "SYNPROXY", comp(sack_perm=None)
+        ).to_text()
+        == "synproxy sack-perm"
+    )
+    assert (
+        build_verdict(Family.IP, "filter", "jump", "SYNPROXY", {}).to_text()
+        == "synproxy"
+    )
+    # nft's synproxy grammar has no --ecn twin
+    with pytest.raises(FermError, match=r"^option 'ecn' has no nft"):
+        build_verdict(Family.IP, "filter", "jump", "SYNPROXY", comp(ecn=None))
+    with pytest.raises(FermError, match=r"^invalid synproxy mss"):
+        build_verdict(
+            Family.IP, "filter", "jump", "SYNPROXY", comp(mss="banana")
+        )
+
+
+def _netmap_rule(
+    match_name: str, match_value: Value, to_value: str
+) -> RenderedRule:
+    return _rule(
+        _opt(match_name, match_value),
+        _target("NETMAP"),
+        _opt("to", to_value, module="NETMAP"),
+    )
+
+
+def test_translate_rule_netmap_prefix_map_sides() -> None:
+    # prerouting/output rewrite the destination, postrouting/input the
+    # source; the map key is the rule's own same-side address match
+    nft = translate_rule(
+        Family.IP,
+        "nat",
+        _netmap_rule("destination", "10.66.0.0/24", "192.0.2.0/24"),
+        chain="PREROUTING",
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "ip daddr 10.66.0.0/24",
+        "dnat ip prefix to ip daddr map { 10.66.0.0/24 : 192.0.2.0/24 }",
+    ]
+    nft = translate_rule(
+        Family.IP,
+        "nat",
+        _netmap_rule("source", "192.0.2.0/24", "10.66.0.0/24"),
+        chain="POSTROUTING",
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "ip saddr 192.0.2.0/24",
+        "snat ip prefix to ip saddr map { 192.0.2.0/24 : 10.66.0.0/24 }",
+    ]
+    nft = translate_rule(
+        Family.IP6,
+        "nat",
+        _netmap_rule("destination", "fd00:7::/64", "fd00:9::/64"),
+        chain="OUTPUT",
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "ip6 daddr fd00:7::/64",
+        "dnat ip6 prefix to ip6 daddr map { fd00:7::/64 : fd00:9::/64 }",
+    ]
+
+
+def test_translate_rule_netmap_refusals() -> None:
+    rule = _netmap_rule("destination", "10.66.0.0/24", "192.0.2.0/24")
+    # the hook side is unknown in a custom chain (or without chain context)
+    for chain in ("dmz_map", None):
+        with pytest.raises(FermError, match=r"built-in nat chain"):
+            translate_rule(Family.IP, "nat", rule, chain=chain)
+    # ...and outside the nat table (where xt restricts NETMAP anyway)
+    with pytest.raises(FermError, match=r"built-in nat chain"):
+        translate_rule(Family.IP, "mangle", rule, chain="PREROUTING")
+    # the map key must be the same-side address match
+    wrong_side = _netmap_rule("source", "10.66.0.0/24", "192.0.2.0/24")
+    with pytest.raises(FermError, match=r"exactly one 'destination' match"):
+        translate_rule(Family.IP, "nat", wrong_side, chain="PREROUTING")
+    negated = _netmap_rule(
+        "destination", Negated("10.66.0.0/24"), "192.0.2.0/24"
+    )
+    with pytest.raises(FermError, match=r"negated 'destination'"):
+        translate_rule(Family.IP, "nat", negated, chain="PREROUTING")
+    mismatch = _netmap_rule("destination", "10.66.0.0/25", "192.0.2.0/24")
+    with pytest.raises(FermError, match=r"prefix lengths differ"):
+        translate_rule(Family.IP, "nat", mismatch, chain="PREROUTING")
+    host_bits = _netmap_rule("destination", "10.66.0.1/24", "192.0.2.0/24")
+    with pytest.raises(FermError, match=r"host bits set"):
+        translate_rule(Family.IP, "nat", host_bits, chain="PREROUTING")
+    bare = _netmap_rule("destination", "10.66.0.0/24", "192.0.2.1")
+    with pytest.raises(FermError, match=r"explicit prefix length"):
+        translate_rule(Family.IP, "nat", bare, chain="PREROUTING")
+    family_mix = _netmap_rule("destination", "10.66.0.0/24", "fd00:9::/64")
+    with pytest.raises(FermError, match=r"does not match the ip family"):
+        translate_rule(Family.IP, "nat", family_mix, chain="PREROUTING")
+    without_to = _rule(_opt("destination", "10.66.0.0/24"), _target("NETMAP"))
+    with pytest.raises(FermError, match=r"^NETMAP target not yet"):
+        translate_rule(Family.IP, "nat", without_to, chain="PREROUTING")
+
+
+def test_module_qualified_companions_do_not_swallow_match_options() -> None:
+    # `mss` (tcp match) and `to` (string match) share their spelling with
+    # SYNPROXY's and NETMAP's companion options; the match-module twin
+    # must keep refusing as an option, not vanish into a companion
+    tcp_mss = _rule(
+        _opt("protocol", "tcp", kind=OptionKind.PROTO),
+        _opt("mss", "1400", module="tcp"),
+        _target("ACCEPT"),
+    )
+    with pytest.raises(FermError, match=r"^option 'mss' not yet"):
+        translate_rule(Family.IP, "filter", tcp_mss, chain="INPUT")
+    string_to = _rule(
+        _opt("to", "100", module="string"),
+        _target("ACCEPT"),
+    )
+    with pytest.raises(FermError, match=r"^option 'to' not yet"):
+        translate_rule(Family.IP, "filter", string_to, chain="INPUT")

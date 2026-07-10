@@ -68,6 +68,32 @@ For the history of the original Perl implementation, see
   reason (no single nft selector covers the 8-bit TOS byte with a
   mask; nft exposes dscp and ecn separately). Wild-corpus coverage
   under `--nft` rises from 23/31 to 24/31 configs.
+- **nft backend vocabulary, fourth batch: ct status, NFQUEUE, SYNPROXY,
+  TTL/HL, NETMAP, masked marks.** The `ctstate` SNAT/DNAT pseudo-states
+  translate to `ct status` (negation emits the masked bang form
+  `ct status ! snat,dnat` — the only spelling whose bytecode means
+  "none of the bits set"; a list mixing them with real states refuses:
+  it means one OR across two ct registers, which no single nft rule
+  can express), and `mod conntrack ctstatus` translates alongside
+  (`SEEN_REPLY` → `seen-reply`; `NONE` has no nft spelling and
+  refuses). `NFQUEUE` emits the readback's `queue [flags
+  bypass,fanout] to N` (`queue-cpu-fanout` without `queue-balance`
+  refuses, as xt itself does). `SYNPROXY` emits `synproxy` with its
+  parts in the kernel's fixed order and `mss`/`wscale` as a pair
+  whenever either is given (the nft frontend raises both kernel flags
+  together); `ecn` has no nft twin and refuses. `TTL ttl-set` / `HL
+  hl-set` become `ip ttl set` / `ip6 hoplimit set` (the inc/dec
+  variants refuse — nft has no payload arithmetic), and the `mod hl`
+  matches become `ip6 hoplimit` (`>`/`<` readback canon). A
+  partial-mask `mark`/`connmark` match emits the infix bitwise form
+  (`meta mark & 0x… == 0x…`, 8-digit hex operands), and `MARK
+  set-xmark` with a full mask folds to the plain `meta mark set`.
+  `NETMAP` translates to nft's prefix-to-prefix NAT map (`dnat ip
+  prefix to ip daddr map { A : B }`) when a built-in nat chain names
+  the hook side and a same-side address match of equal prefix length
+  names the map key; every other shape refuses with the reason. The
+  adversarial `boundary-values` corpus config now translates
+  end-to-end.
 
 ### Fixed
 
@@ -84,6 +110,15 @@ For the history of the original Perl implementation, see
   rejects, and service-named ports (`ssh`, `http`) resolve to the
   numbers the kernel readback prints (a named port previously left
   `--plan` diffing an applied ruleset forever).
+- **nft backend: negated multi-member `ct state` lists carried the
+  wrong semantics.** `! state (ESTABLISHED RELATED)` used to emit
+  `ct state != established,related`, which nft compiles to a
+  whole-register comparison — true for nearly every packet — instead
+  of iptables' "none of these states"; it now emits the masked bang
+  form `ct state ! established,related` (verified against the netlink
+  bytecode). State lists are also pre-sorted into kernel bit order:
+  the readback re-sorts `related,established`, so the source-order
+  emission left `--plan` diffing an applied ruleset forever.
 
 ### Testing
 
@@ -95,6 +130,12 @@ For the history of the original Perl implementation, see
   translated vocabulary against `nft -c` and pinning `--plan`
   convergence after a real apply. Golden pairs `icmp_types`,
   `flags_targets` and `match_extras` pin the emitted text.
+- The containerized readback pin (`nox -s nft_readback_e2e`) gains the
+  fourth-batch canon: ct bit-order and bang-form respells, `queue …
+  to`, the synproxy part order and mss/wscale pairing, 8-digit
+  masked-mark hex, the NETMAP prefix map, and `ip ttl set` /
+  `ip6 hoplimit set`; the `ct_queue_netmap` golden pair and the live
+  vocabulary suite cover the same batch end-to-end.
 
 ## [0.1.0a7] - 2026-07-06
 

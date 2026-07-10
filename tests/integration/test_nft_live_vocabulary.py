@@ -8,7 +8,9 @@ The unit layer pins the emitted *text*; this suite pins that the text is
   (the full icmp/icmpv6 type maps, numeric respell, multiport sets,
   limit units and burst, log level/NFLOG shapes, mark, dashed chains,
   addrtype fib types with RTN-ordered lists and limit-iface qualifiers,
-  the dscp name canon, DSCP/CLASSIFY targets with tc-handle respell);
+  the dscp name canon, DSCP/CLASSIFY targets with tc-handle respell,
+  ct status forms with bang negation, NFQUEUE queue-to shapes, SYNPROXY,
+  TTL/HL rewrites, masked marks, set-xmark, mod hl, NETMAP prefix maps);
 * applying it inside a rootless network namespace and re-running
   ``--plan`` must report convergence -- the readback-canonicality
   contract (kernel respells marks to hex, drops default log levels,
@@ -94,6 +96,19 @@ domain ip table filter {
         mod dscp dscp-class be ACCEPT;
         mod set match-set $BADGUYS src DROP;
         mod set ! match-set $BADGUYS src ACCEPT;
+        mod conntrack ctstate DNAT ACCEPT;
+        mod conntrack ctstate "DNAT,SNAT" ACCEPT;
+        mod conntrack ! ctstate "DNAT,SNAT" DROP;
+        mod conntrack ctstatus "CONFIRMED,ASSURED" ACCEPT;
+        mod conntrack ! ctstatus SEEN_REPLY DROP;
+        mod state ! state "ESTABLISHED,RELATED" DROP;
+        mod mark mark "0x80000000/0x80000000" DROP;
+        mod connmark ! mark "0x1/0x3" ACCEPT;
+        NFQUEUE;
+        NFQUEUE queue-num 65535;
+        NFQUEUE queue-balance 0:3 queue-bypass queue-cpu-fanout;
+        proto tcp dport 8443 SYNPROXY sack-perm timestamp wscale 7 mss 1460;
+        proto tcp dport 8444 SYNPROXY mss 1460;
         jump fail2ban-ssh;
     }
     chain OUTPUT {
@@ -120,16 +135,34 @@ domain ip table filter {
         DSCP set-dscp 0x01;
         CLASSIFY set-class 0001:0020;
         CLASSIFY set-class ffff:ffff;
+        TTL ttl-set 42;
+        MARK set-xmark "0xffffffff/0xffffffff";
+    }
+}
+domain ip table nat {
+    chain PREROUTING {
+        daddr 10.66.0.0/24 NETMAP to 192.0.2.0/24;
+    }
+    chain POSTROUTING {
+        saddr 192.0.2.0/24 NETMAP to 10.66.0.0/24;
     }
 }
 domain arp table filter chain INPUT {
     opcode 1 ACCEPT;
     opcode 2 source-mac aa:bb:cc:dd:ee:ff DROP;
 }
-domain ip6 table filter chain INPUT {
-    proto ipv6-icmp icmp-type $ICMP_V6 ACCEPT;
-    mod addrtype dst-type LOCAL ACCEPT;
-    mod dscp dscp-class af21 ACCEPT;
+domain ip6 {
+    table filter chain INPUT {
+        proto ipv6-icmp icmp-type $ICMP_V6 ACCEPT;
+        mod addrtype dst-type LOCAL ACCEPT;
+        mod dscp dscp-class af21 ACCEPT;
+        mod hl hl-gt 254 ACCEPT;
+        mod hl hl-lt 1 DROP;
+        mod conntrack ctstate DNAT ACCEPT;
+    }
+    table mangle chain PREROUTING {
+        HL hl-set 255;
+    }
 }
 """
 

@@ -1,0 +1,34 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add chain ip ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add chain ip ferm nat_POSTROUTING { type nat hook postrouting priority 100; }
+add chain ip ferm nat_PREROUTING { type nat hook prerouting priority -100; }
+add rule ip ferm INPUT ct status dnat accept
+add rule ip ferm INPUT ct status snat,dnat accept
+add rule ip ferm INPUT ct status ! dnat drop
+add rule ip ferm INPUT ct status ! snat,dnat drop
+add rule ip ferm INPUT ct status assured,confirmed accept
+add rule ip ferm INPUT ct status ! expected accept
+add rule ip ferm INPUT ct state ! established,related drop
+add rule ip ferm INPUT ct state established,related accept
+add rule ip ferm INPUT queue to 0
+add rule ip ferm INPUT queue to 65535
+add rule ip ferm INPUT queue flags bypass,fanout to 0-3
+add rule ip ferm INPUT tcp dport 80 synproxy mss 1460 wscale 7 timestamp sack-perm
+add rule ip ferm INPUT tcp dport 81 synproxy mss 1460 wscale 0
+add rule ip ferm INPUT meta mark & 0x80000000 == 0x80000000 drop
+add rule ip ferm INPUT ct mark & 0x00000003 != 0x00000001 accept
+add rule ip ferm mangle_PREROUTING ip ttl set 42
+add rule ip ferm mangle_PREROUTING meta mark set 0xffffffff
+add rule ip ferm nat_POSTROUTING ip saddr 192.0.2.0/24 snat ip prefix to ip saddr map { 192.0.2.0/24 : 10.66.0.0/24 }
+add rule ip ferm nat_PREROUTING ip daddr 10.66.0.0/24 dnat ip prefix to ip daddr map { 10.66.0.0/24 : 192.0.2.0/24 }
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add chain ip6 ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add rule ip6 ferm INPUT ip6 hoplimit > 254 accept
+add rule ip6 ferm INPUT ct status ! snat,dnat drop
+add rule ip6 ferm mangle_PREROUTING ip6 hoplimit set 255

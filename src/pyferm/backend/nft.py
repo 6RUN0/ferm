@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import grp
+import ipaddress
 import pwd
 import re
 import socket
@@ -134,6 +135,33 @@ _NFT_NAME_MAXLEN: Final[int] = 256
 #: ct state keywords nft accepts for ``ct state`` (the ferm ``state`` module
 #: maps to iptables ``--state``, whose vocabulary is this set).
 _CT_STATES: Final[frozenset[str]] = frozenset(NFT_CT_STATES)
+#: ct state bit values: the kernel readback prints a state list
+#: deduplicated in ascending bit order, so emission pre-sorts to match
+#: (the _FIB_TYPE_RANK pattern).
+_CT_STATE_RANK: Final[dict[str, int]] = {
+    "invalid": 0x01,
+    "established": 0x02,
+    "related": 0x04,
+    "new": 0x08,
+    "untracked": 0x40,
+}
+#: ct status bits (IPS_* order), same readback-order contract.  The
+#: xt_conntrack-only SNAT/DNAT pseudo-states live in this register, not
+#: in ct state.
+_CT_STATUS_RANK: Final[dict[str, int]] = {
+    "expected": 0x01,
+    "seen-reply": 0x02,
+    "assured": 0x04,
+    "confirmed": 0x08,
+    "snat": 0x10,
+    "dnat": 0x20,
+}
+_CT_NAT_PSEUDO_STATES: Final[frozenset[str]] = frozenset({"snat", "dnat"})
+#: the --ctstatus vocabulary xt_conntrack accepts, minus NONE (an empty
+#: status mask, which no nft ``ct status`` spelling can express).
+_CTSTATUS_TOKENS: Final[frozenset[str]] = frozenset(
+    {"expected", "seen-reply", "assured", "confirmed"}
+)
 
 
 def _validate_address(scalar: str) -> str:
@@ -850,6 +878,10 @@ _ICMP_NUMERIC_RE: Final[re.Pattern[str]] = re.compile(
 _ICMP_OCTET_MAX: Final[int] = 255
 #: A packet/ct mark is a 32-bit value.
 _MARK_MAX: Final[int] = 0xFFFFFFFF
+#: u16 ceiling shared by NFQUEUE queue numbers and synproxy mss/wscale.
+_U16_MAX: Final[int] = 0xFFFF
+#: the 8-bit IPv4 TTL / IPv6 hop-limit ceiling.
+_HOPLIMIT_MAX: Final[int] = 255
 #: An nflog group is a 16-bit netlink group number.
 _NFLOG_GROUP_MAX: Final[int] = 65535
 #: numeric icmp type -> the name the kernel readback prints it as
@@ -929,6 +961,13 @@ _TTL_COMPARATOR: Final[dict[str, str]] = {
     "ttl-eq": "",
     "ttl-gt": "> ",
     "ttl-lt": "< ",
+}
+#: mod hl, xt_ttl's ip6 twin: the same comparator shapes over
+#: ``ip6 hoplimit`` (readback prints ``>``/``<`` -- verified live).
+_HL_COMPARATOR: Final[dict[str, str]] = {
+    "hl-eq": "",
+    "hl-gt": "> ",
+    "hl-lt": "< ",
 }
 #: iptables addrtype value -> nft fib route type, keyed by kernel RTN
 #: number (RTN_UNSPEC=0 ... RTN_PROHIBIT=8).  A type-list readback is
@@ -1141,6 +1180,54 @@ def _mark_value(scalar: str) -> str:
     return f"0x{value:08x}"
 
 
+def _masked_mark_expr(selector: str, scalar: str, neg: bool) -> str | None:
+    """
+    Spell a partial-mask xt mark match as nft's infix bitwise form.
+
+    Returns None when the plain-equality path applies instead.
+    xt matches ``(mark & mask) == value``; the kernel readback prints
+    both operands as 8-digit hex (``& 0x00000003 == 0x00000000``) --
+    verified live.  A full mask folds to plain equality inside
+    :func:`_mark_value` instead.
+    """
+    if "/" not in scalar:
+        return None
+    base, _, mask = scalar.partition("/")
+    try:
+        value = int(base, 0)
+        mask_value = int(mask, 0)
+    except ValueError:
+        raise FermError(f"invalid mark '{scalar}' for nft backend") from None
+    if mask_value == _MARK_MAX:
+        return None
+    if not (0 <= value <= _MARK_MAX and 0 <= mask_value <= _MARK_MAX):
+        raise FermError(f"invalid mark '{scalar}' for nft backend")
+    operator = "!=" if neg else "=="
+    return f"{selector} & 0x{mask_value:08x} {operator} 0x{value:08x}"
+
+
+def _xmark_full_set(scalar: str) -> str:
+    """
+    Fold ``--set-xmark value[/mask]`` to its plain-set value, else refuse.
+
+    xt writes ``(mark & ~mask) ^ value``; with a full mask (the xt
+    default when the mask is omitted) the old bits are cleared first, so
+    the result is exactly ``set value``.  A partial mask needs nft mark
+    arithmetic that is not emitted yet.
+    """
+    base, sep, mask = scalar.partition("/")
+    if sep:
+        try:
+            full_mask = int(mask, 0) == _MARK_MAX
+        except ValueError:
+            full_mask = False
+        if not full_mask:
+            raise FermError(
+                f"masked set-xmark '{scalar}' not yet supported by nft backend"
+            )
+    return base
+
+
 def _icmp_type_expr(domain: Family, scalar: str, neg: bool) -> str:
     """
     Translate one ``icmp-type`` operand to an nft match expression.
@@ -1288,6 +1375,231 @@ def _tos_refusal(kind: str, name: str) -> FermError:
     )
 
 
+def _ct_bitmask_expr(
+    selector: str, members: list[str], rank: dict[str, int], neg: bool
+) -> str:
+    """
+    Spell a ``ct state``/``ct status`` bitmask match in readback canon.
+
+    The readback prints members deduplicated in ascending bit order.  A
+    negated match must use the masked bang form (``ct status ! a,b``,
+    "none of the bits set"): the ``!=`` spelling compares the WHOLE
+    register against the OR of the bits -- true for nearly every packet
+    -- which is not what iptables' ``! --ctstate a,b`` means (verified
+    against the netlink bytecode).  The one exception: a packet's ct
+    state register holds exactly one state bit, so a single-member
+    negated state keeps the pre-existing ``!=`` canon (both forms
+    round-trip and are faithful there).
+    """
+    ordered = sorted(set(members), key=rank.__getitem__)
+    joined = ",".join(ordered)
+    if not neg:
+        return f"{selector} {joined}"
+    if selector == "ct state" and len(ordered) == 1:
+        return f"{selector} != {joined}"
+    return f"{selector} ! {joined}"
+
+
+def _nfqueue_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
+    """
+    Spell NFQUEUE as nft's ``queue`` statement.
+
+    The kernel reads ``queue num N`` back as ``queue [flags ...] to N``
+    (flags in bypass,fanout order; a bare NFQUEUE as ``queue to 0``), so
+    that form is emitted directly.  xt_NFQUEUE refuses --queue-cpu-fanout
+    without --queue-balance, so the translation refuses too.
+    """
+    num = companions.get("queue-num")
+    balance = companions.get("queue-balance")
+    if num is not None and balance is not None:
+        raise FermError(
+            "'queue-num' and 'queue-balance' are mutually exclusive for "
+            "the nft backend"
+        )
+    if "queue-cpu-fanout" in companions and balance is None:
+        raise FermError(
+            "option 'queue-cpu-fanout' needs 'queue-balance' for the "
+            "nft backend"
+        )
+    if balance is not None:
+        scalar, _ = unwrap_value(balance.value)
+        low, sep, high = scalar.partition(":")
+        if not (sep and low.isdigit() and high.isdigit()):
+            raise FermError(
+                f"invalid queue-balance '{scalar}' for nft backend"
+            )
+        to = f"{int(low)}-{int(high)}"
+    elif num is not None:
+        scalar, _ = unwrap_value(num.value)
+        if not scalar.isdigit() or int(scalar) > _U16_MAX:
+            raise FermError(f"invalid queue-num '{scalar}' for nft backend")
+        to = str(int(scalar))
+    else:
+        to = "0"
+    flags = [
+        flag
+        for companion_name, flag in (
+            ("queue-bypass", "bypass"),
+            ("queue-cpu-fanout", "fanout"),
+        )
+        if companion_name in companions
+    ]
+    parts = ["queue"]
+    if flags:
+        parts.append(f"flags {','.join(flags)}")
+    parts.append(f"to {to}")
+    return NftVerdict(" ".join(parts))
+
+
+def _hoplimit_verdict(
+    target_value: str, companions: dict[str, RenderedOption]
+) -> NftVerdict:
+    """
+    Spell ``--ttl-set``/``--hl-set`` as an nft hop-limit rewrite.
+
+    The readback canon is ``ip ttl set N`` / ``ip6 hoplimit set N``.
+    nft's payload-set grammar has no arithmetic form, so the inc/dec
+    variants refuse.
+    """
+    prefix = "ttl" if target_value == "TTL" else "hl"
+    for arith in (f"{prefix}-inc", f"{prefix}-dec"):
+        if arith in companions:
+            raise FermError(
+                f"option '{arith}' not yet supported by nft backend"
+            )
+    comp = companions.get(f"{prefix}-set")
+    if comp is None:
+        raise FermError(
+            f"{target_value} target not yet supported by nft backend"
+        )
+    scalar, _ = unwrap_value(comp.value)
+    if not scalar.isdigit() or int(scalar) > _HOPLIMIT_MAX:
+        raise FermError(f"invalid {prefix}-set '{scalar}' for nft backend")
+    selector = "ip ttl" if target_value == "TTL" else "ip6 hoplimit"
+    return NftVerdict(f"{selector} set {int(scalar)}")
+
+
+def _synproxy_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
+    """
+    Spell SYNPROXY as nft's ``synproxy`` statement.
+
+    The kernel readback prints the parts in a fixed order (mss, wscale,
+    timestamp, sack-perm) and prints mss/wscale as a PAIR whenever either
+    is given: the nft frontend raises both kernel flags together, so the
+    absent one reads back as 0 -- verified live; the pair is emitted to
+    match.  nft's synproxy grammar has no --ecn twin.
+    """
+    if "ecn" in companions:
+        raise FermError("option 'ecn' has no nft synproxy equivalent")
+    parts = ["synproxy"]
+    mss = companions.get("mss")
+    wscale = companions.get("wscale")
+    if mss is not None or wscale is not None:
+        for label, comp in (("mss", mss), ("wscale", wscale)):
+            scalar = "0" if comp is None else unwrap_value(comp.value)[0]
+            if not scalar.isdigit() or int(scalar) > _U16_MAX:
+                raise FermError(
+                    f"invalid synproxy {label} '{scalar}' for nft backend"
+                )
+            parts.append(f"{label} {int(scalar)}")
+    if "timestamp" in companions:
+        parts.append("timestamp")
+    if "sack-perm" in companions:
+        parts.append("sack-perm")
+    return NftVerdict(" ".join(parts))
+
+
+#: built-in nat chain -> the address side xt NETMAP rewrites on its hook
+#: (prerouting/output rewrite the destination, postrouting/input the
+#: source).
+_NETMAP_SIDE: Final[dict[str, str]] = {
+    "PREROUTING": "daddr",
+    "OUTPUT": "daddr",
+    "INPUT": "saddr",
+    "POSTROUTING": "saddr",
+}
+
+
+def _netmap_network(
+    scalar: str, domain: Family
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    """
+    Parse a strict CIDR network of *domain*'s family, else a plain error.
+
+    xt NETMAP silently masks host bits out of ``--to``; the nft map form
+    spells the network literally, so a host-bit operand (or a bare
+    address without a prefix length) refuses instead of being rewritten.
+    """
+    if "/" not in scalar:
+        raise FermError(
+            f"NETMAP prefix '{scalar}' needs an explicit prefix length "
+            f"for the nft backend"
+        )
+    try:
+        network = ipaddress.ip_network(scalar, strict=True)
+    except ValueError as exc:
+        raise FermError(f"NETMAP prefix '{scalar}': {exc}") from None
+    if network.version != (4 if domain is Family.IP else 6):
+        raise FermError(
+            f"NETMAP prefix '{scalar}' does not match the {domain} family"
+        )
+    return network
+
+
+def _netmap_verdict(
+    domain: Family,
+    table: str,
+    chain: str | None,
+    companions: dict[str, RenderedOption],
+    options: list[RenderedOption],
+) -> NftVerdict:
+    """
+    Spell NETMAP as nft's prefix-to-prefix NAT map.
+
+    The readback canon is ``dnat ip prefix to ip daddr map { A : B }``.
+    The nft map form needs the original prefix as its key, so the rule
+    must carry a same-side address match of the same prefix length; and
+    the hook side is only known statically inside a built-in nat chain
+    (a custom chain can be jumped from either side).
+    """
+    side = _NETMAP_SIDE.get(chain or "") if table == "nat" else None
+    if side is None:
+        raise FermError(
+            "NETMAP translates only inside a built-in nat chain "
+            "(PREROUTING/OUTPUT rewrite the destination, "
+            "POSTROUTING/INPUT the source) for the nft backend"
+        )
+    comp = companions.get("to")
+    if comp is None:
+        raise FermError("NETMAP target not yet supported by nft backend")
+    match_name = "destination" if side == "daddr" else "source"
+    operands = [o for o in options if o.name == match_name]
+    if len(operands) != 1:
+        raise FermError(
+            f"NETMAP needs exactly one '{match_name}' match to name the "
+            f"mapped prefix for the nft backend"
+        )
+    original, neg = unwrap_value(operands[0].value)
+    if neg:
+        raise FermError(
+            f"NETMAP cannot map a negated '{match_name}' match for the "
+            f"nft backend"
+        )
+    to_scalar, _ = unwrap_value(comp.value)
+    original_net = _netmap_network(original, domain)
+    to_net = _netmap_network(to_scalar, domain)
+    if original_net.prefixlen != to_net.prefixlen:
+        raise FermError(
+            f"NETMAP prefix lengths differ ('{original}' vs '{to_scalar}') "
+            f"for the nft backend"
+        )
+    statement = "dnat" if side == "daddr" else "snat"
+    return NftVerdict(
+        f"{statement} {domain} prefix to {domain} {side} "
+        f"map {{ {original_net} : {to_net} }}"
+    )
+
+
 def _translate_match_parts(
     domain: Family, option: RenderedOption, protocol: str | None
 ) -> tuple[str, str | None, str | None]:
@@ -1340,14 +1652,45 @@ def _translate_match_parts(
         expr = f"{key} {_op(neg)}{port}"
         return (expr, None, None) if neg else (expr, key, port)
     if name in ("state", "ctstate"):
-        # mod conntrack's ctstate and mod state translate to the same
-        # `ct state`; the xt_conntrack-only SNAT/DNAT pseudo-states have
-        # no nft ct equivalent and fail the membership check below.
+        # mod conntrack's ctstate and mod state translate to `ct state`;
+        # the xt_conntrack-only SNAT/DNAT pseudo-states are ct STATUS
+        # bits.  A mixed list matches ANY member in iptables (one OR
+        # across both registers), which no single nft rule can spell.
         members = scalar.lower().split(",")
         for member in members:
-            if member not in _CT_STATES:
+            if member not in _CT_STATES and (
+                member not in _CT_NAT_PSEUDO_STATES
+            ):
                 raise FermError(f"unknown ct state '{member}' for nft backend")
-        return (f"ct state {_op(neg)}{','.join(members)}", None, None)
+        states = [m for m in members if m in _CT_STATES]
+        statuses = [m for m in members if m in _CT_NAT_PSEUDO_STATES]
+        if states and statuses:
+            raise FermError(
+                f"option '{name}': a list mixing connection states and "
+                f"SNAT/DNAT pseudo-states matches any of them; nft cannot "
+                f"OR 'ct state' with 'ct status' in one rule"
+            )
+        if statuses:
+            expr = _ct_bitmask_expr(
+                "ct status", statuses, _CT_STATUS_RANK, neg
+            )
+        else:
+            expr = _ct_bitmask_expr("ct state", states, _CT_STATE_RANK, neg)
+        return (expr, None, None)
+    if name == "ctstatus":
+        # xt_conntrack --ctstatus, with the same any-bit OR semantics as
+        # ctstate; NONE (an empty status mask) has no nft spelling.
+        members = [m.lower().replace("_", "-") for m in scalar.split(",")]
+        for member in members:
+            if member not in _CTSTATUS_TOKENS:
+                raise FermError(
+                    f"ct status '{member}' not yet supported by nft backend"
+                )
+        return (
+            _ct_bitmask_expr("ct status", members, _CT_STATUS_RANK, neg),
+            None,
+            None,
+        )
     if name in _MULTIPORT_KEYWORD:
         if protocol not in PORT_PROTOCOLS:
             raise FermError(
@@ -1387,6 +1730,9 @@ def _translate_match_parts(
         # mod mark and mod connmark both spell their option `mark`; the
         # module tells the packet-mark selector from the ct one.
         selector = "ct mark" if option.module == "connmark" else "meta mark"
+        masked = _masked_mark_expr(selector, scalar, neg)
+        if masked is not None:
+            return (masked, None, None)
         return (f"{selector} {_op(neg)}{_mark_value(scalar)}", None, None)
     if name in ("uid-owner", "gid-owner"):
         meta = "skuid" if name == "uid-owner" else "skgid"
@@ -1408,12 +1754,21 @@ def _translate_match_parts(
         operation = _ARP_OPERATION_BY_NUMBER.get(int(scalar), scalar)
         return (f"arp operation {_op(neg)}{operation}", None, None)
     if name in _TTL_COMPARATOR and domain is not Family.IP6:
-        # xt_ttl is ip-only (ip6's twin is the hl module, untranslated
-        # yet), so the ip6 pass falls through to the generic refusal.
+        # xt_ttl is ip-only (mod hl is its ip6 twin below), so the ip6
+        # pass falls through to the generic refusal.
         if not scalar.isdigit():
             raise FermError(f"invalid ttl '{scalar}' for nft backend")
         return (
             f"ip ttl {_op(neg)}{_TTL_COMPARATOR[name]}{scalar}",
+            None,
+            None,
+        )
+    if name in _HL_COMPARATOR and domain is Family.IP6:
+        # ip6t_hl is ip6-only; the ip pass falls through to the refusal.
+        if not scalar.isdigit():
+            raise FermError(f"invalid hl '{scalar}' for nft backend")
+        return (
+            f"ip6 hoplimit {_op(neg)}{_HL_COMPARATOR[name]}{scalar}",
             None,
             None,
         )
@@ -1880,15 +2235,20 @@ def build_verdict(
     # companion spellings are ebtables-specific), so this branch handles
     # the ip/ip6/arp target only.
     if target_value == "MARK" and domain is not Family.EB:
-        for variant in ("set-xmark", "and-mark", "or-mark", "xor-mark"):
+        for variant in ("and-mark", "or-mark", "xor-mark"):
             if variant in companions:
                 raise FermError(
                     f"option '{variant}' not yet supported by nft backend"
                 )
-        comp = companions.get("set-mark")
-        if comp is None:
+        setmark = companions.get("set-mark")
+        setxmark = companions.get("set-xmark")
+        if setmark is not None and setxmark is None:
+            scalar, _ = unwrap_value(setmark.value)
+        elif setxmark is not None and setmark is None:
+            scalar, _ = unwrap_value(setxmark.value)
+            scalar = _xmark_full_set(scalar)
+        else:
             raise FermError("MARK target not yet supported by nft backend")
-        scalar, _ = unwrap_value(comp.value)
         return NftVerdict(f"meta mark set {_mark_value(scalar)}")
     if target_value == "DSCP" and domain in (Family.IP, Family.IP6):
         # Exactly one of set-dscp / set-dscp-class (TCPMSS/CONNMARK pattern);
@@ -1913,6 +2273,16 @@ def build_verdict(
         return NftVerdict(f"meta priority set {_classify_priority(scalar)}")
     if target_value == "TOS":
         raise _tos_refusal("target", "TOS")
+    if target_value == "NFQUEUE":
+        return _nfqueue_verdict(companions)
+    # TTL is the ip twin of ip6's HL; each other family falls through to
+    # the registry refusal below.
+    if target_value == "TTL" and domain is Family.IP:
+        return _hoplimit_verdict("TTL", companions)
+    if target_value == "HL" and domain is Family.IP6:
+        return _hoplimit_verdict("HL", companions)
+    if target_value == "SYNPROXY" and domain in (Family.IP, Family.IP6):
+        return _synproxy_verdict(companions)
     # The ebtables target keywords share companion option names with the
     # inet NAT targets (snat/to-source, dnat/to-destination), so without
     # this guard they would fall through to the user-chain branch below,
@@ -1991,6 +2361,28 @@ _TARGET_COMPANIONS: Final[tuple[str, ...]] = (
     "and-tos",
     "or-tos",
     "xor-tos",
+    "queue-num",
+    "queue-balance",
+    "queue-bypass",
+    "queue-cpu-fanout",
+    "ttl-set",
+    "ttl-dec",
+    "ttl-inc",
+    "hl-set",
+    "hl-dec",
+    "hl-inc",
+    "wscale",
+    "sack-perm",
+    "timestamp",
+    "ecn",
+)
+
+#: companion names that collide with a match option of the same spelling
+#: (`mss` is both SYNPROXY's option and the tcp match's; `to` is NETMAP's
+#: and the string match's), so they are consumed as companions only when
+#: the introducing module IS that target.
+_MODULE_COMPANIONS: Final[frozenset[tuple[str, str]]] = frozenset(
+    {("NETMAP", "to"), ("SYNPROXY", "mss")}
 )
 
 
@@ -2029,7 +2421,13 @@ def _references_empty_named_set(rule: RenderedRule) -> bool:
     )
 
 
-def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
+def translate_rule(
+    domain: Family,
+    table: str,
+    rule: RenderedRule,
+    *,
+    chain: str | None = None,
+) -> NftRule:
     """
     Translate one RenderedRule to an NftRule (two-pass).
 
@@ -2039,6 +2437,10 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
     match subsumes it; ``kind == 'target'`` records the verdict discriminator
     and companion options feed it.  Match statements keep their source order
     (nft is order-sensitive); the verdict is appended last.
+
+    ``chain`` is the ORIGINAL (pre-``nft_chain_name``) chain name, the hook
+    context for verdicts whose translation depends on the hook side (NETMAP);
+    ``None`` means unknown, making such a verdict refuse cleanly.
     """
     if _references_empty_named_set(rule):
         raise internal_error(
@@ -2161,7 +2563,10 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
             target_value, _ = unwrap_value(option.value)
             target_name = name
             continue
-        if name in _TARGET_COMPANIONS:
+        if (
+            name in _TARGET_COMPANIONS
+            or (option.module, name) in _MODULE_COMPANIONS
+        ):
             companions[name] = option
             continue
         if isinstance(option.value, SetRef):
@@ -2204,7 +2609,14 @@ def translate_rule(domain: Family, table: str, rule: RenderedRule) -> NftRule:
         matches.append(NftMatch(expr, set_key=set_key, element=element))
 
     statements: list[NftStatement] = list(matches)
-    if target_value is not None:
+    if target_value == "NETMAP" and domain in (Family.IP, Family.IP6):
+        # NETMAP needs the rule's own address match (the map key) and the
+        # chain's hook side, which build_verdict does not see; arp/eb fall
+        # through to its registry refusal.
+        statements.append(
+            _netmap_verdict(domain, table, chain, companions, rule.options)
+        )
+    elif target_value is not None:
         statements.append(
             build_verdict(
                 domain,
@@ -2463,7 +2875,7 @@ class NftBackend(Backend):
                     )
                 rules[nft_name] = _collapse_chain_rules(
                     [
-                        translate_rule(domain, tbl, rule)
+                        translate_rule(domain, tbl, rule, chain=original)
                         for rule in table_info.chains[original].rules
                         if not _references_empty_named_set(rule)
                     ]

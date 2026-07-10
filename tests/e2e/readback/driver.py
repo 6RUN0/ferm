@@ -26,7 +26,15 @@ The checks:
    ``lephb``/``va`` names absent from the iptables class table);
 5. ``meta priority`` (CLASSIFY) readback strips leading zeros and
    renders the tc-special handles ``ffff:ffff`` -> ``root`` and ``0:0``
-   -> ``none``; a 5-hex-digit half is rejected.
+   -> ``none``; a 5-hex-digit half is rejected;
+6. the 2026-07-10 vocabulary batch: ct state/status lists re-sort into
+   bit order and negate via the masked bang form (``ct status !
+   snat,dnat``; the ``!=`` spelling is a whole-register compare); NFQUEUE
+   reads back as ``queue [flags ...] to N``; synproxy prints its parts
+   in mss/wscale/timestamp/sack-perm order with mss and wscale as a pair
+   whenever either is given; a partial-mask mark prints 8-digit hex on
+   both operands; NETMAP's prefix-to-prefix NAT map and ``ip ttl set``/
+   ``ip6 hoplimit set`` spell back verbatim.
 
 Prints ``NFT-READBACK-PASS`` only after every check has passed.  Stdlib
 only: it runs under the container's system ``python3`` and imports
@@ -267,6 +275,75 @@ table ip t {
         _fail("5-hex-digit tc handle should be rejected", "accepted")
 
 
+def check_ct_queue_netmap_readback() -> None:
+    # Input spellings are scrambled on purpose (list order, flag order,
+    # `queue num`, unpadded hex) to pin the kernel's canonical respell.
+    script = """\
+table ip t {
+  chain c {
+    type filter hook input priority 0;
+    ct state related,established accept
+    ct state ! established,related drop
+    ct state != invalid accept
+    ct status dnat,snat accept
+    ct status ! dnat drop
+    ct status ! snat,dnat drop
+    ct status expected,confirmed,assured,seen-reply accept
+    queue num 65535
+    queue num 0-3 bypass,fanout
+    queue num 1 bypass
+    tcp dport 80 synproxy sack-perm timestamp wscale 7 mss 1460
+    tcp dport 81 synproxy mss 1460
+    tcp dport 82 synproxy sack-perm
+    meta mark & 0x3 != 0x1 accept
+    ct mark & 0x80000000 == 0x80000000 drop
+    ip ttl set 42
+  }
+  chain pre {
+    type nat hook prerouting priority -100;
+    ip daddr 10.66.0.0/24 dnat ip prefix to ip daddr map \\
+      { 10.66.0.0/24 : 192.0.2.0/24 }
+  }
+}
+table ip6 t6 {
+  chain c {
+    type filter hook input priority 0;
+    ip6 hoplimit set 255
+    ip6 hoplimit > 254 accept
+  }
+}
+"""
+    expected = [
+        "ct state established,related accept",
+        "ct state ! established,related drop",
+        "ct state != invalid accept",
+        "ct status snat,dnat accept",
+        "ct status ! dnat drop",
+        "ct status ! snat,dnat drop",
+        "ct status expected,seen-reply,assured,confirmed accept",
+        "queue to 65535",
+        "queue flags bypass,fanout to 0-3",
+        "queue flags bypass to 1",
+        "tcp dport 80 synproxy mss 1460 wscale 7 timestamp sack-perm",
+        "tcp dport 81 synproxy mss 1460 wscale 0",
+        "tcp dport 82 synproxy sack-perm",
+        "meta mark & 0x00000003 != 0x00000001 accept",
+        "ct mark & 0x80000000 == 0x80000000 drop",
+        "ip ttl set 42",
+        "ip daddr 10.66.0.0/24 dnat ip prefix to ip daddr map"
+        " { 10.66.0.0/24 : 192.0.2.0/24 }",
+        "ip6 hoplimit set 255",
+        "ip6 hoplimit > 254 accept",
+    ]
+    lines = _rule_lines(_load_and_list(script))
+    for want in expected:
+        if want not in lines:
+            _fail(
+                f"ct/queue/netmap readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -275,6 +352,7 @@ def main() -> None:
     check_fib_oif_hook_constraint()
     check_dscp_map()
     check_classify_readback()
+    check_ct_queue_netmap_readback()
     print("NFT-READBACK-PASS")
 
 

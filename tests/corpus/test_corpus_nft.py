@@ -52,7 +52,6 @@ _EXPECTED_NFT_REFUSALS = frozenset(
         "rwthctf2012-vpn",
         "stuart-ha-server",
         # translated adversarial set
-        "boundary-values",
         "chain-maze",
         "deep-nesting",
         "four-domains",

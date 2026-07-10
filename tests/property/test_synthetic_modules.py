@@ -363,6 +363,33 @@ _CASES: list[Case] = [
         modules=("conntrack",),
     ),
     Case(
+        "conntrack_ctstate_dnat",
+        _block(
+            "filter",
+            "INPUT",
+            "mod conntrack ctstate DNAT ACCEPT",
+        ),
+        modules=("conntrack",),
+    ),
+    Case(
+        "conntrack_ctstate_negated_nat_list",
+        _block(
+            "filter",
+            "INPUT",
+            'mod conntrack ! ctstate "SNAT,DNAT" DROP',
+        ),
+        modules=("conntrack",),
+    ),
+    Case(
+        "conntrack_ctstatus_multi",
+        _block(
+            "filter",
+            "INPUT",
+            'mod conntrack ctstatus "CONFIRMED,ASSURED" ACCEPT',
+        ),
+        modules=("conntrack",),
+    ),
+    Case(
         "conntrack_ctorigsrc_dst",
         # RFC 5737 documentation addresses -- safe to use in test rules.
         _block(
@@ -812,6 +839,17 @@ _CASES: list[Case] = [
             "nat",
             "POSTROUTING",
             "outerface eth0 NETMAP to 192.0.2.0/24",
+        ),
+        modules=("NETMAP",),
+    ),
+    Case(
+        # the nft-translatable shape: the same-side address match names
+        # the mapped prefix (the map key of the nft prefix-NAT form)
+        "netmap_daddr_prerouting",
+        _block(
+            "nat",
+            "PREROUTING",
+            "daddr 10.66.0.0/24 NETMAP to 192.0.2.0/24",
         ),
         modules=("NETMAP",),
     ),

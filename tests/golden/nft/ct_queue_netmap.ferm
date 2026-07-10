@@ -1,0 +1,42 @@
+# ct status (ctstate NAT pseudo-states + ctstatus, bang-form negation,
+# bit-order sort), NFQUEUE -> queue-to canon, SYNPROXY (fixed part order,
+# mss/wscale pair), TTL/HL set, masked mark match, set-xmark full-mask
+# fold, mod hl, and NETMAP -> prefix-to-prefix NAT map on both sides.
+table filter chain INPUT {
+    mod conntrack ctstate DNAT ACCEPT;
+    mod conntrack ctstate "DNAT,SNAT" ACCEPT;
+    mod conntrack ! ctstate DNAT DROP;
+    mod conntrack ! ctstate "DNAT,SNAT" DROP;
+    mod conntrack ctstatus "CONFIRMED,ASSURED" ACCEPT;
+    mod conntrack ! ctstatus EXPECTED ACCEPT;
+    mod state ! state "ESTABLISHED,RELATED" DROP;
+    mod state state "RELATED,ESTABLISHED" ACCEPT;
+    NFQUEUE;
+    NFQUEUE queue-num 65535;
+    NFQUEUE queue-balance 0:3 queue-bypass queue-cpu-fanout;
+    proto tcp dport 80 SYNPROXY sack-perm timestamp wscale 7 mss 1460;
+    proto tcp dport 81 SYNPROXY mss 1460;
+    mod mark mark "0x80000000/0x80000000" DROP;
+    mod connmark ! mark "0x1/0x3" ACCEPT;
+}
+table mangle chain PREROUTING {
+    TTL ttl-set 42;
+    MARK set-xmark "0xffffffff/0xffffffff";
+}
+table nat {
+    chain PREROUTING {
+        daddr 10.66.0.0/24 NETMAP to 192.0.2.0/24;
+    }
+    chain POSTROUTING {
+        saddr 192.0.2.0/24 NETMAP to 10.66.0.0/24;
+    }
+}
+domain ip6 {
+    table filter chain INPUT {
+        mod hl hl-gt 254 ACCEPT;
+        mod conntrack ! ctstate (SNAT DNAT) DROP;
+    }
+    table mangle chain PREROUTING {
+        HL hl-set 255;
+    }
+}
