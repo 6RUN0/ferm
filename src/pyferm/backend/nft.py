@@ -354,6 +354,25 @@ class NftVmap(NftStatement):
 
 
 @dataclass
+class NftReset(NftStatement):
+    """
+    A ``reset tcp option <name>`` mangle statement (TCPOPTSTRIP).
+
+    A rule may carry several of these (one per stripped option) and no
+    verdict.  Kept a distinct subclass rather than an :class:`NftVerdict`
+    so the collapse/vmap passes -- which key off ``NftMatch`` and
+    ``NftVerdict`` -- leave it linear untouched (a reset is neither a
+    match nor a vmap-eligible verdict).
+    """
+
+    expr: str
+
+    def to_text(self) -> str:
+        """Return the pre-rendered reset statement verbatim."""
+        return self.expr
+
+
+@dataclass
 class NftRule:
     """One rule: ordered statements plus an optional comment."""
 
@@ -825,6 +844,16 @@ _NFT_DEFAULT_LIMIT_RATE: Final[str] = "3/hour"
 def _op(neg: bool) -> str:
     """Return the nft inequality prefix for a (possibly) negated match."""
     return "!= " if neg else ""
+
+
+#: xt ``--pkt-type`` value -> nft ``meta pkttype`` keyword.  The kernel
+#: respells ``unicast`` as ``host`` on readback, so it is emitted directly;
+#: broadcast/multicast are spelled the same in both.
+_PKTTYPE_MAP: Final[dict[str, str]] = {
+    "unicast": "host",
+    "broadcast": "broadcast",
+    "multicast": "multicast",
+}
 
 
 #: iptables ``--icmp-type`` name -> nft ``icmp type`` name (ip family).
@@ -1786,6 +1815,14 @@ def _translate_match_parts(
             None,
             None,
         )
+    if name == "pkt-type":
+        # Not set-eligible (icmp-type precedent): the packet-type words are
+        # bare tokens with no rank in sort_set_elements.  xt's `unicast`
+        # reads back from the kernel as `host`, so it is emitted as `host`.
+        kind = _PKTTYPE_MAP.get(scalar)
+        if kind is None:
+            raise FermError(f"invalid pkttype '{scalar}' for nft backend")
+        return (f"meta pkttype {_op(neg)}{kind}", None, None)
     raise FermError(f"option '{name}' not yet supported by nft backend")
 
 
@@ -2375,6 +2412,7 @@ _TARGET_COMPANIONS: Final[tuple[str, ...]] = (
     "sack-perm",
     "timestamp",
     "ecn",
+    "strip-options",
 )
 
 #: companion names that collide with a match option of the same spelling
@@ -2419,6 +2457,152 @@ def _references_empty_named_set(rule: RenderedRule) -> bool:
         for o in rule.options
         for setref in iter_setrefs(o.value)
     )
+
+
+#: xt stores ``--probability p`` as ``round(p * 2**31)`` and nft matches it
+#: with ``meta random & <mask> < <threshold>`` where the mask is the top of
+#: the 31-bit range the ``meta random`` expression yields.
+_STATISTIC_RANDOM_MASK: Final[int] = 2**31 - 1
+
+
+def _statistic_match(options: dict[str, RenderedOption]) -> str:
+    """
+    Translate a ``mod statistic`` match to its nft expression.
+
+    ``mode random`` maps to ``meta random & <mask> < <threshold>`` (an
+    average-probability sampler) and ``mode nth`` to ``numgen inc mod N P``
+    (a deterministic every-Nth counter; ``P`` is xt's 0-based ``--packet``,
+    which defaults to 0).  The options are collected rule-wide and
+    module-qualified by the caller because ``every``/``packet`` collide with
+    ``mod nth``'s own keywords.  A statistic match is a matcher, never a
+    verdict, so it must not route through the target companion path (which
+    would silently drop it and fail open).
+    """
+    mode_opt = options.get("mode")
+    if mode_opt is None:
+        raise FermError("mod statistic needs a 'mode' for the nft backend")
+    mode, mode_neg = unwrap_value(mode_opt.value)
+    if mode_neg:
+        raise FermError(
+            "mod statistic 'mode' cannot be negated for the nft backend"
+        )
+    if mode == "random":
+        prob_opt = options.get("probability")
+        if prob_opt is None:
+            raise FermError(
+                "mod statistic mode random needs a 'probability' for the "
+                "nft backend"
+            )
+        scalar, _ = unwrap_value(prob_opt.value)
+        try:
+            probability = float(scalar)
+        except ValueError:
+            raise FermError(
+                f"invalid statistic probability '{scalar}' for nft backend"
+            ) from None
+        if not 0.0 <= probability <= 1.0:
+            raise FermError(
+                f"statistic probability '{scalar}' is outside [0, 1] for "
+                "the nft backend"
+            )
+        threshold = round(probability * 2**31)
+        return f"meta random & {_STATISTIC_RANDOM_MASK} < {threshold}"
+    if mode == "nth":
+        every_opt = options.get("every")
+        if every_opt is None:
+            raise FermError(
+                "mod statistic mode nth needs 'every' for the nft backend"
+            )
+        every_scalar, _ = unwrap_value(every_opt.value)
+        if not every_scalar.isdigit() or int(every_scalar) == 0:
+            raise FermError(
+                f"invalid statistic every '{every_scalar}' for nft backend"
+            )
+        packet_opt = options.get("packet")
+        # xt defaults --packet to 0 (0-based) when omitted; ferm passes the
+        # bare `mode nth every N` through, so the nft offset defaults to 0.
+        if packet_opt is None:
+            packet_scalar = "0"
+        else:
+            packet_scalar, _ = unwrap_value(packet_opt.value)
+            if not packet_scalar.isdigit():
+                raise FermError(
+                    f"invalid statistic packet '{packet_scalar}' for nft "
+                    "backend"
+                )
+        if int(packet_scalar) >= int(every_scalar):
+            raise FermError(
+                f"statistic packet '{packet_scalar}' must be less than "
+                f"every '{every_scalar}' for the nft backend"
+            )
+        return f"numgen inc mod {int(every_scalar)} {int(packet_scalar)}"
+    raise FermError(f"unknown statistic mode '{mode}' for the nft backend")
+
+
+#: xt TCPOPTSTRIP mnemonic -> nft ``reset tcp option`` keyword.
+_TCPOPT_NAME: Final[dict[str, str]] = {
+    "wscale": "window",
+    "mss": "maxseg",
+    "sack-permitted": "sack-perm",
+    "sack": "sack",
+    "timestamp": "timestamp",
+    "md5": "md5sig",
+}
+#: tcp option NUMBER -> nft ``reset tcp option`` keyword.  The kernel
+#: respells these known option kinds to names on readback (pinned live);
+#: any other number in 0-255 stays numeric.
+_TCPOPT_NUM_NAME: Final[dict[int, str]] = {
+    0: "eol",
+    1: "nop",
+    2: "maxseg",
+    3: "window",
+    4: "sack-perm",
+    5: "sack",
+    8: "timestamp",
+    19: "md5sig",
+    30: "mptcp",
+    34: "fastopen",
+}
+#: the highest tcp option kind (a single byte).
+_TCP_OPTION_MAX: Final[int] = 255
+
+
+def _tcpopt_nft_name(token: str) -> str:
+    """Map one xt strip-options token (mnemonic or number) to nft."""
+    if token in _TCPOPT_NAME:
+        return _TCPOPT_NAME[token]
+    if token.isdigit():
+        number = int(token)
+        if number > _TCP_OPTION_MAX:
+            raise FermError(f"invalid tcp option '{token}' for nft backend")
+        return _TCPOPT_NUM_NAME.get(number, str(number))
+    raise FermError(f"unknown tcp option '{token}' for nft backend")
+
+
+def _tcpoptstrip_resets(
+    companions: dict[str, RenderedOption], protocol: str | None
+) -> list[NftReset]:
+    """
+    Spell TCPOPTSTRIP as a series of ``reset tcp option <x>`` statements.
+
+    One reset per stripped option, in user order.  nft's reset acts on the
+    tcp header, so the rule must carry a ``proto tcp`` match (xt requires
+    ``-p tcp`` too); the precedent is the NAT-to-a-port transport guard.
+    """
+    if protocol != "tcp":
+        raise FermError(
+            "TCPOPTSTRIP needs a tcp protocol match for the nft backend"
+        )
+    comp = companions.get("strip-options")
+    if comp is None:
+        raise FermError(
+            "TCPOPTSTRIP needs 'strip-options' for the nft backend"
+        )
+    scalar, _ = unwrap_value(comp.value)
+    return [
+        NftReset(f"reset tcp option {_tcpopt_nft_name(token.strip())}")
+        for token in scalar.split(",")
+    ]
 
 
 def translate_rule(
@@ -2531,12 +2715,21 @@ def translate_rule(
     if setref_count > 1:
         raise FermError("at most one named set per rule in this version")
 
+    # mod statistic's options depend on each other (mode selects which of
+    # probability/every/packet apply), so they are collected rule-wide.  The
+    # collection is module-qualified: `every`/`packet` also name `mod nth`'s
+    # own keywords, which must NOT be folded into a statistic match.
+    statistic_opts: dict[str, RenderedOption] = {
+        o.name: o for o in rule.options if o.module == "statistic"
+    }
+
     # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
     comment: str | None = None
     target_name: str | None = None
     target_value: str | None = None
     companions: dict[str, RenderedOption] = {}
+    statistic_emitted = False
 
     for option in rule.options:
         name, kind = option.name, option.kind
@@ -2568,6 +2761,13 @@ def translate_rule(
             or (option.module, name) in _MODULE_COMPANIONS
         ):
             companions[name] = option
+            continue
+        if option.module == "statistic":
+            # Emitted once, at the position of the first statistic option, so
+            # the match keeps its source order among the other matches.
+            if not statistic_emitted:
+                matches.append(NftMatch(_statistic_match(statistic_opts)))
+                statistic_emitted = True
             continue
         if isinstance(option.value, SetRef):
             setref = option.value
@@ -2609,7 +2809,13 @@ def translate_rule(
         matches.append(NftMatch(expr, set_key=set_key, element=element))
 
     statements: list[NftStatement] = list(matches)
-    if target_value == "NETMAP" and domain in (Family.IP, Family.IP6):
+    if target_value == "TCPOPTSTRIP":
+        # TCPOPTSTRIP appends a series of reset statements (one per stripped
+        # option) and no verdict; build_verdict is typed for exactly one
+        # verdict, so it is spelled here (the mangle-MARK precedent for a
+        # verdict-less rule).
+        statements.extend(_tcpoptstrip_resets(companions, protocol))
+    elif target_value == "NETMAP" and domain in (Family.IP, Family.IP6):
         # NETMAP needs the rule's own address match (the map key) and the
         # chain's hook side, which build_verdict does not see; arp/eb fall
         # through to its registry refusal.

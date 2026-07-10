@@ -1,0 +1,7 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add rule ip ferm mangle_PREROUTING meta l4proto tcp reset tcp option maxseg reset tcp option window reset tcp option sack-perm reset tcp option sack reset tcp option timestamp reset tcp option md5sig
+add rule ip ferm mangle_PREROUTING meta l4proto tcp reset tcp option maxseg reset tcp option window reset tcp option sack-perm reset tcp option sack reset tcp option timestamp reset tcp option md5sig reset tcp option mptcp reset tcp option fastopen
+add rule ip ferm mangle_PREROUTING meta l4proto tcp reset tcp option 6 reset tcp option 254

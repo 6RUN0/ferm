@@ -1,0 +1,8 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT meta pkttype host accept
+add rule ip ferm INPUT meta pkttype broadcast drop
+add rule ip ferm INPUT meta pkttype multicast drop
+add rule ip ferm INPUT meta pkttype != broadcast accept

@@ -1,0 +1,9 @@
+# mod statistic: random (probability -> masked meta random, incl. the
+# p=1.0 boundary above the mask) and nth (every/packet -> bare numgen,
+# with xt's 0-based --packet defaulting to 0 when omitted).
+table filter chain INPUT {
+    mod statistic mode random probability 0.5 ACCEPT;
+    mod statistic mode random probability 1.0 DROP;
+    mod statistic mode nth every 10 packet 3 ACCEPT;
+    mod statistic mode nth every 4 DROP;
+}

@@ -1,0 +1,8 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT meta random & 2147483647 < 1073741824 accept
+add rule ip ferm INPUT meta random & 2147483647 < 2147483648 drop
+add rule ip ferm INPUT numgen inc mod 10 3 accept
+add rule ip ferm INPUT numgen inc mod 4 0 drop

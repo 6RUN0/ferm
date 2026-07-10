@@ -4419,3 +4419,236 @@ def test_module_qualified_companions_do_not_swallow_match_options() -> None:
     )
     with pytest.raises(FermError, match=r"^option 'to' not yet"):
         translate_rule(Family.IP, "filter", string_to, chain="INPUT")
+
+
+# --- 2026-07-10 vocabulary batch 5 (light part): statistic, pkttype,
+# --- TCPOPTSTRIP.  Emission spellings pinned against a live kernel readback
+# --- (see tests/integration/test_nft_live_vocabulary).
+
+
+def _statistic(name: str, value: Value) -> RenderedOption:
+    return _opt(name, value, module="statistic")
+
+
+def _statistic_texts(*stat_opts: RenderedOption) -> list[str]:
+    nft = translate_rule(
+        Family.IP, "filter", _rule(*stat_opts, _target("ACCEPT"))
+    )
+    return [s.to_text() for s in nft.statements]
+
+
+def test_translate_rule_statistic_random() -> None:
+    # xt stores the probability as round(p * 2**31); nft matches it with a
+    # masked meta random.  p == 1.0 yields a threshold above the mask, which
+    # nft accepts (the match is then always true).
+    assert _statistic_texts(
+        _statistic("mode", "random"), _statistic("probability", "0.5")
+    ) == ["meta random & 2147483647 < 1073741824", "accept"]
+    assert _statistic_texts(
+        _statistic("mode", "random"), _statistic("probability", "1.0")
+    ) == ["meta random & 2147483647 < 2147483648", "accept"]
+    assert _statistic_texts(
+        _statistic("mode", "random"), _statistic("probability", "0")
+    ) == ["meta random & 2147483647 < 0", "accept"]
+
+
+def test_translate_rule_statistic_nth() -> None:
+    # the bare `numgen inc mod N P` form; xt's --packet defaults to 0
+    assert _statistic_texts(
+        _statistic("mode", "nth"),
+        _statistic("every", "10"),
+        _statistic("packet", "3"),
+    ) == ["numgen inc mod 10 3", "accept"]
+    assert _statistic_texts(
+        _statistic("mode", "nth"), _statistic("every", "10")
+    ) == ["numgen inc mod 10 0", "accept"]
+
+
+def test_translate_rule_statistic_negated_mode_refused() -> None:
+    with pytest.raises(FermError, match=r"^mod statistic 'mode' cannot be"):
+        _statistic_texts(
+            _statistic("mode", Negated("random")),
+            _statistic("probability", "0.5"),
+        )
+
+
+def test_translate_rule_statistic_nth_without_every_refused() -> None:
+    with pytest.raises(FermError, match=r"^mod statistic mode nth needs"):
+        _statistic_texts(_statistic("mode", "nth"))
+
+
+def test_translate_rule_statistic_probability_out_of_range_refused() -> None:
+    for bad in ("1.5", "-0.1", "2"):
+        with pytest.raises(FermError, match=r"outside \[0, 1\]"):
+            _statistic_texts(
+                _statistic("mode", "random"),
+                _statistic("probability", bad),
+            )
+
+
+def test_translate_rule_statistic_unknown_mode_refused() -> None:
+    with pytest.raises(FermError, match=r"^unknown statistic mode 'banana'"):
+        _statistic_texts(_statistic("mode", "banana"))
+
+
+def test_translate_rule_statistic_random_without_probability_refused() -> None:
+    with pytest.raises(
+        FermError, match=r"^mod statistic mode random needs a 'probability'"
+    ):
+        _statistic_texts(_statistic("mode", "random"))
+
+
+def test_translate_rule_statistic_packet_ge_every_refused() -> None:
+    # xt requires --packet < --every (packet is 0-based)
+    with pytest.raises(FermError, match=r"must be less than every"):
+        _statistic_texts(
+            _statistic("mode", "nth"),
+            _statistic("every", "10"),
+            _statistic("packet", "10"),
+        )
+
+
+def test_translate_rule_statistic_invalid_scalars_refused() -> None:
+    with pytest.raises(FermError, match=r"^invalid statistic probability"):
+        _statistic_texts(
+            _statistic("mode", "random"),
+            _statistic("probability", "abc"),
+        )
+    for bad in ("0", "abc"):
+        with pytest.raises(FermError, match=r"^invalid statistic every"):
+            _statistic_texts(
+                _statistic("mode", "nth"), _statistic("every", bad)
+            )
+    with pytest.raises(FermError, match=r"^invalid statistic packet"):
+        _statistic_texts(
+            _statistic("mode", "nth"),
+            _statistic("every", "10"),
+            _statistic("packet", "abc"),
+        )
+
+
+def test_translate_rule_statistic_missing_mode_refused() -> None:
+    with pytest.raises(FermError, match=r"^mod statistic needs a 'mode'"):
+        _statistic_texts(_statistic("probability", "0.5"))
+
+
+def test_translate_rule_statistic_module_qualified_collection() -> None:
+    # `every`/`packet` also name mod nth's own keywords; a non-statistic
+    # `every` must NOT be folded into a statistic match (it falls through to
+    # the generic refusal instead).
+    rule = _rule(
+        _opt("every", "10", module="nth"),
+        _target("ACCEPT"),
+    )
+    with pytest.raises(FermError, match=r"^option 'every' not yet"):
+        translate_rule(Family.IP, "filter", rule)
+
+
+def test_translate_match_pkttype() -> None:
+    # xt's `unicast` reads back from the kernel as `host`
+    assert (
+        translate_match(
+            Family.IP, _opt("pkt-type", "unicast", module="pkttype"), None
+        )
+        == "meta pkttype host"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("pkt-type", "broadcast", module="pkttype"), None
+        )
+        == "meta pkttype broadcast"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("pkt-type", "multicast", module="pkttype"), None
+        )
+        == "meta pkttype multicast"
+    )
+    assert (
+        translate_match(
+            Family.IP,
+            _opt("pkt-type", Negated("unicast"), module="pkttype"),
+            None,
+        )
+        == "meta pkttype != host"
+    )
+
+
+def test_translate_match_pkttype_invalid_refused() -> None:
+    with pytest.raises(FermError, match=r"^invalid pkttype 'banana'"):
+        translate_match(
+            Family.IP, _opt("pkt-type", "banana", module="pkttype"), None
+        )
+
+
+def _tcpoptstrip_rule(
+    strip: str | None, *, protocol: str | None = "tcp"
+) -> RenderedRule:
+    options: list[RenderedOption] = []
+    if protocol is not None:
+        options.append(_opt("protocol", protocol, kind=OptionKind.PROTO))
+    options.append(_target("TCPOPTSTRIP"))
+    if strip is not None:
+        options.append(_opt("strip-options", strip, module="TCPOPTSTRIP"))
+    return _rule(*options)
+
+
+def test_translate_rule_tcpoptstrip_names() -> None:
+    # every xt mnemonic maps to its nft reset keyword; the rule carries no
+    # verdict, only the reset series after the proto match
+    nft = translate_rule(
+        Family.IP,
+        "mangle",
+        _tcpoptstrip_rule("mss,wscale,sack-permitted,sack,timestamp,md5"),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto tcp",
+        "reset tcp option maxseg",
+        "reset tcp option window",
+        "reset tcp option sack-perm",
+        "reset tcp option sack",
+        "reset tcp option timestamp",
+        "reset tcp option md5sig",
+    ]
+
+
+def test_translate_rule_tcpoptstrip_numbers_respell() -> None:
+    # the kernel respells known option kinds to names; unknown numbers stay
+    # numeric
+    nft = translate_rule(
+        Family.IP, "mangle", _tcpoptstrip_rule("0,1,2,3,4,5,8,19,30,34")
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto tcp",
+        "reset tcp option eol",
+        "reset tcp option nop",
+        "reset tcp option maxseg",
+        "reset tcp option window",
+        "reset tcp option sack-perm",
+        "reset tcp option sack",
+        "reset tcp option timestamp",
+        "reset tcp option md5sig",
+        "reset tcp option mptcp",
+        "reset tcp option fastopen",
+    ]
+    nft = translate_rule(Family.IP, "mangle", _tcpoptstrip_rule("6,254"))
+    assert [s.to_text() for s in nft.statements] == [
+        "meta l4proto tcp",
+        "reset tcp option 6",
+        "reset tcp option 254",
+    ]
+
+
+def test_translate_rule_tcpoptstrip_refusals() -> None:
+    with pytest.raises(
+        FermError, match=r"^TCPOPTSTRIP needs a tcp protocol match"
+    ):
+        translate_rule(
+            Family.IP, "mangle", _tcpoptstrip_rule("mss", protocol=None)
+        )
+    with pytest.raises(FermError, match=r"^unknown tcp option 'banana'"):
+        translate_rule(Family.IP, "mangle", _tcpoptstrip_rule("banana"))
+    with pytest.raises(FermError, match=r"^invalid tcp option '256'"):
+        translate_rule(Family.IP, "mangle", _tcpoptstrip_rule("256"))
+    with pytest.raises(FermError, match=r"^TCPOPTSTRIP needs 'strip-options'"):
+        translate_rule(Family.IP, "mangle", _tcpoptstrip_rule(None))

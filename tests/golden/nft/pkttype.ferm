@@ -1,0 +1,8 @@
+# mod pkttype: L2 packet class -> meta pkttype, with xt's `unicast`
+# respelled `host` on kernel readback and the negated form.
+table filter chain INPUT {
+    mod pkttype pkt-type unicast ACCEPT;
+    mod pkttype pkt-type broadcast DROP;
+    mod pkttype pkt-type multicast DROP;
+    mod pkttype pkt-type ! broadcast ACCEPT;
+}

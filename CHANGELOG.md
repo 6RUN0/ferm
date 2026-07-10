@@ -94,6 +94,23 @@ For the history of the original Perl implementation, see
   names the map key; every other shape refuses with the reason. The
   adversarial `boundary-values` corpus config now translates
   end-to-end.
+- **nft backend vocabulary, fifth batch (stateless): statistic,
+  pkttype, TCPOPTSTRIP.** `mod statistic` translates both modes: `mode
+  random probability p` becomes the readback's masked sampler `meta
+  random & 2147483647 < round(p·2³¹)` (the `p = 1.0` threshold sits
+  above the mask, so the match is always true, as intended), and `mode
+  nth every N packet P` becomes the bare `numgen inc mod N P` (xt's
+  0-based `--packet` defaults to 0). `mod pkttype` becomes `meta
+  pkttype`, with xt's `unicast` respelled `host` on kernel readback and
+  the negated form supported. The `TCPOPTSTRIP` target becomes a series
+  of `reset tcp option <x>` statements (one per stripped option, in
+  order): the mnemonics map to nft keywords and known option numbers
+  respell to names (`8` → `timestamp`) while unknown numbers stay
+  numeric; the rule must carry a `tcp` protocol match. Refusals are
+  fail-closed (a negated or unknown statistic mode, a probability
+  outside `[0, 1]`, `nth` without `every` or with `packet ≥ every`, a
+  pkttype outside unicast/broadcast/multicast, a TCPOPTSTRIP without a
+  tcp match or naming an option outside the map and not a byte number).
 
 ### Fixed
 

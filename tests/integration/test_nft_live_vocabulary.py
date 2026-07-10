@@ -10,7 +10,8 @@ The unit layer pins the emitted *text*; this suite pins that the text is
   addrtype fib types with RTN-ordered lists and limit-iface qualifiers,
   the dscp name canon, DSCP/CLASSIFY targets with tc-handle respell,
   ct status forms with bang negation, NFQUEUE queue-to shapes, SYNPROXY,
-  TTL/HL rewrites, masked marks, set-xmark, mod hl, NETMAP prefix maps);
+  TTL/HL rewrites, masked marks, set-xmark, mod hl, NETMAP prefix maps,
+  statistic random/nth samplers, pkttype meta classes, TCPOPTSTRIP resets);
 * applying it inside a rootless network namespace and re-running
   ``--plan`` must report convergence -- the readback-canonicality
   contract (kernel respells marks to hex, drops default log levels,
@@ -109,6 +110,12 @@ domain ip table filter {
         NFQUEUE queue-balance 0:3 queue-bypass queue-cpu-fanout;
         proto tcp dport 8443 SYNPROXY sack-perm timestamp wscale 7 mss 1460;
         proto tcp dport 8444 SYNPROXY mss 1460;
+        mod statistic mode random probability 0.5 ACCEPT;
+        mod statistic mode random probability 1.0 DROP;
+        mod statistic mode nth every 10 packet 3 ACCEPT;
+        mod statistic mode nth every 4 DROP;
+        mod pkttype pkt-type unicast ACCEPT;
+        mod pkttype pkt-type ! broadcast DROP;
         jump fail2ban-ssh;
     }
     chain OUTPUT {
@@ -129,6 +136,10 @@ domain ip table filter {
     chain mss-ish {
         proto tcp tcp-flags (SYN RST) SYN TCPMSS clamp-mss-to-pmtu;
         proto tcp tcp-flags (SYN RST) SYN TCPMSS set-mss 1400;
+    }
+    chain tcpopt-ish {
+        proto tcp TCPOPTSTRIP strip-options "mss,wscale,sack-permitted,md5";
+        proto tcp TCPOPTSTRIP strip-options "sack,8,254";
     }
     chain qos-ish {
         DSCP set-dscp-class af31;

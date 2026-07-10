@@ -1,0 +1,9 @@
+# TCPOPTSTRIP: strip-options -> a series of `reset tcp option <x>`
+# statements (one per option, in user order, no verdict).  Mnemonics map
+# to nft keywords; known option numbers respell to names, unknown numbers
+# stay numeric.  Each rule needs a tcp protocol match.
+table mangle chain PREROUTING {
+    proto tcp TCPOPTSTRIP strip-options "mss,wscale,sack-permitted,sack,timestamp,md5";
+    proto tcp TCPOPTSTRIP strip-options "2,3,4,5,8,19,30,34";
+    proto tcp TCPOPTSTRIP strip-options "6,254";
+}
