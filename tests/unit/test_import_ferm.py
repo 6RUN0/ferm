@@ -819,3 +819,24 @@ COMMIT
     output = _imported(save)
     assert "protocol icmpv6 icmpv6-type echo-request ACCEPT;" in output
     assert "mod icmp6" not in output
+
+
+def test_run_non_ascii_table_name_is_not_understood(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Perl matches save-file lines in byte mode, where \w is [A-Za-z0-9_]:
+    # a table name holding byte \xe9 misses the "*name" pattern, warns
+    # "not understood", and the following policy line dies with no table
+    # open.  Unicode \w would silently accept the wider alphabet.
+    save = "*fil\xe9ter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
+    with pytest.raises(FermError, match="parse error in line 2"):
+        _imported(save)
+    assert "line 1 was not understood" in capsys.readouterr().err
+
+
+def test_run_nbsp_stays_inside_chain_name() -> None:
+    # Perl's byte-mode \S treats \xa0 (latin-1 nbsp) as a plain non-space
+    # byte, so it stays part of the declared chain name; Unicode \s would
+    # split the line into a phantom policy entry instead.
+    save = "*filter\n:FOO\xa0BAR - [0:0]\nCOMMIT\n"
+    assert "chain FOO\xa0BAR;" in _imported(save)

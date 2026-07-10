@@ -57,8 +57,8 @@ from .rules import (
 )
 from .streams import (
     BYTE_ENCODING,
-    HUMAN_STREAM_ERRORS,
     reconfigure_latin1,
+    reconfigure_std_streams,
 )
 from .values import (
     Multi,
@@ -100,6 +100,19 @@ _ESCAPE_RE: Final[re.Pattern[str]] = re.compile(r"[^-\w.:/]", re.ASCII)
 _TOK_QUOTED: Final[re.Pattern[str]] = re.compile(r'\s*"([^"]*)"', re.ASCII)
 _TOK_BANG: Final[re.Pattern[str]] = re.compile(r"\s*(!)", re.ASCII)
 _TOK_WORD: Final[re.Pattern[str]] = re.compile(r"\s*(\S+)", re.ASCII)
+
+#: The save-file line dispatch (Perl's ``while`` chain); ``re.ASCII``
+#: for the same byte-mode reason -- Unicode ``\w``/``\S``/``\b`` would
+#: widen table/chain/policy names past Perl's ``[A-Za-z0-9_]`` model.
+_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"(?:#.*)?", re.ASCII)
+_SAVE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"#.*\b(ip|ip6)tables-save\b", re.ASCII
+)
+_TABLE_RE: Final[re.Pattern[str]] = re.compile(r"\*(\w+)", re.ASCII)
+_CHAIN_DECL_RE: Final[re.Pattern[str]] = re.compile(r":(\S+)\s+-\s+", re.ASCII)
+_POLICY_RE: Final[re.Pattern[str]] = re.compile(r":(\S+)\s+(\w+)\s+", re.ASCII)
+_RULE_RE: Final[re.Pattern[str]] = re.compile(r"-A (\S+)\s+", re.ASCII)
+_COMMIT_RE: Final[re.Pattern[str]] = re.compile(r"COMMIT", re.ASCII)
 
 _USAGE: Final[str] = (
     "Usage:\n"
@@ -679,37 +692,37 @@ class Importer:
 
     def _process_line(self, line: str) -> None:
         """Dispatch one save-file line to its handler (the ``while`` body)."""
-        if re.fullmatch(r"(?:#.*)?", line):
-            match = re.match(r"#.*\b(ip|ip6)tables-save\b", line)
+        if _COMMENT_RE.fullmatch(line):
+            match = _SAVE_HEADER_RE.match(line)
             if match is not None:
                 self.next_domain = match.group(1)
             return
 
-        match = re.fullmatch(r"\*(\w+)", line)
+        match = _TABLE_RE.fullmatch(line)
         if match is not None:
             self._handle_table(match.group(1))
             return
 
-        match = re.match(r":(\S+)\s+-\s+", line)
+        match = _CHAIN_DECL_RE.match(line)
         if match is not None:
             if self.table is None:
                 raise self._die()
             self.write_line(f"chain {match.group(1)};")
             return
 
-        match = re.match(r":(\S+)\s+(\w+)\s+", line)
+        match = _POLICY_RE.match(line)
         if match is not None:
             if self.table is None:
                 raise self._die()
             self.policies[match.group(1)] = match.group(2)
             return
 
-        match = re.match(r"-A (\S+)\s+", line)
+        match = _RULE_RE.match(line)
         if match is not None:
             self._handle_rule(match.group(1), line[match.end() :])
             return
 
-        if re.match(r"COMMIT", line):
+        if _COMMIT_RE.match(line):
             self.flush()
             if self.chain is not None:
                 self.write_line("}")
@@ -856,8 +869,7 @@ def main(
     real stdin.
     """
     # before any write: argparse renders usage/errors through these streams
-    reconfigure_latin1(sys.stdout, errors=HUMAN_STREAM_ERRORS)
-    reconfigure_latin1(sys.stderr, errors=HUMAN_STREAM_ERRORS)
+    reconfigure_std_streams()
     args = list(sys.argv[1:] if argv is None else argv)
     if "-h" in args or "--help" in args:
         sys.stdout.write(_USAGE)

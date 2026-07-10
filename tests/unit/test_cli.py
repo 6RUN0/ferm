@@ -2707,3 +2707,17 @@ def test_rollback_options_full_reload_passthrough() -> None:
 def test_rollback_options_etckeeper_from_no_etckeeper() -> None:
     assert _rollback_opts(["/etc/x"]).etckeeper is True
     assert _rollback_opts(["--no-etckeeper", "/etc/x"]).etckeeper is False
+
+
+def test_def_name_rejects_non_ascii_word_chars(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Perl matches --def in byte mode, where \w is [A-Za-z0-9_].  The
+    # argv byte view of 'ª' is two latin-1 letters that Unicode \w would
+    # accept as a name, so the pattern must stay pinned to re.ASCII.
+    from pyferm.cli import main
+
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--test", "--def", "ª=1", str(conf)]) == 1
+    assert "Invalid --def specification" in capsys.readouterr().err

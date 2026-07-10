@@ -250,6 +250,11 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- `import-ferm` save-file parsing and `--def` name parsing matched with
+  Unicode `\w`/`\S`/`\b` where the Perl tool matches raw bytes: a
+  non-ASCII byte in a table or chain name (or a `--def` name) was
+  silently accepted where Perl warns or rejects. The dispatch patterns
+  are pinned to `re.ASCII`, restoring byte parity.
 - **nft backend: bare match-module loads no longer silently drop.**
   `mod hbh`, `mod dst`, `mod eui64` (whose bare load IS the match:
   extension-header presence, EUI-64 check) and `mod limit` (whose bare
