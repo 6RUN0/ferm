@@ -397,6 +397,11 @@ class NftSetUpdate(NftStatement):
     timeout: str | None = None
     limit: str | None = None
     verb: str = "update"
+    #: True for the ferm-owned implicit sets (recent/hashlimit/connlimit),
+    #: whose full element spec is the declaration identity; False for a
+    #: user ``@set`` mutated by the SET target, where several rules with
+    #: differing keys/timeouts legally share one set (identity: type only).
+    owned: bool = True
 
     def to_text(self) -> str:
         """Render ``<verb> @<name> { ... }`` in pinned brace order."""
@@ -548,6 +553,10 @@ class _DynSetDecl:
     key_expr: str
     timeout: str | None
     limit: str | None
+    #: Mirrors :attr:`NftSetUpdate.owned`: an owned declaration compares by
+    #: the full element spec; a user (SET-target) declaration merges by
+    #: ``type_`` alone, OR-ing the timeout flag across the touching rules.
+    owned: bool = True
 
     @property
     def with_timeout(self) -> bool:
@@ -642,14 +651,45 @@ def _collect_set_declarations(
                         stmt.key_expr,
                         stmt.timeout,
                         stmt.limit,
+                        owned=stmt.owned,
                     )
                     existing = decls.get(stmt.name)
-                    if existing is not None and existing != dyn:
+                    if stmt.owned:
+                        if existing is not None and existing != dyn:
+                            raise FermError(
+                                f"set '{stmt.name}' has conflicting "
+                                "declarations for the nft backend"
+                            )
+                        decls[stmt.name] = dyn
+                        continue
+                    # A user @set mutated by the SET target: several rules
+                    # (differing keys or timeouts) legally share one set, so
+                    # the identity is the nft type alone and the timeout
+                    # flag ORs across uses.  A prior static declaration can
+                    # only be the elementless match-set arm of the same set
+                    # (a SET-targeted set with config elements refuses at
+                    # translate time) -- upgrade it to the dynamic form.
+                    if existing is None:
+                        decls[stmt.name] = dyn
+                        continue
+                    if isinstance(existing, _SetDecl):
+                        # A port-selector use (`dport $x`) would need an
+                        # inet_service set the addr-keyed SET target cannot
+                        # share -- conflict, never a silent overwrite.
+                        if existing.type_ != dyn.type_:
+                            raise FermError(
+                                f"set '{stmt.name}' has conflicting "
+                                "declarations for the nft backend"
+                            )
+                        decls[stmt.name] = dyn
+                        continue
+                    if existing.owned or existing.type_ != dyn.type_:
                         raise FermError(
-                            f"set '{stmt.name}' has conflicting declarations "
-                            "for the nft backend"
+                            f"set '{stmt.name}' has conflicting "
+                            "declarations for the nft backend"
                         )
-                    decls[stmt.name] = dyn
+                    if existing.timeout is None:
+                        existing.timeout = dyn.timeout
                     continue
                 if not isinstance(stmt, NftMatch) or stmt.setref is None:
                     continue
@@ -663,10 +703,17 @@ def _collect_set_declarations(
                 )
                 prior = decls.get(name)
                 if isinstance(prior, _DynSetDecl):
-                    raise FermError(
-                        f"named set '{name}' collides with a stateful set of "
-                        "the same name for the nft backend"
-                    )
+                    if prior.owned or prior.type_ != type_:
+                        raise FermError(
+                            f"named set '{name}' collides with a stateful "
+                            "set of the same name for the nft backend"
+                        )
+                    # A lookup on a SET-target set (the ban-list pattern):
+                    # the dynamic declaration stands, and the selectors
+                    # guard below is skipped -- matching saddr while adding
+                    # daddr (or vice versa) into one addr-typed set is
+                    # legal nft, unlike two static element interpretations.
+                    continue
                 if name in selectors and selectors[name] != selector:
                     raise FermError(
                         f"named set '{name}' used with conflicting selectors "
@@ -1039,6 +1086,25 @@ _ICMP_NUMERIC_RE: Final[re.Pattern[str]] = re.compile(
 )
 #: An icmp type/code is one octet.
 _ICMP_OCTET_MAX: Final[int] = 255
+
+#: iptables ``--tcp-option`` takes one option-kind octet.
+_TCP_OPTION_KIND_MAX: Final[int] = 255
+
+#: ``--tcp-option`` kind number -> the name the kernel readback respells
+#: it to (verified against nft v1.1.6); unknown kinds read back numeric
+#: and are emitted as such.
+_TCP_OPTION_KIND: Final[dict[int, str]] = {
+    0: "eol",
+    1: "nop",
+    2: "maxseg",
+    3: "window",
+    4: "sack-perm",
+    5: "sack",
+    8: "timestamp",
+    19: "md5sig",
+    30: "mptcp",
+    34: "fastopen",
+}
 #: A packet/ct mark is a 32-bit value.
 _MARK_MAX: Final[int] = 0xFFFFFFFF
 #: u16 ceiling shared by NFQUEUE queue numbers and synproxy mss/wscale.
@@ -2130,6 +2196,36 @@ def _translate_match_parts(
         if kind is None:
             raise FermError(f"invalid pkttype '{scalar}' for nft backend")
         return (f"meta pkttype {_op(neg)}{kind}", None, None)
+    if name == "mss":
+        # mod tcpmss and the tcp proto option spell the same match; the
+        # SYNPROXY companion of this name never reaches here (consumed by
+        # the module-qualified companion pass).
+        if protocol != "tcp":
+            raise FermError(
+                "option 'mss' needs a tcp protocol for the nft backend"
+            )
+        low, sep, high = scalar.partition(":")
+        if sep and low.isdigit() and high.isdigit():
+            operand = f"{low}-{high}"
+        elif scalar.isdigit():
+            operand = scalar
+        else:
+            raise FermError(f"invalid mss '{scalar}' for nft backend")
+        return (
+            f"tcp option maxseg size {_op(neg)}{operand}",
+            None,
+            None,
+        )
+    if name == "tcp-option":
+        if protocol != "tcp":
+            raise FermError(
+                "option 'tcp-option' needs a tcp protocol for the nft backend"
+            )
+        if not scalar.isdigit() or int(scalar) > _TCP_OPTION_KIND_MAX:
+            raise FermError(f"invalid tcp-option '{scalar}' for nft backend")
+        kind = _TCP_OPTION_KIND.get(int(scalar), scalar)
+        state = "missing" if neg else "exists"
+        return (f"tcp option {kind} {state}", None, None)
     if name in ("src-range", "dst-range") and domain in (
         Family.IP,
         Family.IP6,
@@ -2251,6 +2347,109 @@ def _translate_match_set(domain: Family, value: Value) -> NftMatch:
     selector = f"{domain} {selector_tail}"
     expr = f"{selector} {_op(negated)}@{_validate_set_name(operand.name)}"
     return NftMatch(expr, set_key=None, setref=operand, set_selector=selector)
+
+
+def _set_target_operand(option: RenderedOption) -> tuple[SetRef, str]:
+    """
+    Unpack an ``add-set``/``del-set`` companion to (SetRef, selector tail).
+
+    The value shape is match-set's (``sc``-coded ``Params([SetRef|name,
+    flags])``), and so are the refusals: an external ipset name and the
+    comma-joined multi-flag form have no @set translation.  The registry
+    marks neither option negatable, so a Negated wrapper is a wiring bug.
+    """
+    value = option.value
+    if (
+        not isinstance(value, Params)
+        or len(value.values) != _MATCH_SET_PARAM_COUNT
+    ):
+        raise internal_error()
+    operand, flags = value.values
+    if not isinstance(operand, SetRef):
+        raise FermError(
+            f"option '{option.name}': external ipset '{operand}' cannot be "
+            f"referenced from nftables; declare it with @set ${operand} = "
+            "() or keep the iptables backend"
+        )
+    if not isinstance(flags, str):
+        raise internal_error()
+    if "," in flags:
+        raise FermError(
+            f"option '{option.name}': multiple SET target flags need a "
+            "concatenated set type that @set does not declare"
+        )
+    selector_tail = _MATCH_SET_FLAG.get(flags)
+    if selector_tail is None:
+        raise FermError(
+            f"option '{option.name}': unsupported SET target flag "
+            f"'{flags}' for the nft backend"
+        )
+    return operand, selector_tail
+
+
+def _set_target_statement(
+    domain: Family, companions: dict[str, RenderedOption]
+) -> NftSetUpdate:
+    """
+    Translate the SET target to an ``add/update/delete @set`` statement.
+
+    The xt_set mapping is exact: a plain ``add-set`` neither refreshes an
+    existing entry's timeout (nft ``add`` is a no-op on a present element),
+    ``add-set`` + ``exist`` refreshes it (nft ``update`` is add-or-refresh),
+    and ``del-set`` removes it (a packet-path ``delete`` of an absent
+    element is a no-op on both sides).  ``timeout N`` becomes the element
+    timeout in the kernel readback spelling (``90`` -> ``1m30s``); xt's
+    ``timeout 0`` means a permanent entry, which is exactly an nft element
+    without a timeout.  The mutated set must be a config-empty ferm
+    ``@set``: a dynamic declaration never emits config elements, and
+    ``--plan`` compares dynamic sets on (type, flags) alone, so declared
+    elements would silently never install.
+    """
+    add = companions.get("add-set")
+    delete = companions.get("del-set")
+    # add-set alongside del-set needs no guard here: each carries a set
+    # reference, so the one-named-set-per-rule guard already refused.
+    primary = add if add is not None else delete
+    if primary is None:
+        raise FermError(
+            "SET target needs 'add-set' or 'del-set' for the nft backend"
+        )
+    setref, selector_tail = _set_target_operand(primary)
+    if setref.elements:
+        raise FermError(
+            f"SET target set '{setref.name}' is a runtime bucket and must "
+            "be declared empty (@set $x = ()) for the nft backend"
+        )
+    name = _validate_set_name(setref.name)
+    timeout: str | None = None
+    if delete is not None:
+        for extra in ("timeout", "exist"):
+            if extra in companions:
+                raise FermError(
+                    f"SET target option '{extra}' is only valid with 'add-set'"
+                )
+        verb = "delete"
+    else:
+        verb = "update" if "exist" in companions else "add"
+        comp = companions.get("timeout")
+        if comp is not None:
+            scalar, _ = unwrap_value(comp.value)
+            if not scalar.isdigit():
+                raise FermError(
+                    f"invalid SET timeout '{scalar}' for nft backend"
+                )
+            seconds = int(scalar)
+            if seconds > 0:
+                timeout = _nft_time_canon(seconds * 1000)
+    set_type = "ipv4_addr" if domain is Family.IP else "ipv6_addr"
+    return NftSetUpdate(
+        name,
+        f"{domain} {selector_tail}",
+        set_type,
+        timeout=timeout,
+        verb=verb,
+        owned=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2819,6 +3018,12 @@ _MODULE_COMPANIONS: Final[frozenset[tuple[str, str]]] = frozenset(
         ("CT", "zone-reply"),
         ("CT", "zone"),
         ("CT", "timeout"),
+        # SET's `timeout` collides with CT's; add/del-set are `sc`-coded
+        # like match-set and must never reach the generic match pass.
+        ("SET", "add-set"),
+        ("SET", "del-set"),
+        ("SET", "timeout"),
+        ("SET", "exist"),
     }
 )
 
@@ -2841,7 +3046,33 @@ def _nft_l4proto(domain: Family, proto: str) -> str:
     return l4proto_name(proto)
 
 
-def _references_empty_named_set(rule: RenderedRule) -> bool:
+def _collect_set_target_names(rules: Iterable[RenderedRule]) -> frozenset[str]:
+    """
+    Collect the set names some SET target of the family mutates.
+
+    A whole-family pre-pass (the ``recent_specs`` precedent): the names feed
+    :func:`_references_empty_named_set` so the empty runtime buckets --
+    which MUST start empty -- keep both their mutating rules and any
+    lookups on them (the ban-list pattern), instead of being dropped as
+    dead empty-set references.
+    """
+    names: set[str] = set()
+    for rule in rules:
+        if not any(
+            o.kind is OptionKind.TARGET and first_scalar(o.value) == "SET"
+            for o in rule.options
+        ):
+            continue
+        for option in rule.options:
+            if option.name in ("add-set", "del-set"):
+                for setref in iter_setrefs(option.value):
+                    names.add(setref.name)
+    return frozenset(names)
+
+
+def _references_empty_named_set(
+    rule: RenderedRule, set_targets: frozenset[str] = frozenset()
+) -> bool:
     """
     Whether *rule* matches on a named set that filtered empty for its family.
 
@@ -2850,9 +3081,17 @@ def _references_empty_named_set(rule: RenderedRule) -> bool:
     as an empty inline address list drops one under the iptables backend and
     the Perl oracle -- otherwise the family would emit a dangling ``@name``
     reference plus an empty ``add set`` declaration.
+
+    ``set_targets`` exempts the sets some rule of the family mutates via the
+    SET target: those are runtime buckets that MUST start empty, so both the
+    mutating rule and a lookup on the set stay (an empty dynamic set matches
+    nothing until the kernel fills it -- the ban-list semantics).  Under the
+    iptables backend the same config unfolds the empty ``@set`` to zero
+    rules; ``@set`` is a port invention with no oracle counterpart, and the
+    nft backend already diverges the same way for recent/hashlimit.
     """
     return any(
-        not setref.elements
+        not setref.elements and setref.name not in set_targets
         for o in rule.options
         for setref in iter_setrefs(o.value)
     )
@@ -3972,6 +4211,7 @@ def translate_rule(
     *,
     chain: str | None = None,
     recent_specs: dict[str, _RecentSpec] | None = None,
+    set_targets: frozenset[str] = frozenset(),
 ) -> NftRule:
     """
     Translate one RenderedRule to an NftRule (two-pass).
@@ -3986,8 +4226,11 @@ def translate_rule(
     ``chain`` is the ORIGINAL (pre-``nft_chain_name``) chain name, the hook
     context for verdicts whose translation depends on the hook side (NETMAP);
     ``None`` means unknown, making such a verdict refuse cleanly.
+    ``set_targets`` carries the family's SET-mutated set names (the
+    whole-family pre-pass, like ``recent_specs``), exempting them from the
+    empty-set wiring assertion below.
     """
-    if _references_empty_named_set(rule):
+    if _references_empty_named_set(rule, set_targets):
         raise internal_error(
             "a rule over a family-filtered empty named set reached "
             "translate_rule; the caller must drop it first"
@@ -4002,10 +4245,14 @@ def translate_rule(
     # `icmp type` and `tcp flags` (like a port match) imply their l4proto
     # dependency, and the kernel readback omits the `meta l4proto` prefix
     # for such a rule, so emitting it would leave --plan diffing forever.
-    # (A maxseg-only rule KEEPS the prefix -- verified live -- so the
-    # TCPMSS verdict does not join this set.)
+    # The `tcp option` MATCH forms (mss, tcp-option) imply it too, but
+    # module-qualified: SYNPROXY's `mss` companion and the TCPMSS verdict
+    # are `tcp option maxseg` SET-statements, whose readback KEEPS the
+    # prefix -- both facts verified live.
     has_implied_l4proto = any(
-        o.name in ("icmp-type", "tcp-flags", "syn") for o in rule.options
+        o.name in ("icmp-type", "tcp-flags", "syn")
+        or (o.name in ("mss", "tcp-option") and o.module in ("tcp", "tcpmss"))
+        for o in rule.options
     ) or _hashlimit_key_implies_l4proto(rule.options)
     # `--limit-burst` is a companion of the SAME xt_limit match, folded
     # into the limit statement below (the kernel readback always prints
@@ -4254,6 +4501,11 @@ def translate_rule(
         statements.append(
             _netmap_verdict(domain, table, chain, companions, rule.options)
         )
+    elif target_value == "SET" and domain in (Family.IP, Family.IP6):
+        # -j SET is non-terminating in iptables and the nft set-mutation
+        # statement is too: the rule ends without a verdict (TCPOPTSTRIP
+        # precedent).  arp/eb fall through to the registry refusal.
+        statements.append(_set_target_statement(domain, companions))
     elif target_value is not None:
         statements.append(
             build_verdict(
@@ -4512,6 +4764,15 @@ class NftBackend(Backend):
                 for rule in chain_rules.rules
             ),
         )
+        # The SET target's runtime buckets must start empty, so their names
+        # exempt both the mutating rules and lookups on them from the
+        # empty-set drop below (the ban-list pattern).
+        set_targets = _collect_set_target_names(
+            rule
+            for table_info in domain_info.tables.values()
+            for chain_rules in table_info.chains.values()
+            for rule in chain_rules.rules
+        )
         for tbl in sorted(domain_info.tables):
             table_info = domain_info.tables[tbl]
             if table_info.preserve_regexes:
@@ -4531,9 +4792,10 @@ class NftBackend(Backend):
                         rule,
                         chain=original,
                         recent_specs=recent_specs,
+                        set_targets=set_targets,
                     )
                     for rule in table_info.chains[original].rules
-                    if not _references_empty_named_set(rule)
+                    if not _references_empty_named_set(rule, set_targets)
                 ]
                 # Assign connlimit set names from the final rule text BEFORE
                 # collapse: distinct names keep collapse from folding two

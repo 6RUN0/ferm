@@ -13,7 +13,8 @@ The unit layer pins the emitted *text*; this suite pins that the text is
   TTL/HL rewrites, masked marks, set-xmark, mod hl, NETMAP prefix maps,
   statistic random/nth samplers, pkttype meta classes, TCPOPTSTRIP resets,
   connbytes ct counters, per-rule connlimit sets, quota unit canon, iprange
-  address ranges, MARK/CONNMARK mark arithmetic);
+  address ranges, MARK/CONNMARK mark arithmetic, SET target runtime
+  buckets with the ban-list lookup, tcpmss/tcp-option kind respells);
 * applying it inside a rootless network namespace and re-running
   ``--plan`` must report convergence -- the readback-canonicality
   contract (kernel respells marks to hex, drops default log levels,
@@ -47,6 +48,7 @@ _NFT_LINE = re.compile(r"^(add|create|delete|insert|flush|replace) ")
 #: One config exercising every construct the nft backend translates.
 _VOCABULARY = """\
 @set $BADGUYS = (10.66.6.6 192.168.66.0/24);
+@set $DYNBAN = ();
 @def $ICMP_V4 = (
     echo-reply pong destination-unreachable source-quench redirect
     echo-request ping router-advertisement router-solicitation
@@ -190,6 +192,17 @@ domain ip table filter {
         mod quota quota 1500000 DROP;
         mod iprange src-range 10.0.0.1-10.0.0.5 ACCEPT;
         mod iprange ! dst-range 192.168.0.1-192.168.0.10 DROP;
+    }
+    chain set-target-ish {
+        mod set match-set $DYNBAN src DROP;
+        proto tcp dport 2222 SET add-set $DYNBAN src timeout 3600;
+        proto tcp dport 2223 SET add-set $DYNBAN src exist;
+        proto tcp dport 2224 SET del-set $DYNBAN src;
+        proto tcp mod tcpmss mss 1400:1500 ACCEPT;
+        proto tcp mod tcpmss ! mss 536 ACCEPT;
+        proto tcp tcp-option 8 ACCEPT;
+        proto tcp tcp-option !19 ACCEPT;
+        proto tcp tcp-option 254 mss 536 DROP;
     }
     chain connlimit-ish {
         proto tcp dport 443 mod connlimit connlimit-above 20

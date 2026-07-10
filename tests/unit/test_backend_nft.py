@@ -4904,14 +4904,17 @@ def test_translate_rule_netmap_refusals() -> None:
 def test_module_qualified_companions_do_not_swallow_match_options() -> None:
     # `mss` (tcp match) and `to` (string match) share their spelling with
     # SYNPROXY's and NETMAP's companion options; the match-module twin
-    # must keep refusing as an option, not vanish into a companion
+    # must translate as a match (batch 8), not vanish into a companion
     tcp_mss = _rule(
         _opt("protocol", "tcp", kind=OptionKind.PROTO),
         _opt("mss", "1400", module="tcp"),
         _target("ACCEPT"),
     )
-    with pytest.raises(FermError, match=r"^option 'mss' not yet"):
-        translate_rule(Family.IP, "filter", tcp_mss, chain="INPUT")
+    nft = translate_rule(Family.IP, "filter", tcp_mss, chain="INPUT")
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp option maxseg size 1400",
+        "accept",
+    ]
     string_to = _rule(
         _opt("to", "100", module="string"),
         _target("ACCEPT"),
@@ -8364,3 +8367,342 @@ def test_finalize_connlimit_exact_names_for_identical_rules() -> None:
     # these literals.
     assert _connlimit_name(rules[0]) == "connlimit_11467455846b"
     assert _connlimit_name(rules[1]) == "connlimit_37377a5e09a1"
+
+
+# ---------------------------------------------------------------------------
+# translate_rule: SET target -> add/update/delete @set statement
+# ---------------------------------------------------------------------------
+from pyferm.backend.nft import (  # noqa: E402
+    _collect_set_target_names,
+    _references_empty_named_set,
+)
+
+#: The family pre-pass render() computes; unit rules must mirror it, or
+#: the empty runtime bucket trips the translate_rule wiring assertion.
+_BUCKET_TARGETS = frozenset({"badguys"})
+
+
+def _set_target_rule(
+    verb_opt: str,
+    setref: SetRef,
+    flags: str = "src",
+    *extra: RenderedOption,
+) -> RenderedRule:
+    return _rule(
+        _opt(verb_opt, Params([setref, flags]), module="SET"),
+        *extra,
+        _target("SET"),
+    )
+
+
+def _translate_set_rule(domain: Family, rule: RenderedRule) -> NftRule:
+    return translate_rule(domain, "filter", rule, set_targets=_BUCKET_TARGETS)
+
+
+def test_set_target_add_update_delete_verbs() -> None:
+    bucket = SetRef("badguys", [])
+    add = _translate_set_rule(Family.IP, _set_target_rule("add-set", bucket))
+    assert [s.to_text() for s in add.statements] == [
+        "add @badguys { ip saddr }"
+    ]
+    update = _translate_set_rule(
+        Family.IP,
+        _set_target_rule(
+            "add-set", bucket, "src", _opt("exist", None, module="SET")
+        ),
+    )
+    assert [s.to_text() for s in update.statements] == [
+        "update @badguys { ip saddr }"
+    ]
+    delete = _translate_set_rule(
+        Family.IP6, _set_target_rule("del-set", bucket, "dst")
+    )
+    assert [s.to_text() for s in delete.statements] == [
+        "delete @badguys { ip6 daddr }"
+    ]
+
+
+def test_set_target_timeout_respells_to_readback() -> None:
+    nft = _translate_set_rule(
+        Family.IP,
+        _set_target_rule(
+            "add-set",
+            SetRef("badguys", []),
+            "src",
+            _opt("timeout", "3600", module="SET"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "add @badguys { ip saddr timeout 1h }"
+    ]
+    stmt = nft.statements[0]
+    assert isinstance(stmt, NftSetUpdate)
+    assert not stmt.owned
+
+
+def test_set_target_timeout_zero_means_permanent() -> None:
+    # xt's `--timeout 0` overrides a set default to "permanent"; the ferm
+    # @set has no default, so a permanent element is one WITHOUT a timeout.
+    nft = _translate_set_rule(
+        Family.IP,
+        _set_target_rule(
+            "add-set",
+            SetRef("badguys", []),
+            "src",
+            _opt("timeout", "0", module="SET"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "add @badguys { ip saddr }"
+    ]
+
+
+def test_set_target_refusals() -> None:
+    bucket = SetRef("badguys", [])
+    # add-set alongside del-set: each carries a set reference, so the
+    # one-named-set-per-rule guard refuses before the SET branch runs.
+    with pytest.raises(FermError, match=r"at most one named set"):
+        _translate_set_rule(
+            Family.IP,
+            _rule(
+                _opt("add-set", Params([bucket, "src"]), module="SET"),
+                _opt("del-set", Params([bucket, "src"]), module="SET"),
+                _target("SET"),
+            ),
+        )
+    with pytest.raises(FermError, match=r"needs 'add-set' or 'del-set'"):
+        _translate_set_rule(Family.IP, _rule(_target("SET")))
+    with pytest.raises(FermError, match=r"only valid with 'add-set'"):
+        _translate_set_rule(
+            Family.IP,
+            _set_target_rule(
+                "del-set", bucket, "src", _opt("timeout", "60", module="SET")
+            ),
+        )
+    with pytest.raises(FermError, match=r"only valid with 'add-set'"):
+        _translate_set_rule(
+            Family.IP,
+            _set_target_rule(
+                "del-set", bucket, "src", _opt("exist", None, module="SET")
+            ),
+        )
+    with pytest.raises(FermError, match=r"multiple SET target flags"):
+        _translate_set_rule(
+            Family.IP, _set_target_rule("add-set", bucket, "src,dst")
+        )
+    with pytest.raises(FermError, match=r"unsupported SET target flag"):
+        _translate_set_rule(
+            Family.IP, _set_target_rule("add-set", bucket, "bogus")
+        )
+    with pytest.raises(FermError, match=r"external ipset"):
+        _translate_set_rule(
+            Family.IP,
+            _rule(
+                _opt("add-set", Params(["extern", "src"]), module="SET"),
+                _target("SET"),
+            ),
+        )
+    with pytest.raises(FermError, match=r"must be declared empty"):
+        _translate_set_rule(
+            Family.IP,
+            _set_target_rule("add-set", SetRef("badguys", ["10.0.0.1"])),
+        )
+    with pytest.raises(FermError, match=r"invalid SET timeout"):
+        _translate_set_rule(
+            Family.IP,
+            _set_target_rule(
+                "add-set", bucket, "src", _opt("timeout", "1h", module="SET")
+            ),
+        )
+
+
+def test_collect_set_target_names_and_empty_set_exemption() -> None:
+    bucket = SetRef("badguys", [])
+    set_rule = _set_target_rule("add-set", bucket)
+    lookup = _rule(_match_set_opt(bucket, "src"), _target("DROP"))
+    other_empty = _rule(
+        _match_set_opt(SetRef("unrelated", []), "src"), _target("DROP")
+    )
+    names = _collect_set_target_names([set_rule, lookup, other_empty])
+    assert names == _BUCKET_TARGETS
+    # The mutating rule and the lookup survive; an empty set nobody
+    # mutates keeps the drop semantics.
+    assert not _references_empty_named_set(set_rule, names)
+    assert not _references_empty_named_set(lookup, names)
+    assert _references_empty_named_set(other_empty, names)
+    assert _references_empty_named_set(lookup)
+
+
+def test_collector_merges_lookup_with_set_target_both_orders() -> None:
+    bucket = SetRef("badguys", [])
+    set_rule = _translate_set_rule(
+        Family.IP,
+        _set_target_rule(
+            "add-set", bucket, "src", _opt("timeout", "60", module="SET")
+        ),
+    )
+    lookup = _translate_set_rule(
+        Family.IP, _rule(_match_set_opt(bucket, "src"), _target("DROP"))
+    )
+    for order in ([set_rule, lookup], [lookup, set_rule]):
+        decls = _collect_set_declarations(Family.IP, {"INPUT": order})
+        decl = decls["badguys"]
+        assert isinstance(decl, _DynSetDecl)
+        assert not decl.owned
+        assert decl.type_ == "ipv4_addr"
+        assert decl.with_timeout
+
+
+def test_collector_ors_timeout_flag_across_set_target_rules() -> None:
+    bucket = SetRef("badguys", [])
+    plain = _translate_set_rule(Family.IP, _set_target_rule("add-set", bucket))
+    timed = _translate_set_rule(
+        Family.IP,
+        _set_target_rule(
+            "add-set", bucket, "src", _opt("timeout", "60", module="SET")
+        ),
+    )
+    # A permanent add and a timed add legally share one set; the flag is
+    # the OR across uses, whichever rule the collector sees first.
+    for order in ([plain, timed], [timed, plain]):
+        decls = _collect_set_declarations(Family.IP, {"INPUT": order})
+        decl = decls["badguys"]
+        assert isinstance(decl, _DynSetDecl)
+        assert decl.with_timeout
+
+
+def test_collector_conflicts_set_target_with_port_lookup() -> None:
+    # `dport $x` types the set inet_service; the addr-keyed SET target
+    # cannot share it -- conflict, never a silent overwrite.
+    port_lookup = _translate_set_rule(
+        Family.IP,
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("dport", SetRef("badguys", ["22"])),
+            _target("ACCEPT"),
+        ),
+    )
+    set_rule = _translate_set_rule(
+        Family.IP, _set_target_rule("add-set", SetRef("badguys", []))
+    )
+    with pytest.raises(FermError, match=r"conflicting declarations"):
+        _collect_set_declarations(
+            Family.IP, {"INPUT": [port_lookup, set_rule]}
+        )
+    with pytest.raises(FermError, match=r"collides with a stateful set"):
+        _collect_set_declarations(
+            Family.IP, {"INPUT": [set_rule, port_lookup]}
+        )
+
+
+def test_collector_keeps_owned_set_strictness() -> None:
+    # A user SET-target set must not merge with a ferm-owned stateful set
+    # (recent_*) of the same name.
+    owned = NftSetUpdate(
+        "badguys", "ip saddr", "ipv4_addr", "1h", "rate 1/minute"
+    )
+    user = _translate_set_rule(
+        Family.IP, _set_target_rule("add-set", SetRef("badguys", []))
+    )
+    owned_rule = NftRule([owned])
+    with pytest.raises(FermError, match=r"conflicting declarations"):
+        _collect_set_declarations(Family.IP, {"INPUT": [owned_rule, user]})
+    with pytest.raises(FermError, match=r"conflicting declarations"):
+        _collect_set_declarations(Family.IP, {"INPUT": [user, owned_rule]})
+
+
+# ---------------------------------------------------------------------------
+# translate_match for the mss and tcp-option matches
+# ---------------------------------------------------------------------------
+
+
+def test_translate_mss_match_forms() -> None:
+    assert (
+        translate_match(Family.IP, _opt("mss", "536", module="tcpmss"), "tcp")
+        == "tcp option maxseg size 536"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("mss", "1400:1500", module="tcpmss"), "tcp"
+        )
+        == "tcp option maxseg size 1400-1500"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("mss", Negated("536"), module="tcpmss"), "tcp"
+        )
+        == "tcp option maxseg size != 536"
+    )
+    with pytest.raises(FermError, match=r"needs a tcp protocol"):
+        translate_match(Family.IP, _opt("mss", "536", module="tcpmss"), None)
+    with pytest.raises(FermError, match=r"^invalid mss 'abc'"):
+        translate_match(Family.IP, _opt("mss", "abc", module="tcpmss"), "tcp")
+    with pytest.raises(FermError, match=r"^invalid mss '536:'"):
+        translate_match(Family.IP, _opt("mss", "536:", module="tcpmss"), "tcp")
+
+
+def test_translate_tcp_option_respells_known_kinds() -> None:
+    # The kernel readback names known kinds (8 -> timestamp) and keeps
+    # unknown ones numeric; emission must match it or --plan never
+    # converges.
+    assert (
+        translate_match(
+            Family.IP, _opt("tcp-option", "8", module="tcp"), "tcp"
+        )
+        == "tcp option timestamp exists"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("tcp-option", "254", module="tcp"), "tcp"
+        )
+        == "tcp option 254 exists"
+    )
+    assert (
+        translate_match(
+            Family.IP, _opt("tcp-option", Negated("19"), module="tcp"), "tcp"
+        )
+        == "tcp option md5sig missing"
+    )
+    with pytest.raises(FermError, match=r"needs a tcp protocol"):
+        translate_match(Family.IP, _opt("tcp-option", "8", module="tcp"), None)
+    with pytest.raises(FermError, match=r"^invalid tcp-option '256'"):
+        translate_match(
+            Family.IP, _opt("tcp-option", "256", module="tcp"), "tcp"
+        )
+    with pytest.raises(FermError, match=r"^invalid tcp-option 'sack'"):
+        translate_match(
+            Family.IP, _opt("tcp-option", "sack", module="tcp"), "tcp"
+        )
+
+
+def test_tcp_option_match_implies_l4proto() -> None:
+    # The tcp option MATCH forms drop the redundant `meta l4proto tcp`
+    # (kernel readback omits it); SYNPROXY's `mss` companion must NOT
+    # trigger the suppression -- its readback keeps the prefix.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("mss", "536", module="tcpmss"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp option maxseg size 536",
+        "accept",
+    ]
+    synproxy = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("syn", None, module="tcp"),
+            _opt("mss", "1460", module="SYNPROXY"),
+            _opt("wscale", "7", module="SYNPROXY"),
+            _target("SYNPROXY"),
+        ),
+    )
+    assert "synproxy mss 1460 wscale 7" in [
+        s.to_text() for s in synproxy.statements
+    ]

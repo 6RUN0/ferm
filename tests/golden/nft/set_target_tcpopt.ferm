@@ -1,0 +1,17 @@
+# SET target onto a ferm-declared runtime bucket (the ban-list pattern:
+# the lookup and the mutating rules share one dynamic set) plus the
+# tcp-option/mss matches.  Spellings are the kernel readback: timeout
+# 3600 -> 1h, kind 8 -> timestamp, kind 254 stays numeric, and the
+# tcp-option/maxseg matches imply their l4proto (no meta l4proto tcp).
+@set $badguys = ();
+table filter chain INPUT {
+    mod set match-set $badguys src DROP;
+    proto tcp dport 2222 SET add-set $badguys src timeout 3600;
+    proto tcp dport 2223 SET add-set $badguys src exist;
+    proto tcp dport 2224 SET del-set $badguys src;
+    proto tcp mod tcpmss mss 1400:1500 ACCEPT;
+    proto tcp mod tcpmss ! mss 536 ACCEPT;
+    proto tcp tcp-option 8 ACCEPT;
+    proto tcp tcp-option !19 ACCEPT;
+    proto tcp tcp-option 254 mss 536 DROP;
+}

@@ -13,6 +13,24 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **nft backend: the SET target and the ban-list pattern.** `SET
+  add-set $x src timeout N` / `add-set ... exist` / `del-set` translate
+  to nft `add`/`update`/`delete @x { ip saddr [timeout ...] }`
+  statements over a ferm-declared `@set` (external ipsets still refuse
+  with a migration hint).  The mutated set is a runtime bucket: it must
+  be declared empty (`@set $x = ()`), gets a `flags dynamic[,timeout]`
+  declaration, and a `match-set` lookup on it now legally shares the
+  name — the empty-set rule drop is lifted for SET-mutated sets, so a
+  self-populating ban list (match + add in one config) works under
+  `--nft`.  Timeouts respell to the kernel readback (`3600` → `1h`);
+  `timeout 0` is a permanent element, exactly xt_set's semantics.
+- **nft backend: `mod tcpmss mss` and `tcp-option` matches.**
+  `mss 1400:1500` → `tcp option maxseg size 1400-1500` (negation `!=`),
+  `tcp-option N` → `tcp option <kind> exists`/`missing`, with known
+  kind numbers respelled to the kernel readback names (8 → timestamp,
+  19 → md5sig, ...) and unknown kinds kept numeric.  Both match forms
+  imply their l4proto, dropping the redundant `meta l4proto tcp`
+  (SYNPROXY's `mss` companion keeps it — verified live).
 - **nft backend: `icmp-type` / `icmpv6-type` match.** Named types
   translate per family (including the iptables aliases `ping`/`pong`/
   `ttl-exceeded` and the ip6 `neighbour-solicitation` → nft
