@@ -234,6 +234,11 @@
 
 ### Изменено
 
+- **`--plan`: единый `plan.py` на 1800 строк стал слоёным пакетом
+  `plan/`** (`model` → `readback` → `diff` → `delta` → `render`);
+  порядок слоёв зафиксирован контрактом import-linter, публичный шов
+  ре-экспортируется из `__init__` — чистое перемещение кода без
+  изменения поведения, зеркально сплиту `backend/nft/` ниже.
 - **nft-бэкенд: единый `backend/nft.py` на 5000 строк стал слоёным
   пакетом `backend/nft/`** (`model` → `chains`/`sets` → `matches` →
   `stateful`/`verdicts` → `assemble` → `backend`); порядок слоёв

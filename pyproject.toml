@@ -184,6 +184,7 @@ known-first-party = ["pyferm"]
 # package root with parent-relative dots (``from ..rules import``), which
 # TID252 bans by default.
 "src/pyferm/backend/**/*.py" = ["TID252"]
+"src/pyferm/plan/*.py" = ["TID252"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -242,22 +243,24 @@ pythonVersion = "3.11"
 # only pretend to be redundant -- the weaker one stops catching the
 # classes of errors the duplication exists for.
 typeCheckingMode = "strict"
-# Underscore names in the nft package are package-private, not
-# module-private: the former single-module backend was split by pure
-# code motion, and its helpers deliberately cross the new module
-# boundaries (and reach the test seam via __init__ re-exports).
-
-# Underscore names in the nft package are package-private, not
-# module-private: the former single-module backend was split by pure
-# code motion, and its helpers deliberately cross the new module
+# Underscore names in the nft and plan packages are package-private,
+# not module-private: both former single-module files were split by
+# pure code motion, and their helpers deliberately cross the new module
 # boundaries (via relative imports) and reach the test seam through
 # __init__ re-exports.  pyright's privacy model is module-scoped
-# regardless of import style, so both rules are muted for the package;
-# vulture (cross-module) still guards real dead code.
+# regardless of import style, so the private-usage and unused-symbol
+# rules are muted for the packages; vulture (cross-module) still
+# guards real dead code.
 [[tool.pyright.executionEnvironments]]
 root = "src/pyferm/backend/nft"
 reportPrivateUsage = "none"
 reportUnusedFunction = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/pyferm/plan"
+reportPrivateUsage = "none"
+reportUnusedFunction = "none"
+reportUnusedClass = "none"
 
 # Tests stay strict except for patterns that are the point of a test:
 # importing the private unit under test, loose lambda stubs (whose
@@ -393,6 +396,20 @@ layers = [
   "pyferm.backend.nft.matches",
   "pyferm.backend.nft.chains | pyferm.backend.nft.sets",
   "pyferm.backend.nft.model",
+]
+
+# Same discipline for the plan package: readback parsing sits below the
+# differ, the differ below the delta emitter, renderers on top; a new
+# upward edge is a design change, not a shortcut.
+[[tool.importlinter.contracts]]
+name = "plan package internal layering"
+type = "layers"
+layers = [
+  "pyferm.plan.render",
+  "pyferm.plan.delta",
+  "pyferm.plan.diff",
+  "pyferm.plan.readback",
+  "pyferm.plan.model",
 ]
 
 [tool.bandit]

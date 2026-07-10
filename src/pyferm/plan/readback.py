@@ -1,101 +1,33 @@
-"""
-Read-only diff preview for ``ferm --plan``.
-
-Provides three parsers that each produce a ``{table: ParsedTable}`` model:
-
-- :func:`parse_save` -- parses an ``iptables-save`` dump (iptables backend,
-  current side).
-- :func:`parse_nft_script` -- parses a ``nft -f`` script produced by the
-  nft backend (desired side).
-- :func:`parse_nft_list` -- parses the output of ``nft list table <fam>
-  ferm`` (nft backend, current side).
-
-The diff engine (:func:`diff_tables`) and renderers
-(:func:`render_structured`, :func:`render_unified`) are backend-agnostic and
-consume whichever parser's output is passed to them.  Read-only by
-construction: this module never runs a command -- the cli hands it text.
-"""
+"""Kernel readback parsers (iptables-save, nft) and rule canonicalizers."""
 
 from __future__ import annotations
 
-import difflib
-import enum
 import re
 import shlex
-from dataclasses import dataclass, field
 from typing import Final
 
-from .config import PlanFormat
-from .domains import (
+from ..domains import (
     NFT_CT_STATES,
     NFT_PRIORITY_LANDMARKS,
     NFT_TABLE_NAME,
     apply_priority_offset,
 )
-from .errors import FermError, internal_error
-from .nftset import (
+from ..errors import FermError
+from ..nftset import (
     canonicalize_element,
     canonicalize_set_elements,
     set_body,
     sort_vmap_pairs,
 )
+from .model import ParsedChain, ParsedSet, ParsedTable
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
 _CHAIN_PARTS_MIN: Final[int] = 2
+
 _CHAIN_PARTS_MAX: Final[int] = 3
 
 # ``-c pkts bytes`` occupies the first 3 tokens of a rule body.
 _COUNTER_TOKENS: Final[int] = 3
-
-
-@dataclass
-class ParsedChain:
-    """One parsed chain: its policy field and its ordered rule bodies."""
-
-    policy: str
-    rules: list[str] = field(default_factory=list[str])
-
-
-@dataclass
-class ParsedSet:
-    """
-    One parsed named set: its elements plus its nft type and flags.
-
-    ``type_`` and ``flags`` are diff-relevant: a set whose elements are
-    unchanged but whose type or flags differ is NOT a no-op -- an element
-    delta applied to a wrongly-typed live set fails the transaction.  Both
-    parsers populate them; ``diff_tables`` models a type/flags divergence as
-    remove+add (the elements are lawfully lost when the type changes).
-
-    A ``dynamic`` set's elements are runtime state the kernel accrues
-    (``update @set``), not configuration: the desired side declares no
-    elements while a live snapshot may carry any number, so
-    ``diff_tables`` compares dynamic sets on ``(type_, flags)`` only.
-    Diffing their elements would report a phantom MODIFY forever and a
-    delta apply would wipe the tracked state on every reconcile.
-    """
-
-    name: str
-    elements: list[str] = field(default_factory=list[str])
-    type_: str | None = None
-    flags: tuple[str, ...] = ()
-
-    @property
-    def is_dynamic(self) -> bool:
-        """True when the set carries the ``dynamic`` flag."""
-        # ``nft list`` prints ``flags dynamic,timeout`` as one whitespace
-        # token, so a flags entry may hold several comma-joined flags.
-        return any("dynamic" in flag.split(",") for flag in self.flags)
-
-
-@dataclass
-class ParsedTable:
-    """One parsed table: its chains and named sets, insertion-ordered."""
-
-    chains: dict[str, ParsedChain] = field(
-        default_factory=dict[str, ParsedChain]
-    )
-    sets: dict[str, ParsedSet] = field(default_factory=dict[str, ParsedSet])
 
 
 def _parse_error(lineno: int, line: str) -> FermError:
@@ -192,6 +124,7 @@ _OPTION_ALIASES: Final[dict[str, str]] = {
     "--destination-ports": "--dports",
     "--source-ports": "--sports",
 }
+
 #: ``-m <proto>`` matches the kernel injects as implied by ``-p <proto>``.
 _IMPLIED_MATCHES: Final[frozenset[str]] = frozenset(
     {"tcp", "udp", "icmp", "icmpv6"}
@@ -282,9 +215,9 @@ _NFT_REJECT_DEFAULTS: Final[dict[str, str]] = {
     "ip": "icmp",
     "ip6": "icmpv6",
 }
+
 #: nft's default reject message type for both icmp families.
 _NFT_REJECT_DEFAULT_TYPE: Final[str] = "port-unreachable"
-
 
 #: One ``{ ... }`` operand run, with an optional ``vmap`` marker so a verdict
 #: map is told apart from a plain anonymous set (no nesting in v1).  The marker
@@ -613,8 +546,10 @@ def _header_priority(header: str) -> str | None:
 # Exact token counts for the recognized table/flush productions.
 # add table <fam> ferm  /  flush table <fam> ferm  -- exactly 4 tokens.
 _NFT_TABLE_PARTS: Final[int] = 4
+
 # add chain: add chain <fam> ferm <chain>
 _NFT_CHAIN_MIN_PARTS: Final[int] = 5
+
 # add rule: add rule <fam> ferm <chain> <body-token>
 _NFT_RULE_MIN_PARTS: Final[int] = 6
 
@@ -624,8 +559,11 @@ _NFT_VERBS: Final[frozenset[str]] = frozenset({"add", "flush", "delete"})
 # nft object-type words, shared between the parse-phase dispatch above and
 # the desired-side indexer's dispatch (_build_desired_index) below.
 _NFT_OBJ_CHAIN: Final[str] = "chain"
+
 _NFT_OBJ_SET: Final[str] = "set"
+
 _NFT_OBJ_ELEMENT: Final[str] = "element"
+
 _NFT_OBJ_RULE: Final[str] = "rule"
 
 
@@ -837,8 +775,11 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
 
 # Depth levels for parse_nft_list's brace-state machine.
 _NL_DEPTH_OUTSIDE: Final[int] = 0  # outside everything
+
 _NL_DEPTH_TABLE: Final[int] = 1  # inside the table block
+
 _NL_DEPTH_CHAIN: Final[int] = 2  # inside a chain block
+
 _NL_DEPTH_SET: Final[int] = 3  # inside a set block
 
 # Regex anchors for the brace-delimited nft-list grammar.
@@ -847,14 +788,18 @@ _NL_DEPTH_SET: Final[int] = 3  # inside a set block
 _NFT_LIST_TABLE_RE: Final[re.Pattern[str]] = re.compile(
     r"^table\s+(\S+)\s+ferm\s*\{$"
 )
+
 _NFT_LIST_CHAIN_RE: Final[re.Pattern[str]] = re.compile(
     r"^chain\s+(\S+)\s*\{$"
 )
+
 _NFT_LIST_SET_RE: Final[re.Pattern[str]] = re.compile(r"^set\s+(\S+)\s*\{$")
+
 # A base-chain header starts with 'type' followed by the hook/priority tokens.
 _NFT_LIST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"^type\s+\S+\s+hook\s+\S+\s+priority\b"
 )
+
 # nft bare-word identifier grammar (mirrors the backend's _NFT_CHAIN_RE /
 # _NFT_SET_NAME_RE, which differ: a chain may carry an interior dash --
 # fail2ban-style names -- while a ferm set name never can, since it comes
@@ -865,6 +810,7 @@ _NFT_LIST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
 _NFT_LIST_CHAIN_IDENT_RE: Final[re.Pattern[str]] = re.compile(
     r"\A[A-Za-z][A-Za-z0-9_-]*\Z"
 )
+
 _NFT_LIST_SET_IDENT_RE: Final[re.Pattern[str]] = re.compile(
     r"\A[A-Za-z][A-Za-z0-9_]*\Z"
 )
@@ -1029,793 +975,3 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
         raise _parse_error(total or 1, "<EOF: unterminated block>")
 
     return tables
-
-
-@dataclass
-class PolicyChange:
-    """A built-in chain's default policy changed (``old`` -> ``new``)."""
-
-    table: str
-    chain: str
-    old: str
-    new: str
-
-
-@dataclass
-class RuleChange:
-    """One rule added to (or removed from) a chain."""
-
-    table: str
-    chain: str
-    rule: str
-
-
-@dataclass
-class ForeignChain:
-    """A user chain present in the kernel but absent from the config."""
-
-    table: str
-    chain: str
-
-
-@dataclass
-class DesuetChain:
-    """A base chain present in the kernel but absent from the config."""
-
-    table: str
-    chain: str
-
-
-@dataclass
-class ChainRebuild:
-    """
-    A built-in chain whose nft priority changed (``old`` -> ``new``).
-
-    A base chain's priority is part of its declaration, and nft refuses to
-    redeclare an existing chain with a different priority ("already exists
-    with different declaration").  The delta must therefore delete and
-    recreate the chain, re-emitting its rules in the same transaction; its
-    counters reset (it changed).  The delete is safe precisely because the
-    knob is base-chain-only: nothing ``jump``s to a hook chain.
-    """
-
-    table: str
-    chain: str
-    old: str
-    new: str
-
-
-class SetChangeKind(enum.StrEnum):
-    """The kinds a diff can record for a named set (see SetChange)."""
-
-    ADD = "add"
-    REMOVE = "remove"
-    MODIFY = "modify"
-
-    @property
-    def touches_elements(self) -> bool:
-        """True for add/modify: the change carries a desired-side set."""
-        return self in (SetChangeKind.ADD, SetChangeKind.MODIFY)
-
-    @property
-    def is_removal(self) -> bool:
-        """True for remove/modify: the change carries a current-side set."""
-        return self in (SetChangeKind.REMOVE, SetChangeKind.MODIFY)
-
-
-@dataclass
-class SetChange:
-    """
-    A named set added, removed, or with changed elements.
-
-    ``elements`` is the desired side; ``current_elements`` is the live
-    side, carried for MODIFY so the diff can show what the elements
-    change FROM, not just what they change to.
-    """
-
-    table: str
-    name: str
-    kind: SetChangeKind
-    elements: list[str]
-    current_elements: list[str] = field(default_factory=list[str])
-
-
-@dataclass
-class _DesiredIndex:
-    """
-    Verbatim render lines keyed by object name, for the delta emitter.
-
-    The delta DECIDES what to touch from the diff, but the content it ADDS is
-    copied byte-for-byte from ``render().save`` (already past every validate
-    border, valid as ``nft -f`` input by construction).  This index is that
-    lookup: each value is one render line with its trailing newline stripped.
-    """
-
-    chain_decl: dict[str, str] = field(default_factory=dict[str, str])
-    chain_rules: dict[str, list[str]] = field(
-        default_factory=dict[str, list[str]]
-    )
-    set_decl: dict[str, str] = field(default_factory=dict[str, str])
-    set_elements: dict[str, str] = field(default_factory=dict[str, str])
-
-
-# Index of a render line: 'add <sub> <fam> ferm <name> ...'
-# -> name at parts[4].
-_DESIRED_NAME_INDEX: Final[int] = 4
-
-
-def _build_desired_index(desired_save: str) -> _DesiredIndex:
-    """
-    Index a ``render().save`` script into verbatim lines keyed by object name.
-
-    Productions mirror :func:`parse_nft_script`; ``add table``/``flush table``
-    carry no per-object content and are skipped, and ``delete table`` (the
-    whole-table replace a full reload applies) resets the index so only
-    objects after it count.  An unrecognized line is a render-contract
-    violation (render produced it), so it raises :func:`internal_error` rather
-    than being silently dropped.
-    """
-    index = _DesiredIndex()
-    for line in desired_save.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = stripped.split()
-        if parts[:2] == ["delete", "table"]:
-            index = _DesiredIndex()  # whole-table replace: drop anything prior
-            continue
-        if parts[:2] in (["add", "table"], ["flush", "table"]):
-            continue
-        if len(parts) <= _DESIRED_NAME_INDEX or parts[0] != "add":
-            raise internal_error(f"unexpected render line: {stripped!r}")
-        sub, name = parts[1], parts[_DESIRED_NAME_INDEX]
-        if sub == _NFT_OBJ_CHAIN:
-            index.chain_decl[name] = stripped
-        elif sub == _NFT_OBJ_RULE:
-            index.chain_rules.setdefault(name, []).append(stripped)
-        elif sub == _NFT_OBJ_SET:
-            index.set_decl[name] = stripped
-        elif sub == _NFT_OBJ_ELEMENT:
-            index.set_elements[name] = stripped
-        else:
-            raise internal_error(f"unexpected render line: {stripped!r}")
-    return index
-
-
-def _emit_set_changes(
-    diff: PlanDiff,
-    current: dict[str, ParsedTable],
-    index: _DesiredIndex,
-    *,
-    family: str,
-) -> list[str]:
-    """
-    Emit the set BUILD-UP phase of a delta: adds and element-modifies only.
-
-    A delta never emits ``delete set``: ``build_nft_delta`` diverts
-    any set ``remove`` (pure removal OR retype remove+add) to a full reload,
-    because ``delete set`` is refcount-unsafe inside a transaction when a live
-    rule still references the set.  So this phase only adds new sets (verbatim
-    render declaration + elements) and applies element deltas to modified sets
-    (this is what spares unchanged elements from churn).  A ``remove`` reaching
-    here is a broken contract -> ``internal_error``.
-    """
-    prefix = f"{family} ferm"
-    current_sets = (
-        current[NFT_TABLE_NAME].sets if NFT_TABLE_NAME in current else {}
-    )
-    out: list[str] = []
-    for sc in sorted(diff.set_changes, key=lambda s: s.name):
-        if sc.kind == SetChangeKind.REMOVE:
-            raise internal_error(
-                "set remove reached the emitter"
-                f" (should full-reload): {sc.name!r}"
-            )
-        if sc.kind == SetChangeKind.ADD:
-            decl = index.set_decl.get(sc.name)
-            if decl is None:
-                raise internal_error(f"no desired decl for set {sc.name!r}")
-            out.append(decl)
-            elements = index.set_elements.get(sc.name)
-            if elements is not None:
-                out.append(elements)
-        elif sc.kind == SetChangeKind.MODIFY:
-            live = current_sets[sc.name].elements
-            desired_elements = sc.elements
-            desired_membership = set(desired_elements)
-            live_membership = set(live)
-            removed = [e for e in live if e not in desired_membership]
-            added = [e for e in desired_elements if e not in live_membership]
-            if removed:
-                out.append(
-                    f"delete element {prefix} {sc.name} "
-                    f"{{ {', '.join(removed)} }}"
-                )
-            if added:
-                out.append(
-                    f"add element {prefix} {sc.name} {{ {', '.join(added)} }}"
-                )
-    return out
-
-
-def _emit_chain_changes(
-    diff: PlanDiff,
-    current: dict[str, ParsedTable],
-    index: _DesiredIndex,
-    *,
-    family: str,
-) -> list[str]:
-    """
-    Emit the chain phase of a delta.
-
-    Per desired chain: a new chain is declared and filled; a chain with a rule
-    delta is redeclared (idempotent -- updates a base chain's policy),
-    flushed, and rebuilt from the verbatim desired rules (its counters are
-    lost, it changed); a base chain with ONLY a policy change is redeclared
-    without a flush (policy updates, counters survive); an unchanged chain is
-    left untouched (the whole point -- its counters survive).  Desuet base
-    chains and foreign user chains are deleted (convergence to desired).
-    """
-    prefix = f"{family} ferm"
-    current_chains = (
-        current[NFT_TABLE_NAME].chains if NFT_TABLE_NAME in current else {}
-    )
-    rule_changed = {rc.chain for rc in diff.rules_added} | {
-        rc.chain for rc in diff.rules_removed
-    }
-    policy_changed = {pc.chain for pc in diff.policy_changes}
-    rebuilt = {cr.chain for cr in diff.chain_rebuilds}
-    out: list[str] = []
-    for name in sorted(index.chain_decl):
-        decl = index.chain_decl[name]
-        rules = index.chain_rules.get(name, [])
-        if name not in current_chains:
-            out.append(decl)
-            out.extend(rules)
-        elif name in rebuilt:
-            # Priority changed: nft cannot redeclare in place.  Delete first,
-            # then recreate and re-emit rules in the same transaction.  This
-            # subsumes any coincident policy/rule change.
-            out.append(f"delete chain {prefix} {name}")
-            out.append(decl)
-            out.extend(rules)
-        elif name in rule_changed:
-            out.append(decl)
-            out.append(f"flush chain {prefix} {name}")
-            out.extend(rules)
-        elif name in policy_changed:
-            out.append(decl)
-        # else: unchanged -- skip so its counters survive.
-    out.extend(
-        f"delete chain {prefix} {dchain.chain}"
-        for dchain in sorted(diff.desuet_chains, key=lambda d: d.chain)
-    )
-    out.extend(
-        f"delete chain {prefix} {fchain.chain}"
-        for fchain in sorted(diff.foreign_chains, key=lambda f: f.chain)
-    )
-    return out
-
-
-def emit_delta_script(
-    diff: PlanDiff,
-    current: dict[str, ParsedTable],
-    index: _DesiredIndex,
-    *,
-    family: str,
-) -> str:
-    """
-    Build an applicable nft delta script from a diff (mirror of render_plan).
-
-    Returns ``""`` when nothing changed -- the caller skips ``nft -f``
-    entirely (idempotency).  Otherwise: an idempotent ``add table`` envelope,
-    the set phase, then the chain phase.  The whole script is one ``nft -f``
-    transaction, so it stays atomic; ``@set`` references resolve because a set
-    is declared before any rule that uses it.
-    """
-    if not diff.has_changes():
-        return ""
-    prefix = f"{family} ferm"
-    lines = [f"add table {prefix}"]
-    lines.extend(_emit_set_changes(diff, current, index, family=family))
-    lines.extend(_emit_chain_changes(diff, current, index, family=family))
-    return "\n".join(lines) + "\n"
-
-
-def needs_full_reload(previous: str | None) -> bool:
-    """
-    Return True when a delta is impossible/pointless -> fall back to reload.
-
-    A delta diffs a captured snapshot against the desired ruleset; with no
-    prior table (first run / ENOENT -> ``None``) or an empty snapshot there is
-    nothing to preserve, so the deterministic, safe choice is the existing
-    ``flush table`` + full rebuild from ``render().save``.
-    """
-    if previous is None:
-        return True
-    return previous.strip() == ""
-
-
-def build_nft_delta(
-    previous: str, desired_save: str, *, family: str
-) -> str | None:
-    """
-    Orchestrate one family's delta: parse both sides, diff, emit.
-
-    ``previous`` is a ``nft list table`` snapshot (the captured live side);
-    ``desired_save`` is ``render().save`` (valid by construction).  Returns the
-    applicable delta script, ``""`` when nothing changed, or ``None`` when the
-    delta is refcount-unsafe and the caller must fall back to a full reload.
-
-    The unsafe case is any set ``remove`` (a pure removal or a retype modelled
-    as remove+add): ``delete set`` aborts the whole transaction if a live rule
-    still references the set, and a flags-only retype keeps the referencing
-    rule unchanged (so its chain is never flushed to clear the reference).
-    Diverting that family to ``render().save`` keeps it correct; counter
-    preservation is lost only for that rare reload.  The caller must have
-    ruled out the snapshot-based full-reload cases via
-    :func:`needs_full_reload` first.
-    """
-    current = parse_nft_list(previous, family=family)
-    desired = parse_nft_script(desired_save)
-    diff = diff_tables(current, desired, noflush=False)
-    if any(sc.kind == SetChangeKind.REMOVE for sc in diff.set_changes):
-        return None
-    index = _build_desired_index(desired_save)
-    return emit_delta_script(diff, current, index, family=family)
-
-
-@dataclass
-class PlanDiff:
-    """The diff for one family: what applying the config would change."""
-
-    policy_changes: list[PolicyChange] = field(
-        default_factory=list[PolicyChange]
-    )
-    rules_added: list[RuleChange] = field(default_factory=list[RuleChange])
-    rules_removed: list[RuleChange] = field(default_factory=list[RuleChange])
-    foreign_chains: list[ForeignChain] = field(
-        default_factory=list[ForeignChain]
-    )
-    desuet_chains: list[DesuetChain] = field(default_factory=list[DesuetChain])
-    chain_rebuilds: list[ChainRebuild] = field(
-        default_factory=list[ChainRebuild]
-    )
-    set_changes: list[SetChange] = field(default_factory=list[SetChange])
-    noflush: bool = False
-    current_empty: bool = False
-
-    def has_changes(self) -> bool:
-        """Return True if applying the config would change the kernel."""
-        return bool(
-            self.policy_changes
-            or self.rules_added
-            or self.rules_removed
-            or self.foreign_chains
-            or self.desuet_chains
-            or self.chain_rebuilds
-            or self.set_changes
-        )
-
-
-@dataclass
-class Plan:
-    """The whole plan: a per-family diff plus any unsupported families."""
-
-    families: dict[str, PlanDiff] = field(default_factory=dict[str, PlanDiff])
-    unsupported: list[str] = field(default_factory=list[str])
-
-    def has_changes(self) -> bool:
-        """Return True if any family's diff carries a change."""
-        return any(diff.has_changes() for diff in self.families.values())
-
-
-def _is_builtin(chain: ParsedChain) -> bool:
-    """
-    Return True when the chain is built-in (carries a real policy).
-
-    User chains carry ``-`` as their policy placeholder.
-    """
-    return chain.policy != "-"
-
-
-def _diff_rules(
-    current: list[str], desired: list[str]
-) -> tuple[list[str], list[str]]:
-    """
-    Compute a positional multiset diff of two ordered rule lists.
-
-    Uses :class:`difflib.SequenceMatcher` so order is significant and a
-    duplicated rule body is not collapsed (a set-diff would silently
-    under-count a removed copy).  Returns ``(added, removed)``.
-    """
-    added: list[str] = []
-    removed: list[str] = []
-    matcher = difflib.SequenceMatcher(a=current, b=desired, autojunk=False)
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag in ("replace", "delete"):
-            removed.extend(current[i1:i2])
-        if tag in ("replace", "insert"):
-            added.extend(desired[j1:j2])
-    return added, removed
-
-
-def diff_tables(
-    current: dict[str, ParsedTable],
-    desired: dict[str, ParsedTable],
-    *,
-    noflush: bool,
-) -> PlanDiff:
-    """
-    Diff one family's current (kernel) model against the desired (config).
-
-    Tables present in ``desired`` are diffed.  ferm's save text carries every
-    table it read from the kernel (``rules_to_save`` iterates the dump-seeded
-    ``domain_info.tables``), so an unmanaged kernel table (nat/mangle) appears
-    in ``desired`` as an empty skeleton and its live rules diff as removals --
-    there is no "untouched foreign table" case.  A table only in ``current``
-    would genuinely not be in ferm's restore input, so it is not touched and
-    produces no diff.  Within a table: built-in policies diff by chain name;
-    rules diff positionally; a user chain only in ``current`` is a foreign
-    chain (warning, flushed unless ``--noflush``).
-
-    Under ``--noflush``: rule removals are suppressed for built-in and
-    undeclared chains (their rules survive) but kept for declared user chains
-    (those are flushed); policy changes and foreign-chain warnings follow the
-    same survives/flushed split.
-    """
-    diff = PlanDiff(noflush=noflush, current_empty=not current)
-
-    for table_name, desired_table in desired.items():
-        current_table = current.get(table_name)
-        current_chains = current_table.chains if current_table else {}
-
-        for chain_name, desired_chain in desired_table.chains.items():
-            current_chain = current_chains.get(chain_name)
-            current_rules = current_chain.rules if current_chain else []
-            chain_rebuilt = False
-
-            if (
-                current_chain is not None
-                and _is_builtin(current_chain)
-                and desired_chain.policy != current_chain.policy
-            ):
-                old_priority = _header_priority(current_chain.policy)
-                new_priority = _header_priority(desired_chain.policy)
-                if old_priority != new_priority:
-                    # Priority is baked into the chain declaration; nft
-                    # rejects an in-place redeclare with a different priority,
-                    # so rebuild (delete + recreate + re-emit rules).  A
-                    # coincident policy change rides along in the new decl.
-                    chain_rebuilt = True
-                    diff.chain_rebuilds.append(
-                        ChainRebuild(
-                            table_name,
-                            chain_name,
-                            old_priority or "",
-                            new_priority or "",
-                        )
-                    )
-                else:
-                    diff.policy_changes.append(
-                        PolicyChange(
-                            table_name,
-                            chain_name,
-                            current_chain.policy,
-                            desired_chain.policy,
-                        )
-                    )
-
-            if chain_rebuilt:
-                # The rebuild re-emits all desired rules verbatim (it deletes
-                # and recreates the chain), so a coincident rule delta is
-                # subsumed.  Skip the per-rule diff to avoid double-counting
-                # the same chain as both "rebuilt" and "N rules added/removed".
-                continue
-
-            added, removed = _diff_rules(current_rules, desired_chain.rules)
-            diff.rules_added.extend(
-                RuleChange(table_name, chain_name, r) for r in added
-            )
-            # --noflush: only a declared user chain is flushed; built-in and
-            # undeclared chains keep their rules, so suppress their removals.
-            builtin = current_chain is not None and _is_builtin(current_chain)
-            declared_user = current_chain is not None and not builtin
-            # Always emit the removal, unless --noflush keeps the rules of a
-            # chain that is not a declared user chain (built-in/undeclared
-            # chains survive).
-            emit_removal = not noflush or declared_user
-            if emit_removal:
-                diff.rules_removed.extend(
-                    RuleChange(table_name, chain_name, r) for r in removed
-                )
-
-        # named set diff: sets added, modified, or removed
-        current_sets = current_table.sets if current_table else {}
-        for set_name, desired_set in desired_table.sets.items():
-            current_set = current_sets.get(set_name)
-            if current_set is None:
-                diff.set_changes.append(
-                    SetChange(
-                        table_name,
-                        set_name,
-                        SetChangeKind.ADD,
-                        desired_set.elements,
-                    )
-                )
-            elif (current_set.type_, current_set.flags) != (
-                desired_set.type_,
-                desired_set.flags,
-            ):
-                # Type/flags cannot be altered in place: drop the set and
-                # recreate it (the elements are lawfully lost -- the type
-                # changed).  Remove precedes add so one transaction reuses
-                # the name.
-                diff.set_changes.append(
-                    SetChange(table_name, set_name, SetChangeKind.REMOVE, [])
-                )
-                diff.set_changes.append(
-                    SetChange(
-                        table_name,
-                        set_name,
-                        SetChangeKind.ADD,
-                        desired_set.elements,
-                    )
-                )
-            elif (
-                not desired_set.is_dynamic
-                and current_set.elements != desired_set.elements
-            ):
-                # A dynamic set never reaches MODIFY: past the type/flags
-                # gate above both sides are dynamic, and its elements are
-                # kernel-accrued runtime state (see ParsedSet).
-                diff.set_changes.append(
-                    SetChange(
-                        table_name,
-                        set_name,
-                        SetChangeKind.MODIFY,
-                        desired_set.elements,
-                        current_elements=current_set.elements,
-                    )
-                )
-        for set_name in current_sets:
-            if set_name not in desired_table.sets:
-                diff.set_changes.append(
-                    SetChange(table_name, set_name, SetChangeKind.REMOVE, [])
-                )
-
-        # foreign chains: user chains in the managed table absent from config
-        for chain_name, current_chain in current_chains.items():
-            if chain_name in desired_table.chains:
-                continue
-            if _is_builtin(current_chain):
-                diff.desuet_chains.append(DesuetChain(table_name, chain_name))
-                continue
-            if noflush:
-                continue  # undeclared user chains survive under --noflush
-            diff.foreign_chains.append(ForeignChain(table_name, chain_name))
-
-    return diff
-
-
-def summary_line(diff: PlanDiff) -> str:
-    """
-    Build the ``Plan: N to add, M to remove, K policy changes`` tail.
-
-    When desuet or foreign chains are present an extra
-    ``, C chain(s) removed`` clause is appended so the summary reflects
-    every change that will be applied -- not just rule-level deltas.
-    """
-    adds = len(diff.rules_added)
-    removes = len(diff.rules_removed)
-    policies = len(diff.policy_changes)
-    chains_removed = len(diff.desuet_chains) + len(diff.foreign_chains)
-    pol_word = "change" if policies == 1 else "changes"
-    summary = (
-        f"Plan: {adds} to add, {removes} to remove,"
-        f" {policies} policy {pol_word}"
-    )
-    if chains_removed:
-        chain_word = "chain" if chains_removed == 1 else "chains"
-        summary += f", {chains_removed} {chain_word} removed"
-    rebuilt = len(diff.chain_rebuilds)
-    if rebuilt:
-        rebuilt_word = "chain" if rebuilt == 1 else "chains"
-        summary += f", {rebuilt} {rebuilt_word} rebuilt"
-    sets_changed = len(diff.set_changes)
-    if sets_changed:
-        set_word = "set" if sets_changed == 1 else "sets"
-        summary += f", {sets_changed} {set_word} changed"
-    return summary
-
-
-def render_structured(plan: Plan) -> str:
-    """Render the default human-readable plan, deterministic by sort order."""
-    lines: list[str] = [
-        f"family {f}: plan not supported for this family"
-        for f in plan.unsupported
-    ]
-
-    if not plan.has_changes() and not plan.unsupported:
-        return "No changes. Live ruleset matches the configuration.\n"
-
-    for family in sorted(plan.families):
-        diff = plan.families[family]
-        if not diff.has_changes():
-            continue
-        lines.append(f"family {family}")
-        if diff.current_empty:
-            lines.append("  note: current ruleset is empty")
-        if diff.noflush:
-            lines.append(
-                "  note: noflush -- existing built-in/undeclared rules"
-                " kept; declared user chains overwritten; policies applied"
-            )
-            lines.append(
-                "  note: noflush -- counts are the net positional diff;"
-                " apply re-appends listed rules to unflushed chains, so"
-                " live rules overlapping the config are duplicated"
-            )
-        lines.extend(
-            f"  ~ policy {c.table}/{c.chain}: {c.old} -> {c.new}"
-            for c in sorted(
-                diff.policy_changes, key=lambda c: (c.table, c.chain)
-            )
-        )
-        lines.extend(
-            f"  - {r.rule}"
-            for r in sorted(
-                diff.rules_removed, key=lambda r: (r.table, r.chain)
-            )
-        )
-        lines.extend(
-            f"  + {r.rule}"
-            for r in sorted(diff.rules_added, key=lambda r: (r.table, r.chain))
-        )
-        lines.extend(
-            f"  warning: chain {fchain.table}/{fchain.chain} is not in"
-            " the config and will be flushed"
-            for fchain in sorted(
-                diff.foreign_chains,
-                key=lambda fchain: (fchain.table, fchain.chain),
-            )
-        )
-        lines.extend(
-            f"  ~ chain {dchain.table}/{dchain.chain} removed"
-            " (base chain no longer declared)"
-            for dchain in sorted(
-                diff.desuet_chains,
-                key=lambda dchain: (dchain.table, dchain.chain),
-            )
-        )
-        lines.extend(
-            f"  ~ chain {cr.table}/{cr.chain} priority {cr.old} -> {cr.new}"
-            " (rebuilt; counters reset)"
-            for cr in sorted(
-                diff.chain_rebuilds,
-                key=lambda cr: (cr.table, cr.chain),
-            )
-        )
-        for sc in sorted(diff.set_changes, key=lambda s: (s.table, s.name)):
-            if sc.kind == SetChangeKind.ADD:
-                elems = ", ".join(sc.elements)
-                lines.append(f"  + set {sc.table}/{sc.name} {{ {elems} }}")
-            elif sc.kind == SetChangeKind.REMOVE:
-                lines.append(f"  - set {sc.table}/{sc.name}")
-            else:
-                elems = ", ".join(sc.elements)
-                lines.append(f"  ~ set {sc.table}/{sc.name} {{ {elems} }}")
-        lines.append(f"  {summary_line(diff)}")
-
-    return "\n".join(lines) + "\n"
-
-
-def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
-    """
-    Build current/desired line lists for one family, for the unified diff.
-
-    Multiset-preserving (ordered lists, never ``set`` -- two identical removed
-    rules must stay two lines) and complete: policy changes (``:CHAIN POLICY``
-    on both sides) and foreign chains are emitted too, so a lock-out via a
-    policy flip or a flushed foreign chain is never hidden from
-    ``--plan-format=diff``.  Sorts are by table first, then chain within each
-    table, so duplicate rule bodies within the same table keep their relative
-    order and stay distinct lines.
-    """
-    tables = sorted(
-        {c.table for c in diff.policy_changes}
-        | {r.table for r in diff.rules_removed}
-        | {r.table for r in diff.rules_added}
-        | {f.table for f in diff.foreign_chains}
-        | {d.table for d in diff.desuet_chains}
-        | {cr.table for cr in diff.chain_rebuilds}
-        | {s.table for s in diff.set_changes}
-    )
-    current: list[str] = []
-    desired: list[str] = []
-    for table in tables:
-        current.append(f"*{table}")
-        desired.append(f"*{table}")
-        for change in sorted(
-            (c for c in diff.policy_changes if c.table == table),
-            key=lambda c: c.chain,
-        ):
-            current.append(f":{change.chain} {change.old}")
-            desired.append(f":{change.chain} {change.new}")
-        for rebuild in sorted(
-            (cr for cr in diff.chain_rebuilds if cr.table == table),
-            key=lambda cr: cr.chain,
-        ):
-            current.append(f":{rebuild.chain} priority {rebuild.old}")
-            desired.append(f":{rebuild.chain} priority {rebuild.new}")
-        current.extend(
-            f"# foreign chain {fchain.chain} will be flushed"
-            for fchain in sorted(
-                (fc for fc in diff.foreign_chains if fc.table == table),
-                key=lambda fchain: fchain.chain,
-            )
-        )
-        current.extend(
-            f"# base chain {dchain.chain} removed (no longer declared)"
-            for dchain in sorted(
-                (dc for dc in diff.desuet_chains if dc.table == table),
-                key=lambda dchain: dchain.chain,
-            )
-        )
-        current.extend(
-            f"-A {r.chain} {r.rule}"
-            for r in sorted(
-                (r for r in diff.rules_removed if r.table == table),
-                key=lambda r: r.chain,
-            )
-        )
-        desired.extend(
-            f"-A {r.chain} {r.rule}"
-            for r in sorted(
-                (r for r in diff.rules_added if r.table == table),
-                key=lambda r: r.chain,
-            )
-        )
-        for sc in sorted(
-            (s for s in diff.set_changes if s.table == table),
-            key=lambda s: s.name,
-        ):
-            if sc.kind.touches_elements:
-                elems = ", ".join(sc.elements)
-                desired.append(f"add set {table} {sc.name} {{ {elems} }}")
-            if sc.kind.is_removal:
-                if sc.current_elements:
-                    elems = ", ".join(sc.current_elements)
-                    current.append(f"add set {table} {sc.name} {{ {elems} }}")
-                else:
-                    current.append(f"add set {table} {sc.name}")
-    return current, desired
-
-
-def render_unified(plan: Plan) -> str:
-    """Render a unified diff of the canonicalized save sections per family."""
-    out: list[str] = [
-        f"family {f}: plan not supported for this family"
-        for f in plan.unsupported
-    ]
-    for family in sorted(plan.families):
-        current, desired = _diff_blob(plan.families[family])
-        out.extend(
-            difflib.unified_diff(
-                current,
-                desired,
-                fromfile=f"{family} (current)",
-                tofile=f"{family} (desired)",
-                lineterm="",
-            )
-        )
-    if not out:
-        return "No changes. Live ruleset matches the configuration.\n"
-    return "\n".join(out) + "\n"
-
-
-def render_plan(plan: Plan, *, fmt: PlanFormat) -> str:
-    """Dispatch to the structured (default) or unified renderer."""
-    if fmt == PlanFormat.DIFF:
-        return render_unified(plan)
-    return render_structured(plan)

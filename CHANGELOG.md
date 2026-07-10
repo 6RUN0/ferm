@@ -228,6 +228,11 @@ For the history of the original Perl implementation, see
 
 ### Changed
 
+- **`--plan`: the single 1800-line `plan.py` is now the layered `plan/`
+  package** (`model` → `readback` → `diff` → `delta` → `render`), with
+  the layer order enforced by an import-linter contract and the public
+  seam re-exported from `__init__` — pure code motion, no behaviour
+  change, mirroring the `backend/nft/` split below.
 - **nft backend: the single 5000-line `backend/nft.py` is now the
   layered `backend/nft/` package** (`model` → `chains`/`sets` →
   `matches` → `stateful`/`verdicts` → `assemble` → `backend`), with the
