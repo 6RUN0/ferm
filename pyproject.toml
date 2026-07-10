@@ -238,6 +238,22 @@ pythonVersion = "3.11"
 # only pretend to be redundant -- the weaker one stops catching the
 # classes of errors the duplication exists for.
 typeCheckingMode = "strict"
+# Underscore names in the nft package are package-private, not
+# module-private: the former single-module backend was split by pure
+# code motion, and its helpers deliberately cross the new module
+# boundaries (and reach the test seam via __init__ re-exports).
+
+# Underscore names in the nft package are package-private, not
+# module-private: the former single-module backend was split by pure
+# code motion, and its helpers deliberately cross the new module
+# boundaries (via relative imports) and reach the test seam through
+# __init__ re-exports.  pyright's privacy model is module-scoped
+# regardless of import style, so both rules are muted for the package;
+# vulture (cross-module) still guards real dead code.
+[[tool.pyright.executionEnvironments]]
+root = "src/pyferm/backend/nft"
+reportPrivateUsage = "none"
+reportUnusedFunction = "none"
 
 # Tests stay strict except for patterns that are the point of a test:
 # importing the private unit under test, loose lambda stubs (whose
@@ -358,6 +374,21 @@ layers = [
   "pyferm.values",
   "pyferm.config",
   "pyferm.errors",
+]
+
+# The nft package's internal seams, in the order the translation
+# pipeline consumes them.  Same-layer modules (``|``) never import
+# each other; a new upward edge is a design change, not a shortcut.
+[[tool.importlinter.contracts]]
+name = "nft backend internal layering"
+type = "layers"
+layers = [
+  "pyferm.backend.nft.backend",
+  "pyferm.backend.nft.assemble",
+  "pyferm.backend.nft.stateful | pyferm.backend.nft.verdicts",
+  "pyferm.backend.nft.matches",
+  "pyferm.backend.nft.chains | pyferm.backend.nft.sets",
+  "pyferm.backend.nft.model",
 ]
 
 [tool.bandit]

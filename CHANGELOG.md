@@ -228,6 +228,12 @@ For the history of the original Perl implementation, see
 
 ### Changed
 
+- **nft backend: the single 5000-line `backend/nft.py` is now the
+  layered `backend/nft/` package** (`model` → `chains`/`sets` →
+  `matches` → `stateful`/`verdicts` → `assemble` → `backend`), with the
+  layer order enforced by an import-linter contract and the public
+  seam re-exported from `__init__` — pure code motion, no behaviour
+  change (byte-identical golden/corpus output).
 - **nft backend: every nft subprocess is pinned to `TZ=UTC`.** nft
   converts a `meta hour`/`meta time` literal between local time and the
   UTC the kernel stores using the process `TZ` on both parse and print,
