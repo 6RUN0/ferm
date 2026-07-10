@@ -980,6 +980,35 @@ def test_make_nft_restore_apply_failure_after_check_raises(
     ]
 
 
+def test_nft_subprocesses_pin_utc_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # nft converts a meta hour/meta time literal by the process TZ on both
+    # parse and print, so every nft subprocess ferm spawns is pinned to UTC:
+    # the emitted clock keeps its xt (UTC) meaning and --plan stays diff-free
+    # on any host.  All three spawn sites must carry env["TZ"] == "UTC" --
+    # the apply path's `nft -c` and `nft -f -`, and the backend-agnostic
+    # capture() snapshot closure whose body names no "nft" string.
+    from pyferm.cli import _make_io, _make_nft_restore
+
+    recorder = _RunRecorder(returncode=0)
+    monkeypatch.setattr(subprocess, "run", recorder)
+    restore = _make_nft_restore(Options(nft=True))
+    restore(_nft_domain_info(), "add table ip ferm\n")
+    _execute, _emit, _read, _restore, capture = _make_io(
+        Options(nft=True, plan=True), sys.stdout
+    )
+    capture("nft list table ip ferm")
+    commands = [call[0][0] for call in recorder.calls]
+    assert ["nft", "-c", "-f", "-"] in commands
+    assert ["nft", "-f", "-"] in commands
+    assert ["nft", "list", "table", "ip", "ferm"] in commands
+    for _args, kwargs in recorder.calls:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert env["TZ"] == "UTC"
+
+
 def test_validate_desired_nft_skips_under_test(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

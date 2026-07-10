@@ -48,7 +48,6 @@ _EXPECTED_NFT_REFUSALS = frozenset(
         "brutesque-out",
         "grnet-synnefo",
         "ivansible-natmss",
-        "rwthctf2012-vpn",
         "stuart-ha-server",
         # translated adversarial set
         "deep-nesting",
@@ -58,7 +57,6 @@ _EXPECTED_NFT_REFUSALS = frozenset(
         "match-overload",
         "nat-cascade",
         "qos-mangle",
-        "raw-edge",
     }
 )
 

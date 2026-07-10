@@ -1,0 +1,13 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT meta hour "09:00"-"18:00" accept
+add rule ip ferm INPUT meta hour "09:30:30"-"23:59:59" accept
+add rule ip ferm INPUT meta day { "Monday", "Tuesday", "Saturday" } accept
+add rule ip ferm INPUT meta day { "Sunday", "Monday" } accept
+add rule ip ferm INPUT meta day != { "Monday", "Tuesday" } drop
+add rule ip ferm INPUT meta time "2026-01-01 00:00:00"-"2026-12-31 00:00:00" accept
+add rule ip ferm INPUT meta time >= "2026-06-01 09:30:00" accept
+add rule ip ferm INPUT meta time <= "2026-12-31 00:00:00" drop
+add rule ip ferm INPUT tcp dport 22 meta hour "09:00"-"17:00" meta day { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday" } accept

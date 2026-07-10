@@ -152,6 +152,40 @@ For the history of the original Perl implementation, see
   expires `S` seconds after its last touch. The calibration is pinned
   against real xt_recent (first drop within the `[H−1, H+1]` jitter
   window; opt-in `nox -s recent_calibration_e2e`).
+- **nft backend vocabulary, sixth batch: TPROXY, CT notrack, NAT flags,
+  `mod time`.** `TPROXY` emits `tproxy to :P` (bare `on-port`), `to A:P`
+  (`on-ip`, bracketed for ip6), an optional `--tproxy-mark` folded to the
+  kernel's and/or mark rewrite, and a terminal `accept`; it requires a
+  transport match and `on-port` (the xt oracle refuses otherwise). `CT
+  notrack` maps to `notrack` (the same spelling as the standalone
+  `NOTRACK` target). The NAT flags `--random` / `--random-fully` /
+  `--persistent` append to `snat`/`dnat`/`masquerade`/`redirect` in the
+  fixed kernel-readback order (`random`/`fully-random` first, `persistent`
+  last; `--random-fully` respells to nft's `fully-random`), unblocking
+  `rwthctf2012-vpn`. `mod time` folds into up to three independent
+  selectors: `meta hour` (a clock range, zero seconds trimmed per
+  boundary, xt defaults `00:00`/`23:59:59`), `meta day` (weekday names in
+  nft numeric order, a single day unbraced, `--weekdays` negation as
+  `!=`), and `meta time` (a full-datetime range or an open `>=`/`<=`
+  bound). Two more corpus configs now translate under `--nft` (`raw-edge`
+  via TPROXY + CT notrack, `rwthctf2012-vpn` via the NAT flags).
+
+  Deliberate refusals (no faithful nft equivalent): the `CHECKSUM` target
+  (kernels since 4.19 handle virtio checksum offload without it, and the
+  nft CLI cannot call xt targets), and `mod time`'s `monthday` (no meta
+  selector), `kerneltz`, and `contiguous` (local-time and cross-midnight
+  semantics nft's UTC-anchored evaluation cannot mirror).
+
+### Changed
+
+- **nft backend: every nft subprocess is pinned to `TZ=UTC`.** nft
+  converts a `meta hour`/`meta time` literal between local time and the
+  UTC the kernel stores using the process `TZ` on both parse and print,
+  so the apply (`nft -c`, `nft -f -`) and snapshot (`nft list table …`)
+  spawns now run under `TZ=UTC`. The emitted clock then means exactly
+  what xt_time (without `--kerneltz`) means — UTC — and `--plan` stays
+  diff-free on any host regardless of its zone or DST state. The iptables
+  call sites are untouched (`TZ` is immaterial to `iptables-save`).
 
 ### Fixed
 

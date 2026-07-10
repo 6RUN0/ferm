@@ -1,0 +1,16 @@
+# raw-table conntrack bypass (NOTRACK and CT notrack read back identically
+# as `notrack`) and mangle TPROXY: a bare on-port maps to `tproxy to :P`, an
+# on-ip mapping adds the address (bracketed for ip6), and --tproxy-mark folds
+# to the kernel's and/or mark rewrite.  TPROXY always ends in accept.
+domain (ip ip6) table raw chain PREROUTING {
+    proto udp dport 53 NOTRACK;
+    proto tcp dport 53 CT notrack;
+}
+domain ip table mangle chain PREROUTING {
+    proto tcp dport 3129 TPROXY on-port 3129 tproxy-mark "0x1/0x1";
+    proto tcp dport 3130 TPROXY on-port 3130 on-ip 127.0.0.1;
+}
+domain ip6 table mangle chain PREROUTING {
+    proto tcp dport 3129 TPROXY on-port 3129 tproxy-mark "0x1/0x1";
+    proto tcp dport 3131 TPROXY on-port 3131 on-ip fe80::1;
+}

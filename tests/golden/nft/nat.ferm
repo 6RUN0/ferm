@@ -1,11 +1,19 @@
 # nat table: SNAT/DNAT/MASQUERADE/REDIRECT map to nft's stateful NAT
-# statements.  PREROUTING/POSTROUTING are renamed nat_<chain>.
+# statements.  PREROUTING/POSTROUTING are renamed nat_<chain>.  The
+# --random / --random-fully / --persistent flags append in the fixed
+# kernel-readback order (random/fully-random first, persistent last).
 domain ip table nat {
     chain PREROUTING {
         proto tcp dport 80 DNAT to-destination 10.0.0.1;
+        proto tcp dport 443 DNAT to-destination 10.0.0.2 random persistent;
+        proto tcp dport 8080 REDIRECT to-ports 8081 random;
     }
     chain POSTROUTING {
         outerface eth0 SNAT to-source 192.168.1.1;
         outerface ppp0 MASQUERADE;
+        outerface eth1 SNAT to-source 192.168.1.2 random;
+        outerface eth2 MASQUERADE random;
+        outerface eth3 MASQUERADE random-fully;
+        outerface eth4 MASQUERADE random random-fully;
     }
 }

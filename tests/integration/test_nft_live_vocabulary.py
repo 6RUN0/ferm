@@ -116,6 +116,16 @@ domain ip table filter {
         mod statistic mode nth every 4 DROP;
         mod pkttype pkt-type unicast ACCEPT;
         mod pkttype pkt-type ! broadcast DROP;
+        mod time timestart 09:00 timestop 18:00 ACCEPT;
+        mod time timestart 23:30:30 ACCEPT;
+        mod time weekdays "Mon,Tue,Sat" ACCEPT;
+        mod time days "Sun" ACCEPT;
+        mod time ! weekdays "Sat,Sun" DROP;
+        mod time datestart 2026-01-01 datestop 2026-12-31 ACCEPT;
+        mod time datestart 2026-06-01T09:30:00 ACCEPT;
+        mod time datestop 2026-12-31 DROP;
+        proto tcp dport 22 mod time timestart 09:00 timestop 17:00
+            weekdays "Mon,Tue,Wed,Thu,Fri" ACCEPT;
         jump fail2ban-ssh;
     }
     chain OUTPUT {
@@ -167,10 +177,23 @@ domain ip table filter {
 domain ip table nat {
     chain PREROUTING {
         daddr 10.66.0.0/24 NETMAP to 192.0.2.0/24;
+        proto tcp dport 8080 DNAT to-destination 192.0.2.2 random persistent;
+        proto tcp dport 8081 REDIRECT to-ports 8082 random;
     }
     chain POSTROUTING {
         saddr 192.0.2.0/24 NETMAP to 10.66.0.0/24;
+        source 10.0.0.0/8 SNAT to-source 192.0.2.1 random;
+        out-interface eth9 MASQUERADE random-fully;
+        out-interface eth8 MASQUERADE random random-fully;
     }
+}
+domain ip table raw chain PREROUTING {
+    proto udp dport 53 NOTRACK;
+    proto tcp dport 53 CT notrack;
+}
+domain ip table mangle chain PREROUTING {
+    proto tcp dport 3129 TPROXY on-port 3129 tproxy-mark "0x1/0x1";
+    proto tcp dport 3130 TPROXY on-port 3130 on-ip 127.0.0.1;
 }
 domain arp table filter chain INPUT {
     opcode 1 ACCEPT;
@@ -191,6 +214,8 @@ domain ip6 {
     }
     table mangle chain PREROUTING {
         HL hl-set 255;
+        proto tcp dport 3129 TPROXY on-port 3129 tproxy-mark "0x1/0x1";
+        proto tcp dport 3131 TPROXY on-port 3131 on-ip fe80::1;
     }
 }
 """
@@ -267,6 +292,36 @@ def test_vocabulary_plan_converges_after_apply(
     )
     assert proc.returncode == 0, (
         f"--plan did not converge:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "No changes." in proc.stdout, proc.stdout
+
+
+def test_time_plan_converges_under_foreign_tz(
+    vocabulary_config: Path,
+) -> None:
+    # meta hour/meta time literals are TZ-converted by nft on both parse and
+    # print, so a non-UTC parent TZ would leave --plan diffing an applied
+    # `meta hour` forever unless every nft subprocess is pinned to UTC
+    # (cli._nft_env).  Running the whole apply+plan under TZ=Europe/Berlin
+    # proves the pin holds: convergence here is exactly the pin working.
+    python = shlex.quote(sys.executable)
+    config = shlex.quote(str(vocabulary_config))
+    inner = (
+        f"{python} -m pyferm --nft {config} >/dev/null 2>&1; "
+        f"exec {python} -m pyferm --nft --plan {config}"
+    )
+    proc = subprocess.run(
+        ["unshare", "-rn", "sh", "-c", inner],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        env={**_ENV, "TZ": "Europe/Berlin"},
+        cwd=REPO_ROOT,
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"--plan did not converge under TZ=Europe/Berlin:\n"
+        f"{proc.stdout}\n{proc.stderr}"
     )
     assert "No changes." in proc.stdout, proc.stdout
 

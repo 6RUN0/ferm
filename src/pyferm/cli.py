@@ -514,6 +514,7 @@ def _make_io(
                 capture_output=True,
                 encoding=BYTE_ENCODING,
                 check=False,
+                env=_nft_env(),
             )
         except OSError as exc:
             raise FermError(f"failed to snapshot for rollback: {exc}") from exc
@@ -539,6 +540,19 @@ def _run_failed(path: str, exc: OSError) -> FermError:
     return FermError(f"Failed to run {path}: {exc}")
 
 
+def _nft_env() -> dict[str, str]:
+    """
+    Environment for every nft subprocess: the inherited env pinned to UTC.
+
+    nft converts a ``meta hour``/``meta time`` literal between local time and
+    the UTC the kernel stores using the process ``TZ`` on both parse and
+    print.  Pinning ``TZ=UTC`` makes the backend's emitted clock mean exactly
+    what xt_time (without --kerneltz) means -- UTC -- and keeps the ``--plan``
+    readback diff-free on any host regardless of its zone or DST state.
+    """
+    return {**os.environ, "TZ": "UTC"}
+
+
 def _nft_check_save(path: str, save: str) -> None:
     """
     Validate a rendered nft script with ``nft -c -f -`` (installs nothing).
@@ -559,6 +573,7 @@ def _nft_check_save(path: str, save: str) -> None:
             input=payload,
             capture_output=True,
             check=False,
+            env=_nft_env(),
         )
     except OSError as exc:
         raise _run_failed(path, exc) from exc
@@ -611,6 +626,7 @@ def _make_nft_restore(options: Options) -> RestoreDomain:
                 [path, "-f", "-"],
                 input=payload,
                 check=False,
+                env=_nft_env(),
             )
         except OSError as exc:
             raise _run_failed(path, exc) from exc

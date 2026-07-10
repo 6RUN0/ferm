@@ -1,0 +1,18 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add chain ip ferm raw_PREROUTING { type filter hook prerouting priority -300; }
+add rule ip ferm mangle_PREROUTING tcp dport 3129 tproxy to :3129 meta mark set meta mark | 0x00000001 accept
+add rule ip ferm mangle_PREROUTING tcp dport 3130 tproxy to 127.0.0.1:3130 accept
+add rule ip ferm raw_PREROUTING udp dport 53 notrack
+add rule ip ferm raw_PREROUTING tcp dport 53 notrack
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add chain ip6 ferm raw_PREROUTING { type filter hook prerouting priority -300; }
+add rule ip6 ferm mangle_PREROUTING tcp dport 3129 tproxy to :3129 meta mark set meta mark | 0x00000001 accept
+add rule ip6 ferm mangle_PREROUTING tcp dport 3131 tproxy to [fe80::1]:3131 accept
+add rule ip6 ferm raw_PREROUTING udp dport 53 notrack
+add rule ip6 ferm raw_PREROUTING tcp dport 53 notrack

@@ -1307,6 +1307,50 @@ def _mark_value(scalar: str) -> str:
     return f"0x{value:08x}"
 
 
+def _masked_mark_set(scalar: str) -> str:
+    """
+    Spell TPROXY's ``--tproxy-mark value[/mask]`` as an nft mark rewrite.
+
+    xt computes ``newmark = (mark & ~mask) ^ value``; the kernel
+    canonicalizes the and/xor tree to an and/or form when ``value`` lies
+    within ``mask`` (xor over zeroed bits is or), and the ``& A`` operand it
+    prints already carries the ``| V`` bits -- ``A = ~mask | value`` does,
+    so the and/or emission round-trips.  A full mask (or the xt default when
+    the mask is omitted) folds to a plain set.  A value with bits outside
+    its mask has a different canonical form that would not round-trip, and a
+    zero mask is an identity assignment; both refuse.
+    """
+    base, sep, mask = scalar.partition("/")
+    if not sep:
+        return f"meta mark set {_mark_value(base)}"
+    try:
+        value = int(base, 0)
+        mask_value = int(mask, 0)
+    except ValueError:
+        raise FermError(
+            f"invalid tproxy-mark '{scalar}' for nft backend"
+        ) from None
+    if not (0 <= value <= _MARK_MAX and 0 <= mask_value <= _MARK_MAX):
+        raise FermError(f"invalid tproxy-mark '{scalar}' for nft backend")
+    if mask_value == 0:
+        raise FermError(
+            f"tproxy-mark '{scalar}' has a zero mask (a no-op) for nft backend"
+        )
+    if value & ~mask_value & _MARK_MAX:
+        raise FermError(
+            f"tproxy-mark '{scalar}' value has bits outside its mask for "
+            f"nft backend"
+        )
+    if mask_value == _MARK_MAX:
+        return f"meta mark set {_mark_value(base)}"
+    and_operand = (~mask_value | value) & _MARK_MAX
+    if and_operand == _MARK_MAX and value != 0:
+        return f"meta mark set meta mark | 0x{value:08x}"
+    if value == 0:
+        return f"meta mark set meta mark & 0x{and_operand:08x}"
+    return f"meta mark set meta mark & 0x{and_operand:08x} | 0x{value:08x}"
+
+
 def _masked_mark_expr(selector: str, scalar: str, neg: bool) -> str | None:
     """
     Spell a partial-mask xt mark match as nft's infix bitwise form.
@@ -1633,6 +1677,51 @@ def _synproxy_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
         parts.append("timestamp")
     if "sack-perm" in companions:
         parts.append("sack-perm")
+    return NftVerdict(" ".join(parts))
+
+
+def _tproxy_verdict(
+    domain: Family,
+    companions: dict[str, RenderedOption],
+    *,
+    has_transport: bool,
+) -> NftVerdict:
+    """
+    Spell TPROXY as nft's ``tproxy`` statement plus a terminal accept.
+
+    xt_TPROXY needs a transport match (the kernel rejects the applied rule
+    without one) and always demands ``--on-port`` (the xt oracle refuses a
+    bare or on-ip-only form).  The readback keeps a bare on-port as
+    ``tproxy to :P``, an on-ip mapping as ``tproxy to A:P`` (bracketed for
+    ip6), and a ``--tproxy-mark`` as a following mark rewrite.  xt_TPROXY
+    returns NF_ACCEPT, so a terminal accept is appended; the whole thing is
+    one composite verdict statement (the NFQUEUE/SYNPROXY precedent).
+    """
+    if not has_transport:
+        raise FermError(
+            "TPROXY needs a transport protocol match (tcp/udp) for the "
+            "nft backend"
+        )
+    on_port = companions.get("on-port")
+    if on_port is None:
+        raise FermError("TPROXY needs 'on-port' for the nft backend")
+    port_scalar = first_scalar(on_port.value)
+    if not port_scalar.isdigit() or int(port_scalar) > _U16_MAX:
+        raise FermError(f"invalid on-port '{port_scalar}' for nft backend")
+    port = str(int(port_scalar))
+    on_ip = companions.get("on-ip")
+    if on_ip is None:
+        destination = f":{port}"
+    else:
+        addr = _validate_address(first_scalar(on_ip.value))
+        destination = (
+            f"[{addr}]:{port}" if domain is Family.IP6 else f"{addr}:{port}"
+        )
+    parts = [f"tproxy to {destination}"]
+    mark = companions.get("tproxy-mark")
+    if mark is not None:
+        parts.append(_masked_mark_set(first_scalar(mark.value)))
+    parts.append("accept")
     return NftVerdict(" ".join(parts))
 
 
@@ -2194,6 +2283,33 @@ def _nflog_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
     return NftVerdict(" ".join(parts))
 
 
+#: xt NAT flag option -> nft spelling, in the fixed kernel-readback order
+#: (random / fully-random first, persistent last).  ``--random-fully`` is
+#: the xt spelling of nft's ``fully-random``.
+_NAT_FLAG_SPELLING: Final[tuple[tuple[str, str], ...]] = (
+    ("random", "random"),
+    ("random-fully", "fully-random"),
+    ("persistent", "persistent"),
+)
+
+
+def _nat_flags(companions: dict[str, RenderedOption]) -> str:
+    """
+    Spell the NAT flag companions as an nft suffix (``""`` when none).
+
+    xt's ``--random`` / ``--random-fully`` / ``--persistent`` read back from
+    nft in a fixed order, comma-joined with no surrounding space; the
+    returned string carries a single leading space so a caller appends it
+    unconditionally.
+    """
+    flags = [
+        spelling
+        for option_name, spelling in _NAT_FLAG_SPELLING
+        if option_name in companions
+    ]
+    return f" {','.join(flags)}" if flags else ""
+
+
 def _nat_to_ports(
     verb: str,
     companions: dict[str, RenderedOption],
@@ -2205,15 +2321,17 @@ def _nat_to_ports(
 
     Without one the bare verb is a complete statement (unlike the
     SNAT/DNAT shape, which raises); with one, a transport match is
-    required first (nft would reject the applied script).
+    required first (nft would reject the applied script).  NAT flags append
+    to both forms, so a flag-only ``masquerade random`` still emits.
     """
+    flags = _nat_flags(companions)
     comp = companions.get("to-ports")
     if comp is not None:
         if not has_transport:
             raise FermError(_NAT_PORT_NEEDS_PROTO)
         port = _validate_port(first_scalar(comp.value))
-        return NftVerdict(f"{verb} to :{port}")
-    return NftVerdict(verb)
+        return NftVerdict(f"{verb} to :{port}{flags}")
+    return NftVerdict(f"{verb}{flags}")
 
 
 def _nat_to_addr(
@@ -2237,7 +2355,7 @@ def _nat_to_addr(
     addr = _validate_address(first_scalar(comp.value))
     if _nat_has_port(domain, addr) and not has_transport:
         raise FermError(_NAT_PORT_NEEDS_PROTO)
-    return NftVerdict(f"{verb} to {addr}")
+    return NftVerdict(f"{verb} to {addr}{_nat_flags(companions)}")
 
 
 def build_verdict(
@@ -2418,6 +2536,35 @@ def build_verdict(
         return _hoplimit_verdict("HL", companions)
     if target_value == "SYNPROXY" and domain in (Family.IP, Family.IP6):
         return _synproxy_verdict(companions)
+    if target_value == "TPROXY" and domain in (Family.IP, Family.IP6):
+        return _tproxy_verdict(domain, companions, has_transport=has_transport)
+    if target_value == "CT":
+        # Only --notrack has an nft spelling; the remaining CT options need
+        # object declarations (ct helper/timeout/zone) that are out of scope,
+        # and a bare CT is untranslatable (the xt oracle refuses it too).
+        for unsupported in (
+            "helper",
+            "ctevents",
+            "expevents",
+            "zone-orig",
+            "zone-reply",
+            "zone",
+            "timeout",
+        ):
+            if unsupported in companions:
+                raise FermError(
+                    f"CT target option '{unsupported}' not yet supported by "
+                    f"nft backend"
+                )
+        if "notrack" in companions:
+            return NftVerdict("notrack")
+        raise FermError("CT target not yet supported by nft backend")
+    if target_value == "CHECKSUM":
+        raise FermError(
+            "CHECKSUM target has no nft equivalent (kernels since 4.19 "
+            "handle virtio checksum offload without it); use the iptables "
+            "backend for this rule"
+        )
     # The ebtables target keywords share companion option names with the
     # inet NAT targets (snat/to-source, dnat/to-destination), so without
     # this guard they would fall through to the user-chain branch below,
@@ -2511,14 +2658,41 @@ _TARGET_COMPANIONS: Final[tuple[str, ...]] = (
     "timestamp",
     "ecn",
     "strip-options",
+    # NAT flag options (SNAT/DNAT/MASQUERADE/REDIRECT); flag options carry
+    # no argument and reach build_verdict as bare-name companions.
+    "random",
+    "random-fully",
+    "persistent",
+    # CT notrack (the only CT companion with an nft spelling); the other
+    # seven CT options are module-qualified below to dodge the `helper`
+    # collision with the `mod helper` match.
+    "notrack",
+    # TPROXY companions.
+    "on-port",
+    "on-ip",
+    "tproxy-mark",
+    # CHECKSUM's only option; collected so the target refuses with the
+    # CHECKSUM message rather than a generic match-path "not supported".
+    "checksum-fill",
 )
 
 #: companion names that collide with a match option of the same spelling
 #: (`mss` is both SYNPROXY's option and the tcp match's; `to` is NETMAP's
-#: and the string match's), so they are consumed as companions only when
-#: the introducing module IS that target.
+#: and the string match's; each `CT` option shares a name with a match
+#: module -- notably `helper` with `mod helper`), so they are consumed as
+#: companions only when the introducing module IS that target.
 _MODULE_COMPANIONS: Final[frozenset[tuple[str, str]]] = frozenset(
-    {("NETMAP", "to"), ("SYNPROXY", "mss")}
+    {
+        ("NETMAP", "to"),
+        ("SYNPROXY", "mss"),
+        ("CT", "helper"),
+        ("CT", "ctevents"),
+        ("CT", "expevents"),
+        ("CT", "zone-orig"),
+        ("CT", "zone-reply"),
+        ("CT", "zone"),
+        ("CT", "timeout"),
+    }
 )
 
 
@@ -3180,6 +3354,186 @@ def _hashlimit_key_implies_l4proto(options: Iterable[RenderedOption]) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# mod time: meta hour / meta day / meta time
+# ---------------------------------------------------------------------------
+
+#: nft weekday index (Sunday=0) -> readback name.
+_NFT_DAY_NAMES: Final[tuple[str, ...]] = (
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+)
+#: xt weekday name/abbreviation -> nft index.  Numeric xt days (1..7,
+#: Monday=1..Sunday=7) map with ``n % 7`` so Sunday's xt 7 becomes nft 0.
+_XT_DAY_TO_NFT: Final[dict[str, int]] = {
+    "monday": 1,
+    "mon": 1,
+    "tuesday": 2,
+    "tue": 2,
+    "wednesday": 3,
+    "wed": 3,
+    "thursday": 4,
+    "thu": 4,
+    "friday": 5,
+    "fri": 5,
+    "saturday": 6,
+    "sat": 6,
+    "sunday": 0,
+    "sun": 0,
+}
+_TIME_OF_DAY_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A(\d{1,2}):(\d{2})(?::(\d{2}))?\Z"
+)
+_DATE_RE: Final[re.Pattern[str]] = re.compile(r"\A(\d{4})-(\d{2})-(\d{2})\Z")
+_CLOCK_HOUR_MAX: Final[int] = 23
+_CLOCK_FIELD_MAX: Final[int] = 59
+_DAYS_PER_WEEK: Final[int] = 7
+
+
+def _clock_parts(
+    match: re.Match[str], scalar: str, kind: str
+) -> tuple[int, int, int]:
+    """Return validated ``(hour, minute, second)`` from a clock match."""
+    hour, minute = int(match.group(1)), int(match.group(2))
+    second = int(match.group(3)) if match.group(3) is not None else 0
+    if not (
+        0 <= hour <= _CLOCK_HOUR_MAX
+        and 0 <= minute <= _CLOCK_FIELD_MAX
+        and 0 <= second <= _CLOCK_FIELD_MAX
+    ):
+        raise FermError(f"invalid {kind} '{scalar}' for nft backend")
+    return hour, minute, second
+
+
+def _time_of_day(scalar: str) -> str:
+    """
+    Normalize an xt ``HH:MM[:SS]`` clock value to the nft readback spelling.
+
+    nft prints a ``meta hour`` bound as ``HH:MM``, appending ``:SS`` only
+    when the seconds are non-zero (per boundary), so emission trims a zero
+    seconds field to keep an applied rule diff-free under ``--plan``.
+    """
+    match = _TIME_OF_DAY_RE.match(scalar)
+    if match is None:
+        raise FermError(f"invalid time '{scalar}' for nft backend")
+    hour, minute, second = _clock_parts(match, scalar, "time")
+    if second:
+        return f"{hour:02d}:{minute:02d}:{second:02d}"
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _datetime_iso(scalar: str) -> str:
+    """
+    Normalize an xt ISO8601 ``date[Thh:mm[:ss]]`` to nft's full form.
+
+    nft prints a ``meta time`` bound as ``YYYY-MM-DD hh:mm:ss`` (seconds
+    always present, ``T`` rendered as a space), so a bare date gains a
+    ``00:00:00`` clock and a ``T`` separator becomes a space.
+    """
+    date_part, sep, time_part = scalar.partition("T")
+    if _DATE_RE.match(date_part) is None:
+        raise FermError(f"invalid date '{scalar}' for nft backend")
+    if not sep:
+        clock = "00:00:00"
+    else:
+        match = _TIME_OF_DAY_RE.match(time_part)
+        if match is None:
+            raise FermError(f"invalid date '{scalar}' for nft backend")
+        hour, minute, second = _clock_parts(match, scalar, "date")
+        clock = f"{hour:02d}:{minute:02d}:{second:02d}"
+    return f"{date_part} {clock}"
+
+
+def _time_hour_match(options: dict[str, RenderedOption]) -> str | None:
+    """Build ``meta hour "S"-"E"`` from timestart/timestop (xt defaults)."""
+    start = options.get("timestart")
+    stop = options.get("timestop")
+    if start is None and stop is None:
+        return None
+    low = _time_of_day(first_scalar(start.value)) if start else "00:00"
+    high = _time_of_day(first_scalar(stop.value)) if stop else "23:59:59"
+    return f'meta hour "{low}"-"{high}"'
+
+
+def _time_day_match(options: dict[str, RenderedOption]) -> str | None:
+    """
+    Build ``meta day`` from days/weekdays (aliases of one xt flag).
+
+    Names are printed in nft's numeric order (Sunday first) and quoted; a
+    single day drops the braces (kernel readback, negation included).  Both
+    keys at once is an xt conflict, so it refuses.
+    """
+    days = options.get("days")
+    weekdays = options.get("weekdays")
+    if days is not None and weekdays is not None:
+        raise FermError(
+            "mod time cannot combine 'days' and 'weekdays' for the nft backend"
+        )
+    option = days if days is not None else weekdays
+    if option is None:
+        return None
+    scalar, neg = unwrap_value(option.value)
+    indices = sorted(
+        {_xt_day_index(token) for token in scalar.split(",") if token.strip()}
+    )
+    names = [f'"{_NFT_DAY_NAMES[index]}"' for index in indices]
+    body = names[0] if len(names) == 1 else f"{{ {', '.join(names)} }}"
+    return f"meta day {_op(neg)}{body}"
+
+
+def _xt_day_index(token: str) -> int:
+    """Map one xt weekday (name/abbreviation/1..7) to its nft index."""
+    lowered = token.strip().lower()
+    if lowered in _XT_DAY_TO_NFT:
+        return _XT_DAY_TO_NFT[lowered]
+    if lowered.isdigit() and 1 <= int(lowered) <= _DAYS_PER_WEEK:
+        return int(lowered) % _DAYS_PER_WEEK
+    raise FermError(f"unknown weekday '{token.strip()}' for nft backend")
+
+
+def _time_span_match(options: dict[str, RenderedOption]) -> str | None:
+    """Build ``meta time`` from datestart/datestop (range / >= / <=)."""
+    start = options.get("datestart")
+    stop = options.get("datestop")
+    low = _datetime_iso(first_scalar(start.value)) if start else None
+    high = _datetime_iso(first_scalar(stop.value)) if stop else None
+    if low is not None and high is not None:
+        return f'meta time "{low}"-"{high}"'
+    if low is not None:
+        return f'meta time >= "{low}"'
+    if high is not None:
+        return f'meta time <= "{high}"'
+    return None
+
+
+def _time_matches(options: dict[str, RenderedOption]) -> list[NftMatch]:
+    """
+    Translate a rule's ``mod time`` options to 0-3 nft meta matches.
+
+    hour/day/time are independent selectors emitted in a fixed order.
+    monthday, kerneltz, and contiguous have no faithful nft equivalent
+    (monthday has no meta selector; kerneltz/contiguous change the local-time
+    and cross-midnight semantics nft's UTC-anchored evaluation cannot mirror),
+    so they refuse.
+    """
+    for refused in ("monthday", "kerneltz", "contiguous"):
+        if refused in options:
+            raise FermError(
+                f"mod time '{refused}' not yet supported by nft backend"
+            )
+    matches: list[NftMatch] = []
+    for builder in (_time_hour_match, _time_day_match, _time_span_match):
+        expr = builder(options)
+        if expr is not None:
+            matches.append(NftMatch(expr))
+    return matches
+
+
 def translate_rule(
     domain: Family,
     table: str,
@@ -3299,6 +3653,14 @@ def translate_rule(
         o.name: o for o in rule.options if o.module == "statistic"
     }
 
+    # mod time spreads across several options (timestart/timestop/days/...)
+    # that fold into up to three independent meta matches, so they are
+    # collected rule-wide and emitted at the first time option (the
+    # statistic/hashlimit precedent).
+    time_opts: dict[str, RenderedOption] = {
+        o.name: o for o in rule.options if o.module == "time"
+    }
+
     # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
     comment: str | None = None
@@ -3308,6 +3670,7 @@ def translate_rule(
     statistic_emitted = False
     recent_emitted = False
     hashlimit_emitted = False
+    time_emitted = False
 
     for option in rule.options:
         name, kind = option.name, option.kind
@@ -3346,6 +3709,13 @@ def translate_rule(
             if not statistic_emitted:
                 matches.append(NftMatch(_statistic_match(statistic_opts)))
                 statistic_emitted = True
+            continue
+        if option.module == "time":
+            # Up to three meta matches, emitted once at the first time option
+            # so they keep source order among the other matches.
+            if not time_emitted:
+                matches.extend(_time_matches(time_opts))
+                time_emitted = True
             continue
         if option.module == "recent":
             # One dynamic-set update per rule, at the first recent option so

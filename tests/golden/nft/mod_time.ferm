@@ -1,0 +1,16 @@
+# mod time folds into up to three independent nft meta selectors: `meta hour`
+# (a clock range, seconds trimmed when zero, xt defaults 00:00/23:59:59),
+# `meta day` (weekday names in nft numeric order, a single day unbraced,
+# --weekdays negation as !=), and `meta time` (a full-datetime range or an
+# open >=/<= bound).  Emitted under a TZ=UTC-pinned nft (see cli._nft_env).
+domain ip table filter chain INPUT {
+    mod time timestart 09:00 timestop 18:00 ACCEPT;
+    mod time timestart 09:30:30 ACCEPT;
+    mod time weekdays "Mon,Tue,Sat" ACCEPT;
+    mod time days "Sun,Mon" ACCEPT;
+    mod time ! weekdays "Mon,Tue" DROP;
+    mod time datestart 2026-01-01 datestop 2026-12-31 ACCEPT;
+    mod time datestart 2026-06-01T09:30:00 ACCEPT;
+    mod time datestop 2026-12-31 DROP;
+    proto tcp dport 22 mod time timestart 09:00 timestop 17:00 weekdays "Mon,Tue,Wed,Thu,Fri" ACCEPT;
+}

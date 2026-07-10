@@ -4326,6 +4326,437 @@ def test_build_verdict_synproxy() -> None:
         )
 
 
+def _flag(name: str, module: str) -> RenderedOption:
+    return _opt(name, None, module=module)
+
+
+def test_build_verdict_nat_flags() -> None:
+    # xt --random / --random-fully / --persistent read back in a fixed order
+    # (random/fully-random first, persistent last), comma-joined, no space;
+    # --random-fully is the xt spelling of nft's fully-random.
+    snat = {
+        "to-source": _opt(
+            "to-source", Multi(values=["1.2.3.4"]), module="SNAT"
+        ),
+        "random": _flag("random", "SNAT"),
+        "persistent": _flag("persistent", "SNAT"),
+    }
+    assert (
+        build_verdict(Family.IP, "nat", "jump", "SNAT", snat).to_text()
+        == "snat to 1.2.3.4 random,persistent"
+    )
+    dnat = {
+        "to-destination": _opt(
+            "to-destination", Multi(values=["10.0.0.5"]), module="DNAT"
+        ),
+        "persistent": _flag("persistent", "DNAT"),
+    }
+    assert (
+        build_verdict(Family.IP, "nat", "jump", "DNAT", dnat).to_text()
+        == "dnat to 10.0.0.5 persistent"
+    )
+    # MASQUERADE takes flags with no to-ports (the bare-verb return path)
+    masq = {"random": _flag("random", "MASQUERADE")}
+    assert (
+        build_verdict(Family.IP, "nat", "jump", "MASQUERADE", masq).to_text()
+        == "masquerade random"
+    )
+    both = {
+        "random": _flag("random", "MASQUERADE"),
+        "random-fully": _flag("random-fully", "MASQUERADE"),
+    }
+    assert (
+        build_verdict(Family.IP, "nat", "jump", "MASQUERADE", both).to_text()
+        == "masquerade random,fully-random"
+    )
+    fully = {"random-fully": _flag("random-fully", "MASQUERADE")}
+    assert (
+        build_verdict(Family.IP, "nat", "jump", "MASQUERADE", fully).to_text()
+        == "masquerade fully-random"
+    )
+    # REDIRECT to-ports + random needs a transport match
+    redirect = {
+        "to-ports": _opt(
+            "to-ports", Multi(values=["8081"]), module="REDIRECT"
+        ),
+        "random": _flag("random", "REDIRECT"),
+    }
+    assert (
+        build_verdict(
+            Family.IP, "nat", "jump", "REDIRECT", redirect, has_transport=True
+        ).to_text()
+        == "redirect to :8081 random"
+    )
+    # flag order in the companion dict must NOT change the emission order
+    reordered = {
+        "persistent": _flag("persistent", "SNAT"),
+        "to-source": _opt(
+            "to-source", Multi(values=["1.2.3.4"]), module="SNAT"
+        ),
+        "random": _flag("random", "SNAT"),
+    }
+    assert (
+        build_verdict(Family.IP, "nat", "jump", "SNAT", reordered).to_text()
+        == "snat to 1.2.3.4 random,persistent"
+    )
+
+
+def test_build_verdict_same_still_refuses_with_random_companion() -> None:
+    # SAME shares the `random` flag with the translated NAT targets, so the
+    # flag is now collected as a companion for it too; without a SAME arm in
+    # build_verdict the target must keep falling into the registry refusal
+    # instead of the user-chain fallthrough.
+    same = {"random": _flag("random", "SAME")}
+    with pytest.raises(
+        FermError,
+        match=r"^target 'SAME' \(or jump to a chain of that name\)"
+        r" not yet supported by nft backend$",
+    ):
+        build_verdict(Family.IP, "nat", "jump", "SAME", same)
+
+
+def test_build_verdict_ct_notrack() -> None:
+    notrack = {"notrack": _flag("notrack", "CT")}
+    assert (
+        build_verdict(Family.IP, "raw", "jump", "CT", notrack).to_text()
+        == "notrack"
+    )
+    # the CT notrack path emits the same spelling as the standalone NOTRACK
+    assert (
+        build_verdict(Family.IP, "raw", "jump", "NOTRACK", {}).to_text()
+        == "notrack"
+    )
+
+
+def test_build_verdict_ct_refusals() -> None:
+    # a bare CT (no companion) has no nft spelling (the xt oracle refuses too)
+    with pytest.raises(
+        FermError, match=r"^CT target not yet supported by nft backend$"
+    ):
+        build_verdict(Family.IP, "raw", "jump", "CT", {})
+    # every other CT option needs object declarations that are out of scope
+    for option in (
+        "helper",
+        "ctevents",
+        "expevents",
+        "zone-orig",
+        "zone-reply",
+        "zone",
+        "timeout",
+    ):
+        comp = {option: _opt(option, "x", module="CT")}
+        with pytest.raises(
+            FermError, match=rf"^CT target option '{option}' not yet"
+        ):
+            build_verdict(Family.IP, "raw", "jump", "CT", comp)
+    # an unsupported option beside notrack still refuses (refusal wins)
+    both = {
+        "notrack": _flag("notrack", "CT"),
+        "helper": _opt("helper", "ftp", module="CT"),
+    }
+    with pytest.raises(FermError, match=r"^CT target option 'helper' not yet"):
+        build_verdict(Family.IP, "raw", "jump", "CT", both)
+
+
+def test_build_verdict_checksum_refused() -> None:
+    comp = {"checksum-fill": _flag("checksum-fill", "CHECKSUM")}
+    with pytest.raises(FermError, match=r"^CHECKSUM target has no nft"):
+        build_verdict(Family.IP, "mangle", "jump", "CHECKSUM", comp)
+
+
+def _tproxy(**names: str | None) -> dict[str, RenderedOption]:
+    return {
+        key.replace("_", "-"): _opt(
+            key.replace("_", "-"),
+            Multi(values=[value]) if value is not None else None,
+            module="TPROXY",
+        )
+        for key, value in names.items()
+    }
+
+
+def test_build_verdict_tproxy() -> None:
+    # a bare on-port maps to `tproxy to :P accept`
+    assert (
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "TPROXY",
+            _tproxy(on_port="3129"),
+            has_transport=True,
+        ).to_text()
+        == "tproxy to :3129 accept"
+    )
+    # on-ip adds the address; ip6 brackets it
+    assert (
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "TPROXY",
+            _tproxy(on_port="3130", on_ip="127.0.0.1"),
+            has_transport=True,
+        ).to_text()
+        == "tproxy to 127.0.0.1:3130 accept"
+    )
+    assert (
+        build_verdict(
+            Family.IP6,
+            "mangle",
+            "jump",
+            "TPROXY",
+            _tproxy(on_port="3131", on_ip="fe80::1"),
+            has_transport=True,
+        ).to_text()
+        == "tproxy to [fe80::1]:3131 accept"
+    )
+    # --tproxy-mark folds to the kernel and/or mark rewrite between the
+    # destination and the terminal accept
+    assert (
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "TPROXY",
+            _tproxy(on_port="3129", tproxy_mark="0x1/0x1"),
+            has_transport=True,
+        ).to_text()
+        == "tproxy to :3129 meta mark set meta mark | 0x00000001 accept"
+    )
+
+
+def test_build_verdict_tproxy_refusals() -> None:
+    # xt_TPROXY needs a transport match (the kernel rejects the applied rule)
+    with pytest.raises(FermError, match=r"needs a transport protocol match"):
+        build_verdict(
+            Family.IP, "mangle", "jump", "TPROXY", _tproxy(on_port="3129")
+        )
+    # and always demands on-port (the xt oracle refuses a bare/on-ip-only form)
+    with pytest.raises(FermError, match=r"TPROXY needs 'on-port'"):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "TPROXY",
+            _tproxy(on_ip="127.0.0.1"),
+            has_transport=True,
+        )
+    for bad in ("65536", "banana", "-1"):
+        with pytest.raises(FermError, match=r"^invalid on-port"):
+            build_verdict(
+                Family.IP,
+                "mangle",
+                "jump",
+                "TPROXY",
+                _tproxy(on_port=bad),
+                has_transport=True,
+            )
+
+
+def test_masked_mark_set_canon() -> None:
+    from pyferm.backend.nft import _masked_mark_set
+
+    # a bare value (no slash) or a full mask is a plain set
+    assert _masked_mark_set("0x1") == "meta mark set 0x00000001"
+    assert _masked_mark_set("0x1/0xffffffff") == "meta mark set 0x00000001"
+    # small values still pad to 8 hex digits
+    assert (
+        _masked_mark_set("0x5/0x5") == "meta mark set meta mark | 0x00000005"
+    )
+    # value == mask -> A collapses to all-ones -> the OR-only form
+    assert (
+        _masked_mark_set("0x1/0x1") == "meta mark set meta mark | 0x00000001"
+    )
+    # value == 0 -> the AND-only form (clear the masked bits)
+    assert (
+        _masked_mark_set("0x0/0xff") == "meta mark set meta mark & 0xffffff00"
+    )
+    # the general and/or form; the AND operand already carries the OR bits
+    assert (
+        _masked_mark_set("0x12/0xff")
+        == "meta mark set meta mark & 0xffffff12 | 0x00000012"
+    )
+
+
+def test_masked_mark_set_refusals() -> None:
+    from pyferm.backend.nft import _masked_mark_set
+
+    # a zero mask is a no-op assignment the kernel does not round-trip
+    with pytest.raises(FermError, match=r"has a zero mask"):
+        _masked_mark_set("0x0/0x0")
+    # a value with bits outside its mask canonicalizes differently
+    with pytest.raises(FermError, match=r"has bits outside its mask"):
+        _masked_mark_set("0x3/0x1")
+
+
+def test_translate_rule_time_hour_day_span() -> None:
+    def time_opt(name: str, value: Value) -> RenderedOption:
+        return _opt(name, value, module="time")
+
+    # hour: seconds trimmed when zero, xt default stop 23:59:59
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            time_opt("timestart", "09:00"),
+            time_opt("timestop", "18:00"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        'meta hour "09:00"-"18:00"',
+        "accept",
+    ]
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("timestart", "09:30:30"), _target("ACCEPT")),
+    )
+    assert nft.statements[0].to_text() == 'meta hour "09:30:30"-"23:59:59"'
+    # day: numeric-ordered quoted names, dedup, a single day unbraced
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("weekdays", "Sat,Mon,Mon,Tue"), _target("ACCEPT")),
+    )
+    assert (
+        nft.statements[0].to_text()
+        == 'meta day { "Monday", "Tuesday", "Saturday" }'
+    )
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("weekdays", "Sun"), _target("ACCEPT")),
+    )
+    assert nft.statements[0].to_text() == 'meta day "Sunday"'
+    # xt numeric days (Mon=1..Sun=7) map to nft's Sunday=0 order
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("weekdays", "7,1"), _target("ACCEPT")),
+    )
+    assert nft.statements[0].to_text() == 'meta day { "Sunday", "Monday" }'
+    # negated weekdays -> !=
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("weekdays", Negated(value="Mon,Tue")), _target("DROP")),
+    )
+    assert nft.statements[0].to_text() == 'meta day != { "Monday", "Tuesday" }'
+    # time: full-datetime range, plus open >= / <= bounds
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            time_opt("datestart", "2026-01-01"),
+            time_opt("datestop", "2026-12-31"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert (
+        nft.statements[0].to_text()
+        == 'meta time "2026-01-01 00:00:00"-"2026-12-31 00:00:00"'
+    )
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("datestart", "2026-06-01T09:30:00"), _target("ACCEPT")),
+    )
+    assert nft.statements[0].to_text() == 'meta time >= "2026-06-01 09:30:00"'
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(time_opt("datestop", "2026-12-31"), _target("DROP")),
+    )
+    assert nft.statements[0].to_text() == 'meta time <= "2026-12-31 00:00:00"'
+    # hour, day, and time compose in a fixed order within one rule
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            time_opt("timestart", "09:00"),
+            time_opt("timestop", "17:00"),
+            time_opt("weekdays", "Mon,Fri"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        'meta hour "09:00"-"17:00"',
+        'meta day { "Monday", "Friday" }',
+        "accept",
+    ]
+
+
+def test_translate_rule_time_refusals() -> None:
+    def time_opt(name: str, value: Value) -> RenderedOption:
+        return _opt(name, value, module="time")
+
+    for refused in ("monthday", "kerneltz", "contiguous"):
+        with pytest.raises(FermError, match=rf"mod time '{refused}' not yet"):
+            translate_rule(
+                Family.IP,
+                "filter",
+                _rule(
+                    time_opt(refused, "1"),
+                    time_opt("timestart", "09:00"),
+                    _target("ACCEPT"),
+                ),
+            )
+    # days and weekdays are aliases of one xt flag; both at once conflicts
+    with pytest.raises(
+        FermError, match=r"cannot combine 'days' and 'weekdays'"
+    ):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                time_opt("days", "Mon"),
+                time_opt("weekdays", "Tue"),
+                _target("ACCEPT"),
+            ),
+        )
+    with pytest.raises(FermError, match=r"unknown weekday 'Funday'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(time_opt("weekdays", "Funday"), _target("ACCEPT")),
+        )
+    with pytest.raises(FermError, match=r"invalid time 'noon'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(time_opt("timestart", "noon"), _target("ACCEPT")),
+        )
+    with pytest.raises(FermError, match=r"invalid date 'someday'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(time_opt("datestart", "someday"), _target("ACCEPT")),
+        )
+
+
+def test_two_tproxy_marks_do_not_collapse() -> None:
+    # different verdict text = different rules; the collapse/vmap pass must
+    # not fold two tproxy rules that differ only in their mark rewrite
+    def tproxy_rule(mark: str) -> NftRule:
+        return NftRule(
+            statements=[
+                NftMatch(
+                    "tcp dport 3129", set_key="tcp dport", element="3129"
+                ),
+                NftVerdict(
+                    f"tproxy to :3129 meta mark set meta mark | {mark} accept"
+                ),
+            ]
+        )
+
+    out = _collapse_chain_rules(
+        [tproxy_rule("0x00000001"), tproxy_rule("0x00000002")]
+    )
+    assert len(out) == 2
+
+
 def _netmap_rule(
     match_name: str, match_value: Value, to_value: str
 ) -> RenderedRule:
