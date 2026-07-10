@@ -42,6 +42,7 @@ from ..domains import (
     Family,
     ShellSnapshot,
     TableInfo,
+    default_tool_names,
 )
 from ..domains import (
     read_previous as _domains_read_previous,
@@ -506,11 +507,7 @@ class IptablesBackend(Backend):
 
         ip/ip6 own a save/restore pair; arp/eb expose only ``*tables``.
         """
-        names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if domain.is_ip:
-            names[TOOL_SAVE] = domain + TOOL_SAVE
-            names[TOOL_RESTORE] = domain + TOOL_RESTORE
-        return names
+        return default_tool_names(domain)
 
     def render(
         self, domain: Family, domain_info: DomainInfo, options: Options

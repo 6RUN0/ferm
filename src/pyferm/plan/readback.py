@@ -56,8 +56,9 @@ def parse_save(text: str, *, host_mask: str) -> dict[str, ParsedTable]:
     """
     tables: dict[str, ParsedTable] = {}
     current: ParsedTable | None = None
+    lines = text.splitlines()
 
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(lines, start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -104,7 +105,7 @@ def parse_save(text: str, *, host_mask: str) -> dict[str, ParsedTable]:
         raise _parse_error(lineno, raw)
 
     if current is not None:
-        raise _parse_error(len(text.splitlines()), "<EOF: missing COMMIT>")
+        raise _parse_error(len(lines), "<EOF: missing COMMIT>")
 
     return tables
 

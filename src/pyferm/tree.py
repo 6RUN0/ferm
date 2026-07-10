@@ -139,6 +139,12 @@ class SetNode(Node):
     span: tuple[Token, ...]
 
 
+#: Cache of dispatch method names by node type, shared across all
+#: NodeVisitor subclasses. Caches only the name (str), not the bound
+#: method -- the method itself depends on self/subclass.
+_VISIT_METHOD_NAMES: dict[type, str] = {}
+
+
 class NodeVisitor:
     """
     Dispatch visitor: visit_<ClassName>, no-op fallback.
@@ -149,7 +155,12 @@ class NodeVisitor:
 
     def visit(self, node: Node) -> object:
         """Dispatch to visit_<ClassName>, or None when none is defined."""
-        method = getattr(self, f"visit_{type(node).__name__}", None)
+        node_type = type(node)
+        name = _VISIT_METHOD_NAMES.get(node_type)
+        if name is None:
+            name = f"visit_{node_type.__name__}"
+            _VISIT_METHOD_NAMES[node_type] = name
+        method = getattr(self, name, None)
         if method is None:
             return None
         return method(node)

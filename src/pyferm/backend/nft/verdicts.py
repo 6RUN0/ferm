@@ -41,6 +41,8 @@ from .model import (
     NftReset,
     NftSetUpdate,
     NftVerdict,
+    _addr_set_type,
+    _bounded_uint,
     _nft_quote_string,
     _nft_time_canon,
     _validate_address,
@@ -231,9 +233,7 @@ def _nfqueue_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
         to = f"{int(low)}-{int(high)}"
     elif num is not None:
         scalar, _ = unwrap_value(num.value)
-        if not scalar.isdigit() or int(scalar) > _U16_MAX:
-            raise FermError(f"invalid queue-num '{scalar}' for nft backend")
-        to = str(int(scalar))
+        to = str(_bounded_uint(scalar, _U16_MAX, "queue-num"))
     else:
         to = "0"
     flags = [
@@ -273,10 +273,9 @@ def _hoplimit_verdict(
             f"{target_value} target not yet supported by nft backend"
         )
     scalar, _ = unwrap_value(comp.value)
-    if not scalar.isdigit() or int(scalar) > _HOPLIMIT_MAX:
-        raise FermError(f"invalid {prefix}-set '{scalar}' for nft backend")
+    value = _bounded_uint(scalar, _HOPLIMIT_MAX, f"{prefix}-set")
     selector = "ip ttl" if target_value == "TTL" else "ip6 hoplimit"
-    return NftVerdict(f"{selector} set {int(scalar)}")
+    return NftVerdict(f"{selector} set {value}")
 
 
 def _synproxy_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
@@ -297,11 +296,8 @@ def _synproxy_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
     if mss is not None or wscale is not None:
         for label, comp in (("mss", mss), ("wscale", wscale)):
             scalar = "0" if comp is None else unwrap_value(comp.value)[0]
-            if not scalar.isdigit() or int(scalar) > _U16_MAX:
-                raise FermError(
-                    f"invalid synproxy {label} '{scalar}' for nft backend"
-                )
-            parts.append(f"{label} {int(scalar)}")
+            value = _bounded_uint(scalar, _U16_MAX, f"synproxy {label}")
+            parts.append(f"{label} {value}")
     if "timestamp" in companions:
         parts.append("timestamp")
     if "sack-perm" in companions:
@@ -335,9 +331,7 @@ def _tproxy_verdict(
     if on_port is None:
         raise FermError("TPROXY needs 'on-port' for the nft backend")
     port_scalar = first_scalar(on_port.value)
-    if not port_scalar.isdigit() or int(port_scalar) > _U16_MAX:
-        raise FermError(f"invalid on-port '{port_scalar}' for nft backend")
-    port = str(int(port_scalar))
+    port = str(_bounded_uint(port_scalar, _U16_MAX, "on-port"))
     on_ip = companions.get("on-ip")
     if on_ip is None:
         destination = f":{port}"
@@ -537,7 +531,7 @@ def _set_target_statement(
             seconds = int(scalar)
             if seconds > 0:
                 timeout = _nft_time_canon(seconds * 1000)
-    set_type = "ipv4_addr" if domain is Family.IP else "ipv6_addr"
+    set_type = _addr_set_type(domain)
     return NftSetUpdate(
         name,
         f"{domain} {selector_tail}",
@@ -706,8 +700,7 @@ def _nflog_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
     group = companions.get("nflog-group")
     if group is not None:
         scalar, _ = unwrap_value(group.value)
-        if not scalar.isdigit() or int(scalar) > _NFLOG_GROUP_MAX:
-            raise FermError(f"invalid nflog-group '{scalar}' for nft backend")
+        _bounded_uint(scalar, _NFLOG_GROUP_MAX, "nflog-group")
         group_num = scalar
     parts.append(f"group {group_num}")
     threshold = companions.get("nflog-threshold")

@@ -198,6 +198,19 @@ class Family(enum.StrEnum):
         return self in (Family.IP, Family.IP6)
 
 
+def default_tool_names(domain: Family) -> dict[str, str]:
+    """
+    Resolve the default x_tables tool set for one family.
+
+    ip/ip6 own a save/restore pair; arp/eb expose only ``*tables``.
+    """
+    names = {TOOL_TABLES: domain + TOOL_TABLES}
+    if domain.is_ip:
+        names[TOOL_SAVE] = domain + TOOL_SAVE
+        names[TOOL_RESTORE] = domain + TOOL_RESTORE
+    return names
+
+
 #: nft's family name for each ferm domain, 1:1; shared by the nft emitter and
 #: the plan-side nft delta parser so the mapping has one home (moved off the
 #: nft backend, next to the :class:`Family` it maps).
@@ -456,10 +469,7 @@ def initialize_domain(
     if resolve_tools is not None:
         names = resolve_tools(domain)
     else:
-        names = {TOOL_TABLES: domain + TOOL_TABLES}
-        if domain.is_ip:
-            names[TOOL_SAVE] = domain + TOOL_SAVE
-            names[TOOL_RESTORE] = domain + TOOL_RESTORE
+        names = default_tool_names(domain)
     domain_info.tools = {
         key: find_tool(name, options) for key, name in names.items()
     }

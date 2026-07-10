@@ -68,70 +68,72 @@ from .verdicts import (
 
 #: option names that are companion arguments of a target, consumed by
 #: :func:`build_verdict` rather than emitted as matches.
-_TARGET_COMPANIONS: Final[tuple[str, ...]] = (
-    "reject-with",
-    "to-source",
-    "to-destination",
-    "log-prefix",
-    "log-level",
-    "to-ports",
-    "nflog-group",
-    "nflog-prefix",
-    "nflog-threshold",
-    "nflog-range",
-    "set-mark",
-    "set-xmark",
-    "and-mark",
-    "or-mark",
-    "xor-mark",
-    "set-mss",
-    "clamp-mss-to-pmtu",
-    "gateway",
-    "save-mark",
-    "restore-mark",
-    "nfmask",
-    "ctmask",
-    "mask",
-    "set-dscp",
-    "set-dscp-class",
-    "set-class",
-    # TOS companions: collected so the target refuses with the TOS message
-    # rather than the generic "option not supported" from the match path.
-    "set-tos",
-    "and-tos",
-    "or-tos",
-    "xor-tos",
-    "queue-num",
-    "queue-balance",
-    "queue-bypass",
-    "queue-cpu-fanout",
-    "ttl-set",
-    "ttl-dec",
-    "ttl-inc",
-    "hl-set",
-    "hl-dec",
-    "hl-inc",
-    "wscale",
-    "sack-perm",
-    "timestamp",
-    "ecn",
-    "strip-options",
-    # NAT flag options (SNAT/DNAT/MASQUERADE/REDIRECT); flag options carry
-    # no argument and reach build_verdict as bare-name companions.
-    "random",
-    "random-fully",
-    "persistent",
-    # CT notrack (the only CT companion with an nft spelling); the other
-    # seven CT options are module-qualified below to dodge the `helper`
-    # collision with the `mod helper` match.
-    "notrack",
-    # TPROXY companions.
-    "on-port",
-    "on-ip",
-    "tproxy-mark",
-    # CHECKSUM's only option; collected so the target refuses with the
-    # CHECKSUM message rather than a generic match-path "not supported".
-    "checksum-fill",
+_TARGET_COMPANIONS: Final[frozenset[str]] = frozenset(
+    {
+        "reject-with",
+        "to-source",
+        "to-destination",
+        "log-prefix",
+        "log-level",
+        "to-ports",
+        "nflog-group",
+        "nflog-prefix",
+        "nflog-threshold",
+        "nflog-range",
+        "set-mark",
+        "set-xmark",
+        "and-mark",
+        "or-mark",
+        "xor-mark",
+        "set-mss",
+        "clamp-mss-to-pmtu",
+        "gateway",
+        "save-mark",
+        "restore-mark",
+        "nfmask",
+        "ctmask",
+        "mask",
+        "set-dscp",
+        "set-dscp-class",
+        "set-class",
+        # TOS companions: collected so the target refuses with the TOS message
+        # rather than the generic "option not supported" from the match path.
+        "set-tos",
+        "and-tos",
+        "or-tos",
+        "xor-tos",
+        "queue-num",
+        "queue-balance",
+        "queue-bypass",
+        "queue-cpu-fanout",
+        "ttl-set",
+        "ttl-dec",
+        "ttl-inc",
+        "hl-set",
+        "hl-dec",
+        "hl-inc",
+        "wscale",
+        "sack-perm",
+        "timestamp",
+        "ecn",
+        "strip-options",
+        # NAT flag options (SNAT/DNAT/MASQUERADE/REDIRECT); flag options carry
+        # no argument and reach build_verdict as bare-name companions.
+        "random",
+        "random-fully",
+        "persistent",
+        # CT notrack (the only CT companion with an nft spelling); the other
+        # seven CT options are module-qualified below to dodge the `helper`
+        # collision with the `mod helper` match.
+        "notrack",
+        # TPROXY companions.
+        "on-port",
+        "on-ip",
+        "tproxy-mark",
+        # CHECKSUM's only option; collected so the target refuses with the
+        # CHECKSUM message rather than a generic match-path "not supported".
+        "checksum-fill",
+    }
 )
 
 #: companion names that collide with a match option of the same spelling

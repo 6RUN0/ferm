@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Final
 
 #: The encoding of every ferm byte boundary: a bijective byte<->char map
@@ -76,3 +77,15 @@ def reconfigure_latin1(stream: object, errors: str = "strict") -> None:
         reconfigure(encoding=BYTE_ENCODING, errors=errors)
     except ValueError:
         return
+
+
+def reconfigure_std_streams() -> None:
+    """
+    Switch ``sys.stdout``/``sys.stderr`` to latin-1, human-error-tolerant.
+
+    Called first thing by every entry point's ``main()``: argparse and
+    error rendering both write through these streams before any other
+    I/O happens, so the encoding must already be latin-1 by then.
+    """
+    reconfigure_latin1(sys.stdout, errors=HUMAN_STREAM_ERRORS)
+    reconfigure_latin1(sys.stderr, errors=HUMAN_STREAM_ERRORS)

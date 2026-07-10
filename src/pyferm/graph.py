@@ -102,6 +102,16 @@ class Cluster:
     nodes: tuple[tuple[str, NodeKind], ...]
     edges: tuple[tuple[str, str, EdgeKind], ...]
 
+    @property
+    def dot_id(self) -> str:
+        """Injective subgraph/block id, shared by both renderers."""
+        return _cluster_id(self.domain, self.table)
+
+    @property
+    def label(self) -> str:
+        """Escaped ``domain/table`` display label, shared by both renderers."""
+        return f"{_escape_ident(self.domain)}/{_escape_ident(self.table)}"
+
 
 @dataclass(frozen=True)
 class ChainGraph:
@@ -561,12 +571,8 @@ def render_dot(graph: ChainGraph) -> str:
     """Render the graph as Graphviz DOT (deterministic; spec §5)."""
     lines = ["digraph ferm {"]
     for cluster in graph.clusters:
-        cid = _cluster_id(cluster.domain, cluster.table)
-        lines.append(f"  subgraph cluster_{cid} {{")
-        label = (
-            f"{_escape_ident(cluster.domain)}/{_escape_ident(cluster.table)}"
-        )
-        lines.append(f'    label="{label}";')
+        lines.append(f"  subgraph cluster_{cluster.dot_id} {{")
+        lines.append(f'    label="{cluster.label}";')
         for name, kind in cluster.nodes:
             attr = _DOT_NODE_ATTR.get(kind, "")
             lines.append(f"    {_quote_ident(name)}{attr};")
@@ -597,11 +603,7 @@ def render_d2(graph: ChainGraph) -> str:
     """
     lines: list[str] = []
     for cluster in graph.clusters:
-        cid = _cluster_id(cluster.domain, cluster.table)
-        label = (
-            f"{_escape_ident(cluster.domain)}/{_escape_ident(cluster.table)}"
-        )
-        lines.append(f'{cid}: "{label}" {{')
+        lines.append(f'{cluster.dot_id}: "{cluster.label}" {{')
         for name, kind in cluster.nodes:
             style = _D2_NODE_STYLE.get(kind)
             if style:

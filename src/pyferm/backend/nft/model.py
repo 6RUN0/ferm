@@ -6,8 +6,9 @@ import re
 import socket
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
+from ...domains import Family
 from ...errors import FermError, internal_error
 from ...nftset import (
     l4proto_name,
@@ -24,12 +25,6 @@ from ...values import (
     SetRef,
     Value,
 )
-
-if TYPE_CHECKING:
-    from ...domains import (
-        Family,
-    )
-
 
 #: nft comment byte limit; over -> a plain ferm error.
 NFT_COMMENT_MAX: Final[int] = 128
@@ -407,6 +402,14 @@ def render_comment(comment: str) -> str:
     return f"comment {_nft_quote_string(comment)}"
 
 
+#: Shared refusal for a match/NAT value whose runtime shape (list, missing
+#: scalar, ...) has no nft translation; used verbatim by both value
+#: extractors below and by the tcp-flags Params unpacking in ``matches.py``.
+_UNSUPPORTED_VALUE_SHAPE: Final[str] = (
+    "unsupported value shape for nft backend"
+)
+
+
 def unwrap_value(value: Value) -> tuple[str, bool]:
     """
     Return ``(scalar, negated)`` for a simple match value.
@@ -430,7 +433,7 @@ def unwrap_value(value: Value) -> tuple[str, bool]:
             "multi-value cannot be expressed as a single nft match"
         )
     if not isinstance(value, str):
-        raise FermError("unsupported value shape for nft backend")
+        raise FermError(_UNSUPPORTED_VALUE_SHAPE)
     return value, negated
 
 
@@ -444,16 +447,28 @@ def first_scalar(value: Value) -> str:
     """
     if isinstance(value, (Multi, Params)):
         if not value.values or not isinstance(value.values[0], str):
-            raise FermError("unsupported value shape for nft backend")
+            raise FermError(_UNSUPPORTED_VALUE_SHAPE)
         return value.values[0]
     if isinstance(value, str):
         return value
-    raise FermError("unsupported value shape for nft backend")
+    raise FermError(_UNSUPPORTED_VALUE_SHAPE)
+
+
+def _bounded_uint(scalar: str, maximum: int, label: str) -> int:
+    """Return *scalar* as an unsigned int in ``[0, maximum]``, else error."""
+    if not scalar.isdigit() or int(scalar) > maximum:
+        raise FermError(f"invalid {label} '{scalar}' for nft backend")
+    return int(scalar)
 
 
 def _op(neg: bool) -> str:
     """Return the nft inequality prefix for a (possibly) negated match."""
     return "!= " if neg else ""
+
+
+def _addr_set_type(domain: Family) -> str:
+    """Return the nft address-set element type for *domain* (ip vs ip6)."""
+    return "ipv4_addr" if domain is Family.IP else "ipv6_addr"
 
 
 def _nft_l4proto(domain: Family, proto: str) -> str:

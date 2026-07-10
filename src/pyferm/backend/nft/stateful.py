@@ -35,6 +35,7 @@ from .model import (
     NftQuota,
     NftRule,
     NftSetUpdate,
+    _addr_set_type,
     _nft_time_canon,
     _op,
     _validate_set_name,
@@ -368,7 +369,7 @@ def _recent_update(
             "recent rule reached translate_rule without its pre-pass spec"
         )
     spec = recent_specs[facts.name]
-    set_type = "ipv4_addr" if domain == Family.IP else "ipv6_addr"
+    set_type = _addr_set_type(domain)
     return NftSetUpdate(
         f"recent_{facts.name}",
         f"{domain} {spec.direction}",
@@ -434,7 +435,7 @@ def _hashlimit_key(
         raise FermError(
             f"unsupported hashlimit mode '{mode_scalar}' for the nft backend"
         )
-    addr_type = "ipv4_addr" if domain == Family.IP else "ipv6_addr"
+    addr_type = _addr_set_type(domain)
     keys: list[str] = []
     types: list[str] = []
     for token in _HASHLIMIT_MODE_ORDER:
@@ -992,7 +993,7 @@ def _connlimit_update(domain: Family, rule: RenderedRule) -> NftSetUpdate:
             )
         if bits < max_bits:  # a full mask needs no `& netmask`
             key += f" & {_prefix_length_mask(domain, length)}"
-    set_type = "ipv4_addr" if domain == Family.IP else "ipv6_addr"
+    set_type = _addr_set_type(domain)
     return NftSetUpdate(
         _CONNLIMIT_SENTINEL, f"{key} {count_expr}", set_type, verb="add"
     )

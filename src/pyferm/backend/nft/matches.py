@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     )
 
 from .model import (
+    _UNSUPPORTED_VALUE_SHAPE,
     NftMatch,
     _nft_ifname,
     _op,
@@ -417,13 +418,13 @@ def _tcp_flags_expr(value: Value) -> str:
         value = value.value
         neg = True
     if not isinstance(value, Params):
-        raise FermError("unsupported value shape for nft backend")
+        raise FermError(_UNSUPPORTED_VALUE_SHAPE)
     try:
         mask_raw, comp_raw = value.values
     except ValueError:
-        raise FermError("unsupported value shape for nft backend") from None
+        raise FermError(_UNSUPPORTED_VALUE_SHAPE) from None
     if not isinstance(mask_raw, str) or not isinstance(comp_raw, str):
-        raise FermError("unsupported value shape for nft backend")
+        raise FermError(_UNSUPPORTED_VALUE_SHAPE)
     mask = _tcp_flag_list(mask_raw)
     if comp_raw.lower() == "none":
         if neg:

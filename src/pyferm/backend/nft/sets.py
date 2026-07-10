@@ -82,6 +82,13 @@ _DYN_SET_SIZE: Final[int] = 65535
 _CONNLIMIT_SENTINEL: Final[str] = "?"
 
 
+def _conflicting_set(name: str) -> FermError:
+    """Build the shared error for a set name with two incompatible uses."""
+    return FermError(
+        f"set '{name}' has conflicting declarations for the nft backend"
+    )
+
+
 @dataclass
 class _DynSetDecl:
     """
@@ -207,10 +214,7 @@ def _collect_set_declarations(
                     existing = decls.get(stmt.name)
                     if stmt.owned:
                         if existing is not None and existing != dyn:
-                            raise FermError(
-                                f"set '{stmt.name}' has conflicting "
-                                "declarations for the nft backend"
-                            )
+                            raise _conflicting_set(stmt.name)
                         decls[stmt.name] = dyn
                         continue
                     # A user @set mutated by the SET target: several rules
@@ -228,17 +232,11 @@ def _collect_set_declarations(
                         # inet_service set the addr-keyed SET target cannot
                         # share -- conflict, never a silent overwrite.
                         if existing.type_ != dyn.type_:
-                            raise FermError(
-                                f"set '{stmt.name}' has conflicting "
-                                "declarations for the nft backend"
-                            )
+                            raise _conflicting_set(stmt.name)
                         decls[stmt.name] = dyn
                         continue
                     if existing.owned or existing.type_ != dyn.type_:
-                        raise FermError(
-                            f"set '{stmt.name}' has conflicting "
-                            "declarations for the nft backend"
-                        )
+                        raise _conflicting_set(stmt.name)
                     if existing.timeout is None:
                         existing.timeout = dyn.timeout
                     continue

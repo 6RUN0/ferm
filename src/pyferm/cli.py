@@ -30,6 +30,7 @@ realised with :mod:`signal` (``signal.alarm``/``SIGALRM``) rather than Perl's
 from __future__ import annotations
 
 import argparse
+import contextlib
 import enum
 import os
 import re
@@ -69,12 +70,12 @@ from .streams import (
     HUMAN_STREAM_ERRORS,
     argv_to_latin1,
     escape_control_chars,
-    reconfigure_latin1,
+    reconfigure_std_streams,
 )
 from .tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
     from .backend.base import (
         Backend,
@@ -144,7 +145,12 @@ Options:
 """
 
 _TIMEOUT_RE: Final[re.Pattern[str]] = re.compile(r"^[+-]?\d+$")
-_DEF_RE: Final[re.Pattern[str]] = re.compile(r"\$?(\w+)=(.*)", re.DOTALL)
+# re.ASCII: --def specs arrive as latin-1 byte views, and Perl matches
+# them with byte-mode \w ([A-Za-z0-9_]) -- Unicode \w would widen the
+# accepted names.
+_DEF_RE: Final[re.Pattern[str]] = re.compile(
+    r"\$?(\w+)=(.*)", re.DOTALL | re.ASCII
+)
 
 # Perl system() runs a one-string command through /bin/sh only when it
 # contains shell metacharacters (perl doio.c, Perl_do_exec3); otherwise it
@@ -406,6 +412,16 @@ def _setup_streams(
         lines_stream.close()
 
     return lines_stream, restore
+
+
+@contextlib.contextmanager
+def _shell_streams(options: Options) -> Generator[TextIO]:
+    """Scope :func:`_setup_streams` to a ``with`` block (restore on exit)."""
+    lines_stream, restore = _setup_streams(options)
+    try:
+        yield lines_stream
+    finally:
+        restore()
 
 
 @dataclass(frozen=True)
@@ -913,8 +929,7 @@ def _run_graph(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Run the ferm CLI (Perl's top-level program, ``:620-819``)."""
     # before any write: argparse renders usage/errors through these streams
-    reconfigure_latin1(sys.stdout, errors=HUMAN_STREAM_ERRORS)
-    reconfigure_latin1(sys.stderr, errors=HUMAN_STREAM_ERRORS)
+    reconfigure_std_streams()
     try:
         return _main(argv)
     except FermError as exc:
@@ -974,11 +989,8 @@ def _main(argv: list[str] | None = None) -> int:
             fail_level = None
         return _run_lint(args.files[0], fail_level=fail_level)
 
-    lines_stream, restore_streams = _setup_streams(options)
-    try:
+    with _shell_streams(options) as lines_stream:
         return _run(args, options, lines_stream)
-    finally:
-        restore_streams()
 
 
 def build_plan(
@@ -1296,7 +1308,7 @@ def _apply_config(
         for command in [*parser.post_hooks, *parser.flush_hooks]:
             _run_hook(command, options, io.emit_line)
 
-        if status is not None:
+        def _rollback() -> None:
             _rollback_all(
                 domains,
                 options,
@@ -1304,6 +1316,9 @@ def _apply_config(
                 execute=io.execute,
                 restore=io.restore,
             )
+
+        if status is not None:
+            _rollback()
 
         # Ask the user, and roll back without confirmation (``:803-817``).
         if options.interactive:
@@ -1323,13 +1338,7 @@ def _apply_config(
                     io.emit_line(notice)
 
             if not options.noexec and not _confirm_rules(options):
-                _rollback_all(
-                    domains,
-                    options,
-                    backend,
-                    execute=io.execute,
-                    restore=io.restore,
-                )
+                _rollback()
 
         # Record the applied ruleset in /etc history (best-effort, port-only).
         # Reached only on success: both rollback paths raise SystemExit above,
@@ -1484,8 +1493,7 @@ def _rollback_to(
             return ExitCode.OK
 
     etckeeper.rollback(sha, subpath)
-    lines_stream, restore_streams = _setup_streams(options)
-    try:
+    with _shell_streams(options) as lines_stream:
         return _apply_config(
             config,
             options,
@@ -1493,5 +1501,3 @@ def _rollback_to(
             defs=defs,
             subject=f"rolled back to {sha}",
         )
-    finally:
-        restore_streams()

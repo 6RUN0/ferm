@@ -8,6 +8,12 @@ from ..config import PlanFormat
 from .model import Plan, PlanDiff, SetChangeKind
 
 
+def _clause(count: int, noun: str, verb: str) -> str:
+    """Build one ``, N noun(s) verb`` summary_line clause."""
+    plural = noun if count == 1 else noun + "s"
+    return f", {count} {plural} {verb}"
+
+
 def summary_line(diff: PlanDiff) -> str:
     """
     Build the ``Plan: N to add, M to remove, K policy changes`` tail.
@@ -26,16 +32,11 @@ def summary_line(diff: PlanDiff) -> str:
         f" {policies} policy {pol_word}"
     )
     if chains_removed:
-        chain_word = "chain" if chains_removed == 1 else "chains"
-        summary += f", {chains_removed} {chain_word} removed"
-    rebuilt = len(diff.chain_rebuilds)
-    if rebuilt:
-        rebuilt_word = "chain" if rebuilt == 1 else "chains"
-        summary += f", {rebuilt} {rebuilt_word} rebuilt"
-    sets_changed = len(diff.set_changes)
-    if sets_changed:
-        set_word = "set" if sets_changed == 1 else "sets"
-        summary += f", {sets_changed} {set_word} changed"
+        summary += _clause(chains_removed, "chain", "removed")
+    if rebuilt := len(diff.chain_rebuilds):
+        summary += _clause(rebuilt, "chain", "rebuilt")
+    if sets_changed := len(diff.set_changes):
+        summary += _clause(sets_changed, "set", "changed")
     return summary
 
 

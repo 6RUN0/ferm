@@ -771,6 +771,14 @@ class Parser:
         self.set_target(rule, "jump", name)
         merge_keywords(rule, defs.keywords, name)
 
+    def _load_match_module(self, rule: Rule, module: str) -> None:
+        """Append ``module`` to ``rule`` and merge its option keywords."""
+        defs = MATCH_DEFS.get(rule.domain_family or "", {}).get(module)
+        append_option(rule, "match", module)
+        rule.match.add(module)
+        if defs is not None:
+            merge_keywords(rule, defs.keywords, module)
+
     def _load_match_modules(self, rule: Rule) -> None:
         """
         Handle ``mod``/``module``: load each named match module.
@@ -783,12 +791,7 @@ class Parser:
             module = stringify(value)
             if module in rule.match:
                 continue
-            family_defs = MATCH_DEFS.get(rule.domain_family or "", {})
-            defs = family_defs.get(module)
-            append_option(rule, "match", module)
-            rule.match.add(module)
-            if defs is not None:
-                merge_keywords(rule, defs.keywords, module)
+            self._load_match_module(rule, module)
 
     def _resolve_shortcut(self, rule: Rule, keyword: str) -> str:
         """
@@ -802,12 +805,7 @@ class Parser:
         shortcut = SHORTCUTS.get(family, {}).get(keyword)
         if shortcut is None:
             return keyword
-        module = shortcut[0]
-        defs = MATCH_DEFS.get(family, {}).get(module)
-        append_option(rule, "match", module)
-        rule.match.add(module)
-        if defs is not None:
-            merge_keywords(rule, defs.keywords, module)
+        self._load_match_module(rule, shortcut[0])
         return shortcut[1]
 
     # -- keyword / option parsing (:1943-2031) ---------------------------
@@ -1488,6 +1486,12 @@ class Parser:
             # something not inherited by the parent closure
             walker.rule.non_empty = True
 
+            # walker.rule is not reassigned past this point within handle():
+            # its only reassignment site is _leaf_finish_rule, a stage-0
+            # control handler that returns immediately above, before this
+            # line runs. Safe to alias for the rest of this dispatch.
+            rule = walker.rule
+
             # stage 1: sigils ($ &)
             if isinstance(keyword, str) and (
                 sigil := self._LEAF_SIGILS.get(keyword)
@@ -1498,33 +1502,28 @@ class Parser:
             # @subchain/subchain/@gotosubchain are promoted to typed nodes
             # (routed by _dispatch_leading); the chain-context check below
             # still guards the leaf rule keywords.
-            if walker.rule.chain is None:
+            if rule.chain is None:
                 error(_ERR_CHAIN_REQUIRED)
 
             # everything else is part of a "real" rule
-            walker.rule.has_rule = True
+            rule.has_rule = True
 
             # stage 2: extended parameters -- module load
             if isinstance(keyword, str) and keyword in _LEAF_MODULE_LOAD:
-                self._load_match_modules(walker.rule)
+                self._load_match_modules(rule)
                 return False
 
             # shortcuts
-            if (
-                isinstance(keyword, str)
-                and keyword not in walker.rule.keywords
-            ):
-                keyword = self._resolve_shortcut(walker.rule, keyword)
+            if isinstance(keyword, str) and keyword not in rule.keywords:
+                keyword = self._resolve_shortcut(rule, keyword)
                 walker.shown_keyword = keyword
 
             # keywords from rule.keywords -- a module option shadows a
             # same-named fixed action key, so this lookup stays above the
             # action table.
-            if isinstance(keyword, str) and keyword in walker.rule.keywords:
-                realize_protocol_keyword(walker.rule, keyword)
-                self.parse_option(
-                    walker.rule.keywords[keyword], walker.rule, negated
-                )
+            if isinstance(keyword, str) and keyword in rule.keywords:
+                realize_protocol_keyword(rule, keyword)
+                self.parse_option(rule.keywords[keyword], rule, negated)
                 return False
 
             # stage 3: fixed action/option keywords.  The table sits at the
@@ -1538,15 +1537,15 @@ class Parser:
                 return action(self, walker, keyword, negated)
 
             if isinstance(keyword, str) and is_netfilter_core_target(keyword):
-                self.set_target(walker.rule, "jump", keyword)
+                self.set_target(rule, "jump", keyword)
                 return False
 
             if isinstance(keyword, str):
                 defs = is_netfilter_module_target(
-                    TARGET_DEFS, walker.rule.domain_family, keyword
+                    TARGET_DEFS, rule.domain_family, keyword
                 )
                 if defs is not None:
-                    self.set_module_target(walker.rule, keyword, defs)
+                    self.set_module_target(rule, keyword, defs)
                     return False
 
             return error(f"Unrecognized keyword: {keyword}")
