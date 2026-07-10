@@ -1,0 +1,11 @@
+# mod hashlimit via an implicit dynamic set: upto (conform rate), a srcip key
+# with an explicit burst and htable-expire timeout, and the concatenated
+# srcip+dstport key (whose port implies l4proto, dropping the meta prefix).
+table filter chain INPUT {
+    proto tcp mod hashlimit hashlimit-upto 3/minute hashlimit-burst 5
+        hashlimit-name ssh_brute hashlimit-mode srcip
+        hashlimit-htable-expire 60000 ACCEPT;
+    proto tcp mod hashlimit hashlimit-above 10/second
+        hashlimit-name flood hashlimit-mode "srcip,dstport"
+        hashlimit-srcmask 24 DROP;
+}

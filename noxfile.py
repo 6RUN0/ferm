@@ -488,6 +488,28 @@ def datapath_e2e(session: nox.Session) -> None:
     )
 
 
+@nox.session
+def recent_calibration_e2e(session: nox.Session) -> None:
+    """
+    Real-packet calibration of the recent token-bucket (rootless netns).
+
+    Drives ICMP echo-request through the emitted nft dynamic-set update form
+    inside ``unshare -rn`` and checks the first DROP lands in xt_recent's
+    ``[H-1, H+1]`` window, for both corpus structures (check-first and
+    set-first).  Needs no docker (just ``unshare``/``nft``/``ping``); it is
+    time-dependent evidence, not a regression gate, so it is opt-in and kept
+    out of ``preflight``.
+    """
+    _uv(
+        session,
+        "pytest",
+        "tests/e2e/test_recent_calibration.py",
+        "-n0",
+        *session.posargs,
+        env={"FERM_RECENT_CAL_E2E": "1"},
+    )
+
+
 #: Distro matrix for ``datapath_e2e_matrix``.  Each value is the base
 #: image fed to the Dockerfile's ``BASE`` build ARG; the key is both the
 #: parametrize id and the image tag (``FERM_DATAPATH_TAG``).  Adding a

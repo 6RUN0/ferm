@@ -344,6 +344,58 @@ table ip6 t6 {
             )
 
 
+def check_stateful_dynset_readback() -> None:
+    # The recent/hashlimit slice emits implicit dynamic sets.  Pin, on a real
+    # apply+relist, that the emitted declaration and update-element forms are
+    # exactly what the kernel prints back -- otherwise --plan/delta-apply see a
+    # phantom diff forever and the delta wipes the accrued stateful state.
+    # Built by concatenation so each nft statement stays one logical line
+    # while the source lines fit the 79-column limit.
+    script = (
+        "table ip t {\n"
+        "  set recent_SSH { type ipv4_addr; size 65535;"
+        " flags dynamic,timeout; }\n"
+        "  set hl_conc { type ipv4_addr . inet_service; size 65535;"
+        " flags dynamic,timeout; }\n"
+        "  set hl_persec { type ipv4_addr; size 65535; flags dynamic; }\n"
+        "  chain c {\n"
+        "    type filter hook input priority 0;\n"
+        "    update @recent_SSH { ip saddr timeout 1m limit rate over"
+        " 8/minute burst 7 packets } drop\n"
+        "    update @hl_conc { ip saddr & 255.255.255.0 . tcp dport timeout"
+        " 1m30s limit rate over 10/second burst 5 packets } drop\n"
+        "    meta l4proto tcp update @hl_persec { ip saddr limit rate"
+        " 5/second burst 5 packets } accept\n"
+        "  }\n"
+        "}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    expected = [
+        # declaration flag spelling (comma, no space) and size injection
+        "flags dynamic,timeout",
+        "flags dynamic",
+        "size 65535",
+        "type ipv4_addr . inet_service",
+        # element order: key, timeout, limit; burst injected; time canon
+        "update @recent_SSH { ip saddr timeout 1m limit rate over 8/minute"
+        " burst 7 packets } drop",
+        "update @hl_conc { ip saddr & 255.255.255.0 . tcp dport timeout"
+        " 1m30s limit rate over 10/second burst 5 packets } drop",
+        # a /second element carries no timeout; the update form is stable
+        # (never respelled into a legacy `meter`) after apply+relist
+        "meta l4proto tcp update @hl_persec { ip saddr limit rate 5/second"
+        " burst 5 packets } accept",
+    ]
+    for want in expected:
+        if want not in lines:
+            _fail(
+                f"stateful dynset readback line missing: {want}",
+                "\n".join(lines),
+            )
+    if any("meter" in line for line in lines):
+        _fail("update form respelled into a legacy meter", "\n".join(lines))
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -353,6 +405,7 @@ def main() -> None:
     check_dscp_map()
     check_classify_readback()
     check_ct_queue_netmap_readback()
+    check_stateful_dynset_readback()
     print("NFT-READBACK-PASS")
 
 

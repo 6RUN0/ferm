@@ -18,6 +18,7 @@ from pyferm.backend.nft import (
     NftRule,
     _collect_set_declarations,
     _set_type_and_elements,
+    _SetDecl,
 )
 from pyferm.domains import Family
 from pyferm.errors import FermError
@@ -199,7 +200,9 @@ def test_collect_declarations_dedups_same_name() -> None:
     }
     decls = _collect_set_declarations(Family.IP, rules)
     assert set(decls) == {"ssh"}
-    assert decls["ssh"].elements == ["22", "2222"]
+    ssh_decl = decls["ssh"]
+    assert isinstance(ssh_decl, _SetDecl)
+    assert ssh_decl.elements == ["22", "2222"]
 
 
 def test_collect_declarations_conflicting_elements_raise() -> None:

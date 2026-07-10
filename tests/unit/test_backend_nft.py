@@ -3903,9 +3903,13 @@ def test_translate_rule_match_set_declaration_pickup() -> None:
         "filter",
         _rule(_match_set_opt(setref, "src"), _target("DROP")),
     )
+    from pyferm.backend.nft import _SetDecl
+
     decls = _collect_set_declarations(Family.IP, {"INPUT": [nft]})
     assert "badguys" in decls
-    assert decls["badguys"].elements == ["10.1.2.3"]
+    badguys_decl = decls["badguys"]
+    assert isinstance(badguys_decl, _SetDecl)
+    assert badguys_decl.elements == ["10.1.2.3"]
 
 
 def test_translate_rule_match_set_empty_set_guard_sees_nested() -> None:
@@ -3980,7 +3984,7 @@ def test_translate_match_negated_interface_keeps_inequality() -> None:
 def test_serialize_table_emits_named_set_declarations() -> None:
     from pyferm.backend.nft import NftSetType, _SetDecl
 
-    decls = {
+    decls: dict[str, _SetDecl | _DynSetDecl] = {
         "ports": _SetDecl(NftSetType.INET_SERVICE, False, ["22", "80"]),
         "nets": _SetDecl(NftSetType.IPV4_ADDR, True, ["10.0.0.0/8"]),
     }
@@ -4652,3 +4656,723 @@ def test_translate_rule_tcpoptstrip_refusals() -> None:
         translate_rule(Family.IP, "mangle", _tcpoptstrip_rule("256"))
     with pytest.raises(FermError, match=r"^TCPOPTSTRIP needs 'strip-options'"):
         translate_rule(Family.IP, "mangle", _tcpoptstrip_rule(None))
+
+
+# --- 2026-07-10 vocabulary batch 5 (stateful part): mod recent, mod
+# --- hashlimit via implicit dynamic sets.  Element spellings and the recent
+# --- calibration formula are pinned against a live kernel readback and real
+# --- xt_recent (see tests/integration/test_nft_live_vocabulary and the
+# --- opt-in tests/e2e/test_recent_calibration).
+
+from pyferm.backend.nft import (  # noqa: E402
+    NftSetUpdate,
+    _build_recent_specs,
+    _DynSetDecl,
+    _nft_time_canon,
+    _reduce_rate,
+)
+
+
+def _recent(name: str, value: Value = None) -> RenderedOption:
+    return _opt(name, value, module="recent")
+
+
+def _recent_rule(
+    *opts: RenderedOption, verdict: str | None = None
+) -> RenderedRule:
+    options = [_opt("match", "recent", kind=OptionKind.MATCH_MODULE), *opts]
+    if verdict is not None:
+        options.append(_target(verdict))
+    return _rule(*options)
+
+
+def _hashlimit_rule(
+    *opts: RenderedOption, proto: str = "tcp", verdict: str = "ACCEPT"
+) -> RenderedRule:
+    return _rule(
+        _opt("protocol", proto, kind=OptionKind.PROTO),
+        _opt("match", "hashlimit", kind=OptionKind.MATCH_MODULE),
+        *opts,
+        _target(verdict),
+    )
+
+
+def _recent_texts(domain: Family, *rules: RenderedRule) -> list[list[str]]:
+    specs = _build_recent_specs(domain, rules)
+    return [
+        [
+            s.to_text()
+            for s in translate_rule(
+                domain, "filter", rule, chain="c", recent_specs=specs
+            ).statements
+        ]
+        for rule in rules
+    ]
+
+
+def _hashlimit_text(
+    domain: Family, *opts: RenderedOption, proto: str = "tcp"
+) -> list[str]:
+    rule = _hashlimit_rule(*opts, proto=proto)
+    return [
+        s.to_text()
+        for s in translate_rule(domain, "filter", rule, chain="c").statements
+    ]
+
+
+# --- time canon + rate reducer (the calibration primitives) ---
+
+
+def test_nft_time_canon_full_decomposition() -> None:
+    assert _nft_time_canon(60_000) == "1m"
+    assert _nft_time_canon(90_000) == "1m30s"
+    assert _nft_time_canon(61_000) == "1m1s"
+    assert _nft_time_canon(300_000) == "5m"
+    assert _nft_time_canon(3_600_000) == "1h"
+    assert _nft_time_canon(86_400_000) == "1d"
+    assert _nft_time_canon(500) == "500ms"
+    assert _nft_time_canon(86_400_000 + 3_600_000 + 1) == "1d1h1ms"
+
+
+def test_nft_time_canon_rejects_nonpositive() -> None:
+    with pytest.raises(FermError, match=r"timeout must be positive"):
+        _nft_time_canon(0)
+
+
+def test_reduce_rate_calibration_pins() -> None:
+    # chain-maze: T=2 H=4 S=60 -> 8/minute; stuart: T=2 H=8 S=300 -> 192/hour;
+    # single check rule: T=1 H=4 S=60 -> 4/minute.  Smallest integer unit.
+    assert _reduce_rate(8, 60) == (8, "minute")
+    assert _reduce_rate(16, 300) == (192, "hour")
+    assert _reduce_rate(4, 60) == (4, "minute")
+    assert _reduce_rate(10, 5) == (2, "second")
+
+
+def test_reduce_rate_irreducible_refused() -> None:
+    with pytest.raises(FermError, match=r"no integer nft rate unit"):
+        _reduce_rate(1, 7)
+
+
+# --- recent translation ---
+
+
+def test_recent_check_then_set_calibrated_uniform_spec() -> None:
+    # chain-maze structure: rcheck first (goto), bare set second (NOP).  Both
+    # rules of the name emit the identical calibrated element spec; T=2.
+    check = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "4"),
+        _recent("name", "SSH"),
+        verdict="bad",
+    )
+    bare = _recent_rule(_recent("set"), _recent("name", "SSH"))
+    spec = (
+        "update @recent_SSH { ip saddr timeout 1m "
+        "limit rate over 8/minute burst 7 packets }"
+    )
+    assert _recent_texts(Family.IP, check, bare) == [
+        [spec, "jump bad"],
+        [spec],
+    ]
+
+
+def test_recent_ip6_and_rdest_direction() -> None:
+    check = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "4"),
+        _recent("name", "V6"),
+        _recent("rdest"),
+        verdict="bad",
+    )
+    bare = _recent_rule(
+        _recent("set"), _recent("name", "V6"), _recent("rdest")
+    )
+    spec = (
+        "update @recent_V6 { ip6 daddr timeout 1m "
+        "limit rate over 8/minute burst 7 packets }"
+    )
+    assert _recent_texts(Family.IP6, check, bare) == [
+        [spec, "jump bad"],
+        [spec],
+    ]
+
+
+def test_recent_set_only_with_verdict_timeout_only() -> None:
+    # A name with no check rules and a bare `set` carrying a real verdict is
+    # legal: the element spec is timeout-only, so the update matches
+    # unconditionally and the verdict always fires (as xt --set does).
+    bare = _recent_rule(
+        _recent("set"),
+        _recent("seconds", "60"),
+        _recent("name", "GUARD"),
+        verdict="DROP",
+    )
+    assert _recent_texts(Family.IP, bare) == [
+        ["update @recent_GUARD { ip saddr timeout 1m }", "drop"]
+    ]
+
+
+def test_recent_stuart_set_first_calibration() -> None:
+    # stuart-ha-server: bare set first, update H=8 S=300 second;
+    # T=2 -> 192/hour.
+    bare = _recent_rule(_recent("set"), _recent("name", "SSH"))
+    upd = _recent_rule(
+        _recent("update"),
+        _recent("seconds", "300"),
+        _recent("hitcount", "8"),
+        _recent("name", "SSH"),
+        verdict="bad",
+    )
+    spec = (
+        "update @recent_SSH { ip saddr timeout 5m "
+        "limit rate over 192/hour burst 15 packets }"
+    )
+    assert _recent_texts(Family.IP, bare, upd) == [[spec], [spec, "jump bad"]]
+
+
+def test_recent_refuses_unsupported_verbs() -> None:
+    for verb in ("remove", "rttl", "reap", "mask"):
+        value = "255.255.255.0" if verb == "mask" else None
+        rule = _recent_rule(
+            _recent("set"),
+            _recent(verb, value),
+            _recent("name", "X"),
+        )
+        with pytest.raises(FermError, match=rf"mod recent '{verb}'"):
+            _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_negation() -> None:
+    rule = _recent_rule(
+        _recent("set"),
+        _opt("seconds", Negated("60"), module="recent"),
+        _recent("name", "X"),
+    )
+    with pytest.raises(
+        FermError, match=r"mod recent 'seconds' cannot be negated"
+    ):
+        _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_non_ip_family() -> None:
+    rule = _recent_rule(_recent("set"), _recent("name", "X"))
+    with pytest.raises(FermError, match=r"mod recent needs the ip or ip6"):
+        _build_recent_specs(Family.ARP, [rule])
+
+
+def test_recent_refuses_no_verb_or_multiple() -> None:
+    with pytest.raises(FermError, match=r"exactly one of set/rcheck/update"):
+        _build_recent_specs(Family.IP, [_recent_rule(_recent("name", "X"))])
+    both = _recent_rule(
+        _recent("set"), _recent("rcheck"), _recent("name", "X")
+    )
+    with pytest.raises(FermError, match=r"exactly one of set/rcheck/update"):
+        _build_recent_specs(Family.IP, [both])
+
+
+def test_recent_refuses_missing_or_invalid_name() -> None:
+    with pytest.raises(FermError, match=r"mod recent needs a 'name'"):
+        _build_recent_specs(Family.IP, [_recent_rule(_recent("set"))])
+    bad = _recent_rule(_recent("set"), _recent("name", "bad-name"))
+    with pytest.raises(FermError, match=r"invalid recent name 'bad-name'"):
+        _build_recent_specs(Family.IP, [bad])
+
+
+def test_recent_refuses_hitcount_without_seconds() -> None:
+    rule = _recent_rule(
+        _recent("rcheck"),
+        _recent("hitcount", "4"),
+        _recent("name", "X"),
+    )
+    with pytest.raises(FermError, match=r"'hitcount' needs 'seconds'"):
+        _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_check_without_pair() -> None:
+    rule = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("name", "X"),
+    )
+    with pytest.raises(
+        FermError, match=r"rcheck/update needs 'seconds' and 'hitcount'"
+    ):
+        _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_no_seconds_anywhere() -> None:
+    rule = _recent_rule(_recent("set"), _recent("name", "X"), verdict="DROP")
+    with pytest.raises(FermError, match=r"has no seconds anywhere"):
+        _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_conflicting_seconds() -> None:
+    a = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "4"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    b = _recent_rule(
+        _recent("update"),
+        _recent("seconds", "120"),
+        _recent("hitcount", "4"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    with pytest.raises(FermError, match=r"conflicting seconds"):
+        _build_recent_specs(Family.IP, [a, b])
+
+
+def test_recent_refuses_conflicting_directions() -> None:
+    a = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "4"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    b = _recent_rule(_recent("set"), _recent("name", "X"), _recent("rdest"))
+    with pytest.raises(FermError, match=r"mixes rsource and rdest"):
+        _build_recent_specs(Family.IP, [a, b])
+
+
+def test_recent_refuses_conflicting_hitcounts() -> None:
+    a = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "4"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    b = _recent_rule(
+        _recent("update"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "8"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    with pytest.raises(FermError, match=r"conflicting hitcounts"):
+        _build_recent_specs(Family.IP, [a, b])
+
+
+def test_recent_refuses_rsource_rdest_together() -> None:
+    rule = _recent_rule(
+        _recent("set"),
+        _recent("name", "X"),
+        _recent("rsource"),
+        _recent("rdest"),
+    )
+    with pytest.raises(FermError, match=r"cannot combine rsource and rdest"):
+        _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_set_verdict_with_check_rules() -> None:
+    check = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "4"),
+        _recent("name", "SSH"),
+        verdict="bad",
+    )
+    guarded_set = _recent_rule(
+        _recent("set"),
+        _recent("name", "SSH"),
+        verdict="DROP",
+    )
+    with pytest.raises(FermError, match=r"set rule carries a verdict"):
+        _build_recent_specs(Family.IP, [check, guarded_set])
+
+
+def test_recent_refuses_irreducible_rate() -> None:
+    rule = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "7"),
+        _recent("hitcount", "1"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    with pytest.raises(FermError, match=r"no integer nft rate unit"):
+        _build_recent_specs(Family.IP, [rule])
+
+
+def test_recent_refuses_non_numeric_seconds() -> None:
+    rule = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "abc"),
+        _recent("hitcount", "4"),
+        _recent("name", "X"),
+        verdict="bad",
+    )
+    with pytest.raises(FermError, match=r"invalid recent seconds"):
+        _build_recent_specs(Family.IP, [rule])
+
+
+# --- hashlimit translation ---
+
+
+def test_hashlimit_upto_conform_form() -> None:
+    assert _hashlimit_text(
+        Family.IP,
+        _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+        _opt("hashlimit-name", "ssh_brute", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+    ) == [
+        "meta l4proto tcp",
+        "update @hashlimit_ssh_brute { ip saddr timeout 1m "
+        "limit rate 3/minute burst 5 packets }",
+        "accept",
+    ]
+
+
+def test_hashlimit_above_over_form_with_burst() -> None:
+    assert _hashlimit_text(
+        Family.IP,
+        _opt("hashlimit-above", "10/second", module="hashlimit"),
+        _opt("hashlimit-burst", "20", module="hashlimit"),
+        _opt("hashlimit-name", "flood", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+    ) == [
+        "meta l4proto tcp",
+        "update @hashlimit_flood { ip saddr "
+        "limit rate over 10/second burst 20 packets }",
+        "accept",
+    ]
+
+
+def test_hashlimit_persecond_no_timeout() -> None:
+    # /second without htable-expire carries no element timeout.
+    assert _hashlimit_text(
+        Family.IP,
+        _opt("hashlimit-upto", "5/second", module="hashlimit"),
+        _opt("hashlimit-name", "ps", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+    ) == [
+        "meta l4proto tcp",
+        "update @hashlimit_ps { ip saddr "
+        "limit rate 5/second burst 5 packets }",
+        "accept",
+    ]
+
+
+def test_hashlimit_concat_key_and_masks_and_expire() -> None:
+    texts = _hashlimit_text(
+        Family.IP,
+        _opt("hashlimit-above", "10/second", module="hashlimit"),
+        _opt("hashlimit-name", "conc", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip,dstport", module="hashlimit"),
+        _opt("hashlimit-srcmask", "24", module="hashlimit"),
+        _opt("hashlimit-htable-expire", "90000", module="hashlimit"),
+    )
+    # the port in the key implies l4proto, so no `meta l4proto tcp` prefix
+    assert texts == [
+        "update @hashlimit_conc { ip saddr & 255.255.255.0 . tcp dport "
+        "timeout 1m30s limit rate over 10/second burst 5 packets }",
+        "accept",
+    ]
+
+
+def test_hashlimit_ip6_mask() -> None:
+    assert _hashlimit_text(
+        Family.IP6,
+        _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+        _opt("hashlimit-name", "v6", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        _opt("hashlimit-srcmask", "64", module="hashlimit"),
+    ) == [
+        "meta l4proto tcp",
+        "update @hashlimit_v6 { ip6 saddr & ffff:ffff:ffff:ffff:: "
+        "timeout 1m limit rate 3/minute burst 5 packets }",
+        "accept",
+    ]
+
+
+def test_hashlimit_legacy_synonym() -> None:
+    # bare `hashlimit` is xt's legacy synonym for hashlimit-upto
+    assert _hashlimit_text(
+        Family.IP,
+        _opt("hashlimit", "3/minute", module="hashlimit"),
+        _opt("hashlimit-name", "leg", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+    ) == [
+        "meta l4proto tcp",
+        "update @hashlimit_leg { ip saddr timeout 1m "
+        "limit rate 3/minute burst 5 packets }",
+        "accept",
+    ]
+
+
+def _hl(*opts: RenderedOption, proto: str = "tcp") -> RenderedRule:
+    return _hashlimit_rule(*opts, proto=proto)
+
+
+def test_hashlimit_refuses_missing_mode() -> None:
+    with pytest.raises(FermError, match=r"needs 'hashlimit-mode'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hl(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_missing_name() -> None:
+    with pytest.raises(FermError, match=r"needs 'hashlimit-name'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hl(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_invalid_name() -> None:
+    with pytest.raises(FermError, match=r"invalid hashlimit name 'bad-x'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hl(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-name", "bad-x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_negation() -> None:
+    with pytest.raises(FermError, match=r"cannot be negated"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hl(
+                _opt(
+                    "hashlimit-upto", Negated("3/minute"), module="hashlimit"
+                ),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_port_mode_without_transport() -> None:
+    with pytest.raises(FermError, match=r"needs a tcp/udp protocol"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hashlimit_rule(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcport", module="hashlimit"),
+                proto="icmp",
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_byte_and_bad_rates() -> None:
+    for bad in ("1kb/second", "3", "5/fortnight"):
+        with pytest.raises(FermError, match=r"unsupported hashlimit rate"):
+            translate_rule(
+                Family.IP,
+                "filter",
+                _hl(
+                    _opt("hashlimit-upto", bad, module="hashlimit"),
+                    _opt("hashlimit-name", "x", module="hashlimit"),
+                    _opt("hashlimit-mode", "srcip", module="hashlimit"),
+                ),
+                chain="c",
+            )
+
+
+def test_hashlimit_refuses_unknown_mode() -> None:
+    with pytest.raises(FermError, match=r"unsupported hashlimit mode"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hl(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip,banana", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_upto_and_above_together() -> None:
+    with pytest.raises(FermError, match=r"cannot combine upto and above"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _hl(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-above", "5/minute", module="hashlimit"),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+def test_hashlimit_refuses_non_ip_family() -> None:
+    with pytest.raises(FermError, match=r"needs the ip or ip6 family"):
+        translate_rule(
+            Family.ARP,
+            "filter",
+            _hl(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            ),
+            chain="c",
+        )
+
+
+# --- dynamic set declaration collection + serialization ---
+
+
+def _dyn_rule(update: NftSetUpdate) -> NftRule:
+    return NftRule(statements=[update])
+
+
+def test_collect_dynamic_set_declarations() -> None:
+    upd = NftSetUpdate(
+        "recent_SSH",
+        "ip saddr",
+        "ipv4_addr",
+        "1m",
+        "rate over 8/minute burst 7 packets",
+    )
+    decls = _collect_set_declarations(Family.IP, {"c": [_dyn_rule(upd)]})
+    assert decls == {
+        "recent_SSH": _DynSetDecl(
+            "ipv4_addr",
+            "ip saddr",
+            "1m",
+            "rate over 8/minute burst 7 packets",
+        )
+    }
+    decl = decls["recent_SSH"]
+    assert isinstance(decl, _DynSetDecl)
+    assert decl.with_timeout
+
+
+def test_serialize_dynamic_set_flags_and_size() -> None:
+    table = NftTable(family="ip", name="ferm")
+    chains: list[NftBaseChain | NftRegularChain] = [NftRegularChain("c")]
+    upd = NftSetUpdate(
+        "recent_SSH",
+        "ip saddr",
+        "ipv4_addr",
+        "1m",
+        "rate over 8/minute burst 7 packets",
+    )
+    rules = {"c": [_dyn_rule(upd)]}
+    decls = _collect_set_declarations(Family.IP, rules)
+    out = serialize_table(table, chains, rules, decls, noflush=False)
+    assert (
+        "add set ip ferm recent_SSH { type ipv4_addr; size 65535; "
+        "flags dynamic,timeout; }\n"
+    ) in out
+
+
+def test_serialize_dynamic_set_without_timeout() -> None:
+    table = NftTable(family="ip", name="ferm")
+    chains: list[NftBaseChain | NftRegularChain] = [NftRegularChain("c")]
+    upd = NftSetUpdate(
+        "hashlimit_ps",
+        "ip saddr",
+        "ipv4_addr",
+        None,
+        "rate 5/second burst 5 packets",
+    )
+    rules = {"c": [_dyn_rule(upd)]}
+    decls = _collect_set_declarations(Family.IP, rules)
+    out = serialize_table(table, chains, rules, decls, noflush=False)
+    assert (
+        "add set ip ferm hashlimit_ps { type ipv4_addr; size 65535; "
+        "flags dynamic; }\n"
+    ) in out
+
+
+def test_dynamic_set_conflicts_with_static_set_name() -> None:
+    # A user @set literally named `recent_SSH` collides with the implicit set.
+    static = NftMatch(
+        "ip saddr @recent_SSH",
+        set_key=None,
+        setref=SetRef(name="recent_SSH", elements=["10.0.0.1"]),
+        set_selector="ip saddr",
+    )
+    upd = NftSetUpdate(
+        "recent_SSH",
+        "ip saddr",
+        "ipv4_addr",
+        "1m",
+        "rate over 8/minute burst 7 packets",
+    )
+    rules = {"c": [_dyn_rule(upd), NftRule(statements=[static])]}
+    with pytest.raises(FermError, match=r"collides with a stateful set"):
+        _collect_set_declarations(Family.IP, rules)
+
+
+def test_dynamic_set_conflicting_declarations_refused() -> None:
+    a = NftSetUpdate("recent_X", "ip saddr", "ipv4_addr", "1m", None)
+    b = NftSetUpdate("recent_X", "ip saddr", "ipv4_addr", None, None)
+    rules = {"c": [_dyn_rule(a), _dyn_rule(b)]}
+    with pytest.raises(FermError, match=r"conflicting declarations"):
+        _collect_set_declarations(Family.IP, rules)
+
+
+def test_dynamic_set_same_type_different_key_refused() -> None:
+    # hashlimit mode srcip vs dstip under one name: the nft TYPE coincides
+    # (both ipv4_addr) but the keys mean different buckets -- the conflict
+    # identity must cover the key expression, not just the declared type.
+    a = NftSetUpdate(
+        "hashlimit_S",
+        "ip saddr",
+        "ipv4_addr",
+        "1m",
+        "rate 3/minute burst 5 packets",
+    )
+    b = NftSetUpdate(
+        "hashlimit_S",
+        "ip daddr",
+        "ipv4_addr",
+        "1m",
+        "rate 3/minute burst 5 packets",
+    )
+    rules = {"c": [_dyn_rule(a), _dyn_rule(b)]}
+    with pytest.raises(FermError, match=r"conflicting declarations"):
+        _collect_set_declarations(Family.IP, rules)
+
+
+def test_dynamic_set_same_key_different_limit_refused() -> None:
+    # One name, two rates: the element's stateful expression is fixed at
+    # creation, so whichever rule fires first would silently win -- refuse.
+    a = NftSetUpdate(
+        "hashlimit_S",
+        "ip saddr",
+        "ipv4_addr",
+        "1m",
+        "rate 3/minute burst 5 packets",
+    )
+    b = NftSetUpdate(
+        "hashlimit_S",
+        "ip saddr",
+        "ipv4_addr",
+        "1m",
+        "rate 9/minute burst 5 packets",
+    )
+    rules = {"c": [_dyn_rule(a), _dyn_rule(b)]}
+    with pytest.raises(FermError, match=r"conflicting declarations"):
+        _collect_set_declarations(Family.IP, rules)

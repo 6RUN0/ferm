@@ -217,3 +217,81 @@ def test_inline_l4proto_set_orders_by_protocol_number() -> None:
     assert desired == current
     assert "{ esp, ah }" in desired
     assert "{ ah, esp }" not in desired
+
+
+def _dyn_set(
+    name: str,
+    elements: list[str],
+    *,
+    flags: tuple[str, ...] = ("dynamic,timeout",),
+) -> dict[str, ParsedTable]:
+    t = ParsedTable()
+    t.sets[name] = ParsedSet(name, elements, type_="ipv4_addr", flags=flags)
+    return {"ferm": t}
+
+
+def test_dynamic_set_runtime_elements_are_not_a_change() -> None:
+    # The kernel accrues elements in a dynamic set at runtime; the desired
+    # side declares none.  Diffing them would report a phantom MODIFY on
+    # every --plan and a delta apply would wipe the tracked state.
+    diff = diff_tables(
+        current=_dyn_set(
+            "recent_SSH",
+            ["10.0.0.1 timeout 1m expires 33s700ms"],
+        ),
+        desired=_dyn_set("recent_SSH", []),
+        noflush=False,
+    )
+    assert not diff.has_changes()
+    assert diff.set_changes == []
+
+
+def test_dynamic_set_flags_divergence_is_remove_add() -> None:
+    # Type/flags stay diff-relevant for dynamic sets: ',timeout' appearing
+    # or vanishing needs a recreate, exactly like a static-set retype.
+    diff = diff_tables(
+        current=_dyn_set("recent_SSH", [], flags=("dynamic",)),
+        desired=_dyn_set("recent_SSH", []),
+        noflush=False,
+    )
+    kinds = [c.kind for c in diff.set_changes if c.name == "recent_SSH"]
+    assert kinds == [SetChangeKind.REMOVE, SetChangeKind.ADD]
+
+
+def test_static_set_elements_still_diff_as_modify() -> None:
+    # The dynamic-set element exemption must not leak onto static sets.
+    current = _table_with_set("ssh", ["22"])
+    desired = _table_with_set("ssh", ["2222"])
+    diff = diff_tables(current=current, desired=desired, noflush=False)
+    sc = next(c for c in diff.set_changes if c.name == "ssh")
+    assert sc.kind == SetChangeKind.MODIFY
+
+
+def test_dynamic_set_kernel_list_form_converges() -> None:
+    # Verbatim `nft list ruleset` shapes pinned live (nft v1.1.6): the
+    # single-token 'dynamic,timeout' flags spelling, the '# count' comment
+    # on the size line, and a stateful-decorated runtime element must all
+    # parse -- and diff SAME against the desired declaration-only script.
+    current = parse_nft_list(
+        "table ip ferm {\n"
+        "\tset recent_SSH {\n"
+        "\t\ttype ipv4_addr\n"
+        "\t\tsize 65535\t# count 1\n"
+        "\t\tflags dynamic,timeout\n"
+        "\t\telements = { 127.0.0.1 limit rate over 4/minute burst 5"
+        " packets timeout 1m expires 59s990ms }\n"
+        "\t}\n"
+        "}\n",
+        family="ip",
+    )
+    desired = parse_nft_script(
+        "add table ip ferm\n"
+        "add set ip ferm recent_SSH"
+        " { type ipv4_addr; size 65535; flags dynamic,timeout; }\n"
+    )
+    live = current["ferm"].sets["recent_SSH"]
+    assert live.is_dynamic
+    assert live.flags == ("dynamic,timeout",)
+    assert desired["ferm"].sets["recent_SSH"].is_dynamic
+    diff = diff_tables(current=current, desired=desired, noflush=False)
+    assert not diff.has_changes()

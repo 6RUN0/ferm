@@ -149,6 +149,20 @@ domain ip table filter {
         TTL ttl-set 42;
         MARK set-xmark "0xffffffff/0xffffffff";
     }
+    chain recent-ish {
+        mod recent rcheck seconds 60 hitcount 4 name SSHV4 goto fail2ban-ssh;
+        mod recent set name SSHV4 NOP;
+    }
+    chain hashlimit-ish {
+        proto tcp mod hashlimit hashlimit-upto 3/minute hashlimit-burst 5
+            hashlimit-name hl_upto hashlimit-mode srcip
+            hashlimit-htable-expire 60000 ACCEPT;
+        proto tcp mod hashlimit hashlimit-above 10/second
+            hashlimit-name hl_conc hashlimit-mode "srcip,dstport"
+            hashlimit-srcmask 24 DROP;
+        proto udp mod hashlimit hashlimit-upto 5/second
+            hashlimit-name hl_persec hashlimit-mode dstip ACCEPT;
+    }
 }
 domain ip table nat {
     chain PREROUTING {
@@ -170,6 +184,10 @@ domain ip6 {
         mod hl hl-gt 254 ACCEPT;
         mod hl hl-lt 1 DROP;
         mod conntrack ctstate DNAT ACCEPT;
+        mod recent rcheck seconds 300 hitcount 8 name SSHV6 rdest DROP;
+        mod recent set name SSHV6 rdest NOP;
+        proto tcp mod hashlimit hashlimit-upto 3/minute hashlimit-name hl_v6
+            hashlimit-mode srcip hashlimit-srcmask 64 ACCEPT;
     }
     table mangle chain PREROUTING {
         HL hl-set 255;
@@ -249,5 +267,40 @@ def test_vocabulary_plan_converges_after_apply(
     )
     assert proc.returncode == 0, (
         f"--plan did not converge:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "No changes." in proc.stdout, proc.stdout
+
+
+def test_stateful_plan_converges_with_populated_set(
+    vocabulary_config: Path,
+) -> None:
+    # A dynamic set is empty right after apply, so a bare apply+--plan would be
+    # falsely green: it never exercises the plan.py guard that excludes a
+    # dynamic set's kernel-accrued elements from the diff.  Populate one set
+    # (an injected element stands in for a matched packet's `update @set`) and
+    # only then re-plan: the desired side still declares no elements, so
+    # convergence proves the guard, not an empty coincidence.
+    python = shlex.quote(sys.executable)
+    config = shlex.quote(str(vocabulary_config))
+    inner = (
+        f"{python} -m pyferm --nft {config} >/dev/null 2>&1; "
+        "nft add element ip ferm recent_SSHV4 "
+        "'{ 203.0.113.7 timeout 1m }' >/dev/null 2>&1; "
+        "nft add element ip ferm hashlimit_hl_upto "
+        "'{ 203.0.113.8 timeout 1m }' >/dev/null 2>&1; "
+        f"exec {python} -m pyferm --nft --plan {config}"
+    )
+    proc = subprocess.run(
+        ["unshare", "-rn", "sh", "-c", inner],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        env=_ENV,
+        cwd=REPO_ROOT,
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"--plan did not converge over a populated set:\n"
+        f"{proc.stdout}\n{proc.stderr}"
     )
     assert "No changes." in proc.stdout, proc.stdout

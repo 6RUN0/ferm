@@ -66,12 +66,26 @@ class ParsedSet:
     delta applied to a wrongly-typed live set fails the transaction.  Both
     parsers populate them; ``diff_tables`` models a type/flags divergence as
     remove+add (the elements are lawfully lost when the type changes).
+
+    A ``dynamic`` set's elements are runtime state the kernel accrues
+    (``update @set``), not configuration: the desired side declares no
+    elements while a live snapshot may carry any number, so
+    ``diff_tables`` compares dynamic sets on ``(type_, flags)`` only.
+    Diffing their elements would report a phantom MODIFY forever and a
+    delta apply would wipe the tracked state on every reconcile.
     """
 
     name: str
     elements: list[str] = field(default_factory=list[str])
     type_: str | None = None
     flags: tuple[str, ...] = ()
+
+    @property
+    def is_dynamic(self) -> bool:
+        """True when the set carries the ``dynamic`` flag."""
+        # ``nft list`` prints ``flags dynamic,timeout`` as one whitespace
+        # token, so a flags entry may hold several comma-joined flags.
+        return any("dynamic" in flag.split(",") for flag in self.flags)
 
 
 @dataclass
@@ -1548,7 +1562,13 @@ def diff_tables(
                         desired_set.elements,
                     )
                 )
-            elif current_set.elements != desired_set.elements:
+            elif (
+                not desired_set.is_dynamic
+                and current_set.elements != desired_set.elements
+            ):
+                # A dynamic set never reaches MODIFY: past the type/flags
+                # gate above both sides are dynamic, and its elements are
+                # kernel-accrued runtime state (see ParsedSet).
                 diff.set_changes.append(
                     SetChange(
                         table_name,

@@ -373,6 +373,38 @@ class NftReset(NftStatement):
 
 
 @dataclass
+class NftSetUpdate(NftStatement):
+    """
+    An ``update @<name> { <key>[ timeout <t>][ limit <rate> ] }`` statement.
+
+    Backs ``mod recent`` / ``mod hashlimit`` via an implicit dynamic set: the
+    statement both mutates the set (recording ``<key>``) and, through its
+    optional ``limit rate``, gates the rule's verdict.  It carries the
+    declaration facts (``set_type``; a ``timeout`` implies the
+    ``,timeout`` flag) so :func:`_collect_set_declarations` can raise the
+    matching :class:`_DynSetDecl` without re-parsing the key.  The brace order
+    is pinned to the kernel readback: key, then timeout, then limit.  Kept a
+    distinct subclass (like :class:`NftReset`) so the collapse/vmap passes --
+    which key off :class:`NftMatch`/:class:`NftVerdict` -- leave it untouched.
+    """
+
+    name: str
+    key_expr: str
+    set_type: str
+    timeout: str | None = None
+    limit: str | None = None
+
+    def to_text(self) -> str:
+        """Render ``update @<name> { ... }`` in pinned brace order."""
+        parts = [self.key_expr]
+        if self.timeout is not None:
+            parts.append(f"timeout {self.timeout}")
+        if self.limit is not None:
+            parts.append(f"limit {self.limit}")
+        return f"update @{self.name} {{ {' '.join(parts)} }}"
+
+
+@dataclass
 class NftRule:
     """One rule: ordered statements plus an optional comment."""
 
@@ -461,6 +493,40 @@ class _SetDecl:
     elements: list[str]
 
 
+#: The kernel injects ``size 65535`` into an implicit dynamic set; emit it
+#: explicitly so ``--plan`` converges against the readback.
+_DYN_SET_SIZE: Final[int] = 65535
+
+
+@dataclass
+class _DynSetDecl:
+    """
+    A dynamic (stateful) named-set declaration for recent/hashlimit.
+
+    Unlike :class:`_SetDecl`, it carries no config elements (the kernel
+    accrues them at runtime via ``update @set``) and always prints an explicit
+    ``size 65535``.  ``type_`` is the full nft type expression, a single
+    keyword (``ipv4_addr``) or a concatenation (``ipv4_addr . inet_service``).
+
+    Beyond ``type_``, the fields exist for the collector's conflict
+    equality, not for emission: a dynamic element's stateful expression is
+    fixed at creation and every touching rule consumes from it, so one name
+    MUST mean one element spec.  Same nft type is not enough -- ``srcip``
+    and ``dstip`` keys, or two different rates, share a type yet mean
+    different buckets.
+    """
+
+    type_: str
+    key_expr: str
+    timeout: str | None
+    limit: str | None
+
+    @property
+    def with_timeout(self) -> bool:
+        """True when the elements bear a timeout (``,timeout`` flag)."""
+        return self.timeout is not None
+
+
 def _set_type_and_elements(
     domain: Family, selector: str, setref: SetRef
 ) -> tuple[NftSetType, bool, list[str]]:
@@ -514,22 +580,41 @@ def _set_type_and_elements(
 
 def _collect_set_declarations(
     domain: Family, rules: dict[str, list[NftRule]]
-) -> dict[str, _SetDecl]:
+) -> dict[str, _SetDecl | _DynSetDecl]:
     """
     Aggregate named-set declarations over one family's rules.
 
     Keyed by name within this ``render()``: every ferm table merges into one
-    ``table <family> ferm``, so a name is family-scoped.  The selector is
-    read structurally from :attr:`NftMatch.set_selector` (never reverse-parsed
-    out of the rendered text).  A name reused with a differing selector or a
-    differing element set is a conflict (error); the same name across several
-    chains or tables of one family is one object (dedup).
+    ``table <family> ferm``, so a name is family-scoped.  Two arms feed the
+    single dict -- static sets read structurally from :attr:`NftMatch.setref`
+    (never reverse-parsed out of the rendered text) and dynamic sets from
+    :class:`NftSetUpdate` (recent/hashlimit).  A name reused with a differing
+    selector or element set, or across the static/dynamic kinds, is a conflict
+    (error); the same name across several chains or tables of one family is one
+    object (dedup).  The unified namespace is the collision guard the spec
+    requires: an implicit ``recent_<x>``/``hashlimit_<x>`` set cannot silently
+    shadow a user ``@set`` of the same name.
     """
-    decls: dict[str, _SetDecl] = {}
+    decls: dict[str, _SetDecl | _DynSetDecl] = {}
     selectors: dict[str, str] = {}
     for chain_rules in rules.values():
         for rule in chain_rules:
             for stmt in rule.statements:
+                if isinstance(stmt, NftSetUpdate):
+                    dyn = _DynSetDecl(
+                        stmt.set_type,
+                        stmt.key_expr,
+                        stmt.timeout,
+                        stmt.limit,
+                    )
+                    existing = decls.get(stmt.name)
+                    if existing is not None and existing != dyn:
+                        raise FermError(
+                            f"set '{stmt.name}' has conflicting declarations "
+                            "for the nft backend"
+                        )
+                    decls[stmt.name] = dyn
+                    continue
                 if not isinstance(stmt, NftMatch) or stmt.setref is None:
                     continue
                 setref = stmt.setref
@@ -540,12 +625,18 @@ def _collect_set_declarations(
                 type_, flags_interval, elements = _set_type_and_elements(
                     domain, selector, setref
                 )
+                prior = decls.get(name)
+                if isinstance(prior, _DynSetDecl):
+                    raise FermError(
+                        f"named set '{name}' collides with a stateful set of "
+                        "the same name for the nft backend"
+                    )
                 if name in selectors and selectors[name] != selector:
                     raise FermError(
                         f"named set '{name}' used with conflicting selectors "
                         f"'{selectors[name]}' and '{selector}'"
                     )
-                if name in decls and decls[name].elements != elements:
+                if prior is not None and prior.elements != elements:
                     raise FermError(
                         f"named set '{name}' has conflicting element sets"
                     )
@@ -558,7 +649,7 @@ def serialize_table(
     table: NftTable,
     chains: list[NftBaseChain | NftRegularChain],
     rules: dict[str, list[NftRule]],
-    decls: dict[str, _SetDecl],
+    decls: dict[str, _SetDecl | _DynSetDecl],
     *,
     noflush: bool,
 ) -> str:
@@ -577,6 +668,13 @@ def serialize_table(
         lines.append(f"flush table {prefix}\n")
     for name in sorted(decls):
         decl = decls[name]
+        if isinstance(decl, _DynSetDecl):
+            dyn_flags = "dynamic,timeout" if decl.with_timeout else "dynamic"
+            lines.append(
+                f"add set {prefix} {name} {{ type {decl.type_}; "
+                f"size {_DYN_SET_SIZE}; flags {dyn_flags}; }}\n"
+            )
+            continue
         flags = " flags interval;" if decl.flags_interval else ""
         lines.append(
             f"add set {prefix} {name} {{ type {decl.type_};{flags} }}\n"
@@ -2605,12 +2703,490 @@ def _tcpoptstrip_resets(
     ]
 
 
+# ---------------------------------------------------------------------------
+# Stateful vocabulary: mod recent / mod hashlimit via implicit dynamic sets
+# ---------------------------------------------------------------------------
+
+#: nft time unit spans in milliseconds, largest first, for canonicalising a
+#: ``timeout``/rate period.  ``nft list`` prints the full decomposition with
+#: zero components dropped (``90s`` -> ``1m30s``, ``500ms`` -> ``500ms``).
+_TIME_UNITS_MS: Final[tuple[tuple[str, int], ...]] = (
+    ("d", 86_400_000),
+    ("h", 3_600_000),
+    ("m", 60_000),
+    ("s", 1_000),
+    ("ms", 1),
+)
+#: rate unit spans in seconds, smallest first: the reducer picks the smallest
+#: unit that renders ``T*H/S`` as an integer count, matching the readback
+#: (``8/60s`` -> ``8/minute``, ``16/300s`` -> ``192/hour``).
+_RATE_UNITS: Final[tuple[tuple[str, int], ...]] = (
+    ("second", 1),
+    ("minute", 60),
+    ("hour", 3_600),
+    ("day", 86_400),
+)
+#: xt rate-unit spelling (with abbreviations) -> nft rate unit.
+_HASHLIMIT_UNIT: Final[dict[str, str]] = {
+    "sec": "second",
+    "second": "second",
+    "min": "minute",
+    "minute": "minute",
+    "hour": "hour",
+    "day": "day",
+}
+#: rate unit -> the period nft prints as the element ``timeout`` when a
+#: hashlimit rule gives no explicit htable-expire (``/second`` stays
+#: timeout-less: a bare ``flags dynamic`` element is legal, pinned live).
+_HASHLIMIT_PERIOD_TIMEOUT: Final[dict[str, str]] = {
+    "minute": "1m",
+    "hour": "1h",
+    "day": "1d",
+}
+#: hashlimit-mode token -> canonical emission order rank.  The readback keeps
+#: our emission order verbatim, so a fixed rank makes concatenated keys stable.
+_HASHLIMIT_MODE_ORDER: Final[tuple[str, ...]] = (
+    "srcip",
+    "dstip",
+    "srcport",
+    "dstport",
+)
+
+
+def _nft_time_canon(milliseconds: int) -> str:
+    """
+    Render *milliseconds* as nft's canonical time literal.
+
+    Full d/h/m/s/ms decomposition, largest unit first, zero components
+    dropped: ``60000`` -> ``1m``, ``90000`` -> ``1m30s``, ``500`` -> ``500ms``.
+    """
+    if milliseconds <= 0:
+        raise FermError(
+            "stateful timeout must be positive for the nft backend"
+        )
+    parts: list[str] = []
+    remainder = milliseconds
+    for unit, span in _TIME_UNITS_MS:
+        whole, remainder = divmod(remainder, span)
+        if whole:
+            parts.append(f"{whole}{unit}")
+    return "".join(parts)
+
+
+def _reduce_rate(numerator: int, seconds: int) -> tuple[int, str]:
+    """
+    Express ``numerator/seconds`` packets-per-second as ``N/<unit>``.
+
+    Picks the smallest nft rate unit that yields an integer ``N >= 1``; an
+    average rate that no unit renders whole (``несводимое T*H/S``) refuses.
+    """
+    for unit, span in _RATE_UNITS:
+        product = numerator * span
+        if product % seconds == 0 and product // seconds >= 1:
+            return product // seconds, unit
+    raise FermError(
+        f"average rate {numerator}/{seconds}s has no integer nft rate unit "
+        "for the nft backend"
+    )
+
+
+@dataclass(frozen=True)
+class _RecentFacts:
+    """Per-rule mod recent facts, structurally parsed once (fail-closed)."""
+
+    name: str
+    is_check: bool
+    seconds: str | None
+    hitcount: str | None
+    direction: str
+    has_verdict: bool
+
+
+@dataclass(frozen=True)
+class _RecentSpec:
+    """Per-name aggregate: the uniform element spec every rule of it emits."""
+
+    direction: str
+    timeout: str
+    limit: str | None
+
+
+def _recent_scalar(opts: dict[str, RenderedOption], key: str) -> str | None:
+    """Return a numeric recent option's scalar, or None when absent."""
+    option = opts.get(key)
+    if option is None:
+        return None
+    scalar, _ = unwrap_value(option.value)
+    if not scalar.isdigit():
+        raise FermError(f"invalid recent {key} '{scalar}' for the nft backend")
+    return scalar
+
+
+def _recent_facts(domain: Family, rule: RenderedRule) -> _RecentFacts | None:
+    """
+    Parse a rule's ``mod recent`` options into structured facts, or None.
+
+    Refuses per-rule: a non-ip/ip6 family; a negated option; the unsupported
+    ``remove``/``rttl``/``reap``/``mask`` verbs; a missing or multiple
+    set/rcheck/update verb; a missing/invalid name; a hitcount without seconds;
+    and a check verb lacking the seconds+hitcount the token-bucket needs.
+    """
+    recent_opts = [o for o in rule.options if o.module == "recent"]
+    if not recent_opts:
+        return None
+    if domain not in (Family.IP, Family.IP6):
+        raise FermError("mod recent needs the ip or ip6 family for nft")
+    opts: dict[str, RenderedOption] = {}
+    for option in recent_opts:
+        if isinstance(option.value, (Negated, PreNegated)):
+            raise FermError(
+                f"mod recent '{option.name}' cannot be negated for the nft "
+                "backend"
+            )
+        opts[option.name] = option
+    for unsupported in ("remove", "rttl", "reap", "mask"):
+        if unsupported in opts:
+            raise FermError(
+                f"mod recent '{unsupported}' is not supported by the nft "
+                "backend"
+            )
+    verbs = [verb for verb in ("set", "rcheck", "update") if verb in opts]
+    if len(verbs) != 1:
+        raise FermError(
+            "mod recent needs exactly one of set/rcheck/update for the nft "
+            "backend"
+        )
+    is_check = verbs[0] in ("rcheck", "update")
+    name_option = opts.get("name")
+    if name_option is None:
+        raise FermError("mod recent needs a 'name' for the nft backend")
+    raw_name, _ = unwrap_value(name_option.value)
+    try:
+        _validate_set_name(f"recent_{raw_name}")
+    except FermError:
+        raise FermError(
+            f"invalid recent name '{raw_name}' for the nft backend"
+        ) from None
+    if "rsource" in opts and "rdest" in opts:
+        raise FermError(
+            "mod recent cannot combine rsource and rdest for the nft backend"
+        )
+    direction = "daddr" if "rdest" in opts else "saddr"
+    seconds = _recent_scalar(opts, "seconds")
+    hitcount = _recent_scalar(opts, "hitcount")
+    if hitcount is not None and seconds is None:
+        raise FermError(
+            "mod recent 'hitcount' needs 'seconds' for the nft backend"
+        )
+    if is_check and (seconds is None or hitcount is None):
+        raise FermError(
+            "mod recent rcheck/update needs 'seconds' and 'hitcount' for the "
+            "nft backend"
+        )
+    has_verdict = any(o.kind is OptionKind.TARGET for o in rule.options)
+    return _RecentFacts(
+        raw_name, is_check, seconds, hitcount, direction, has_verdict
+    )
+
+
+def _build_recent_specs(
+    domain: Family, rules: Iterable[RenderedRule]
+) -> dict[str, _RecentSpec]:
+    """
+    Aggregate every mod recent rule of one family into per-name specs.
+
+    A dynamic set's stateful (limit) expression is fixed when the element is
+    created and every add/update touching it consumes a token, so all rules of
+    a name MUST emit the identical element spec.  ``T`` counts the name's
+    update-emitting rules; ``R = T*H/S`` (integer-reduced) and ``B = T*H - 1``
+    are calibrated against real xt_recent (2026-07-10 live pin).  Refuses a
+    name with conflicting seconds/direction/hitcount, a name with no seconds
+    anywhere, or a bare ``set`` carrying a real verdict when the name also has
+    check rules (the verdict would fire only on overflow, unlike xt).
+    """
+    facts_by_name: dict[str, list[_RecentFacts]] = {}
+    for rule in rules:
+        facts = _recent_facts(domain, rule)
+        if facts is not None:
+            facts_by_name.setdefault(facts.name, []).append(facts)
+    specs: dict[str, _RecentSpec] = {}
+    for name, facts_list in facts_by_name.items():
+        seconds_values = {
+            f.seconds for f in facts_list if f.seconds is not None
+        }
+        if len(seconds_values) > 1:
+            raise FermError(
+                f"mod recent '{name}' has conflicting seconds for the nft "
+                "backend"
+            )
+        if not seconds_values:
+            raise FermError(
+                f"mod recent '{name}' has no seconds anywhere; the window is "
+                "undefined for the nft backend"
+            )
+        directions = {f.direction for f in facts_list}
+        if len(directions) > 1:
+            raise FermError(
+                f"mod recent '{name}' mixes rsource and rdest for the nft "
+                "backend"
+            )
+        hitcounts = {f.hitcount for f in facts_list if f.hitcount is not None}
+        if len(hitcounts) > 1:
+            raise FermError(
+                f"mod recent '{name}' has conflicting hitcounts for the nft "
+                "backend"
+            )
+        has_check = any(f.is_check for f in facts_list)
+        if has_check and any(
+            not f.is_check and f.has_verdict for f in facts_list
+        ):
+            raise FermError(
+                f"mod recent '{name}' set rule carries a verdict but the name "
+                "has check rules for the nft backend"
+            )
+        seconds = int(next(iter(seconds_values)))
+        timeout = _nft_time_canon(seconds * 1000)
+        limit: str | None = None
+        if has_check:
+            hits = int(next(iter(hitcounts)))
+            numerator = len(facts_list) * hits
+            rate, unit = _reduce_rate(numerator, seconds)
+            limit = f"rate over {rate}/{unit} burst {numerator - 1} packets"
+        specs[name] = _RecentSpec(next(iter(directions)), timeout, limit)
+    return specs
+
+
+def _recent_update(
+    domain: Family,
+    rule: RenderedRule,
+    recent_specs: dict[str, _RecentSpec] | None,
+) -> NftSetUpdate:
+    """Emit one rule's ``update @recent_<name> { ... }`` from its spec."""
+    facts = _recent_facts(domain, rule)
+    if facts is None:
+        raise internal_error()  # caller gates on a recent option present
+    if recent_specs is None or facts.name not in recent_specs:
+        # The per-name spec is a whole-family pre-pass; a caller reaching
+        # translate_rule for a recent rule without it is a wiring bug.
+        raise internal_error(
+            "recent rule reached translate_rule without its pre-pass spec"
+        )
+    spec = recent_specs[facts.name]
+    set_type = "ipv4_addr" if domain == Family.IP else "ipv6_addr"
+    return NftSetUpdate(
+        f"recent_{facts.name}",
+        f"{domain} {spec.direction}",
+        set_type,
+        spec.timeout,
+        spec.limit,
+    )
+
+
+def _prefix_length_mask(domain: Family, length: str) -> str:
+    """Render a hashlimit prefix length as the nft address mask literal."""
+    if not length.isdigit():
+        raise FermError(
+            f"invalid hashlimit mask '{length}' for the nft backend"
+        )
+    bits = int(length)
+    if domain == Family.IP:
+        if bits > 32:  # noqa: PLR2004 - IPv4 prefix ceiling
+            raise FermError(f"hashlimit mask '{length}' exceeds /32 for nft")
+        return str(ipaddress.IPv4Network(f"0.0.0.0/{bits}").netmask)
+    if bits > 128:  # noqa: PLR2004 - IPv6 prefix ceiling
+        raise FermError(f"hashlimit mask '{length}' exceeds /128 for nft")
+    return str(ipaddress.IPv6Network(f"::/{bits}").netmask)
+
+
+def _hashlimit_rate(scalar: str) -> tuple[str, str]:
+    """
+    Parse an xt hashlimit rate ``N/unit`` into ``(N, nft-unit)``.
+
+    Byte rates (``1kb/s`` and kin) leave ``N`` non-numeric and refuse, as do
+    fractional counts and unknown units -- packet rates over time only.
+    """
+    number, _, unit = scalar.partition("/")
+    if not number.isdigit() or int(number) < 1:
+        raise FermError(
+            f"unsupported hashlimit rate '{scalar}' for the nft backend"
+        )
+    nft_unit = _HASHLIMIT_UNIT.get(unit)
+    if nft_unit is None:
+        raise FermError(
+            f"unsupported hashlimit rate unit in '{scalar}' for the nft "
+            "backend"
+        )
+    return str(int(number)), nft_unit
+
+
+def _hashlimit_key(
+    domain: Family,
+    mode_scalar: str,
+    opts: dict[str, RenderedOption],
+    protocol: str | None,
+) -> tuple[str, str]:
+    """
+    Build the concatenated hashlimit key and its nft set type from the mode.
+
+    Modes emit in the canonical order srcip, dstip, srcport, dstport;
+    src/dstmask narrow the address key with an ``& <mask>``; a port mode
+    without a tcp/udp protocol refuses.
+    """
+    tokens = mode_scalar.split(",")
+    unknown = [t for t in tokens if t not in _HASHLIMIT_MODE_ORDER]
+    if unknown:
+        raise FermError(
+            f"unsupported hashlimit mode '{mode_scalar}' for the nft backend"
+        )
+    addr_type = "ipv4_addr" if domain == Family.IP else "ipv6_addr"
+    keys: list[str] = []
+    types: list[str] = []
+    for token in _HASHLIMIT_MODE_ORDER:
+        if token not in tokens:
+            continue
+        if token in ("srcip", "dstip"):
+            side = "saddr" if token == "srcip" else "daddr"
+            mask = opts.get(
+                "hashlimit-srcmask"
+                if token == "srcip"
+                else "hashlimit-dstmask"
+            )
+            key = f"{domain} {side}"
+            if mask is not None:
+                length, _ = unwrap_value(mask.value)
+                key += f" & {_prefix_length_mask(domain, length)}"
+            keys.append(key)
+            types.append(addr_type)
+        else:
+            if protocol not in PORT_PROTOCOLS:
+                raise FermError(
+                    f"hashlimit mode '{token}' needs a tcp/udp protocol for "
+                    "the nft backend"
+                )
+            port = "sport" if token == "srcport" else "dport"
+            keys.append(f"{protocol} {port}")
+            types.append("inet_service")
+    return " . ".join(keys), " . ".join(types)
+
+
+def _hashlimit_timeout(
+    opts: dict[str, RenderedOption], unit: str
+) -> str | None:
+    """
+    Resolve the element timeout for a hashlimit rule.
+
+    htable-expire (milliseconds) wins; otherwise the rate period stands in
+    (``/minute`` -> ``1m``), and a bare ``/second`` rate carries no timeout
+    (a timeout-less element under ``flags dynamic`` is legal, pinned live).
+    """
+    expire = opts.get("hashlimit-htable-expire")
+    if expire is not None:
+        milliseconds, _ = unwrap_value(expire.value)
+        if not milliseconds.isdigit():
+            raise FermError(
+                f"invalid hashlimit htable-expire '{milliseconds}' for the "
+                "nft backend"
+            )
+        return _nft_time_canon(int(milliseconds))
+    return _HASHLIMIT_PERIOD_TIMEOUT.get(unit)
+
+
+def _hashlimit_update(
+    domain: Family, rule: RenderedRule, protocol: str | None
+) -> NftSetUpdate:
+    """
+    Emit one rule's ``update @hashlimit_<name> { ... }`` statement.
+
+    Self-contained per rule (every parameter lives on the rule); the cross-rule
+    "one name, one shape" invariant is the declaration-conflict guard in
+    :func:`_collect_set_declarations`.  ``upto`` gives the conform rate,
+    ``above`` the ``over`` rate; hashlimit takes no ``T`` compensation (xt
+    taxes its shared htable identically).
+    """
+    opts = {o.name: o for o in rule.options if o.module == "hashlimit"}
+    if domain not in (Family.IP, Family.IP6):
+        raise FermError("mod hashlimit needs the ip or ip6 family for nft")
+    for option in opts.values():
+        if isinstance(option.value, (Negated, PreNegated)):
+            raise FermError(
+                f"mod hashlimit '{option.name}' cannot be negated for the nft "
+                "backend"
+            )
+    name_option = opts.get("hashlimit-name")
+    if name_option is None:
+        raise FermError(
+            "mod hashlimit needs 'hashlimit-name' for the nft backend"
+        )
+    raw_name, _ = unwrap_value(name_option.value)
+    try:
+        _validate_set_name(f"hashlimit_{raw_name}")
+    except FermError:
+        raise FermError(
+            f"invalid hashlimit name '{raw_name}' for the nft backend"
+        ) from None
+    # `hashlimit` is xt's legacy synonym for `hashlimit-upto`.
+    upto = opts.get("hashlimit-upto") or opts.get("hashlimit")
+    above = opts.get("hashlimit-above")
+    if upto is not None and above is not None:
+        raise FermError(
+            "mod hashlimit cannot combine upto and above for the nft backend"
+        )
+    rate_option = upto if upto is not None else above
+    if rate_option is None:
+        raise FermError(
+            "mod hashlimit needs an upto/above rate for the nft backend"
+        )
+    rate_scalar, _ = unwrap_value(rate_option.value)
+    rate, unit = _hashlimit_rate(rate_scalar)
+    burst = "5"
+    burst_option = opts.get("hashlimit-burst")
+    if burst_option is not None:
+        burst, _ = unwrap_value(burst_option.value)
+        if not _NFT_BURST_RE.match(burst):
+            raise FermError(
+                f"invalid hashlimit burst '{burst}' for the nft backend"
+            )
+    prefix = "rate over" if above is not None else "rate"
+    limit = f"{prefix} {rate}/{unit} burst {burst} packets"
+    mode_option = opts.get("hashlimit-mode")
+    if mode_option is None:
+        raise FermError(
+            "mod hashlimit needs 'hashlimit-mode' for the nft backend"
+        )
+    mode_scalar, _ = unwrap_value(mode_option.value)
+    key_expr, set_type = _hashlimit_key(domain, mode_scalar, opts, protocol)
+    timeout = _hashlimit_timeout(opts, unit)
+    return NftSetUpdate(
+        f"hashlimit_{raw_name}", key_expr, set_type, timeout, limit
+    )
+
+
+def _hashlimit_key_implies_l4proto(options: Iterable[RenderedOption]) -> bool:
+    """
+    Report whether a hashlimit port mode puts a proto selector in the key.
+
+    A ``srcport``/``dstport`` mode emits ``<proto> sport|dport`` inside the
+    dynamic-set key, which -- like an explicit port match -- makes the kernel
+    drop the ``meta l4proto`` prefix on readback; emitting it anyway would
+    leave ``--plan`` diffing forever.
+    """
+    for option in options:
+        if option.module == "hashlimit" and option.name == "hashlimit-mode":
+            scalar, _ = unwrap_value(option.value)
+            if any(
+                token in ("srcport", "dstport") for token in scalar.split(",")
+            ):
+                return True
+    return False
+
+
 def translate_rule(
     domain: Family,
     table: str,
     rule: RenderedRule,
     *,
     chain: str | None = None,
+    recent_specs: dict[str, _RecentSpec] | None = None,
 ) -> NftRule:
     """
     Translate one RenderedRule to an NftRule (two-pass).
@@ -2645,7 +3221,7 @@ def translate_rule(
     # TCPMSS verdict does not join this set.)
     has_implied_l4proto = any(
         o.name in ("icmp-type", "tcp-flags", "syn") for o in rule.options
-    )
+    ) or _hashlimit_key_implies_l4proto(rule.options)
     # `--limit-burst` is a companion of the SAME xt_limit match, folded
     # into the limit statement below (the kernel readback always prints
     # an explicit burst, so the pair must emit as one statement).
@@ -2730,6 +3306,8 @@ def translate_rule(
     target_value: str | None = None
     companions: dict[str, RenderedOption] = {}
     statistic_emitted = False
+    recent_emitted = False
+    hashlimit_emitted = False
 
     for option in rule.options:
         name, kind = option.name, option.kind
@@ -2768,6 +3346,18 @@ def translate_rule(
             if not statistic_emitted:
                 matches.append(NftMatch(_statistic_match(statistic_opts)))
                 statistic_emitted = True
+            continue
+        if option.module == "recent":
+            # One dynamic-set update per rule, at the first recent option so
+            # it keeps source order; the limit spec comes from the pre-pass.
+            if not recent_emitted:
+                matches.append(_recent_update(domain, rule, recent_specs))
+                recent_emitted = True
+            continue
+        if option.module == "hashlimit":
+            if not hashlimit_emitted:
+                matches.append(_hashlimit_update(domain, rule, protocol))
+                hashlimit_emitted = True
             continue
         if isinstance(option.value, SetRef):
             setref = option.value
@@ -3067,6 +3657,19 @@ class NftBackend(Backend):
         table = NftTable(family=domain.nft_name, name=NFT_TABLE_NAME)
         chains: list[NftBaseChain | NftRegularChain] = []
         rules: dict[str, list[NftRule]] = {}
+        # mod recent's per-name element spec (timeout + calibrated rate) needs
+        # facts spread across several rules of the family (the window lives on
+        # the check rule, the bare `set` is target-less), so it is aggregated
+        # in a whole-family pre-pass before any rule is translated.
+        recent_specs = _build_recent_specs(
+            domain,
+            (
+                rule
+                for table_info in domain_info.tables.values()
+                for chain_rules in table_info.chains.values()
+                for rule in chain_rules.rules
+            ),
+        )
         for tbl in sorted(domain_info.tables):
             table_info = domain_info.tables[tbl]
             if table_info.preserve_regexes:
@@ -3081,7 +3684,13 @@ class NftBackend(Backend):
                     )
                 rules[nft_name] = _collapse_chain_rules(
                     [
-                        translate_rule(domain, tbl, rule, chain=original)
+                        translate_rule(
+                            domain,
+                            tbl,
+                            rule,
+                            chain=original,
+                            recent_specs=recent_specs,
+                        )
                         for rule in table_info.chains[original].rules
                         if not _references_empty_named_set(rule)
                     ]

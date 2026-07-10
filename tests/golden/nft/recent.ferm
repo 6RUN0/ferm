@@ -1,0 +1,11 @@
+# mod recent via an implicit dynamic set: a check rule (rcheck seconds 60
+# hitcount 4) and a bare set rule share one name, so both emit the identical
+# calibrated element spec (T=2 -> rate over 8/minute burst 7).  The set rule
+# carries no verdict (NOP); goto routes an over-limit hit to a guard chain.
+table filter {
+    chain INPUT {
+        mod recent rcheck seconds 60 hitcount 4 name SSH goto guard;
+        mod recent set name SSH NOP;
+    }
+    chain guard DROP;
+}

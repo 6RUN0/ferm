@@ -111,6 +111,47 @@ For the history of the original Perl implementation, see
   outside `[0, 1]`, `nth` without `every` or with `packet ≥ every`, a
   pkttype outside unicast/broadcast/multicast, a TCPOPTSTRIP without a
   tcp match or naming an option outside the map and not a byte number).
+- **nft backend vocabulary, fifth batch (stateful): `mod recent` and
+  `mod hashlimit`.** Both translate to an implicit named dynamic set
+  (`add set ... { type ...; size 65535; flags dynamic[,timeout]; }`)
+  and an `update @<set> { <key>[ timeout <t>][ limit rate [over] R burst
+  B packets] }` statement that both records the key and gates the rule's
+  verdict. `mod recent set`/`rcheck`/`update` map to one set named
+  `recent_<name>` (rsource → `saddr`, rdest → `daddr`); every rule of a
+  name emits the identical calibrated element spec, so `R = T·H/S`
+  (integer-reduced to an nft rate unit), `B = T·H − 1`, with `T` the
+  number of update-rules touching the name (`hitcount 4 seconds 60`
+  across a check rule and a bare `set` gives `rate over 8/minute burst
+  7`). `mod hashlimit` maps to `hashlimit_<name>`: `hashlimit-upto` is
+  the conform rate and `hashlimit-above` the `over` rate (burst explicit,
+  default 5); `hashlimit-mode` builds the key (`srcip`/`dstip` →
+  `ip[6] saddr`/`daddr`, `srcport`/`dstport` → `<proto> sport`/`dport`,
+  concatenated in a fixed order with a matching concatenated set type),
+  `hashlimit-srcmask`/`dstmask` narrow an address key with `& <mask>`,
+  and the element timeout comes from `hashlimit-htable-expire` (or the
+  rate period, with a bare `/second` rate carrying no timeout). Emission
+  matches the kernel readback byte for byte (time canon `90s` → `1m30s`;
+  `flags dynamic,timeout` with no space), and the `plan.py` differ now
+  excludes a dynamic set's kernel-accrued elements from the diff so
+  `--plan` converges and a delta apply never wipes the tracked state.
+  Refusals are fail-closed (recent `remove`/`rttl`/`reap`/`mask`, any
+  negation, a name with conflicting seconds/direction/hitcount or no
+  seconds anywhere, a `set` with a real verdict when the name has check
+  rules, an irreducible rate; hashlimit without a mode, a port mode with
+  no tcp/udp protocol, byte or fractional rates, an invalid identifier,
+  and a name reused with a conflicting shape or colliding with a user
+  `@set`). Two more corpus configs now translate under `--nft`
+  (`ferm-tools-example` via hashlimit, `chain-maze` via recent).
+
+  Sanctioned semantic deviations from xt (documented for parity
+  reasoning): xt_recent's sliding window becomes an nft token bucket —
+  an average-rate approximation whose stateful expression is fixed when
+  the element is created, so every update-rule of a name must emit the
+  identical spec; xt `rcheck` is read-only but the nft update form
+  refreshes the element's timestamp and taxes a token; and an element
+  expires `S` seconds after its last touch. The calibration is pinned
+  against real xt_recent (first drop within the `[H−1, H+1]` jitter
+  window; opt-in `nox -s recent_calibration_e2e`).
 
 ### Fixed
 
