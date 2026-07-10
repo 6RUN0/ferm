@@ -173,6 +173,106 @@ def _set_type_and_elements(
     return type_, flags_interval, sort_set_elements(elements)
 
 
+def _merge_dynamic_decl(
+    decls: dict[str, _SetDecl | _DynSetDecl], stmt: NftSetUpdate
+) -> None:
+    """
+    Merge one :class:`NftSetUpdate` sighting into ``decls``.
+
+    Dynamic-set arm of :func:`_collect_set_declarations`: see that
+    docstring for the collision-namespace rationale.
+    """
+    if stmt.name == _CONNLIMIT_SENTINEL:
+        # The connlimit post-pass runs in render() before the
+        # collapse pass and MUST have renamed every sentinel;
+        # one surviving here is a wiring bug, not config error.
+        raise internal_error(
+            "connlimit set reached declaration collection "
+            "with an unfinalized name"
+        )
+    dyn = _DynSetDecl(
+        stmt.set_type,
+        stmt.key_expr,
+        stmt.timeout,
+        stmt.limit,
+        owned=stmt.owned,
+    )
+    existing = decls.get(stmt.name)
+    if stmt.owned:
+        if existing is not None and existing != dyn:
+            raise _conflicting_set(stmt.name)
+        decls[stmt.name] = dyn
+        return
+    # A user @set mutated by the SET target: several rules
+    # (differing keys or timeouts) legally share one set, so
+    # the identity is the nft type alone and the timeout
+    # flag ORs across uses.  A prior static declaration can
+    # only be the elementless match-set arm of the same set
+    # (a SET-targeted set with config elements refuses at
+    # translate time) -- upgrade it to the dynamic form.
+    if existing is None:
+        decls[stmt.name] = dyn
+        return
+    if isinstance(existing, _SetDecl):
+        # A port-selector use (`dport $x`) would need an
+        # inet_service set the addr-keyed SET target cannot
+        # share -- conflict, never a silent overwrite.
+        if existing.type_ != dyn.type_:
+            raise _conflicting_set(stmt.name)
+        decls[stmt.name] = dyn
+        return
+    if existing.owned or existing.type_ != dyn.type_:
+        raise _conflicting_set(stmt.name)
+    if existing.timeout is None:
+        existing.timeout = dyn.timeout
+
+
+def _merge_static_decl(
+    decls: dict[str, _SetDecl | _DynSetDecl],
+    selectors: dict[str, str],
+    domain: Family,
+    stmt: NftMatch,
+) -> None:
+    """
+    Merge one :class:`NftMatch` setref sighting into ``decls``.
+
+    Static-set arm of :func:`_collect_set_declarations`; the caller has
+    already confirmed ``stmt.setref is not None``.
+    """
+    setref = stmt.setref
+    if setref is None:
+        raise internal_error()  # structural; caller narrows this
+    name = _validate_set_name(setref.name)
+    if stmt.set_selector is None:
+        raise internal_error()  # structural; -O would void assert
+    selector = stmt.set_selector
+    type_, flags_interval, elements = _set_type_and_elements(
+        domain, selector, setref
+    )
+    prior = decls.get(name)
+    if isinstance(prior, _DynSetDecl):
+        if prior.owned or prior.type_ != type_:
+            raise FermError(
+                f"named set '{name}' collides with a stateful "
+                "set of the same name for the nft backend"
+            )
+        # A lookup on a SET-target set (the ban-list pattern):
+        # the dynamic declaration stands, and the selectors
+        # guard below is skipped -- matching saddr while adding
+        # daddr (or vice versa) into one addr-typed set is
+        # legal nft, unlike two static element interpretations.
+        return
+    if name in selectors and selectors[name] != selector:
+        raise FermError(
+            f"named set '{name}' used with conflicting selectors "
+            f"'{selectors[name]}' and '{selector}'"
+        )
+    if prior is not None and prior.elements != elements:
+        raise FermError(f"named set '{name}' has conflicting element sets")
+    selectors[name] = selector
+    decls[name] = _SetDecl(type_, flags_interval, elements)
+
+
 def _collect_set_declarations(
     domain: Family, rules: dict[str, list[NftRule]]
 ) -> dict[str, _SetDecl | _DynSetDecl]:
@@ -196,84 +296,9 @@ def _collect_set_declarations(
         for rule in chain_rules:
             for stmt in rule.statements:
                 if isinstance(stmt, NftSetUpdate):
-                    if stmt.name == _CONNLIMIT_SENTINEL:
-                        # The connlimit post-pass runs in render() before the
-                        # collapse pass and MUST have renamed every sentinel;
-                        # one surviving here is a wiring bug, not config error.
-                        raise internal_error(
-                            "connlimit set reached declaration collection "
-                            "with an unfinalized name"
-                        )
-                    dyn = _DynSetDecl(
-                        stmt.set_type,
-                        stmt.key_expr,
-                        stmt.timeout,
-                        stmt.limit,
-                        owned=stmt.owned,
-                    )
-                    existing = decls.get(stmt.name)
-                    if stmt.owned:
-                        if existing is not None and existing != dyn:
-                            raise _conflicting_set(stmt.name)
-                        decls[stmt.name] = dyn
-                        continue
-                    # A user @set mutated by the SET target: several rules
-                    # (differing keys or timeouts) legally share one set, so
-                    # the identity is the nft type alone and the timeout
-                    # flag ORs across uses.  A prior static declaration can
-                    # only be the elementless match-set arm of the same set
-                    # (a SET-targeted set with config elements refuses at
-                    # translate time) -- upgrade it to the dynamic form.
-                    if existing is None:
-                        decls[stmt.name] = dyn
-                        continue
-                    if isinstance(existing, _SetDecl):
-                        # A port-selector use (`dport $x`) would need an
-                        # inet_service set the addr-keyed SET target cannot
-                        # share -- conflict, never a silent overwrite.
-                        if existing.type_ != dyn.type_:
-                            raise _conflicting_set(stmt.name)
-                        decls[stmt.name] = dyn
-                        continue
-                    if existing.owned or existing.type_ != dyn.type_:
-                        raise _conflicting_set(stmt.name)
-                    if existing.timeout is None:
-                        existing.timeout = dyn.timeout
-                    continue
-                if not isinstance(stmt, NftMatch) or stmt.setref is None:
-                    continue
-                setref = stmt.setref
-                name = _validate_set_name(setref.name)
-                if stmt.set_selector is None:
-                    raise internal_error()  # structural; -O would void assert
-                selector = stmt.set_selector
-                type_, flags_interval, elements = _set_type_and_elements(
-                    domain, selector, setref
-                )
-                prior = decls.get(name)
-                if isinstance(prior, _DynSetDecl):
-                    if prior.owned or prior.type_ != type_:
-                        raise FermError(
-                            f"named set '{name}' collides with a stateful "
-                            "set of the same name for the nft backend"
-                        )
-                    # A lookup on a SET-target set (the ban-list pattern):
-                    # the dynamic declaration stands, and the selectors
-                    # guard below is skipped -- matching saddr while adding
-                    # daddr (or vice versa) into one addr-typed set is
-                    # legal nft, unlike two static element interpretations.
-                    continue
-                if name in selectors and selectors[name] != selector:
-                    raise FermError(
-                        f"named set '{name}' used with conflicting selectors "
-                        f"'{selectors[name]}' and '{selector}'"
-                    )
-                if prior is not None and prior.elements != elements:
-                    raise FermError(
-                        f"named set '{name}' has conflicting element sets"
-                    )
-                selectors[name] = selector
-                decls[name] = _SetDecl(type_, flags_interval, elements)
+                    _merge_dynamic_decl(decls, stmt)
+                elif isinstance(stmt, NftMatch) and stmt.setref is not None:
+                    _merge_static_decl(decls, selectors, domain, stmt)
     return decls
 
 

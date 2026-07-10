@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import enum
 import os
 import re
 import subprocess  # live-only: run rules / hooks / *-save / *-restore
@@ -49,7 +48,7 @@ from .backend.iptables import (
 )
 from .backend.nft import TOOL_NFT, NftBackend
 from .config import Options, PlanFormat
-from .errors import FermError, internal_error
+from .errors import ExitCode, FermError, internal_error
 from .functions import Evaluator, splitpath_dir, splitpath_file
 from .graph import collect_graph, render_d2, render_dot
 from .introspect import describe, list_modules
@@ -87,20 +86,6 @@ if TYPE_CHECKING:
     )
     from .domains import DomainInfo, Family
     from .tree import Block
-
-
-class ExitCode(enum.IntEnum):
-    """
-    Process exit status: the ferm/plan contract.
-
-    ``0`` on success/no changes, ``2`` when ``--plan``/``--lint`` finds
-    pending changes, ``1`` on a ferm error -- never a bare literal past
-    this module boundary.
-    """
-
-    OK = 0
-    ERROR = 1
-    CHANGES = 2
 
 
 #: A clean run leaves exactly two scope frames on the stack: the global

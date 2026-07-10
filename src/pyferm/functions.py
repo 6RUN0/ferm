@@ -788,11 +788,7 @@ class Evaluator:
         value = self.getvalues(allow_negation=True)
         negated = False
         ips: list[Value]
-        if isinstance(value, list):
-            ips = realize_deferred(family, *value)
-        elif isinstance(value, Deferred):
-            ips = realize_deferred(family, value)
-        elif isinstance(value, Negated):
+        if isinstance(value, Negated):
             ips = realize_deferred(family, value.value)
             negated = True
         elif isinstance(value, SetRef):
@@ -800,10 +796,8 @@ class Evaluator:
             if rule.domain_both:
                 filtered = ipfilter(family, filtered)
             return SetRef(value.name, filtered)
-        elif _is_ref(value):
-            raise internal_error()
         else:
-            ips = [value]
+            ips = realize_deferred(family, *to_array(value))
         if rule.domain_both:
             ips = ipfilter(family, ips)
         if negated and ips:

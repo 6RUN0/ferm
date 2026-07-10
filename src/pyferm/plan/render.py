@@ -108,14 +108,14 @@ def render_structured(plan: Plan) -> str:
             )
         )
         for sc in sorted(diff.set_changes, key=lambda s: (s.table, s.name)):
-            if sc.kind == SetChangeKind.ADD:
-                elems = ", ".join(sc.elements)
-                lines.append(f"  + set {sc.table}/{sc.name} {{ {elems} }}")
-            elif sc.kind == SetChangeKind.REMOVE:
+            if sc.kind == SetChangeKind.REMOVE:
                 lines.append(f"  - set {sc.table}/{sc.name}")
             else:
+                sign = "+" if sc.kind == SetChangeKind.ADD else "~"
                 elems = ", ".join(sc.elements)
-                lines.append(f"  ~ set {sc.table}/{sc.name} {{ {elems} }}")
+                lines.append(
+                    f"  {sign} set {sc.table}/{sc.name} {{ {elems} }}"
+                )
         lines.append(f"  {summary_line(diff)}")
 
     return "\n".join(lines) + "\n"

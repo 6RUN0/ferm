@@ -16,12 +16,27 @@ this module a leaf of the dependency graph (it imports nothing from
 
 from __future__ import annotations
 
+import enum
 import sys
 from typing import Final, NoReturn, Protocol
 
 #: Shared Perl-parity message for a value that must be a plain string, not a
 #: reference (``values.py``/``resolver.py``/``functions.py`` all raise it).
 ERR_STRING_EXPECTED: Final[str] = "String expected"
+
+
+class ExitCode(enum.IntEnum):
+    """
+    Process exit status: the ferm/plan contract.
+
+    ``0`` on success/no changes, ``2`` when ``--plan``/``--lint`` finds
+    pending changes, ``1`` on a ferm error -- never a bare literal past
+    this module boundary.
+    """
+
+    OK = 0
+    ERROR = 1
+    CHANGES = 2
 
 
 class ErrorContext(Protocol):

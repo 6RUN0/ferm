@@ -178,8 +178,6 @@ def validate_names(domain_info: DomainInfo) -> None:
                 )
 
 
-#: ip6 ``reject-with`` value translation (``:1871-1878``); several IPv4 names
-#: collapse onto ``icmp6-adm-prohibited``.
 def _scalar(value: Value) -> str:
     """
     Narrow a ``params``/``multi`` element to a scalar string.
@@ -280,12 +278,13 @@ def format_option(
     values; a tagged value passes through unchanged (the oracle's ``exists
     $icmp_map{$value}`` never matches a stringified ref).
     """
-    if domain == "ip6" and name == "protocol" and value == "icmp":
-        value = "icmpv6"
-    if domain == "ip6" and name == "icmp-type":
-        name = "icmpv6-type"
-    if domain == "ip6" and name == "reject-with" and isinstance(value, str):
-        value = ICMP6_REJECT_MAP.get(value, value)
+    if domain == "ip6":
+        if name == "protocol" and value == "icmp":
+            value = "icmpv6"
+        if name == "icmp-type":
+            name = "icmpv6-type"
+        if name == "reject-with" and isinstance(value, str):
+            value = ICMP6_REJECT_MAP.get(value, value)
 
     return shell_format_option(name, value, fast=fast)
 

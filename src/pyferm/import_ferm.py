@@ -41,7 +41,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, TextIO
 
-from .errors import FermError, internal_error
+from .errors import ExitCode, FermError, internal_error
 from .modules import (
     MATCH_DEFS,
     PORT_PROTOCOLS,
@@ -873,7 +873,7 @@ def main(
     args = list(sys.argv[1:] if argv is None else argv)
     if "-h" in args or "--help" in args:
         sys.stdout.write(_USAGE)
-        return 0
+        return ExitCode.OK
 
     domain = os.environ.get("FERM_DOMAIN") or "ip"
     importer = Importer(sys.stdout, domain)
@@ -881,7 +881,7 @@ def main(
     source = _choose_input_source(args, stdin_is_tty=is_tty)
     if source == "usage":
         sys.stderr.write(_USAGE)
-        return 1
+        return ExitCode.ERROR
     try:
         lines: Iterable[str] = (
             save_reader() if source == "save" else _gather_input(args)
@@ -889,8 +889,8 @@ def main(
         importer.run(lines)
     except FermError as exc:
         sys.stderr.write(f"{exc}\n")
-        return 1
-    return 0
+        return ExitCode.ERROR
+    return ExitCode.OK
 
 
 if __name__ == "__main__":

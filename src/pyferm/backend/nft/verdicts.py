@@ -655,13 +655,13 @@ def _nat_has_port(domain: Family, operand: str) -> bool:
     the load-bearing case is the ip6 ``return False`` that avoids the false
     positive on a plain IPv6 host.
     """
-    if domain == "ip6":
+    if domain is Family.IP6:
         return "]:" in operand
     return ":" in operand
 
 
 def _reject_for(domain: Family, scalar: str) -> str:
-    if domain == "ip6":
+    if domain is Family.IP6:
         # normalize an ip4 reject spelling written in an ip6 domain before
         # the ip6 lookup (shared oracle ip4->icmp6 alias set)
         scalar = ICMP6_REJECT_MAP.get(scalar, scalar)

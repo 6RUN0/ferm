@@ -134,7 +134,6 @@ def _render_module(
     kind: RegistryKind, name: str, family: str, module: ModuleDef
 ) -> str:
     """Render one registry hit as a titled option table."""
-    kind = RegistryKind(kind)
     rows = [
         _option_row(key, keyword, module)
         for key, keyword in module.keywords.items()

@@ -1564,9 +1564,9 @@ from pyferm.backend.nft import _reject_for  # noqa: E402
     ],
 )
 def test_reject_for_covers_the_full_mapping(
-    domain: Family, scalar: str, expected: str
+    domain: str, scalar: str, expected: str
 ) -> None:
-    assert _reject_for(domain, scalar) == expected
+    assert _reject_for(Family(domain), scalar) == expected
 
 
 def test_build_verdict_jump_to_builtin_is_error() -> None:
@@ -7407,6 +7407,12 @@ def test_connbytes_range_forms_and_refusals() -> None:
     with pytest.raises(FermError) as exc:
         _connbytes_range("ct bytes", ":", False)
     assert _msg(exc) == "invalid connbytes range ':' for the nft backend"
+    # an empty value dies as an invalid *value* (the bare-N branch), not
+    # as an invalid range -- pins why the bare-N branch cannot fold into
+    # the N: branch
+    with pytest.raises(FermError) as exc:
+        _connbytes_range("ct bytes", "", False)
+    assert _msg(exc) == "invalid connbytes value '' for the nft backend"
 
 
 def test_connbytes_u64_and_match_refusals() -> None:

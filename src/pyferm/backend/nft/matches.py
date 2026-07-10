@@ -690,6 +690,32 @@ def _ct_bitmask_expr(
     return f"{selector} ! {joined}"
 
 
+def _ctstate_expr(name: str, scalar: str, neg: bool) -> str:
+    """
+    Translate a ``mod state``/``mod conntrack`` state list to a ``ct`` expr.
+
+    mod conntrack's ctstate and mod state translate to `ct state`; the
+    xt_conntrack-only SNAT/DNAT pseudo-states are ct STATUS bits.  A mixed
+    list matches ANY member in iptables (one OR across both registers),
+    which no single nft rule can spell.
+    """
+    members = scalar.lower().split(",")
+    for member in members:
+        if member not in _CT_STATES and (member not in _CT_NAT_PSEUDO_STATES):
+            raise FermError(f"unknown ct state '{member}' for nft backend")
+    states = [m for m in members if m in _CT_STATES]
+    statuses = [m for m in members if m in _CT_NAT_PSEUDO_STATES]
+    if states and statuses:
+        raise FermError(
+            f"option '{name}': a list mixing connection states and "
+            f"SNAT/DNAT pseudo-states matches any of them; nft cannot "
+            f"OR 'ct state' with 'ct status' in one rule"
+        )
+    if statuses:
+        return _ct_bitmask_expr("ct status", statuses, _CT_STATUS_RANK, neg)
+    return _ct_bitmask_expr("ct state", states, _CT_STATE_RANK, neg)
+
+
 def _iprange_bound(domain: Family, scalar: str) -> str:
     """
     Validate one ``mod iprange`` boundary as an address of *domain*'s family.
@@ -765,31 +791,7 @@ def _translate_match_parts(
         expr = f"{key} {_op(neg)}{port}"
         return (expr, None, None) if neg else (expr, key, port)
     if name in ("state", "ctstate"):
-        # mod conntrack's ctstate and mod state translate to `ct state`;
-        # the xt_conntrack-only SNAT/DNAT pseudo-states are ct STATUS
-        # bits.  A mixed list matches ANY member in iptables (one OR
-        # across both registers), which no single nft rule can spell.
-        members = scalar.lower().split(",")
-        for member in members:
-            if member not in _CT_STATES and (
-                member not in _CT_NAT_PSEUDO_STATES
-            ):
-                raise FermError(f"unknown ct state '{member}' for nft backend")
-        states = [m for m in members if m in _CT_STATES]
-        statuses = [m for m in members if m in _CT_NAT_PSEUDO_STATES]
-        if states and statuses:
-            raise FermError(
-                f"option '{name}': a list mixing connection states and "
-                f"SNAT/DNAT pseudo-states matches any of them; nft cannot "
-                f"OR 'ct state' with 'ct status' in one rule"
-            )
-        if statuses:
-            expr = _ct_bitmask_expr(
-                "ct status", statuses, _CT_STATUS_RANK, neg
-            )
-        else:
-            expr = _ct_bitmask_expr("ct state", states, _CT_STATE_RANK, neg)
-        return (expr, None, None)
+        return (_ctstate_expr(name, scalar, neg), None, None)
     if name == "ctstatus":
         # xt_conntrack --ctstatus, with the same any-bit OR semantics as
         # ctstate; NONE (an empty status mask) has no nft spelling.
