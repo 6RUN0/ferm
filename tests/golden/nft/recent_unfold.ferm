@@ -1,0 +1,8 @@
+# Array unfolding through a shared recent dynamic set: proto (tcp udp)
+# unfolds into two rules, but both check the SAME name (PROBE), so they
+# share ONE recent_PROBE set.  T=2 update-emitting rules x H=3 -> 6/minute
+# burst 5, the identical calibrated element spec on both rules.
+table filter chain INPUT {
+    proto (tcp udp) dport 22 mod recent rcheck seconds 60 hitcount 3
+        name PROBE DROP;
+}

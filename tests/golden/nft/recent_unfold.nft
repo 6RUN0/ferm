@@ -1,0 +1,7 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add set ip ferm recent_PROBE { type ipv4_addr; size 65535; flags dynamic,timeout; }
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport 22 update @recent_PROBE { ip saddr timeout 1m limit rate over 6/minute burst 5 packets } drop
+add rule ip ferm INPUT udp dport 22 update @recent_PROBE { ip saddr timeout 1m limit rate over 6/minute burst 5 packets } drop

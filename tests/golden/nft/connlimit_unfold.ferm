@@ -1,0 +1,8 @@
+# Array unfolding through a per-rule connlimit dynamic set: proto (tcp udp)
+# x dport (80 443) unfolds into four concrete rules, and because each
+# xt_connlimit rule owns its own conncount tree the four rules must get four
+# DISTINCT connlimit_<hash> sets (never folded into one).
+domain ip table filter chain INPUT {
+    proto (tcp udp) dport (80 443) mod connlimit connlimit-above 20
+        connlimit-mask 24 DROP;
+}

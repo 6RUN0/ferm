@@ -3077,7 +3077,8 @@ def _reduce_rate(numerator: int, seconds: int) -> tuple[int, str]:
     Express ``numerator/seconds`` packets-per-second as ``N/<unit>``.
 
     Picks the smallest nft rate unit that yields an integer ``N >= 1``; an
-    average rate that no unit renders whole (``несводимое T*H/S``) refuses.
+    average rate that no unit renders whole (an irreducible ``T*H/S``)
+    refuses.
     """
     for unit, span in _RATE_UNITS:
         product = numerator * span
@@ -3249,8 +3250,14 @@ def _build_recent_specs(
         if has_check:
             hits = int(next(iter(hitcounts)))
             numerator = len(facts_list) * hits
-            rate, unit = _reduce_rate(numerator, seconds)
-            limit = f"rate over {rate}/{unit} burst {numerator - 1} packets"
+            if numerator > 1:
+                rate, unit = _reduce_rate(numerator, seconds)
+                limit = (
+                    f"rate over {rate}/{unit} burst {numerator - 1} packets"
+                )
+            # T*H == 1 degenerates to "match from the first in-window
+            # packet"; the limitless update expresses that exactly, while
+            # the formula's `burst 0` is rejected by nft outright.
         specs[name] = _RecentSpec(next(iter(directions)), timeout, limit)
     return specs
 
@@ -3411,6 +3418,19 @@ def _hashlimit_update(
                 f"mod hashlimit '{option.name}' cannot be negated for the nft "
                 "backend"
             )
+    if "hashlimit-htable-max" in opts:
+        # The dynamic set's capacity is pinned to the kernel's implicit
+        # `size 65535` for --plan readback parity; honouring a user cap
+        # would need that convergence re-verified, so refuse instead of
+        # silently overriding a deliberate memory/DoS ceiling.
+        raise FermError(
+            "mod hashlimit 'hashlimit-htable-max' has no nft equivalent "
+            "for the nft backend"
+        )
+    # hashlimit-htable-size and hashlimit-htable-gcinterval are pure
+    # performance-tuning knobs (initial bucket count, GC cadence) with no
+    # match semantics; nft sizes and expires dynamic sets itself, so they
+    # are deliberately ignored rather than refused.
     name_option = opts.get("hashlimit-name")
     if name_option is None:
         raise FermError(

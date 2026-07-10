@@ -5275,7 +5275,11 @@ def test_recent_refuses_unsupported_verbs() -> None:
             _recent(verb, value),
             _recent("name", "X"),
         )
-        with pytest.raises(FermError, match=rf"mod recent '{verb}'"):
+        with pytest.raises(
+            FermError,
+            match=rf"^mod recent '{verb}' is not supported by the nft "
+            r"backend$",
+        ):
             _build_recent_specs(Family.IP, [rule])
 
 
@@ -5286,32 +5290,49 @@ def test_recent_refuses_negation() -> None:
         _recent("name", "X"),
     )
     with pytest.raises(
-        FermError, match=r"mod recent 'seconds' cannot be negated"
+        FermError,
+        match=r"^mod recent 'seconds' cannot be negated for the nft backend$",
     ):
         _build_recent_specs(Family.IP, [rule])
 
 
 def test_recent_refuses_non_ip_family() -> None:
     rule = _recent_rule(_recent("set"), _recent("name", "X"))
-    with pytest.raises(FermError, match=r"mod recent needs the ip or ip6"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent needs the ip or ip6 family for nft$",
+    ):
         _build_recent_specs(Family.ARP, [rule])
 
 
 def test_recent_refuses_no_verb_or_multiple() -> None:
-    with pytest.raises(FermError, match=r"exactly one of set/rcheck/update"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent needs exactly one of set/rcheck/update for the "
+        r"nft backend$",
+    ):
         _build_recent_specs(Family.IP, [_recent_rule(_recent("name", "X"))])
     both = _recent_rule(
         _recent("set"), _recent("rcheck"), _recent("name", "X")
     )
-    with pytest.raises(FermError, match=r"exactly one of set/rcheck/update"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent needs exactly one of set/rcheck/update for the "
+        r"nft backend$",
+    ):
         _build_recent_specs(Family.IP, [both])
 
 
 def test_recent_refuses_missing_or_invalid_name() -> None:
-    with pytest.raises(FermError, match=r"mod recent needs a 'name'"):
+    with pytest.raises(
+        FermError, match=r"^mod recent needs a 'name' for the nft backend$"
+    ):
         _build_recent_specs(Family.IP, [_recent_rule(_recent("set"))])
     bad = _recent_rule(_recent("set"), _recent("name", "bad-name"))
-    with pytest.raises(FermError, match=r"invalid recent name 'bad-name'"):
+    with pytest.raises(
+        FermError,
+        match=r"^invalid recent name 'bad-name' for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [bad])
 
 
@@ -5321,7 +5342,10 @@ def test_recent_refuses_hitcount_without_seconds() -> None:
         _recent("hitcount", "4"),
         _recent("name", "X"),
     )
-    with pytest.raises(FermError, match=r"'hitcount' needs 'seconds'"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent 'hitcount' needs 'seconds' for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [rule])
 
 
@@ -5332,14 +5356,20 @@ def test_recent_refuses_check_without_pair() -> None:
         _recent("name", "X"),
     )
     with pytest.raises(
-        FermError, match=r"rcheck/update needs 'seconds' and 'hitcount'"
+        FermError,
+        match=r"^mod recent rcheck/update needs 'seconds' and 'hitcount' for "
+        r"the nft backend$",
     ):
         _build_recent_specs(Family.IP, [rule])
 
 
 def test_recent_refuses_no_seconds_anywhere() -> None:
     rule = _recent_rule(_recent("set"), _recent("name", "X"), verdict="DROP")
-    with pytest.raises(FermError, match=r"has no seconds anywhere"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent 'X' has no seconds anywhere; the window is "
+        r"undefined for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [rule])
 
 
@@ -5358,7 +5388,10 @@ def test_recent_refuses_conflicting_seconds() -> None:
         _recent("name", "X"),
         verdict="bad",
     )
-    with pytest.raises(FermError, match=r"conflicting seconds"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent 'X' has conflicting seconds for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [a, b])
 
 
@@ -5371,7 +5404,10 @@ def test_recent_refuses_conflicting_directions() -> None:
         verdict="bad",
     )
     b = _recent_rule(_recent("set"), _recent("name", "X"), _recent("rdest"))
-    with pytest.raises(FermError, match=r"mixes rsource and rdest"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent 'X' mixes rsource and rdest for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [a, b])
 
 
@@ -5390,7 +5426,11 @@ def test_recent_refuses_conflicting_hitcounts() -> None:
         _recent("name", "X"),
         verdict="bad",
     )
-    with pytest.raises(FermError, match=r"conflicting hitcounts"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent 'X' has conflicting hitcounts for the nft "
+        r"backend$",
+    ):
         _build_recent_specs(Family.IP, [a, b])
 
 
@@ -5401,7 +5441,11 @@ def test_recent_refuses_rsource_rdest_together() -> None:
         _recent("rsource"),
         _recent("rdest"),
     )
-    with pytest.raises(FermError, match=r"cannot combine rsource and rdest"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent cannot combine rsource and rdest for the nft "
+        r"backend$",
+    ):
         _build_recent_specs(Family.IP, [rule])
 
 
@@ -5418,19 +5462,29 @@ def test_recent_refuses_set_verdict_with_check_rules() -> None:
         _recent("name", "SSH"),
         verdict="DROP",
     )
-    with pytest.raises(FermError, match=r"set rule carries a verdict"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod recent 'SSH' set rule carries a verdict but the name has "
+        r"check rules for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [check, guarded_set])
 
 
 def test_recent_refuses_irreducible_rate() -> None:
+    # hitcount 2 keeps T*H == 2 > 1, so the rate reducer still runs (a lone
+    # hitcount 1 now yields a limitless spec and never reaches the reducer).
     rule = _recent_rule(
         _recent("rcheck"),
         _recent("seconds", "7"),
-        _recent("hitcount", "1"),
+        _recent("hitcount", "2"),
         _recent("name", "X"),
         verdict="bad",
     )
-    with pytest.raises(FermError, match=r"no integer nft rate unit"):
+    with pytest.raises(
+        FermError,
+        match=r"^average rate 2/7s has no integer nft rate unit for the nft "
+        r"backend$",
+    ):
         _build_recent_specs(Family.IP, [rule])
 
 
@@ -5442,7 +5496,10 @@ def test_recent_refuses_non_numeric_seconds() -> None:
         _recent("name", "X"),
         verdict="bad",
     )
-    with pytest.raises(FermError, match=r"invalid recent seconds"):
+    with pytest.raises(
+        FermError,
+        match=r"^invalid recent seconds 'abc' for the nft backend$",
+    ):
         _build_recent_specs(Family.IP, [rule])
 
 
@@ -5545,7 +5602,10 @@ def _hl(*opts: RenderedOption, proto: str = "tcp") -> RenderedRule:
 
 
 def test_hashlimit_refuses_missing_mode() -> None:
-    with pytest.raises(FermError, match=r"needs 'hashlimit-mode'"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod hashlimit needs 'hashlimit-mode' for the nft backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5558,7 +5618,10 @@ def test_hashlimit_refuses_missing_mode() -> None:
 
 
 def test_hashlimit_refuses_missing_name() -> None:
-    with pytest.raises(FermError, match=r"needs 'hashlimit-name'"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod hashlimit needs 'hashlimit-name' for the nft backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5571,7 +5634,10 @@ def test_hashlimit_refuses_missing_name() -> None:
 
 
 def test_hashlimit_refuses_invalid_name() -> None:
-    with pytest.raises(FermError, match=r"invalid hashlimit name 'bad-x'"):
+    with pytest.raises(
+        FermError,
+        match=r"^invalid hashlimit name 'bad-x' for the nft backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5585,7 +5651,11 @@ def test_hashlimit_refuses_invalid_name() -> None:
 
 
 def test_hashlimit_refuses_negation() -> None:
-    with pytest.raises(FermError, match=r"cannot be negated"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod hashlimit 'hashlimit-upto' cannot be negated for the nft "
+        r"backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5601,7 +5671,11 @@ def test_hashlimit_refuses_negation() -> None:
 
 
 def test_hashlimit_refuses_port_mode_without_transport() -> None:
-    with pytest.raises(FermError, match=r"needs a tcp/udp protocol"):
+    with pytest.raises(
+        FermError,
+        match=r"^hashlimit mode 'srcport' needs a tcp/udp protocol for the "
+        r"nft backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5616,8 +5690,20 @@ def test_hashlimit_refuses_port_mode_without_transport() -> None:
 
 
 def test_hashlimit_refuses_byte_and_bad_rates() -> None:
-    for bad in ("1kb/second", "3", "5/fortnight"):
-        with pytest.raises(FermError, match=r"unsupported hashlimit rate"):
+    # a byte rate leaves N non-numeric (rate message); a rate with no or an
+    # unknown unit is a unit message -- each pinned to its full string.
+    cases = {
+        "1kb/second": (
+            r"^unsupported hashlimit rate '1kb/second' for the nft backend$"
+        ),
+        "3": r"^unsupported hashlimit rate unit in '3' for the nft backend$",
+        "5/fortnight": (
+            r"^unsupported hashlimit rate unit in '5/fortnight' for the nft "
+            r"backend$"
+        ),
+    }
+    for bad, message in cases.items():
+        with pytest.raises(FermError, match=message):
             translate_rule(
                 Family.IP,
                 "filter",
@@ -5631,7 +5717,11 @@ def test_hashlimit_refuses_byte_and_bad_rates() -> None:
 
 
 def test_hashlimit_refuses_unknown_mode() -> None:
-    with pytest.raises(FermError, match=r"unsupported hashlimit mode"):
+    with pytest.raises(
+        FermError,
+        match=r"^unsupported hashlimit mode 'srcip,banana' for the nft "
+        r"backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5645,7 +5735,11 @@ def test_hashlimit_refuses_unknown_mode() -> None:
 
 
 def test_hashlimit_refuses_upto_and_above_together() -> None:
-    with pytest.raises(FermError, match=r"cannot combine upto and above"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod hashlimit cannot combine upto and above for the nft "
+        r"backend$",
+    ):
         translate_rule(
             Family.IP,
             "filter",
@@ -5660,7 +5754,10 @@ def test_hashlimit_refuses_upto_and_above_together() -> None:
 
 
 def test_hashlimit_refuses_non_ip_family() -> None:
-    with pytest.raises(FermError, match=r"needs the ip or ip6 family"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod hashlimit needs the ip or ip6 family for nft$",
+    ):
         translate_rule(
             Family.ARP,
             "filter",
@@ -6127,17 +6224,25 @@ def test_connlimit_update_forms() -> None:
 
 def test_connlimit_refusals() -> None:
     # exactly one of upto/above
-    with pytest.raises(FermError, match=r"exactly one of connlimit-upto"):
+    exactly_one = (
+        r"^mod connlimit needs exactly one of connlimit-upto/connlimit-above "
+        r"for the nft backend$"
+    )
+    with pytest.raises(FermError, match=exactly_one):
         _connlimit_update(
             Family.IP,
             _connlimit(
                 _cl("connlimit-above", "10"), _cl("connlimit-upto", "5")
             ),
         )
-    with pytest.raises(FermError, match=r"exactly one of connlimit-upto"):
+    with pytest.raises(FermError, match=exactly_one):
         _connlimit_update(Family.IP, _connlimit(_cl("connlimit-mask", "24")))
     # saddr and daddr together
-    with pytest.raises(FermError, match=r"cannot combine saddr and daddr"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod connlimit cannot combine saddr and daddr for the nft "
+        r"backend$",
+    ):
         _connlimit_update(
             Family.IP,
             _connlimit(
@@ -6147,7 +6252,11 @@ def test_connlimit_refusals() -> None:
             ),
         )
     # a zero mask keys the whole address space as one bucket
-    with pytest.raises(FermError, match=r"connlimit-mask 0 keys"):
+    with pytest.raises(
+        FermError,
+        match=r"^connlimit-mask 0 keys the whole address space as one bucket; "
+        r"refused for the nft backend$",
+    ):
         _connlimit_update(
             Family.IP,
             _connlimit(
@@ -6155,7 +6264,10 @@ def test_connlimit_refusals() -> None:
             ),
         )
     # mask out of range
-    with pytest.raises(FermError, match=r"exceeds /32"):
+    with pytest.raises(
+        FermError,
+        match=r"^connlimit mask '33' exceeds /32 for the nft backend$",
+    ):
         _connlimit_update(
             Family.IP,
             _connlimit(
@@ -6163,12 +6275,18 @@ def test_connlimit_refusals() -> None:
             ),
         )
     # count is not a mark value (u32)
-    with pytest.raises(FermError, match=r"invalid connlimit count 'lots'"):
+    with pytest.raises(
+        FermError,
+        match=r"^invalid connlimit count 'lots' for the nft backend$",
+    ):
         _connlimit_update(
             Family.IP, _connlimit(_cl("connlimit-above", "lots"))
         )
     # arp has no address key
-    with pytest.raises(FermError, match=r"needs the ip or ip6 family"):
+    with pytest.raises(
+        FermError,
+        match=r"^mod connlimit needs the ip or ip6 family for nft$",
+    ):
         _connlimit_update(Family.ARP, _connlimit(_cl("connlimit-above", "10")))
 
 
@@ -6279,3 +6397,1910 @@ def test_connlimit_sets_aggregate_by_name() -> None:
     }
     assert len(connlimit_decls) == 2
     assert all(isinstance(d, _DynSetDecl) for d in connlimit_decls.values())
+
+
+# --- 2026-07-10 nft fix regression + mutation-kill batch.  Covers the two
+# --- product fixes (lone recent hitcount 1 emits a limitless spec; hashlimit
+# --- htable-max refuses while htable-size/gcinterval are ignored), the
+# --- option-loop `continue` sites, and boundary pins for the batch-5/7
+# --- primitives (_hashlimit_key, _clock_parts, _setmark_effective).
+
+from pyferm.backend.nft import (  # noqa: E402
+    _TIME_OF_DAY_RE,
+    _clock_parts,
+    _hashlimit_key,
+    _recent_update,
+    _setmark_effective,
+)
+
+
+def _has_stmt(rule: NftRule, text: str) -> bool:
+    return any(s.to_text() == text for s in rule.statements)
+
+
+# --- fix (a): lone recent hitcount 1 -> no limit clause ---
+
+
+def test_recent_lone_hitcount_one_has_no_limit_clause() -> None:
+    # T*H == 1 degenerates to "match from the first in-window packet"; the
+    # limitless update expresses that, while the formula's `burst 0` is
+    # rejected by nft outright.  Holds for either check verb.
+    for verb in ("rcheck", "update"):
+        rule = _recent_rule(
+            _recent(verb),
+            _recent("seconds", "60"),
+            _recent("hitcount", "1"),
+            _recent("name", "X"),
+            verdict="bad",
+        )
+        texts = _recent_texts(Family.IP, rule)[0]
+        assert texts[0] == "update @recent_X { ip saddr timeout 1m }"
+        assert all("limit" not in t and "burst" not in t for t in texts)
+
+
+def test_recent_two_rules_hitcount_one_still_calibrates() -> None:
+    # T=2, H=1: numerator 2 > 1, so the limit clause returns (burst 1) -- the
+    # fix only suppresses the clause when T*H == 1, not whenever H == 1.
+    check = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "1"),
+        _recent("name", "P"),
+        verdict="bad",
+    )
+    bare = _recent_rule(_recent("set"), _recent("name", "P"))
+    spec = (
+        "update @recent_P { ip saddr timeout 1m "
+        "limit rate over 2/minute burst 1 packets }"
+    )
+    assert _recent_texts(Family.IP, check, bare) == [
+        [spec, "jump bad"],
+        [spec],
+    ]
+
+
+def test_recent_single_rcheck_hitcount_three_burst_two() -> None:
+    # T=1, H=3: numerator 3 -> 3/minute burst 2 (the general formula stays
+    # intact for a single check rule with hitcount > 1).
+    rule = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "3"),
+        _recent("name", "Q"),
+        verdict="bad",
+    )
+    spec = (
+        "update @recent_Q { ip saddr timeout 1m "
+        "limit rate over 3/minute burst 2 packets }"
+    )
+    assert _recent_texts(Family.IP, rule) == [[spec, "jump bad"]]
+
+
+def test_recent_update_without_prepass_spec_is_internal_error() -> None:
+    # a recent rule reaching translate_rule with a spec dict that lacks its
+    # name is a wiring bug (the whole-family pre-pass was skipped).
+    rule = _recent_rule(
+        _recent("set"), _recent("seconds", "60"), _recent("name", "X")
+    )
+    with pytest.raises(FermError, match=r"without its pre-pass spec"):
+        _recent_update(Family.IP, rule, {})
+
+
+# --- fix (b): hashlimit htable-* knobs ---
+
+
+def test_hashlimit_htable_max_refused() -> None:
+    with pytest.raises(
+        FermError,
+        match=r"^mod hashlimit 'hashlimit-htable-max' has no nft equivalent "
+        r"for the nft backend$",
+    ):
+        _hashlimit_text(
+            Family.IP,
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "x", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _opt("hashlimit-htable-max", "100", module="hashlimit"),
+        )
+
+
+def test_hashlimit_htable_size_and_gcinterval_ignored() -> None:
+    # htable-size/gcinterval are pure performance knobs with no match
+    # semantics; nft sizes and expires dynamic sets itself, so a rule
+    # carrying them must translate byte-identically to one without them.
+    base = (
+        _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+        _opt("hashlimit-name", "ig", module="hashlimit"),
+        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+    )
+    plain = _hashlimit_text(Family.IP, *base)
+    tuned = _hashlimit_text(
+        Family.IP,
+        *base,
+        _opt("hashlimit-htable-size", "4096", module="hashlimit"),
+        _opt("hashlimit-htable-gcinterval", "1000", module="hashlimit"),
+    )
+    assert tuned == plain
+    assert any("update @hashlimit_ig" in t for t in tuned)
+
+
+def test_hashlimit_htable_expire_boundaries() -> None:
+    def hl(expire: str) -> list[str]:
+        return _hashlimit_text(
+            Family.IP,
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "e", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _opt("hashlimit-htable-expire", expire, module="hashlimit"),
+        )
+
+    with pytest.raises(
+        FermError,
+        match=r"^stateful timeout must be positive for the nft backend$",
+    ):
+        hl("0")
+    with pytest.raises(
+        FermError,
+        match=r"^invalid hashlimit htable-expire 'abc' for the nft backend$",
+    ):
+        hl("abc")
+
+
+# --- option-loop `continue` sites (translate_rule): a later independent
+# --- match must still emit after each dynamic/stateful module branch ---
+
+
+def test_option_loop_continues_after_connbytes() -> None:
+    rule = _rule(
+        _opt("protocol", "tcp", kind=OptionKind.PROTO),
+        _opt("connbytes", "100:", module="connbytes"),
+        _opt("connbytes-dir", "both", module="connbytes"),
+        _opt("connbytes-mode", "bytes", module="connbytes"),
+        _opt("dport", "80"),
+        _target("ACCEPT"),
+    )
+    nft = translate_rule(Family.IP, "filter", rule)
+    assert _has_stmt(nft, "ct bytes >= 100")
+    assert _has_stmt(nft, "tcp dport 80")
+
+
+def test_option_loop_continues_after_connlimit() -> None:
+    rule = _rule(
+        _opt("protocol", "tcp", kind=OptionKind.PROTO),
+        _cl("connlimit-above", "20"),
+        _cl("connlimit-mask", "24"),
+        _opt("dport", "80"),
+        _target("DROP"),
+    )
+    nft = translate_rule(Family.IP, "filter", rule)
+    assert _has_stmt(nft, "tcp dport 80")
+    assert any(isinstance(s, NftSetUpdate) for s in nft.statements)
+
+
+def test_option_loop_continues_after_quota() -> None:
+    rule = _rule(
+        _opt("protocol", "tcp", kind=OptionKind.PROTO),
+        _opt("quota", "1048576", module="quota"),
+        _opt("dport", "80"),
+        _target("ACCEPT"),
+    )
+    nft = translate_rule(Family.IP, "filter", rule)
+    assert _has_stmt(nft, "quota 1 mbytes")
+    assert _has_stmt(nft, "tcp dport 80")
+
+
+def test_option_loop_continues_after_match_set() -> None:
+    rule = _rule(
+        _opt("protocol", "tcp", kind=OptionKind.PROTO),
+        _match_set_opt(SetRef("badguys", ["10.0.0.1"]), "src"),
+        _opt("dport", "80"),
+        _target("DROP"),
+    )
+    nft = translate_rule(Family.IP, "filter", rule)
+    assert _has_stmt(nft, "ip saddr @badguys")
+    assert _has_stmt(nft, "tcp dport 80")
+
+
+def test_connbytes_emits_single_statement() -> None:
+    # three connbytes options fold into ONE `ct ... bytes` statement (emitted
+    # at the first option, then the loop skips the rest).
+    rule = _rule(
+        _opt("connbytes", "100:", module="connbytes"),
+        _opt("connbytes-mode", "bytes", module="connbytes"),
+        _opt("connbytes-dir", "both", module="connbytes"),
+        _target("ACCEPT"),
+    )
+    nft = translate_rule(Family.IP, "filter", rule)
+    ct_stmts = [s for s in nft.statements if s.to_text() == "ct bytes >= 100"]
+    assert len(ct_stmts) == 1
+
+
+def test_collect_set_declarations_gathers_dynamic_and_static() -> None:
+    # a dynamic (hashlimit) set rule followed by a static @set-backed
+    # match-set rule in one chain -> declarations for BOTH sets (the inner
+    # loop must not break after the dynamic arm).
+    dyn = translate_rule(
+        Family.IP,
+        "filter",
+        _hashlimit_rule(
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "hl", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        ),
+    )
+    static = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _match_set_opt(SetRef("badguys", ["10.0.0.1"]), "src"),
+            _target("DROP"),
+        ),
+    )
+    decls = _collect_set_declarations(Family.IP, {"c": [dyn, static]})
+    assert "hashlimit_hl" in decls
+    assert "badguys" in decls
+
+
+# --- _hashlimit_key: exact (key_expr, set_type) per mode ---
+
+
+@pytest.mark.parametrize(
+    ("domain", "mode", "opts", "protocol", "expected"),
+    [
+        (Family.IP, "srcip", {}, "tcp", ("ip saddr", "ipv4_addr")),
+        (Family.IP, "dstip", {}, "tcp", ("ip daddr", "ipv4_addr")),
+        (Family.IP, "srcport", {}, "tcp", ("tcp sport", "inet_service")),
+        (Family.IP, "dstport", {}, "tcp", ("tcp dport", "inet_service")),
+        (
+            Family.IP,
+            "srcip,dstport",
+            {},
+            "tcp",
+            ("ip saddr . tcp dport", "ipv4_addr . inet_service"),
+        ),
+        (
+            Family.IP,
+            "srcip,srcport,dstport",
+            {},
+            "tcp",
+            (
+                "ip saddr . tcp sport . tcp dport",
+                "ipv4_addr . inet_service . inet_service",
+            ),
+        ),
+        (Family.IP6, "srcip", {}, "tcp", ("ip6 saddr", "ipv6_addr")),
+        (Family.IP6, "dstport", {}, "tcp", ("tcp dport", "inet_service")),
+        (
+            Family.IP6,
+            "srcip,dstport",
+            {},
+            "tcp",
+            ("ip6 saddr . tcp dport", "ipv6_addr . inet_service"),
+        ),
+        (
+            Family.IP,
+            "srcip",
+            {
+                "hashlimit-srcmask": _opt(
+                    "hashlimit-srcmask", "24", module="hashlimit"
+                )
+            },
+            "tcp",
+            ("ip saddr & 255.255.255.0", "ipv4_addr"),
+        ),
+        (
+            Family.IP,
+            "dstip",
+            {
+                "hashlimit-dstmask": _opt(
+                    "hashlimit-dstmask", "16", module="hashlimit"
+                )
+            },
+            "tcp",
+            ("ip daddr & 255.255.0.0", "ipv4_addr"),
+        ),
+    ],
+)
+def test_hashlimit_key_modes(
+    domain: Family,
+    mode: str,
+    opts: dict[str, RenderedOption],
+    protocol: str,
+    expected: tuple[str, str],
+) -> None:
+    assert _hashlimit_key(domain, mode, opts, protocol) == expected
+
+
+# --- _clock_parts boundaries ---
+
+
+@pytest.mark.parametrize(
+    ("scalar", "expected"),
+    [("00:00:00", (0, 0, 0)), ("23:59:59", (23, 59, 59))],
+)
+def test_clock_parts_valid_boundaries(
+    scalar: str, expected: tuple[int, int, int]
+) -> None:
+    match = _TIME_OF_DAY_RE.match(scalar)
+    assert match is not None
+    assert _clock_parts(match, scalar, "time") == expected
+
+
+@pytest.mark.parametrize("scalar", ["24:00:00", "00:60:00", "00:00:60"])
+def test_clock_parts_out_of_range_refused(scalar: str) -> None:
+    match = _TIME_OF_DAY_RE.match(scalar)
+    assert match is not None
+    with pytest.raises(
+        FermError, match=rf"^invalid time '{scalar}' for nft backend$"
+    ):
+        _clock_parts(match, scalar, "time")
+
+
+# --- _setmark_effective boundaries ---
+
+
+def test_setmark_effective_boundaries() -> None:
+    assert _setmark_effective("0x0/0x0") == "0x0/0x0"
+    assert (
+        _setmark_effective("0xffffffff/0xffffffff") == "0xffffffff/0xffffffff"
+    )
+    with pytest.raises(
+        FermError,
+        match=r"^invalid set-mark '0x100000000/0x0' for nft backend$",
+    ):
+        _setmark_effective("0x100000000/0x0")
+
+
+# --- connlimit mask boundaries (full mask needs no `& netmask`) ---
+
+
+def test_connlimit_full_mask_has_no_ampersand() -> None:
+    upd = _connlimit_update(
+        Family.IP,
+        _connlimit(_cl("connlimit-above", "10"), _cl("connlimit-mask", "32")),
+    )
+    assert upd.key_expr == "ip saddr ct count over 10"
+    upd6 = _connlimit_update(
+        Family.IP6,
+        _connlimit(_cl("connlimit-above", "10"), _cl("connlimit-mask", "128")),
+    )
+    assert upd6.key_expr == "ip6 saddr ct count over 10"
+
+
+def test_connlimit_oversized_mask_refused() -> None:
+    with pytest.raises(
+        FermError,
+        match=r"^connlimit mask '33' exceeds /32 for the nft backend$",
+    ):
+        _connlimit_update(
+            Family.IP,
+            _connlimit(
+                _cl("connlimit-above", "10"), _cl("connlimit-mask", "33")
+            ),
+        )
+    with pytest.raises(
+        FermError,
+        match=r"^connlimit mask '129' exceeds /128 for the nft backend$",
+    ):
+        _connlimit_update(
+            Family.IP6,
+            _connlimit(
+                _cl("connlimit-above", "10"), _cl("connlimit-mask", "129")
+            ),
+        )
+
+
+# --- build_verdict: HL refusal, SNAT port threading ---
+
+
+def test_build_verdict_hl_target_needs_hl_set() -> None:
+    with pytest.raises(FermError, match=r"^HL target not yet supported"):
+        build_verdict(Family.IP6, "mangle", "jump", "HL", {})
+
+
+def test_build_verdict_snat_threads_port() -> None:
+    # mirror of the DNAT port case: the `:port` form must survive onto the
+    # emitted snat verdict when the rule established a transport.
+    snat = {
+        "to-source": _opt(
+            "to-source", Multi(values=["1.2.3.4:1024"]), module="SNAT"
+        )
+    }
+    assert (
+        build_verdict(
+            Family.IP, "nat", "jump", "SNAT", snat, has_transport=True
+        ).to_text()
+        == "snat to 1.2.3.4:1024"
+    )
+
+
+# --- tcp-flags implies l4proto (like icmp-type/syn) ---
+
+
+def test_translate_rule_tcp_flags_option_suppresses_l4proto() -> None:
+    # a real tcp-flags match (not just --syn) implies l4proto tcp, so the
+    # `meta l4proto tcp` prefix is suppressed exactly as for icmp-type.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("tcp-flags", Params(values=["SYN,RST", "SYN"]), module="tcp"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "tcp flags & (syn | rst) == syn",
+        "accept",
+    ]
+
+
+# --- u64/u63 ceilings (the success side; the refusals live above) ---
+
+
+def test_connbytes_u64_max_translates() -> None:
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _connbytes("18446744073709551615:", "both", "bytes"),
+    )
+    assert nft.statements[0].to_text() == "ct bytes >= 18446744073709551615"
+
+
+def test_quota_u63_max_translates() -> None:
+    nft = translate_rule(
+        Family.IP, "filter", _quota_rule("9223372036854775807")
+    )
+    assert isinstance(nft.statements[0], NftQuota)
+    assert nft.statements[0].to_text() == "quota 9223372036854775807 bytes"
+
+
+# --- every dynamic set declaration carries `flags dynamic` ---
+
+
+def _dynamic_add_set_lines(
+    family: Family, chain_name: str, rules: list[NftRule]
+) -> list[str]:
+    table = NftTable(family=family.nft_name, name="ferm")
+    chains: list[NftBaseChain | NftRegularChain] = [
+        NftRegularChain(chain_name)
+    ]
+    payload = {chain_name: rules}
+    decls = _collect_set_declarations(family, payload)
+    out = serialize_table(table, chains, payload, decls, noflush=False)
+    return [line for line in out.splitlines() if line.startswith("add set")]
+
+
+def test_dynamic_sets_carry_flags_dynamic() -> None:
+    recent_rule = _recent_rule(
+        _recent("rcheck"),
+        _recent("seconds", "60"),
+        _recent("hitcount", "3"),
+        _recent("name", "R"),
+        verdict="DROP",
+    )
+    specs = _build_recent_specs(Family.IP, [recent_rule])
+    recent_nft = translate_rule(
+        Family.IP, "filter", recent_rule, chain="c", recent_specs=specs
+    )
+    hashlimit_nft = translate_rule(
+        Family.IP,
+        "filter",
+        _hashlimit_rule(
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "H", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        ),
+    )
+    connlimit_nft = translate_rule(
+        Family.IP,
+        "filter",
+        _connlimit(_cl("connlimit-above", "20"), _cl("connlimit-mask", "24")),
+    )
+    _finalize_connlimit_names(Family.IP, "filter", "c", [connlimit_nft])
+    for label, rules in (
+        ("recent", [recent_nft]),
+        ("hashlimit", [hashlimit_nft]),
+        ("connlimit", [connlimit_nft]),
+    ):
+        lines = _dynamic_add_set_lines(Family.IP, "c", rules)
+        assert lines, f"{label} produced no add set line"
+        assert all("flags dynamic" in line for line in lines), label
+
+
+# --- ip6 parity for family-agnostic constructs ---
+
+
+def test_family_agnostic_constructs_match_under_ip6() -> None:
+    # these constructs carry no address family, so ip6 must emit identically
+    # to ip; one representative assertion per construct.
+    assert (
+        build_verdict(Family.IP6, "filter", "jump", "NFQUEUE", {}).to_text()
+        == build_verdict(Family.IP, "filter", "jump", "NFQUEUE", {}).to_text()
+    )
+    assert (
+        translate_match(
+            Family.IP6, _opt("pkt-type", "unicast", module="pkttype"), None
+        )
+        == "meta pkttype host"
+    )
+    stat = _rule(
+        _statistic("mode", "random"),
+        _statistic("probability", "0.5"),
+        _target("ACCEPT"),
+    )
+    assert [
+        s.to_text()
+        for s in translate_rule(Family.IP6, "filter", stat).statements
+    ] == ["meta random & 2147483647 < 1073741824", "accept"]
+    tcpopt = translate_rule(Family.IP6, "mangle", _tcpoptstrip_rule("mss"))
+    assert [s.to_text() for s in tcpopt.statements] == [
+        "meta l4proto tcp",
+        "reset tcp option maxseg",
+    ]
+    time_rule = _rule(
+        _opt("weekdays", "Mon,Fri", module="time"), _target("ACCEPT")
+    )
+    assert (
+        translate_rule(Family.IP6, "filter", time_rule).statements[0].to_text()
+        == 'meta day { "Monday", "Friday" }'
+    )
+    assert (
+        translate_rule(Family.IP6, "filter", _quota_rule("1048576"))
+        .statements[0]
+        .to_text()
+        == "quota 1 mbytes"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-10 mutation-kill batch 2
+#
+# Full-anchored refusal messages and behaviour pins for the surviving nft.py
+# mutants: control-flow in NftBackend.commit/render/rollback (fake-runner
+# seams), translate_rule/build_verdict/_translate_match_parts branches, the
+# mark/dscp/ct/connbytes/hashlimit/statistic/netmap/nfqueue primitives, and
+# the collapse/vmap fold helpers.  Message tests assert the EXACT runtime
+# string (str(exc.value) ==) so an XX-wrapped / upper-cased / None-replaced
+# literal diverges and dies.
+# ---------------------------------------------------------------------------
+
+from pyferm.backend.nft import (  # noqa: E402
+    _CT_STATE_RANK,
+    _connbytes_match,
+    _connbytes_range,
+    _connbytes_u64,
+    _connlimit_count,
+    _ct_bitmask_expr,
+    _datetime_iso,
+    _dscp_class_value,
+    _dscp_value,
+    _elements_equal,
+    _full_reload_text,
+    _hashlimit_key_implies_l4proto,
+    _hashlimit_rate,
+    _hashlimit_update,
+    _icmp_type_expr,
+    _iprange_bound,
+    _mark_value,
+    _masked_mark_expr,
+    _masked_mark_set,
+    _merge_run,
+    _netmap_verdict,
+    _nflog_verdict,
+    _nfqueue_verdict,
+    _prefix_length_mask,
+    _quota_statement,
+    _statistic_match,
+    _stmt_equal,
+    _synproxy_verdict,
+    _tcp_flags_expr,
+    _tcpopt_nft_name,
+    _time_day_match,
+    _time_hour_match,
+    _time_of_day,
+    _tproxy_verdict,
+    _translate_match_set,
+)
+
+
+def _msg(exc: pytest.ExceptionInfo[FermError]) -> str:
+    return str(exc.value)
+
+
+# --- _tcp_flags_expr -------------------------------------------------------
+
+
+def test_tcp_flags_unsupported_shape_message_anchored() -> None:
+    # not-Params, wrong arity, and non-str members all share ONE refusal.
+    for value in (
+        "not-params",
+        Params(values=["only-one"]),
+        Params(values=[Negated("x"), "syn"]),
+    ):
+        with pytest.raises(FermError) as exc:
+            _tcp_flags_expr(value)
+        assert _msg(exc) == "unsupported value shape for nft backend"
+
+
+def test_tcp_flags_negated_none_refused() -> None:
+    # neg must stay a real bool: a negated MASK/NONE has no infix form.
+    with pytest.raises(FermError) as exc:
+        _tcp_flags_expr(Negated(Params(values=["SYN", "NONE"])))
+    assert (
+        _msg(exc)
+        == "negated tcp-flags NONE cannot be expressed for nft backend"
+    )
+
+
+# --- _mark_value / _masked_mark_set / _masked_mark_expr --------------------
+
+
+def test_mark_value_partial_mask_refused() -> None:
+    with pytest.raises(FermError) as exc:
+        _mark_value("0x1/0x2")
+    assert (
+        _msg(exc) == "masked mark '0x1/0x2' not yet supported by nft backend"
+    )
+
+
+def test_masked_mark_set_invalid_and_zero_mask() -> None:
+    with pytest.raises(FermError) as exc:
+        _masked_mark_set("zz/0x1")
+    assert _msg(exc) == "invalid tproxy-mark 'zz/0x1' for nft backend"
+    with pytest.raises(FermError) as exc:
+        _masked_mark_set("0x1/0x0")
+    assert (
+        _msg(exc)
+        == "tproxy-mark '0x1/0x0' has a zero mask (a no-op) for nft backend"
+    )
+
+
+def test_masked_mark_expr_invalid_message() -> None:
+    with pytest.raises(FermError) as exc:
+        _masked_mark_expr("meta mark", "0x1/zz", False)
+    assert _msg(exc) == "invalid mark '0x1/zz' for nft backend"
+
+
+# --- _icmp_type_expr -------------------------------------------------------
+
+
+def test_icmp_type_expr_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _icmp_type_expr(Family.IP, "300", False)
+    assert _msg(exc) == "invalid icmp type '300' for nft backend"
+    with pytest.raises(FermError) as exc:
+        _icmp_type_expr(Family.IP, "3/1", True)
+    assert (
+        _msg(exc) == "negated icmp type/code match cannot be expressed as "
+        "infix nft matches"
+    )
+    with pytest.raises(FermError) as exc:
+        _icmp_type_expr(Family.IP, "bogus", False)
+    assert _msg(exc) == "icmp-type 'bogus' not yet supported by nft backend"
+
+
+def test_icmp_type_octet_boundary() -> None:
+    # 255 is the max octet; the readback keeps an unmapped number verbatim.
+    assert _icmp_type_expr(Family.IP, "255", False) == "icmp type 255"
+
+
+# --- _dscp_value / _dscp_class_value ---------------------------------------
+
+
+def test_dscp_value_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _dscp_value("dscp", "zz")
+    assert (
+        _msg(exc) == "option 'dscp': invalid dscp value 'zz' for nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _dscp_value("dscp", "99")
+    assert (
+        _msg(exc)
+        == "option 'dscp': dscp value '99' out of range 0-63 for nft backend"
+    )
+
+
+def test_dscp_class_value_refusal_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _dscp_class_value("dscp-class", "bogus")
+    assert (
+        _msg(exc)
+        == "option 'dscp-class': unknown dscp class 'bogus' for nft backend"
+    )
+
+
+# --- _iprange_bound --------------------------------------------------------
+
+
+def test_iprange_bound_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _iprange_bound(Family.IP, "1.2.3.4.5")
+    assert _msg(exc) == "invalid iprange bound '1.2.3.4.5' for the nft backend"
+    with pytest.raises(FermError) as exc:
+        _iprange_bound(Family.IP, "fe80::1")
+    assert (
+        _msg(exc) == "iprange bound 'fe80::1' does not match the ip family "
+        "for the nft backend"
+    )
+
+
+# --- _ct_bitmask_expr ------------------------------------------------------
+
+
+def test_ct_bitmask_single_negated_state_uses_inequality() -> None:
+    # a single-member negated `ct state` keeps the `!=` canon; the multi and
+    # the `ct status` selector use the masked bang form instead.
+    assert _ct_bitmask_expr("ct state", ["new"], _CT_STATE_RANK, True) == (
+        "ct state != new"
+    )
+    assert _ct_bitmask_expr("ct state", ["new"], _CT_STATE_RANK, False) == (
+        "ct state new"
+    )
+
+
+def test_ct_bitmask_two_negated_states_use_bang_form() -> None:
+    expr, _key, _element = _translate_match_parts(
+        Family.IP,
+        _opt("state", Negated("NEW,ESTABLISHED"), module="state"),
+        None,
+    )
+    assert expr == "ct state ! established,new"
+
+
+# --- _nfqueue_verdict ------------------------------------------------------
+
+
+def test_nfqueue_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _nfqueue_verdict(
+            {
+                "queue-num": _opt("queue-num", "1"),
+                "queue-balance": _opt("queue-balance", "1:2"),
+            }
+        )
+    assert (
+        _msg(exc) == "'queue-num' and 'queue-balance' are mutually exclusive "
+        "for the nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _nfqueue_verdict({"queue-cpu-fanout": _opt("queue-cpu-fanout", None)})
+    assert (
+        _msg(exc) == "option 'queue-cpu-fanout' needs 'queue-balance' for the "
+        "nft backend"
+    )
+
+
+def test_nfqueue_balance_partition_from_left() -> None:
+    # `low:high` must split on the FIRST colon; a right-split would mis-read
+    # a malformed triple, but the readback form is a straight low-high range.
+    verdict = _nfqueue_verdict({"queue-balance": _opt("queue-balance", "1:3")})
+    assert verdict.to_text() == "queue to 1-3"
+
+
+# --- _synproxy_verdict -----------------------------------------------------
+
+
+def test_synproxy_mss_u16_max_accepted() -> None:
+    # 65535 is the u16 ceiling (inclusive); the wscale twin reads back as 0.
+    verdict = _synproxy_verdict(
+        {"mss": _opt("mss", "65535", module="SYNPROXY")}
+    )
+    assert verdict.to_text() == "synproxy mss 65535 wscale 0"
+
+
+# --- _tproxy_verdict -------------------------------------------------------
+
+
+def test_tproxy_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _tproxy_verdict(Family.IP, {}, has_transport=False)
+    assert (
+        _msg(exc)
+        == "TPROXY needs a transport protocol match (tcp/udp) for the "
+        "nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _tproxy_verdict(Family.IP, {}, has_transport=True)
+    assert _msg(exc) == "TPROXY needs 'on-port' for the nft backend"
+
+
+def test_tproxy_on_port_u16_max_accepted() -> None:
+    verdict = _tproxy_verdict(
+        Family.IP,
+        {"on-port": _opt("on-port", "65535", module="TPROXY")},
+        has_transport=True,
+    )
+    assert verdict.to_text() == "tproxy to :65535 accept"
+
+
+# --- _netmap_verdict -------------------------------------------------------
+
+
+def test_netmap_outside_nat_chain_refused_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _netmap_verdict(Family.IP, "filter", "INPUT", {}, [])
+    assert _msg(exc) == (
+        "NETMAP translates only inside a built-in nat chain "
+        "(PREROUTING/OUTPUT rewrite the destination, "
+        "POSTROUTING/INPUT the source) for the nft backend"
+    )
+
+
+# --- _translate_match_set --------------------------------------------------
+
+
+def test_match_set_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _translate_match_set(Family.IP, Params(values=["extipset", "src"]))
+    assert _msg(exc) == (
+        "option 'match-set': external ipset 'extipset' cannot be "
+        "referenced from nftables; declare it with @set $extipset = "
+        "(...) or keep the iptables backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _translate_match_set(
+            Family.IP, Params(values=[SetRef("s", ["1.1.1.1"]), "src,dst"])
+        )
+    assert _msg(exc) == (
+        "option 'match-set': multiple set-match flags need a "
+        "concatenated set type that @set does not declare"
+    )
+    with pytest.raises(FermError) as exc:
+        _translate_match_set(
+            Family.IP, Params(values=[SetRef("s", ["1.1.1.1"]), "bogus"])
+        )
+    assert _msg(exc) == (
+        "option 'match-set': unsupported set-match flag 'bogus' "
+        "for the nft backend"
+    )
+
+
+def test_match_set_wrong_arity_is_internal_error() -> None:
+    # A non-Params / wrong-length value is a caller contract breach: the
+    # guard is `not Params or len != 2`, so a 1-element Params must still
+    # route to internal_error, never fall through to the unpack.
+    with pytest.raises(FermError, match="internal error"):
+        _translate_match_set(Family.IP, Params(values=["only-one"]))
+
+
+# --- _nflog_verdict --------------------------------------------------------
+
+
+def test_nflog_threshold_refused_and_accepted() -> None:
+    with pytest.raises(FermError) as exc:
+        _nflog_verdict({"nflog-threshold": _opt("nflog-threshold", "0")})
+    assert _msg(exc) == "invalid nflog-threshold '0' for nft backend"
+    ok = _nflog_verdict({"nflog-threshold": _opt("nflog-threshold", "1")})
+    assert ok.to_text() == "log group 0 queue-threshold 1"
+
+
+def test_nflog_group_u16_max_accepted() -> None:
+    ok = _nflog_verdict({"nflog-group": _opt("nflog-group", "65535")})
+    assert ok.to_text() == "log group 65535"
+
+
+# --- _statistic_match ------------------------------------------------------
+
+
+def test_statistic_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _statistic_match({"mode": _opt("mode", "random", module="statistic")})
+    assert (
+        _msg(exc) == "mod statistic mode random needs a 'probability' for the "
+        "nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _statistic_match(
+            {
+                "mode": _opt("mode", "random", module="statistic"),
+                "probability": _opt("probability", "2", module="statistic"),
+            }
+        )
+    assert (
+        _msg(exc)
+        == "statistic probability '2' is outside [0, 1] for the nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _statistic_match(
+            {
+                "mode": _opt("mode", "nth", module="statistic"),
+                "every": _opt("every", "10", module="statistic"),
+                "packet": _opt("packet", "abc", module="statistic"),
+            }
+        )
+    assert _msg(exc) == "invalid statistic packet 'abc' for nft backend"
+
+
+# --- _prefix_length_mask ---------------------------------------------------
+
+
+def test_prefix_length_mask_refusals_and_boundaries() -> None:
+    with pytest.raises(FermError) as exc:
+        _prefix_length_mask(Family.IP, "zz")
+    assert _msg(exc) == "invalid hashlimit mask 'zz' for the nft backend"
+    # /32 and /128 are the inclusive ceilings; one past refuses.
+    assert _prefix_length_mask(Family.IP, "32") == "255.255.255.255"
+    assert _prefix_length_mask(Family.IP6, "128") == (
+        "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+    )
+    with pytest.raises(FermError) as exc:
+        _prefix_length_mask(Family.IP, "33")
+    assert _msg(exc) == "hashlimit mask '33' exceeds /32 for nft"
+    with pytest.raises(FermError) as exc:
+        _prefix_length_mask(Family.IP6, "129")
+    assert _msg(exc) == "hashlimit mask '129' exceeds /128 for nft"
+
+
+# --- _connbytes ------------------------------------------------------------
+
+
+def test_connbytes_range_forms_and_refusals() -> None:
+    # negated open lower bound flips >= to < (readback spelling, not ge/lt)
+    assert _connbytes_range("ct bytes", "100", True) == "ct bytes < 100"
+    # inclusive N:M lo == hi is a legal 1-wide interval, not lo > hi
+    assert _connbytes_range("ct bytes", "5:5", False) == "ct bytes 5-5"
+    with pytest.raises(FermError) as exc:
+        _connbytes_range("ct bytes", ":", False)
+    assert _msg(exc) == "invalid connbytes range ':' for the nft backend"
+
+
+def test_connbytes_u64_and_match_refusals() -> None:
+    with pytest.raises(FermError) as exc:
+        _connbytes_u64("abc")
+    assert _msg(exc) == "invalid connbytes value 'abc' for the nft backend"
+    with pytest.raises(FermError) as exc:
+        _connbytes_match({})
+    assert (
+        _msg(exc)
+        == "mod connbytes needs a 'connbytes' value for the nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _connbytes_match(
+            {"connbytes": _opt("connbytes", "100:", module="connbytes")}
+        )
+    assert _msg(exc) == (
+        "mod connbytes needs both 'connbytes-dir' and 'connbytes-mode' "
+        "for the nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _connbytes_match(
+            {
+                "connbytes": _opt("connbytes", "100:", module="connbytes"),
+                "connbytes-dir": _opt(
+                    "connbytes-dir", Negated("both"), module="connbytes"
+                ),
+                "connbytes-mode": _opt(
+                    "connbytes-mode", "bytes", module="connbytes"
+                ),
+            }
+        )
+    assert (
+        _msg(exc)
+        == "mod connbytes dir/mode cannot be negated for the nft backend"
+    )
+
+
+# --- _quota_statement ------------------------------------------------------
+
+
+def test_quota_over_ceiling_refused_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _quota_statement(_opt("quota", "9223372036854775808", module="quota"))
+    assert _msg(exc) == (
+        "quota '9223372036854775808' exceeds nft's 2^63-1 ceiling "
+        "for the nft backend"
+    )
+
+
+# --- _connlimit_count ------------------------------------------------------
+
+
+def test_connlimit_count_u32_boundary() -> None:
+    assert _connlimit_count("4294967295") == "4294967295"
+    with pytest.raises(FermError) as exc:
+        _connlimit_count("4294967296")
+    assert (
+        _msg(exc)
+        == "connlimit count '4294967296' exceeds 2^32-1 for the nft backend"
+    )
+
+
+# --- _hashlimit_rate / _hashlimit_update -----------------------------------
+
+
+def test_hashlimit_rate_lower_boundary() -> None:
+    # 1 packet is the minimum legal rate (the guard is `< 1`, not `<= 1`).
+    assert _hashlimit_rate("1/second") == ("1", "second")
+
+
+def _hlrule(*opts: RenderedOption) -> RenderedRule:
+    return _rule(*opts, _target("ACCEPT"))
+
+
+def test_hashlimit_update_refusals_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _hashlimit_update(
+            Family.IP,
+            _hlrule(
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            ),
+            "tcp",
+        )
+    assert (
+        _msg(exc)
+        == "mod hashlimit needs an upto/above rate for the nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _hashlimit_update(
+            Family.IP,
+            _hlrule(
+                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+                _opt("hashlimit-name", "x", module="hashlimit"),
+                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+                _opt("hashlimit-burst", "zz", module="hashlimit"),
+            ),
+            "tcp",
+        )
+    assert _msg(exc) == "invalid hashlimit burst 'zz' for the nft backend"
+
+
+def test_hashlimit_update_threads_set_type() -> None:
+    # the emitted update carries the address set type from the mode key, not
+    # a dropped/None placeholder.
+    upd = _hashlimit_update(
+        Family.IP,
+        _hlrule(
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "h", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        ),
+        "tcp",
+    )
+    assert upd.set_type == "ipv4_addr"
+
+
+# --- _hashlimit_key_implies_l4proto ----------------------------------------
+
+
+def test_hashlimit_key_implies_l4proto_requires_both() -> None:
+    # only a `hashlimit`-module `hashlimit-mode` option carrying a port token
+    # implies l4proto; a same-named option from another module must NOT.
+    port_mode = _opt("hashlimit-mode", "srcport", module="hashlimit")
+    assert _hashlimit_key_implies_l4proto([port_mode]) is True
+    assert (
+        _hashlimit_key_implies_l4proto(
+            [_opt("hashlimit-mode", "dstport", module="hashlimit")]
+        )
+        is True
+    )
+    # wrong module -> the AND guard rejects it
+    assert (
+        _hashlimit_key_implies_l4proto(
+            [_opt("hashlimit-mode", "srcport", module="time")]
+        )
+        is False
+    )
+    # right module/name but an address-only key -> no port token
+    assert (
+        _hashlimit_key_implies_l4proto(
+            [_opt("hashlimit-mode", "srcip", module="hashlimit")]
+        )
+        is False
+    )
+
+
+# --- _tcpopt_nft_name ------------------------------------------------------
+
+
+def test_tcpopt_number_boundary() -> None:
+    # 255 is the inclusive max tcp option number.
+    assert _tcpopt_nft_name("255") == "255"
+    with pytest.raises(FermError) as exc:
+        _tcpopt_nft_name("256")
+    assert _msg(exc) == "invalid tcp option '256' for nft backend"
+
+
+# --- _time_of_day / _datetime_iso / _time_* --------------------------------
+
+
+def test_time_of_day_out_of_range_message() -> None:
+    with pytest.raises(FermError) as exc:
+        _time_of_day("24:00")
+    assert _msg(exc) == "invalid time '24:00' for nft backend"
+
+
+def test_datetime_iso_invalid_message() -> None:
+    with pytest.raises(FermError) as exc:
+        _datetime_iso("2020-1-1")
+    assert _msg(exc) == "invalid date '2020-1-1' for nft backend"
+    with pytest.raises(FermError) as exc:
+        _datetime_iso("2020-01-01T24:00")
+    assert _msg(exc) == "invalid date '2020-01-01T24:00' for nft backend"
+
+
+def test_time_hour_default_low_bound() -> None:
+    # a lone timestop keeps xt's implicit 00:00 start (a literal, not XX-ed).
+    assert _time_hour_match(
+        {"timestop": _opt("timestop", "12:00", module="time")}
+    ) == ('meta hour "00:00"-"12:00"')
+
+
+def test_time_day_combined_keys_refused_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        _time_day_match(
+            {
+                "days": _opt("days", "Mon", module="time"),
+                "weekdays": _opt("weekdays", "Tue", module="time"),
+            }
+        )
+    assert (
+        _msg(exc)
+        == "mod time cannot combine 'days' and 'weekdays' for the nft backend"
+    )
+
+
+# --- _classify_priority (via CLASSIFY) -------------------------------------
+
+
+def test_classify_priority_zero_minor_not_none() -> None:
+    # 0:5 is NOT the tc `none` sentinel (that is 0:0); the AND guard keeps a
+    # non-zero minor from collapsing to none.
+    verdict = build_verdict(
+        Family.IP,
+        "mangle",
+        "jump",
+        "CLASSIFY",
+        {"set-class": _opt("set-class", "0:5", module="CLASSIFY")},
+    )
+    assert verdict.to_text() == "meta priority set 0:5"
+
+
+# --- build_verdict: CONNMARK / DSCP / MARK / CHECKSUM ----------------------
+
+
+def test_build_verdict_connmark_masked_register_refused() -> None:
+    for key in ("ctmask", "mask"):
+        with pytest.raises(FermError) as exc:
+            build_verdict(
+                Family.IP,
+                "mangle",
+                "jump",
+                "CONNMARK",
+                {key: _opt(key, "0xff", module="CONNMARK")},
+            )
+        assert _msg(exc) == (
+            f"CONNMARK '{key}' mixes two masked registers; nft "
+            "cannot express it for the nft backend"
+        )
+
+
+def test_build_verdict_connmark_two_arith_ops_refused() -> None:
+    with pytest.raises(FermError) as exc:
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "CONNMARK",
+            {
+                "set-mark": _opt("set-mark", "1", module="CONNMARK"),
+                "and-mark": _opt("and-mark", "2", module="CONNMARK"),
+            },
+        )
+    assert _msg(exc) == "CONNMARK target not yet supported by nft backend"
+
+
+def test_build_verdict_dscp_invalid_value_and_class() -> None:
+    with pytest.raises(FermError) as exc:
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "DSCP",
+            {"set-dscp": _opt("set-dscp", "99", module="DSCP")},
+        )
+    assert _msg(exc) == (
+        "option 'set-dscp': dscp value '99' out of range 0-63 for nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "DSCP",
+            {"set-dscp-class": _opt("set-dscp-class", "bogus", module="DSCP")},
+        )
+    assert _msg(exc) == (
+        "option 'set-dscp-class': unknown dscp class 'bogus' for nft backend"
+    )
+
+
+def test_build_verdict_mark_arith_zero_mask_names_option() -> None:
+    with pytest.raises(FermError) as exc:
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "MARK",
+            {"set-xmark": _opt("set-xmark", "0x5/0x0", module="MARK")},
+        )
+    assert (
+        _msg(exc)
+        == "set-xmark '0x5/0x0' has a zero mask (a no-op) for nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "MARK",
+            {"set-mark": _opt("set-mark", "0x0/0x0", module="MARK")},
+        )
+    assert (
+        _msg(exc)
+        == "set-mark '0x0/0x0' has a zero mask (a no-op) for nft backend"
+    )
+
+
+def test_build_verdict_checksum_refused_anchored() -> None:
+    with pytest.raises(FermError) as exc:
+        build_verdict(Family.IP, "mangle", "jump", "CHECKSUM", {})
+    assert _msg(exc) == (
+        "CHECKSUM target has no nft equivalent (kernels since 4.19 "
+        "handle virtio checksum offload without it); use the iptables "
+        "backend for this rule"
+    )
+
+
+# --- _translate_match_parts branch behaviour -------------------------------
+
+
+def _translate_match(domain: Family, option: RenderedOption) -> str:
+    return _translate_match_parts(domain, option, "tcp")[0]
+
+
+def test_match_parts_negated_operators_keep_bang() -> None:
+    # the `_op(neg)` threading must pass the real neg flag, not a constant:
+    # each negated form keeps its `!= ` prefix.
+    assert (
+        _translate_match_parts(
+            Family.IP,
+            _opt("destination-ports", Negated("22"), module="multiport"),
+            "tcp",
+        )[0]
+        == "tcp dport != 22"
+    )
+    assert (
+        _translate_match_parts(Family.IP, _opt("dscp", Negated("10")), None)[0]
+        == "ip dscp != af11"
+    )
+    assert (
+        _translate_match_parts(Family.ARP, _opt("opcode", Negated("1")), None)[
+            0
+        ]
+        == "arp operation != request"
+    )
+    assert (
+        _translate_match_parts(Family.IP, _opt("ttl-gt", Negated("5")), None)[
+            0
+        ]
+        == "ip ttl != > 5"
+    )
+
+
+def test_match_parts_dscp_invalid_names_option() -> None:
+    with pytest.raises(FermError) as exc:
+        _translate_match_parts(Family.IP, _opt("dscp", "zz"), None)
+    assert (
+        _msg(exc) == "option 'dscp': invalid dscp value 'zz' for nft backend"
+    )
+    with pytest.raises(FermError) as exc:
+        _translate_match_parts(Family.IP, _opt("dscp-class", "bogus"), None)
+    assert (
+        _msg(exc)
+        == "option 'dscp-class': unknown dscp class 'bogus' for nft backend"
+    )
+
+
+def test_match_parts_length_and_mac_refusals() -> None:
+    with pytest.raises(FermError) as exc:
+        _translate_match_parts(Family.IP, _opt("length", "5:x"), None)
+    assert _msg(exc) == "invalid length '5:x' for nft backend"
+    with pytest.raises(FermError) as exc:
+        _translate_match_parts(Family.IP, _opt("mac-source", "zz"), None)
+    assert _msg(exc) == "invalid mac 'zz' for nft backend"
+
+
+def test_match_parts_iprange_boolean_guard() -> None:
+    # `not sep or not low or not high` must reject a missing bound with the
+    # iprange message, not slip through to the per-bound validator.
+    for scalar in ("10.0.0.1-", "-10.0.0.2"):
+        with pytest.raises(FermError) as exc:
+            _translate_match_parts(Family.IP, _opt("src-range", scalar), None)
+        assert _msg(exc) == f"invalid iprange '{scalar}' for the nft backend"
+
+
+# --- collapse / vmap fold helpers ------------------------------------------
+
+
+def _set_match(element: str) -> NftMatch:
+    return NftMatch(
+        f"tcp dport {element}", set_key="tcp dport", element=element
+    )
+
+
+def test_elements_equal_none_semantics() -> None:
+    assert _elements_equal(None, None) is True
+    assert _elements_equal(None, ["22"]) is False
+    assert _elements_equal(["22", "80"], ["80", "22"]) is True
+
+
+def test_stmt_equal_type_and_expr_paths() -> None:
+    # a match vs a verdict is never equal (the isinstance AND guard); two
+    # plain-expr matches compare by expr.
+    assert _stmt_equal(_set_match("22"), NftVerdict("accept")) is False
+    assert (
+        _stmt_equal(NftMatch("ct state new"), NftMatch("ct state new")) is True
+    )
+    assert (
+        _stmt_equal(NftMatch("ct state new"), NftMatch("ct state old"))
+        is False
+    )
+    # eligible + plain of the SAME expr falls to the expr path (both set_key
+    # must be non-None to take the structured path).
+    assert _stmt_equal(_set_match("22"), NftMatch("tcp dport 22")) is True
+
+
+def test_merge_run_extends_prefolded_and_keeps_comment() -> None:
+    prefolded = NftRule(
+        [
+            NftMatch(
+                "tcp dport 22", set_key="tcp dport", elements=["22", "80"]
+            ),
+            NftVerdict("accept"),
+        ],
+        comment="keepme",
+    )
+    single = NftRule([_set_match("443"), NftVerdict("accept")])
+    merged = _merge_run([prefolded, single], 0, 1, 0)
+    assert merged.statements[0].to_text() == "tcp dport { 22, 80, 443 }"
+    assert merged.comment == "keepme"
+
+
+def test_collapse_folds_full_run_of_singles() -> None:
+    rules = [
+        NftRule([_set_match(p), NftVerdict("accept")])
+        for p in ("22", "80", "443", "8080")
+    ]
+    out = _collapse_chain_rules(rules)
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "tcp dport { 22, 80, 443, 8080 }"
+
+
+def test_vmap_candidate_rejects_non_leaf_shapes() -> None:
+    # set_key present but no single element -> not a vmap leaf
+    no_element = NftRule(
+        [NftMatch("tcp dport", set_key="tcp dport"), NftVerdict("accept")]
+    )
+    assert _vmap_candidate(no_element) is None
+    # element present but no set_key (e.g. a negated match) -> not a leaf
+    no_key = NftRule(
+        [NftMatch("tcp dport 22", element="22"), NftVerdict("accept")]
+    )
+    assert _vmap_candidate(no_key) is None
+    # a real leaf still folds
+    leaf = NftRule([_set_match("22"), NftVerdict("accept")])
+    assert _vmap_candidate(leaf) == ("tcp dport", "22", "accept")
+
+
+def test_full_reload_text_rewrites_flush_to_delete() -> None:
+    save = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        "add rule ip ferm INPUT accept\n"
+    )
+    out = _full_reload_text(save, "ip")
+    assert "delete table ip ferm\nadd table ip ferm\n" in out
+    assert "flush table ip ferm\n" not in out
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-10 mutation-kill batch 2 (part 2): lifecycle control flow
+#
+# NftBackend.commit/render/rollback thread family/delta/full-reload decisions
+# through fake runner seams (project memory: runner default None + late
+# binding -- the seam stays untouched).  These pin the delta-vs-full-reload
+# choice, the applied stdin text, and which domain_info reaches `restore`.
+# ---------------------------------------------------------------------------
+
+_KILL2_SAVE = (
+    "add table ip ferm\n"
+    "flush table ip ferm\n"
+    "add chain ip ferm INPUT "
+    "{ type filter hook input priority filter; policy accept; }\n"
+    "add rule ip ferm INPUT tcp dport 22 accept\n"
+    "add rule ip ferm INPUT tcp dport 80 accept\n"
+)
+_KILL2_PREV_ONE = (
+    "table ip ferm {\n"
+    "\tchain INPUT {\n"
+    "\t\ttype filter hook input priority filter; policy accept;\n"
+    "\t\ttcp dport 22 accept\n"
+    "\t}\n"
+    "}\n"
+)
+_KILL2_PREV_SAME = (
+    "table ip ferm {\n"
+    "\tchain INPUT {\n"
+    "\t\ttype filter hook input priority filter; policy accept;\n"
+    "\t\ttcp dport 22 accept\n"
+    "\t\ttcp dport 80 accept\n"
+    "\t}\n"
+    "}\n"
+)
+
+
+class _CommitResult:
+    def __init__(self) -> None:
+        self.emitted: list[str] = []
+        self.applied: list[str] = []
+        self.restore_di: list[object] = []
+        self.info: DomainInfo | None = None
+        self.rc: int | None = None
+
+
+def _run_commit(
+    previous: str | None,
+    options: Options,
+    save: str = _KILL2_SAVE,
+) -> _CommitResult:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    info.previous = previous
+    result = _CommitResult()
+    result.info = info
+
+    def restore(di: object, text: str) -> None:
+        result.restore_di.append(di)
+        result.applied.append(text)
+
+    result.rc = NftBackend().commit(
+        Family.IP,
+        info,
+        Rendered(save=save),
+        options,
+        execute=lambda _c: None,
+        emit_line=result.emitted.append,
+        restore=restore,
+    )
+    return result
+
+
+def test_commit_delta_flushes_chain_not_table() -> None:
+    # previous carries one of the two rules -> a real delta that flushes the
+    # chain and re-adds it, never the whole table.
+    res = _run_commit(_KILL2_PREV_ONE, Options(noexec=False, lines=True))
+    assert len(res.applied) == 1
+    applied = res.applied[0]
+    assert "flush chain ip ferm INPUT" in applied
+    assert "delete table ip ferm" not in applied
+    assert "flush table ip ferm" not in applied
+    # the same delta text is what was shown under --lines
+    assert any("flush chain ip ferm INPUT" in line for line in res.emitted)
+
+
+def test_commit_idempotent_delta_applies_nothing() -> None:
+    # previous already matches the rendered save -> empty delta -> nft -f is
+    # skipped entirely (no restore call).
+    res = _run_commit(_KILL2_PREV_SAME, Options(noexec=False, lines=True))
+    assert res.applied == []
+    assert res.emitted == []
+
+
+def test_commit_first_run_full_reloads_with_delete_table() -> None:
+    # no previous snapshot -> needs_full_reload -> whole-table replace via
+    # delete+add table, never a bare `flush table`.
+    res = _run_commit(None, Options(noexec=False, lines=True))
+    assert len(res.applied) == 1
+    applied = res.applied[0]
+    assert "delete table ip ferm" in applied
+    assert "flush table ip ferm" not in applied
+
+
+def test_commit_full_reload_opt_out_forces_delete_table() -> None:
+    # --full-reload turns off the delta even with a usable snapshot.
+    res = _run_commit(
+        _KILL2_PREV_ONE, Options(noexec=False, lines=True, full_reload=True)
+    )
+    assert len(res.applied) == 1
+    assert "delete table ip ferm" in res.applied[0]
+
+
+def test_commit_restore_receives_domain_info_not_none() -> None:
+    # `restore(domain_info, apply_text)` must thread the real domain_info so
+    # the applier can pick the right tool/family.
+    res = _run_commit(None, Options(noexec=False, lines=False))
+    assert res.restore_di == [res.info]
+
+
+def test_commit_lines_false_emits_nothing() -> None:
+    # the `options.lines and apply_text` guard must be AND: without --lines no
+    # script text is echoed even though a full reload is applied.
+    res = _run_commit(None, Options(noexec=False, lines=False))
+    assert res.emitted == []
+    assert len(res.applied) == 1  # still applied, just not echoed
+
+
+def test_commit_noflush_full_reload_neither_flushes_nor_deletes() -> None:
+    # --noflush keeps the apply append-only: no flush table (the save carries
+    # none) and the full-reload transform must not inject delete table.
+    save = _KILL2_SAVE.replace("flush table ip ferm\n", "")
+    res = _run_commit(
+        None, Options(noexec=False, lines=True, noflush=True), save=save
+    )
+    assert len(res.applied) == 1
+    assert "flush table ip ferm" not in res.applied[0]
+    assert "delete table ip ferm" not in res.applied[0]
+
+
+# --- render: None-threading through the family pipeline --------------------
+
+
+def _render_ip(info: DomainInfo, options: Options | None = None) -> str:
+    save = (
+        NftBackend()
+        .render(Family.IP, info, options or Options(test=True))
+        .save
+    )
+    assert save is not None
+    return save
+
+
+def test_render_threads_family_table_and_set_type() -> None:
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    inp = table.chains.setdefault("INPUT", ChainInfo(policy="DROP"))
+    inp.rules.append(_rule(_opt("source", "10.0.0.1"), _target("ACCEPT")))
+    inp.rules.append(
+        _rule(
+            _opt("source", SetRef("goodguys", ["10.0.0.0/24"])),
+            _target("ACCEPT"),
+        )
+    )
+    inp.rules.append(_rule(_target("mychain")))
+    table.chains.setdefault("mychain", ChainInfo())
+    save = _render_ip(info)
+    # domain threaded into translate_rule -> real family prefix on the match
+    assert "add rule ip ferm INPUT ip saddr 10.0.0.1 accept\n" in save
+    # table threaded into the jump target name (filter keeps the bare name)
+    assert "add rule ip ferm INPUT jump mychain\n" in save
+    # domain threaded into _collect_set_declarations -> real set type
+    assert (
+        "add set ip ferm goodguys { type ipv4_addr; flags interval; }\n"
+        in save
+    )
+
+
+def test_render_finalizes_connlimit_name_from_family_table_chain() -> None:
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    inp = table.chains.setdefault("INPUT", ChainInfo(policy="DROP"))
+    inp.rules.append(
+        _rule(
+            _opt("connlimit-above", "20", module="connlimit"),
+            _opt("connlimit-mask", "24", module="connlimit"),
+            _target("DROP"),
+        )
+    )
+    save = _render_ip(info)
+    # the content hash folds (family, table, chain, rule text, ordinal); the
+    # rendered name must match the value _finalize_connlimit_names computes
+    # for exactly (ip, filter, INPUT).
+    assert "connlimit_fc6b45d39967" in save
+    assert save.count("connlimit_fc6b45d39967") == 2  # decl + update reference
+
+
+def test_render_recent_rule_uses_prepass_specs() -> None:
+    # render must build recent specs and thread them into translate_rule; a
+    # dropped spec would raise internal_error instead.
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    inp = table.chains.setdefault("INPUT", ChainInfo(policy="ACCEPT"))
+    inp.rules.append(
+        _rule(
+            _opt("rcheck", None, module="recent"),
+            _opt("seconds", "60", module="recent"),
+            _opt("hitcount", "3", module="recent"),
+            _opt("name", "R", module="recent"),
+            _target("DROP"),
+        )
+    )
+    save = _render_ip(info)
+    assert (
+        "add rule ip ferm INPUT update @recent_R "
+        "{ ip saddr timeout 1m limit rate over 3/minute "
+        "burst 2 packets } drop\n"
+    ) in save
+
+
+def test_render_netmap_rule_threads_chain() -> None:
+    # chain is only consumed by _netmap_verdict; dropping it makes NETMAP
+    # refuse (no built-in nat chain known), so a successful render pins the
+    # chain threading.
+    info = DomainInfo()
+    nat = info.tables.setdefault("nat", TableInfo())
+    pre = nat.chains.setdefault("PREROUTING", ChainInfo(policy="ACCEPT"))
+    pre.rules.append(
+        _rule(
+            _opt("destination", "10.0.0.0/24"),
+            _opt("to", "192.168.0.0/24", module="NETMAP"),
+            _target("NETMAP"),
+        )
+    )
+    save = _render_ip(info)
+    assert (
+        "dnat ip prefix to ip daddr map { 10.0.0.0/24 : 192.168.0.0/24 }"
+        in save
+    )
+
+
+def test_render_noflush_omits_flush_line() -> None:
+    # noflush must thread to serialize_table (not a hardcoded False/None).
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    table.chains.setdefault("INPUT", ChainInfo(policy="DROP")).rules.append(
+        _rule(_target("ACCEPT"))
+    )
+    save = _render_ip(info, Options(test=True, noflush=True))
+    assert "flush table ip ferm" not in save
+    assert save.startswith("add table ip ferm\n")
+
+
+def test_render_preserve_message_anchored() -> None:
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    table.preserve_regexes.append(re.compile("foo"))
+    with pytest.raises(FermError) as exc:
+        NftBackend().render(Family.IP, info, Options(test=True))
+    assert _msg(exc) == "@preserve not yet supported by nft backend"
+
+
+# --- rollback --------------------------------------------------------------
+
+
+def test_rollback_restore_receives_domain_info() -> None:
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    info.enabled = True
+    info.previous = "table ip ferm {\n}\n"
+    seen: list[object] = []
+    NftBackend().rollback(
+        Family.IP,
+        info,
+        Options(),
+        execute=lambda _c: None,
+        restore=lambda di, _save: seen.append(di),
+    )
+    assert seen == [info]
+
+
+# --- build_chains: arp base-chain map needs the real domain ----------------
+
+
+def test_build_chains_arp_forward_has_no_mapping() -> None:
+    # map_base_chain must receive the real domain: arp maps only filter
+    # INPUT/OUTPUT, so an arp filter/FORWARD base chain refuses (the ip map
+    # would wrongly accept it).
+    table = TableInfo(chains={"FORWARD": ChainInfo()})
+    with pytest.raises(FermError, match="not yet supported"):
+        build_chains(Family.ARP, "filter", table)
+
+
+# --- serialize_table: the dynamic-decl loop must CONTINUE, not break -------
+
+
+def test_serialize_table_emits_all_dynamic_declarations() -> None:
+    # two dynamic set declarations: the first must not `break` the loop and
+    # swallow the second.
+    hl_a = translate_rule(
+        Family.IP,
+        "filter",
+        _hashlimit_rule(
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "aaa", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        ),
+    )
+    hl_b = translate_rule(
+        Family.IP,
+        "filter",
+        _hashlimit_rule(
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", "bbb", module="hashlimit"),
+            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        ),
+    )
+    lines = _dynamic_add_set_lines(Family.IP, "c", [hl_a, hl_b])
+    names = {line.split()[4] for line in lines}
+    assert names == {"hashlimit_aaa", "hashlimit_bbb"}
+
+
+# --- render_comment boundary + _nft_time_canon + _reduce_rate --------------
+
+
+def test_render_comment_boundary_inclusive() -> None:
+    # the limit is inclusive: exactly NFT_COMMENT_MAX bytes pass, one more
+    # refuses (the guard is `>`, not `>=`).
+    assert render_comment("x" * 128) == 'comment "' + "x" * 128 + '"'
+    with pytest.raises(FermError, match="exceeds nft limit"):
+        render_comment("x" * 129)
+
+
+def test_nft_time_canon_positive_boundary() -> None:
+    # 1 ms is the minimum positive timeout (the guard is `<= 0`, not `<= 1`).
+    assert _nft_time_canon(1) == "1ms"
+    with pytest.raises(FermError, match="must be positive"):
+        _nft_time_canon(0)
+
+
+def test_reduce_rate_unit_quotient_one() -> None:
+    # a quotient of exactly 1 at the smallest unit must be accepted (the guard
+    # is `>= 1`): 1 packet per 1 second is `1/second`, not promoted to minute.
+    assert _reduce_rate(1, 1) == (1, "second")
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-10 mutation-kill batch 2 (part 3): mark register boundaries
+#
+# The 0/_MARK_MAX comparison edges in _mark_value / _masked_mark_expr /
+# _masked_mark_set / _setmark_effective, plus the effective-mask arithmetic
+# that a `int(0)` mutation would silently zero.
+# ---------------------------------------------------------------------------
+
+
+def test_mark_value_range_edges() -> None:
+    # 0 is a legal mark (the guard is `0 <= value`, not `1 <=`/`0 <`).
+    assert _mark_value("0") == "0x00000000"
+    with pytest.raises(FermError) as exc:
+        _mark_value("0x100000000")
+    assert _msg(exc) == "invalid mark '0x100000000' for nft backend"
+    # a non-full mask whose bits are unparsable still refuses as masked, not
+    # as a bare value (full_mask stays False on the ValueError path).
+    with pytest.raises(FermError) as exc:
+        _mark_value("0x1/zz")
+    assert _msg(exc) == "masked mark '0x1/zz' not yet supported by nft backend"
+
+
+def test_masked_mark_expr_range_edges() -> None:
+    # value 0 and mask 0 are both legal (lower bounds inclusive); a full mask
+    # value with a partial mask is legal (upper bound inclusive).
+    assert (
+        _masked_mark_expr("meta mark", "0x0/0x1", False)
+        == "meta mark & 0x00000001 == 0x00000000"
+    )
+    assert (
+        _masked_mark_expr("meta mark", "0x0/0x0", False)
+        == "meta mark & 0x00000000 == 0x00000000"
+    )
+    assert (
+        _masked_mark_expr("meta mark", "0xffffffff/0x1", False)
+        == "meta mark & 0x00000001 == 0xffffffff"
+    )
+
+
+def test_masked_mark_set_out_of_range_value() -> None:
+    # the range guard is an AND: a value past _MARK_MAX must refuse even with
+    # a legal mask (an OR would let it through to the arithmetic).
+    with pytest.raises(FermError) as exc:
+        _masked_mark_set("0x100000000/0x1")
+    assert _msg(exc) == "invalid tproxy-mark '0x100000000/0x1' for nft backend"
+
+
+def test_setmark_effective_folds_value_into_mask() -> None:
+    # the effective mask is value | mask; a mutation that reads the mask as
+    # int(0) would drop the mask bits and mis-fold 0x5/0x3 to 0x5/0x5.
+    assert _setmark_effective("0x5/0x3") == "0x5/0x7"
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-10 mutation-kill batch 2 (part 4): _collect_set_declarations refusals
+#
+# Full-anchored variants of the three declaration-collection guards (the
+# unfinalized-connlimit sentinel, the dynamic-set conflict, and the
+# stateful/named collision) so the XX/upper/None message mutants diverge.
+# ---------------------------------------------------------------------------
+
+
+def _hl_named(name: str, mode: str) -> NftRule:
+    return translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
+            _opt("hashlimit-name", name, module="hashlimit"),
+            _opt("hashlimit-mode", mode, module="hashlimit"),
+            _target("ACCEPT"),
+        ),
+    )
+
+
+def test_collect_unfinalized_connlimit_message_anchored() -> None:
+    sentinel = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("connlimit-above", "20", module="connlimit"),
+            _opt("connlimit-mask", "24", module="connlimit"),
+            _target("DROP"),
+        ),
+    )
+    with pytest.raises(FermError) as exc:
+        _collect_set_declarations(Family.IP, {"c": [sentinel]})
+    assert _msg(exc) == (
+        "internal error: connlimit set reached declaration collection "
+        "with an unfinalized name"
+    )
+
+
+def test_collect_dynamic_set_conflict_message_anchored() -> None:
+    # two hashlimit rules share a name but declare different key types.
+    with pytest.raises(FermError) as exc:
+        _collect_set_declarations(
+            Family.IP,
+            {"c": [_hl_named("d", "srcip"), _hl_named("d", "dstport")]},
+        )
+    assert _msg(exc) == (
+        "set 'hashlimit_d' has conflicting declarations for the nft backend"
+    )
+
+
+def test_collect_stateful_named_collision_message_anchored() -> None:
+    # a static @set whose name collides with a dynamic (hashlimit) set.
+    named = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("source", SetRef("hashlimit_dup", ["10.0.0.1"])),
+            _target("DROP"),
+        ),
+    )
+    with pytest.raises(FermError) as exc:
+        _collect_set_declarations(
+            Family.IP, {"c": [_hl_named("dup", "srcip"), named]}
+        )
+    assert _msg(exc) == (
+        "named set 'hashlimit_dup' collides with a stateful set of "
+        "the same name for the nft backend"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-10 mutation-kill batch 2 (part 4b): _finalize_connlimit_names hash
+#
+# The set name is a content hash over (family, table, chain, rule text,
+# per-text ordinal).  Pinning the exact names of two byte-identical rules
+# catches the ordinal arithmetic, the join separators, and the digest slice
+# width (all of which shift the hash).
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_connlimit_exact_names_for_identical_rules() -> None:
+    def make() -> NftRule:
+        return translate_rule(
+            Family.IP,
+            "filter",
+            _connlimit(
+                _cl("connlimit-above", "20"), _cl("connlimit-mask", "24")
+            ),
+        )
+
+    rules = [make(), make()]
+    _finalize_connlimit_names(Family.IP, "filter", "FORWARD", rules)
+    # ordinal 0 and ordinal 1 give two distinct, exact content hashes; any
+    # drift in the ordinal step, the join glue, or the 12-char slice changes
+    # these literals.
+    assert _connlimit_name(rules[0]) == "connlimit_11467455846b"
+    assert _connlimit_name(rules[1]) == "connlimit_37377a5e09a1"

@@ -1,0 +1,12 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add set ip ferm connlimit_411c6917caf6 { type ipv4_addr; size 65535; flags dynamic; }
+add set ip ferm connlimit_57500c6b3bba { type ipv4_addr; size 65535; flags dynamic; }
+add set ip ferm connlimit_838418e56588 { type ipv4_addr; size 65535; flags dynamic; }
+add set ip ferm connlimit_98e1180ff097 { type ipv4_addr; size 65535; flags dynamic; }
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT tcp dport 80 add @connlimit_838418e56588 { ip saddr & 255.255.255.0 ct count over 20 } drop
+add rule ip ferm INPUT tcp dport 443 add @connlimit_98e1180ff097 { ip saddr & 255.255.255.0 ct count over 20 } drop
+add rule ip ferm INPUT udp dport 80 add @connlimit_411c6917caf6 { ip saddr & 255.255.255.0 ct count over 20 } drop
+add rule ip ferm INPUT udp dport 443 add @connlimit_57500c6b3bba { ip saddr & 255.255.255.0 ct count over 20 } drop
