@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeAlias, cast
 
-from pyferm.domains import (
+from .domains import (
     DEFAULT_TABLE,
     CapturePrevious,
     ChainInfo,
@@ -57,8 +57,8 @@ from pyferm.domains import (
     parse_family,
     resolve_chain_priority,
 )
-from pyferm.errors import FermError, error, internal_error, warning
-from pyferm.functions import (
+from .errors import FermError, error, internal_error, warning
+from .functions import (
     Evaluator,
     ipfilter,
     realize_protocol,
@@ -66,7 +66,7 @@ from pyferm.functions import (
     splitpath_dir,
     splitpath_file,
 )
-from pyferm.modules import (
+from .modules import (
     MATCH_DEFS,
     PORT_PROTOCOLS,
     PROTO_DEFS,
@@ -76,14 +76,14 @@ from pyferm.modules import (
     ModuleDef,
     ParamFunction,
 )
-from pyferm.rules import (
+from .rules import (
     is_netfilter_core_target,
     is_netfilter_module_target,
     mkrules2,
     netfilter_canonical_protocol,
     netfilter_protocol_module,
 )
-from pyferm.scope import (
+from .scope import (
     Frame,
     Rule,
     SourcePosition,
@@ -91,8 +91,8 @@ from pyferm.scope import (
     merge_keywords,
     new_level,
 )
-from pyferm.tokenizer import Line, Script, Token, Tokenizer, make_line_token
-from pyferm.tree import (
+from .tokenizer import Line, Script, Token, Tokenizer, make_line_token
+from .tree import (
     Block,
     BlockNode,
     DefNode,
@@ -106,7 +106,7 @@ from pyferm.tree import (
     SetNode,
     SubchainNode,
 )
-from pyferm.values import (
+from .values import (
     Multi,
     Params,
     SetRef,
@@ -119,13 +119,13 @@ from pyferm.values import (
     stringify,
     to_array,
 )
-from pyferm.walker import Walker
+from .walker import Walker
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterable, Iterator
 
-    from pyferm.config import Options
-    from pyferm.scope import Scope
+    from .config import Options
+    from .scope import Scope
 
 #: ferm 1.1 keywords automatically remapped with a warning (Perl ``:86``).
 DEPRECATED_KEYWORDS: Final[dict[str, str]] = {"realgoto": "goto"}

@@ -4,22 +4,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from pyferm.domains import (
+from ...domains import (
     Family,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.modules import PORT_PROTOCOLS
-from pyferm.nftset import (
+from ...errors import FermError, internal_error
+from ...modules import PORT_PROTOCOLS
+from ...nftset import (
     sort_set_elements,
 )
-from pyferm.scope import OptionKind
-from pyferm.values import (
+from ...scope import OptionKind
+from ...values import (
     SetRef,
     iter_setrefs,
 )
 
 if TYPE_CHECKING:
-    from pyferm.rules import (
+    from ...rules import (
         RenderedOption,
         RenderedRule,
     )

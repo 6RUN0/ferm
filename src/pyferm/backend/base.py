@@ -27,8 +27,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from pyferm.config import Options
-    from pyferm.domains import DomainInfo, Family, ShellSnapshot
+    from ..config import Options
+    from ..domains import DomainInfo, Family, ShellSnapshot
 
 
 @runtime_checkable

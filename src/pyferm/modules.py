@@ -33,8 +33,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Final, TypeAlias
 
-from pyferm.errors import FermError
-from pyferm.values import perl_true
+from .errors import FermError
+from .values import perl_true
 
 
 @dataclass(frozen=True)

@@ -37,27 +37,27 @@ import subprocess  # live-only: run rules / hooks / *-save / *-restore
 import sys
 from typing import TYPE_CHECKING, Final, TextIO
 
-from pyferm import __version__, etckeeper
-from pyferm.analysis import Severity, run_analysis
-from pyferm.backend.iptables import (
+from . import __version__, etckeeper
+from .analysis import Severity, run_analysis
+from .backend.iptables import (
     IptablesBackend,
     restore_domain,
     rules_to_save,
     validate_names,
 )
-from pyferm.backend.nft import TOOL_NFT, NftBackend
-from pyferm.config import Options, PlanFormat
-from pyferm.errors import FermError, internal_error
-from pyferm.functions import Evaluator, splitpath_dir, splitpath_file
-from pyferm.graph import (
+from .backend.nft import TOOL_NFT, NftBackend
+from .config import Options, PlanFormat
+from .errors import FermError, internal_error
+from .functions import Evaluator, splitpath_dir, splitpath_file
+from .graph import (
     collect_graph,
     escape_control_chars,
     render_d2,
     render_dot,
 )
-from pyferm.introspect import describe, list_modules
-from pyferm.parser import Parser
-from pyferm.plan import (
+from .introspect import describe, list_modules
+from .parser import Parser
+from .plan import (
     Plan,
     diff_tables,
     parse_nft_list,
@@ -66,20 +66,20 @@ from pyferm.plan import (
     render_plan,
     summary_line,
 )
-from pyferm.resolver import pick_resolver, set_resolver_provider
-from pyferm.scope import Frame, Scope
-from pyferm.streams import (
+from .resolver import pick_resolver, set_resolver_provider
+from .scope import Frame, Scope
+from .streams import (
     BYTE_ENCODING,
     HUMAN_STREAM_ERRORS,
     argv_to_latin1,
     reconfigure_latin1,
 )
-from pyferm.tokenizer import Script, Tokenizer, open_script, tokenize_string
+from .tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from pyferm.backend.base import (
+    from .backend.base import (
         Backend,
         ExecuteCapture,
         ExecuteCommand,
@@ -87,8 +87,8 @@ if TYPE_CHECKING:
         RestoreDomain,
         SaveReader,
     )
-    from pyferm.domains import DomainInfo, Family
-    from pyferm.tree import Block
+    from .domains import DomainInfo, Family
+    from .tree import Block
 
 
 class ExitCode(enum.IntEnum):

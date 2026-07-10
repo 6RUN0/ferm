@@ -41,8 +41,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, TextIO
 
-from pyferm.errors import FermError, internal_error
-from pyferm.modules import (
+from .errors import FermError, internal_error
+from .modules import (
     MATCH_DEFS,
     PORT_PROTOCOLS,
     PROTO_DEFS,
@@ -50,17 +50,17 @@ from pyferm.modules import (
     Keyword,
     ParamFunction,
 )
-from pyferm.rules import (
+from .rules import (
     is_netfilter_core_target,
     is_netfilter_module_target,
     netfilter_canonical_protocol,
 )
-from pyferm.streams import (
+from .streams import (
     BYTE_ENCODING,
     HUMAN_STREAM_ERRORS,
     reconfigure_latin1,
 )
-from pyferm.values import (
+from .values import (
     Multi,
     Negated,
     Params,

@@ -23,8 +23,8 @@ import enum
 from dataclasses import dataclass
 from typing import Final, NamedTuple
 
-from pyferm.errors import FermError
-from pyferm.modules import (
+from .errors import FermError
+from .modules import (
     MATCH_DEFS,
     PROTO_DEFS,
     SHORTCUTS,
@@ -35,7 +35,7 @@ from pyferm.modules import (
     ParamFunction,
     Registry,
 )
-from pyferm.parser import DEPRECATED_KEYWORDS
+from .parser import DEPRECATED_KEYWORDS
 
 #: Hard cap for every ``--list-modules`` output line.  A literal so the
 #: golden tests are environment-independent (never COLUMNS/tty-derived).

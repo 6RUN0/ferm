@@ -41,12 +41,12 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from pyferm.errors import internal_error
-from pyferm.values import Deferred, Value, contains_deferred, realize_deferred
+from .errors import internal_error
+from .values import Deferred, Value, contains_deferred, realize_deferred
 
 if TYPE_CHECKING:
-    from pyferm.modules import ModuleDef, Registry
-    from pyferm.scope import Option, OptionKind, Rule, SourcePosition
+    from .modules import ModuleDef, Registry
+    from .scope import Option, OptionKind, Rule, SourcePosition
 
 #: Targets understood by netfilter itself, no ``-m`` module (``:1769``).
 #: Public so the backends and graph builder share one definition instead of

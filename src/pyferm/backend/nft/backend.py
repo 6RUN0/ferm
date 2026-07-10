@@ -6,7 +6,15 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pyferm.backend.base import (
+from ...domains import (
+    NFT_TABLE_NAME,
+    Family,
+    ShellSnapshot,
+)
+from ...errors import FermError, internal_error
+from ...plan import build_nft_delta, needs_full_reload
+from ...streams import BYTE_ENCODING
+from ..base import (
     Backend,
     ExecuteCapture,
     ExecuteCommand,
@@ -15,20 +23,12 @@ from pyferm.backend.base import (
     RestoreDomain,
     SaveReader,
 )
-from pyferm.domains import (
-    NFT_TABLE_NAME,
-    Family,
-    ShellSnapshot,
-)
-from pyferm.errors import FermError, internal_error
-from pyferm.plan import build_nft_delta, needs_full_reload
-from pyferm.streams import BYTE_ENCODING
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from pyferm.config import Options
-    from pyferm.domains import DomainInfo
+    from ...config import Options
+    from ...domains import DomainInfo
 
 from .assemble import _collapse_chain_rules, translate_rule
 from .chains import build_chains, nft_chain_name

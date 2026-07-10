@@ -7,20 +7,20 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from pyferm.domains import (
+from ...domains import (
     NFT_TABLE_NAME,
     Family,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.nftset import (
+from ...errors import FermError, internal_error
+from ...nftset import (
     RANK_ADDRESS,
     RANK_INTERVAL,
     classify,
     set_body,
     sort_set_elements,
 )
-from pyferm.scope import OptionKind
-from pyferm.values import (
+from ...scope import OptionKind
+from ...values import (
     SetRef,
     iter_setrefs,
 )
@@ -28,7 +28,7 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from pyferm.rules import (
+    from ...rules import (
         RenderedRule,
     )
 

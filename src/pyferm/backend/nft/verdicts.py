@@ -5,23 +5,22 @@ from __future__ import annotations
 import ipaddress
 from typing import Final
 
-from pyferm.domains import (
+from ...domains import (
     ICMP6_REJECT_MAP,
     Family,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.modules import TARGET_DEFS
-from pyferm.rules import (
+from ...errors import FermError, internal_error
+from ...modules import TARGET_DEFS
+from ...rules import (
     CORE_TARGETS,
     RenderedOption,
     is_netfilter_builtin_chain,
     is_netfilter_module_target,
 )
-from pyferm.values import (
+from ...values import (
     Params,
     SetRef,
 )
-
 from .chains import nft_chain_name
 from .matches import (
     _CLASSID_RE,

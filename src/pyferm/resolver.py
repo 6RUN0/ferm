@@ -33,9 +33,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
-from pyferm.errors import ERR_STRING_EXPECTED, FermError, error, warning
-from pyferm.streams import BYTE_ENCODING
-from pyferm.values import Value, to_array
+from .errors import ERR_STRING_EXPECTED, FermError, error, warning
+from .streams import BYTE_ENCODING
+from .values import Value, to_array
 
 _NETMASK_RE: Final[re.Pattern[str]] = re.compile(r"/\d+$")
 _IPV4_RE: Final[re.Pattern[str]] = re.compile(r"\d+\.\d+\.\d+\.\d+")

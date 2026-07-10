@@ -5,13 +5,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Final, NamedTuple
 
-from pyferm.errors import FermError
-from pyferm.rules import (
+from ...errors import FermError
+from ...rules import (
     is_netfilter_builtin_chain,
 )
 
 if TYPE_CHECKING:
-    from pyferm.domains import (
+    from ...domains import (
         Family,
         TableInfo,
     )

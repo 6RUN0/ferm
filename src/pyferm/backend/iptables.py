@@ -30,18 +30,8 @@ import time
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final
 
-from pyferm import __version__
-from pyferm.backend.base import (
-    Backend,
-    Command,
-    ExecuteCapture,
-    ExecuteCommand,
-    LineEmitter,
-    Rendered,
-    RestoreDomain,
-    SaveReader,
-)
-from pyferm.domains import (
+from .. import __version__
+from ..domains import (
     EB_TABLES,
     ICMP6_REJECT_MAP,
     TOOL_RESTORE,
@@ -53,17 +43,17 @@ from pyferm.domains import (
     ShellSnapshot,
     TableInfo,
 )
-from pyferm.domains import (
+from ..domains import (
     read_previous as _domains_read_previous,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.rules import (
+from ..errors import FermError, internal_error
+from ..rules import (
     CORE_TARGETS,
     RenderedRule,
     is_netfilter_builtin_chain,
 )
-from pyferm.streams import BYTE_ENCODING
-from pyferm.values import (
+from ..streams import BYTE_ENCODING
+from ..values import (
     Deferred,
     Multi,
     Negated,
@@ -72,11 +62,21 @@ from pyferm.values import (
     SetRef,
     Value,
 )
+from .base import (
+    Backend,
+    Command,
+    ExecuteCapture,
+    ExecuteCommand,
+    LineEmitter,
+    Rendered,
+    RestoreDomain,
+    SaveReader,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-    from pyferm.config import Options
+    from ..config import Options
 
     #: The ``subprocess.run``-shaped seam of the restore spawn site (the
     #: ``capture_previous`` convention); the save text travels as bytes.

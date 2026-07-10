@@ -25,15 +25,15 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Final
 
-from pyferm.config import PlanFormat
-from pyferm.domains import (
+from .config import PlanFormat
+from .domains import (
     NFT_CT_STATES,
     NFT_PRIORITY_LANDMARKS,
     NFT_TABLE_NAME,
     apply_priority_offset,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.nftset import (
+from .errors import FermError, internal_error
+from .nftset import (
     canonicalize_element,
     canonicalize_set_elements,
     set_body,

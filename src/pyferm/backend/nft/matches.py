@@ -8,13 +8,13 @@ import pwd
 import re
 from typing import TYPE_CHECKING, Final
 
-from pyferm.domains import (
+from ...domains import (
     NFT_CT_STATES,
     Family,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.modules import PORT_PROTOCOLS
-from pyferm.values import (
+from ...errors import FermError, internal_error
+from ...modules import PORT_PROTOCOLS
+from ...values import (
     Negated,
     Params,
     PreNegated,
@@ -23,7 +23,7 @@ from pyferm.values import (
 )
 
 if TYPE_CHECKING:
-    from pyferm.rules import (
+    from ...rules import (
         RenderedOption,
     )
 

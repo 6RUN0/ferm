@@ -26,8 +26,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Final, TypeAlias
 
-from pyferm.errors import FermError
-from pyferm.streams import BYTE_ENCODING
+from .errors import FermError
+from .streams import BYTE_ENCODING
 
 #: The ``subprocess.run``-shaped seam every spawn site accepts (the
 #: ``capture_previous`` convention): tests inject a recorder, production

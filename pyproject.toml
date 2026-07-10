@@ -180,6 +180,10 @@ known-first-party = ["pyferm"]
 # split parser, so it drives the Parser's own parse helpers (_parse_def,
 # _include_file, ...) by design -- SLF001 is that intended coupling.
 "src/pyferm/walker.py" = ["N802", "SLF001"]
+# The package uses relative imports throughout; subpackages reach the
+# package root with parent-relative dots (``from ..rules import``), which
+# TID252 bans by default.
+"src/pyferm/backend/**/*.py" = ["TID252"]
 
 [tool.mypy]
 python_version = "3.11"

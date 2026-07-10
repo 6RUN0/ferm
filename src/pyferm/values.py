@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, TypeAlias
 
-from pyferm.errors import ERR_STRING_EXPECTED, error, internal_error
+from .errors import ERR_STRING_EXPECTED, error, internal_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

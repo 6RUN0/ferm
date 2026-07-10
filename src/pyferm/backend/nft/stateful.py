@@ -8,14 +8,14 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from pyferm.domains import (
+from ...domains import (
     Family,
 )
-from pyferm.errors import FermError, internal_error
-from pyferm.modules import PORT_PROTOCOLS
-from pyferm.scope import OptionKind
-from pyferm.streams import BYTE_ENCODING
-from pyferm.values import (
+from ...errors import FermError, internal_error
+from ...modules import PORT_PROTOCOLS
+from ...scope import OptionKind
+from ...streams import BYTE_ENCODING
+from ...values import (
     Negated,
     PreNegated,
 )
@@ -23,7 +23,7 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from pyferm.rules import (
+    from ...rules import (
         RenderedOption,
         RenderedRule,
     )

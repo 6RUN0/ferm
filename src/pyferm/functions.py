@@ -29,13 +29,13 @@ import subprocess
 from collections import deque
 from typing import TYPE_CHECKING, ClassVar, Final, TypeAlias
 
-from pyferm.errors import ERR_STRING_EXPECTED, error, internal_error
-from pyferm.modules import PROTO_DEFS
-from pyferm.resolver import resolve
-from pyferm.scope import FunctionLike, Rule, Scope, append_option
-from pyferm.streams import BYTE_ENCODING
-from pyferm.tokenizer import Token, Tokenizer, make_line_token
-from pyferm.values import (
+from .errors import ERR_STRING_EXPECTED, error, internal_error
+from .modules import PROTO_DEFS
+from .resolver import resolve
+from .scope import FunctionLike, Rule, Scope, append_option
+from .streams import BYTE_ENCODING
+from .tokenizer import Token, Tokenizer, make_line_token
+from .values import (
     Deferred,
     Negated,
     SetRef,
@@ -57,7 +57,7 @@ from pyferm.values import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from pyferm.resolver import ResolverProvider
+    from .resolver import ResolverProvider
 
 _NAME_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 _DVAR_RE: Final[re.Pattern[str]] = re.compile(r"\$(\w+)")

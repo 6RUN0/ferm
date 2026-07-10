@@ -38,14 +38,14 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final
 
-from pyferm.errors import FermError
+from .errors import FermError
 
 # Runtime import, not TYPE_CHECKING: the parametrized default_factory
 # expressions below (``list[RenderedRule]``) evaluate at class-body time.
-from pyferm.rules import RenderedRule
+from .rules import RenderedRule
 
 if TYPE_CHECKING:
-    from pyferm.config import Options
+    from .config import Options
 
 #: The table a rule/chain falls back to when none is specified (Perl's
 #: implicit ``"filter"`` default, e.g. ``:2093``/``:2123``).

@@ -26,13 +26,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final, TypeAlias
 
-from pyferm.errors import FermError, error, set_error_context
-from pyferm.streams import BYTE_ENCODING, reconfigure_latin1
+from .errors import FermError, error, set_error_context
+from .streams import BYTE_ENCODING, reconfigure_latin1
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from pyferm.values import Deferred
+    from .values import Deferred
 
 
 @dataclass

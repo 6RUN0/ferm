@@ -35,14 +35,14 @@ from typing import TYPE_CHECKING, Final, Protocol
 # Runtime imports, not TYPE_CHECKING: the parametrized default_factory
 # expressions below (``dict[str, Keyword]`` etc.) evaluate at class-body
 # time.
-from pyferm.modules import Keyword
-from pyferm.values import Value
+from .modules import Keyword
+from .values import Value
 
 if TYPE_CHECKING:
     # Type-only: tokenizer sits below scope in the import layering, so this
     # edge is allowed, but nothing here needs Token at runtime -- deferred
     # annotations (``from __future__ import annotations``) keep it that way.
-    from pyferm.tokenizer import Token
+    from .tokenizer import Token
 
 
 @dataclass(frozen=True)

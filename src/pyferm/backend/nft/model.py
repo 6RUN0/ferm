@@ -8,15 +8,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from pyferm.errors import FermError, internal_error
-from pyferm.nftset import (
+from ...errors import FermError, internal_error
+from ...nftset import (
     l4proto_name,
     set_body,
     sort_set_elements,
     sort_vmap_pairs,
 )
-from pyferm.streams import BYTE_ENCODING
-from pyferm.values import (
+from ...streams import BYTE_ENCODING
+from ...values import (
     Multi,
     Negated,
     Params,
@@ -26,7 +26,7 @@ from pyferm.values import (
 )
 
 if TYPE_CHECKING:
-    from pyferm.domains import (
+    from ...domains import (
         Family,
     )
 
