@@ -221,6 +221,20 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- **nft backend: bare match-module loads no longer silently drop.**
+  `mod hbh`, `mod dst`, `mod eui64` (whose bare load IS the match:
+  extension-header presence, EUI-64 check) and `mod limit` (whose bare
+  load is a real limiter at xt_limit's default rate) used to vanish
+  from the translated rule, leaving an unconditional verdict — a
+  fail-open widening the iptables backend does not have (`-m eui64` is
+  emitted verbatim there). A bare load now refuses at translate time
+  unless the module is semantically inert without options (`state`,
+  `conntrack`) or contributes at least one option to the rule.
+- **nft backend: the eb `MARK` target no longer emits `jump mark`.**
+  The parser rewrites eb `MARK` to ebtables' lowercase `mark` spelling,
+  which slipped past the eb-target guard and fell through to the
+  user-chain branch — a jump to a chain that never exists, rejected
+  only at apply time. It now refuses cleanly like the other eb targets.
 - **nft backend: `mod recent` with an effective hitcount of one no
   longer emits `burst 0`.** A lone check rule with `hitcount 1`
   produced `limit rate over ... burst 0 packets`, which nft rejects at

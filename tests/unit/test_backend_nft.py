@@ -1773,6 +1773,66 @@ def test_translate_rule_skips_match_module_marker() -> None:
     ]
 
 
+def test_translate_rule_bare_match_module_refuses() -> None:
+    # A bare `mod hbh` / `mod dst` / `mod eui64` IS the match (extension
+    # header presence, EUI-64 check); the iptables backend emits `-m hbh`,
+    # so skipping the marker would silently widen the rule to all packets.
+    for module in ("hbh", "dst", "eui64"):
+        with pytest.raises(FermError, match=f"bare 'mod {module}'"):
+            translate_rule(
+                Family.IP6,
+                "filter",
+                _rule(
+                    _opt("match", module, kind=OptionKind.MATCH_MODULE),
+                    _target("ACCEPT"),
+                ),
+            )
+
+
+def test_translate_rule_bare_limit_module_refuses() -> None:
+    # xt_limit with zero flags is a REAL limiter (default rate 3/hour,
+    # burst 5); dropping the marker would silently remove the rate limit.
+    with pytest.raises(FermError, match="bare 'mod limit'"):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("match", "limit", kind=OptionKind.MATCH_MODULE),
+                _target("ACCEPT"),
+            ),
+        )
+
+
+def test_translate_rule_bare_inert_module_still_skips() -> None:
+    # xt_state/xt_conntrack accept zero flags and then match every packet,
+    # so their bare load carries no semantics and the marker may drop.
+    for module in ("state", "conntrack"):
+        nft = translate_rule(
+            Family.IP,
+            "filter",
+            _rule(
+                _opt("match", module, kind=OptionKind.MATCH_MODULE),
+                _target("ACCEPT"),
+            ),
+        )
+        assert [s.to_text() for s in nft.statements] == ["accept"]
+
+
+def test_translate_rule_eb_mark_target_refuses() -> None:
+    # The parser remaps eb MARK to ebtables' `mark` spelling before it
+    # reaches the backend; the eb-target guard must catch the remapped
+    # form instead of emitting a `jump mark` to a chain that never exists.
+    with pytest.raises(FermError, match="eb target 'mark'"):
+        translate_rule(
+            Family.EB,
+            "filter",
+            _rule(
+                _target("mark"),
+                _opt("set-mark", "1", module="mark"),
+            ),
+        )
+
+
 def test_translate_rule_port_suppresses_redundant_proto() -> None:
     nft = translate_rule(
         Family.IP,

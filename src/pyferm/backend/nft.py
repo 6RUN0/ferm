@@ -2266,8 +2266,10 @@ _VERDICT_TARGET: Final[dict[str, str]] = {
 #: ebtables target keywords (``modules.py`` ``target_x("eb", ...)``):
 #: they are targets, never user chains, and have no nft bridge-family
 #: translation yet, so :func:`build_verdict` refuses them explicitly.
+#: The parser rewrites the eb ``MARK`` keyword to ebtables' ``mark``
+#: spelling before it reaches the backend, so both forms are guarded.
 _EB_TARGETS: Final[frozenset[str]] = frozenset(
-    {"arpreply", "dnat", "redirect", "snat", "MARK"}
+    {"arpreply", "dnat", "redirect", "snat", "MARK", "mark"}
 )
 #: iptables ``reject-with`` canonical name -> nft reject spec, ip family.
 #: Covers every type ``iptables -j REJECT`` accepts; the short aliases
@@ -3950,6 +3952,19 @@ def _finalize_connlimit_names(
                 stmt.name = f"connlimit_{digest}"
 
 
+#: Match modules whose BARE ``mod X`` load matches every packet (their xt
+#: parse accepts zero flags and then checks nothing), so dropping the
+#: ``-m`` marker loses no semantics.  Every other bare load either IS the
+#: match (``hbh``/``dst``/``eui64`` header checks, ``limit``'s implicit
+#: default rate) or is invalid iptables (mandatory options); both refuse
+#: rather than silently widen the rule.  A marker whose module contributes
+#: at least one option to the rule is always skippable: the options carry
+#: (or refuse) the semantics.
+_BARE_INERT_MATCH_MODULES: Final[frozenset[str]] = frozenset(
+    {"state", "conntrack"}
+)
+
+
 def translate_rule(
     domain: Family,
     table: str,
@@ -4100,7 +4115,20 @@ def translate_rule(
     for option in rule.options:
         name, kind = option.name, option.kind
         if kind is OptionKind.MATCH_MODULE:
-            continue  # -m marker is implicit in nft
+            # The -m marker is implicit in nft only when the module's
+            # options carry the semantics; a bare load of anything outside
+            # the inert set is itself the match and must not drop.
+            module_name, _ = unwrap_value(option.value)
+            if module_name not in _BARE_INERT_MATCH_MODULES and not any(
+                o.module == module_name
+                and o.kind is not OptionKind.MATCH_MODULE
+                for o in rule.options
+            ):
+                raise FermError(
+                    f"bare 'mod {module_name}' (module load without any "
+                    f"of its options) not yet supported by nft backend"
+                )
+            continue
         if name == "comment":
             comment, _ = unwrap_value(option.value)
             continue
