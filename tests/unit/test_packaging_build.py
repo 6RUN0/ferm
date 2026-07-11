@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import re
 import shutil
 import subprocess
@@ -11,32 +10,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.unit._packaging import find_repo_root, load_packaging_module
+
 if TYPE_CHECKING:
     from types import ModuleType
 
 
-def _find_repo_root() -> Path:
-    # Anchor on the ``packaging/`` tree rather than a fixed parent depth: the
-    # mutmut sandbox copies only ``src`` + ``tests`` into ``mutants/``, so the
-    # test sits one level deeper there and ``packaging/`` lives in the real
-    # checkout above it. Ascend to the nearest ancestor that actually has it.
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "packaging").is_dir():
-            return parent
-    msg = "could not locate repo root (no ancestor contains packaging/)"
-    raise RuntimeError(msg)
-
-
-_BUILD = _find_repo_root() / "packaging" / "build.py"
-
-
 def _load_build() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("packaging_build", _BUILD)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_packaging_module("packaging_build", "build.py")
 
 
 def test_tag_ref_anchors_to_tag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,7 +354,7 @@ def test_maintainer_identity_is_consistent() -> None:
     # the build driver's _DEB_FULLNAME/_DEB_EMAIL (the dch source of truth), or
     # a release would stamp mismatched maintainers across the three channels.
     build = _load_build()
-    root = _find_repo_root()
+    root = find_repo_root()
     full = f"{build._DEB_FULLNAME} <{build._DEB_EMAIL}>"
     control = (root / "packaging" / "deb" / "debian" / "control").read_text(
         encoding="utf-8",
@@ -395,7 +376,7 @@ def test_apk_post_install_probes_runlevel_symlink_with_lstat() -> None:
     # gone, so a symlink can be dangling, and busybox `ls` follows it and fails
     # -- which would silently drop the advisory. `[ -L ]` matches live OR
     # dangling. Guards the empirically-found probe regression.
-    root = _find_repo_root()
+    root = find_repo_root()
     script = (root / "packaging" / "apk" / "pyferm.post-install").read_text(
         encoding="utf-8",
     )
@@ -409,7 +390,7 @@ def test_apk_post_install_probes_runlevel_symlink_with_lstat() -> None:
 
 
 def _read_spec() -> str:
-    spec = _find_repo_root() / "packaging" / "rpm" / "pyferm.spec"
+    spec = find_repo_root() / "packaging" / "rpm" / "pyferm.spec"
     return spec.read_text(encoding="utf-8")
 
 

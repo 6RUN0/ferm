@@ -22,6 +22,9 @@ interpreter, nftables, git and etckeeper -- no project dependencies.  ferm is
 bind-mounted and run via ``python3 -m pyferm`` (``PYTHONPATH=/work/src``).
 """
 
+# This driver is bind-mounted into the container per file, so the shared
+# tests/ helpers are unreachable here: it stays self-contained (stdlib-only)
+# and its overlap with the sibling drivers is intentional, not to be hoisted.
 from __future__ import annotations
 
 import subprocess

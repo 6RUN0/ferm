@@ -29,10 +29,11 @@ built image so distros don't clobber each other.  See the
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.e2e.conftest import build_driver, run_driver
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DATAPATH_DIR = Path(__file__).parent / "datapath"
@@ -59,22 +60,10 @@ pytestmark = [
 
 
 def test_datapath_through_ferm_rules() -> None:
-    build_cmd = ["docker", "build", "-q", "-t", _IMAGE]
-    if _BASE:
-        build_cmd += ["--build-arg", f"BASE={_BASE}"]
-    build_cmd.append(str(_DATAPATH_DIR))
-    build = subprocess.run(
-        build_cmd,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
+    build_args = ["--build-arg", f"BASE={_BASE}"] if _BASE else None
+    build_driver(_IMAGE, _DATAPATH_DIR, build_args=build_args)
 
-    run_cmd = [
-        "docker",
-        "run",
-        "--rm",
+    run_args = [
         # NET_ADMIN writes netfilter rules; SYS_ADMIN is the broader
         # grant the driver needs for two things NET_ADMIN cannot do
         # (empirically established 2026-06-15): `ip netns add`
@@ -111,24 +100,19 @@ def test_datapath_through_ferm_rules() -> None:
         in_container = (
             f"/work-dist/{binary_path.parent.name}/{binary_path.name}"
         )
-        run_cmd += [
+        run_args += [
             "-v",
             f"{dist_root}:/work-dist:ro",
             "-e",
             f"FERM_BINARY={in_container}",
         ]
 
-    run_cmd += [
+    run_args += [
         _IMAGE,
         "python3",
         "/work/datapath/driver.py",
     ]
-    run = subprocess.run(
-        run_cmd,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
+    run = run_driver(run_args)
     verdict = f"driver verdict:\nSTDOUT:\n{run.stdout}\nSTDERR:\n{run.stderr}"
 
     # SKIP must be checked BEFORE the PASS assertion, else a legitimate

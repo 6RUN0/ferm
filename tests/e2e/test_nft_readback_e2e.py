@@ -20,10 +20,11 @@ container.
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.e2e.conftest import build_and_run_driver
 
 _READBACK_DIR = Path(__file__).parent / "readback"
 _IMAGE = "ferm-nft-readback-e2e"
@@ -45,19 +46,10 @@ pytestmark = [
 
 
 def test_nft_readback_canon() -> None:
-    build = subprocess.run(
-        ["docker", "build", "-q", "-t", _IMAGE, str(_READBACK_DIR)],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
-
-    run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
+    build_and_run_driver(
+        _IMAGE,
+        _READBACK_DIR,
+        run_args=[
             "--cap-add=NET_ADMIN",
             "-v",
             f"{_READBACK_DIR}/driver.py:/work/driver.py:ro",
@@ -67,10 +59,5 @@ def test_nft_readback_canon() -> None:
             "python3",
             "/work/driver.py",
         ],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
+        pass_marker="NFT-READBACK-PASS",
     )
-    verdict = f"driver verdict:\n{run.stdout}\n{run.stderr}"
-    assert run.returncode == 0, verdict
-    assert "NFT-READBACK-PASS" in run.stdout, verdict

@@ -2,39 +2,20 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.unit._packaging import load_packaging_module
+
 if TYPE_CHECKING:
     from types import ModuleType
 
 
-def _find_repo_root() -> Path:
-    # Anchor on the ``packaging/`` tree rather than a fixed parent depth: the
-    # mutmut sandbox copies only ``src`` + ``tests`` into ``mutants/``, so the
-    # test sits one level deeper there and ``packaging/`` lives in the real
-    # checkout above it. Ascend to the nearest ancestor that actually has it.
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "packaging").is_dir():
-            return parent
-    msg = "could not locate repo root (no ancestor contains packaging/)"
-    raise RuntimeError(msg)
-
-
-_ENTRY = _find_repo_root() / "packaging" / "entry.py"
-
-
 def _load_entry() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("packaging_entry", _ENTRY)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_packaging_module("packaging_entry", "entry.py")
 
 
 def test_import_ferm_basename_routes_to_import_ferm() -> None:

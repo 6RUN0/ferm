@@ -26,10 +26,11 @@ lives in ``nft/driver.py``, which runs inside the container.
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.e2e.conftest import build_and_run_driver
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _NFT_DIR = Path(__file__).parent / "nft"
@@ -52,19 +53,10 @@ pytestmark = [
 
 
 def test_nft_round_trip_and_coexistence() -> None:
-    build = subprocess.run(
-        ["docker", "build", "-q", "-t", _IMAGE, str(_NFT_DIR)],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
-
-    run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
+    build_and_run_driver(
+        _IMAGE,
+        _NFT_DIR,
+        run_args=[
             "--cap-add=NET_ADMIN",
             "-v",
             f"{_REPO_ROOT}/src:/work/src:ro",
@@ -78,10 +70,5 @@ def test_nft_round_trip_and_coexistence() -> None:
             "python3",
             "/work/driver.py",
         ],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
+        pass_marker="NFT-E2E-PASS",
     )
-    verdict = f"driver verdict:\n{run.stdout}\n{run.stderr}"
-    assert run.returncode == 0, verdict
-    assert "NFT-E2E-PASS" in run.stdout, verdict

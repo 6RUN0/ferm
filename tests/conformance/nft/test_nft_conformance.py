@@ -17,6 +17,7 @@ filesystem during an ordinary collection.  Run via ``nox -s nft_conformance``.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -26,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from pyferm.plan import canonicalize_nft_header, canonicalize_nft_rule
+from tests._netns import rootless_netns_works
 from tests.conformance.nft.tdotparser import (
     HeaderCase,
     RuleCase,
@@ -35,6 +37,7 @@ from tests.conformance.nft.tdotparser import (
 _CORPUS_ENV = "FERM_NFT_CORPUS"
 
 
+@functools.cache
 def _load_corpus() -> list[RuleCase | HeaderCase]:
     """Parse every ``.t`` file under ``$FERM_NFT_CORPUS`` (lazy).
 
@@ -142,26 +145,10 @@ _BASELINE_DIVERGENCES: frozenset[str] = frozenset(
 )
 
 
-def _rootless_netns_works() -> bool:
-    """Probe whether ``unshare -rn`` can make a rootless network namespace."""
-    if shutil.which("unshare") is None:
-        return False
-    try:
-        probe = subprocess.run(
-            ["unshare", "-rn", "true"],
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return probe.returncode == 0
-
-
 _NFT_OK = shutil.which("nft") is not None
 # Short-circuit on corpus presence so the probe never runs during an
 # ordinary (non-opt-in) collection.
-_NETNS_OK = bool(os.environ.get(_CORPUS_ENV)) and _rootless_netns_works()
+_NETNS_OK = bool(os.environ.get(_CORPUS_ENV)) and rootless_netns_works()
 
 
 def _extract_rule(listing: str) -> str | None:

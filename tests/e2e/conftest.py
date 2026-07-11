@@ -18,8 +18,13 @@ unaffected.
 from __future__ import annotations
 
 import os
+import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _executed_test_count = [0]
 
@@ -44,3 +49,57 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                 "instead of passing on a silent all-skip.",
                 red=True,
             )
+
+
+# --- shared driver harness for the containerized e2e suites --------------
+#
+# Every containerized e2e file follows the same shape: ``docker build -q`` a
+# per-suite context, then ``docker run --rm`` its ``driver.py`` and assert a
+# per-suite PASS marker on stdout with the full driver output attached to any
+# failure.  These helpers factor out that mechanics; a suite with its own
+# skip/verdict protocol (datapath) composes ``build_driver`` + ``run_driver``
+# and keeps its bespoke assertions local.
+
+
+def build_driver(
+    image: str, context_dir: Path, *, build_args: list[str] | None = None
+) -> None:
+    """``docker build -q`` *context_dir* into *image*, asserting success."""
+    cmd = ["docker", "build", "-q", "-t", image]
+    if build_args:
+        cmd += build_args
+    cmd.append(str(context_dir))
+    build = subprocess.run(
+        cmd,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
+
+
+def run_driver(run_args: list[str]) -> subprocess.CompletedProcess[str]:
+    """``docker run --rm`` with *run_args* (mounts, env, image, command)."""
+    return subprocess.run(
+        ["docker", "run", "--rm", *run_args],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def assert_driver_pass(
+    run: subprocess.CompletedProcess[str], pass_marker: str
+) -> None:
+    """Assert the driver exited 0 and printed *pass_marker* on stdout."""
+    verdict = f"driver verdict:\n{run.stdout}\n{run.stderr}"
+    assert run.returncode == 0, verdict
+    assert pass_marker in run.stdout, verdict
+
+
+def build_and_run_driver(
+    image: str, context_dir: Path, *, run_args: list[str], pass_marker: str
+) -> None:
+    """Build the suite image, run its driver, and assert a PASS verdict."""
+    build_driver(image, context_dir)
+    assert_driver_pass(run_driver(run_args), pass_marker)

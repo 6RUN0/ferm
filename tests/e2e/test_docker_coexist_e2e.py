@@ -25,10 +25,11 @@ which runs inside the container.
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.e2e.conftest import build_and_run_driver
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COEXIST_DIR = Path(__file__).parent / "docker_coexist"
@@ -52,19 +53,10 @@ pytestmark = [
 
 
 def test_ferm_reload_does_not_clobber_real_docker() -> None:
-    build = subprocess.run(
-        ["docker", "build", "-q", "-t", _IMAGE, str(_COEXIST_DIR)],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
-
-    run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
+    build_and_run_driver(
+        _IMAGE,
+        _COEXIST_DIR,
+        run_args=[
             # docker-in-docker requires a privileged container; the inner
             # engine's netfilter state stays in the container's netns.
             "--privileged",
@@ -81,10 +73,5 @@ def test_ferm_reload_does_not_clobber_real_docker() -> None:
             _IMAGE,
             "/work/driver.py",
         ],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
+        pass_marker="DOCKER-COEXIST-PASS",
     )
-    verdict = f"driver verdict:\n{run.stdout}\n{run.stderr}"
-    assert run.returncode == 0, verdict
-    assert "DOCKER-COEXIST-PASS" in run.stdout, verdict

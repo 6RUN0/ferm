@@ -8,45 +8,27 @@ SONAME set in lockstep with build.py's ``.so`` allow-list.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.unit._packaging import find_repo_root, load_packaging_module
+
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
     from types import ModuleType
 
-
-def _find_repo_root() -> Path:
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "packaging").is_dir():
-            return parent
-    msg = "could not locate repo root (no ancestor contains packaging/)"
-    raise RuntimeError(msg)
-
-
-_REPO_ROOT = _find_repo_root()
-
-
-def _load(name: str, filename: str) -> ModuleType:
-    path = _REPO_ROOT / "packaging" / filename
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+_REPO_ROOT = find_repo_root()
 
 
 def _load_scan() -> ModuleType:
-    return _load("packaging_scan", "scan_image.py")
+    return load_packaging_module("packaging_scan", "scan_image.py")
 
 
 def _load_build() -> ModuleType:
-    return _load("packaging_build", "build.py")
+    return load_packaging_module("packaging_build", "build.py")
 
 
 def test_read_pinned_image_extracts_digest_ref(tmp_path: Path) -> None:

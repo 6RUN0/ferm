@@ -19,24 +19,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests._netns import rootless_netns_works
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 
 def _rootless_netns_works() -> bool:
-    """Probe whether ``unshare -rn`` can make a rootless network namespace."""
-    if shutil.which("nft") is None or shutil.which("unshare") is None:
-        return False
-    try:
-        probe = subprocess.run(
-            ["unshare", "-rn", "true"],
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return probe.returncode == 0
+    """Probe rootless netns availability, additionally requiring ``nft``."""
+    return shutil.which("nft") is not None and rootless_netns_works()
 
 
 pytestmark = pytest.mark.skipif(

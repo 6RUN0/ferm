@@ -24,10 +24,11 @@ skipped otherwise, and whenever docker is unavailable.
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.e2e.conftest import build_and_run_driver
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ETCKEEPER_DIR = Path(__file__).parent / "etckeeper"
@@ -50,19 +51,10 @@ pytestmark = [
 
 
 def test_apply_commit_rollback_round_trip() -> None:
-    build = subprocess.run(
-        ["docker", "build", "-q", "-t", _IMAGE, str(_ETCKEEPER_DIR)],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert build.returncode == 0, f"docker build failed:\n{build.stderr}"
-
-    run = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
+    build_and_run_driver(
+        _IMAGE,
+        _ETCKEEPER_DIR,
+        run_args=[
             "--cap-add=NET_ADMIN",
             "-v",
             f"{_REPO_ROOT}/src:/work/src:ro",
@@ -76,10 +68,5 @@ def test_apply_commit_rollback_round_trip() -> None:
             "python3",
             "/work/driver.py",
         ],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
+        pass_marker="ETCKEEPER-E2E-PASS",
     )
-    verdict = f"driver verdict:\n{run.stdout}\n{run.stderr}"
-    assert run.returncode == 0, verdict
-    assert "ETCKEEPER-E2E-PASS" in run.stdout, verdict

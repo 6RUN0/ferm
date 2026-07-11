@@ -21,6 +21,9 @@ only: it runs under the container's system ``python3`` with
 ``PYTHONPATH=/work/src`` and imports nothing from the test deps.
 """
 
+# This driver is bind-mounted into the container per file, so the shared
+# tests/ helpers are unreachable here: it stays self-contained (stdlib-only)
+# and its overlap with the sibling drivers is intentional, not to be hoisted.
 from __future__ import annotations
 
 import re

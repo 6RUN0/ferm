@@ -13,6 +13,9 @@ to 0; v6 ND traverses the nft input hook; ``nft flush ruleset`` last is a
 safe canonical teardown.
 """
 
+# This module is bind-mounted into the container per file, so the shared
+# tests/ helpers are unreachable here: it stays self-contained (stdlib-only)
+# and its overlap with the sibling drivers is intentional, not to be hoisted.
 from __future__ import annotations
 
 import subprocess

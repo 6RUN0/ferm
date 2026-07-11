@@ -25,30 +25,15 @@ from pathlib import Path
 
 import pytest
 
+from tests._netns import rootless_netns_works
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC = _REPO_ROOT / "src"
 _OPT_IN = os.environ.get("FERM_NFT_E2E") == "1"
 
-
-def _rootless_netns_works() -> bool:
-    """Probe whether ``unshare -rn`` can make a rootless network namespace."""
-    if shutil.which("unshare") is None:
-        return False
-    try:
-        probe = subprocess.run(
-            ["unshare", "-rn", "true"],
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return probe.returncode == 0
-
-
 # Short-circuit on `_OPT_IN` so the probe subprocess never runs during an
 # ordinary (non-opt-in) collection.
-_NETNS_OK = _OPT_IN and _rootless_netns_works()
+_NETNS_OK = _OPT_IN and rootless_netns_works()
 
 pytestmark = [
     pytest.mark.nft_e2e,

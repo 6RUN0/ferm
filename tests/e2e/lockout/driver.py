@@ -20,6 +20,9 @@ Stdlib-only and standalone on purpose: the container has no project
 dependencies, just a Python interpreter and iptables.
 """
 
+# This driver is bind-mounted into the container per file, so the shared
+# tests/ helpers are unreachable here: it stays self-contained (stdlib-only)
+# and its overlap with the sibling drivers is intentional, not to be hoisted.
 from __future__ import annotations
 
 import os
