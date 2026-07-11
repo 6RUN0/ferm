@@ -210,10 +210,6 @@ def test_emit_set_remove_is_internal_error() -> None:
     # A set 'remove' must be filtered out by build_nft_delta (-> full reload)
     # BEFORE the emitter runs.  If one reaches the emitter the delta contract
     # is broken: fail loud rather than emit a refcount-unsafe 'delete set'.
-    import pytest
-
-    from pyferm.errors import FermError
-
     current = _table_with_set("h", ParsedSet("h", ["10.0.0.1"], "ipv4_addr"))
     diff = diff_tables(current, {"ferm": ParsedTable()}, noflush=False)
     with pytest.raises(FermError):
@@ -365,6 +361,8 @@ def test_emit_delta_starts_with_add_table_and_orders_sets_before_chains() -> (
 
 
 def test_needs_full_reload_predicate() -> None:
+    # needs_full_reload only branches on the snapshot: no prior table (None)
+    # or an empty snapshot -> nothing to preserve -> reload; otherwise delta.
     assert needs_full_reload(None) is True
     assert needs_full_reload("") is True
     assert needs_full_reload("   \n") is True
@@ -455,14 +453,6 @@ def test_set_removal_forces_full_reload_via_delta_none() -> None:
         "{ type filter hook input priority 0; policy accept; }\n"
     )
     assert build_nft_delta(previous, desired, family="ip") is None
-
-
-def test_needs_full_reload_contract() -> None:
-    # needs_full_reload only branches on the snapshot: no prior table (None)
-    # or an empty snapshot -> nothing to preserve -> reload; otherwise delta.
-    assert needs_full_reload(None) is True
-    assert needs_full_reload("") is True
-    assert needs_full_reload("table ip ferm {\n}\n") is False
 
 
 def test_build_desired_index_resets_on_delete_table() -> None:

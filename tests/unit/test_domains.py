@@ -62,6 +62,17 @@ def test_family_is_ip_only_ip_and_ip6() -> None:
 # --- find_tool -------------------------------------------------------------
 
 
+def _executable_at(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
+    """Make ``os.access`` report *present* paths executable, pinning X_OK."""
+
+    def fake_access(path: str, mode: int) -> bool:
+        # X_OK is the only correct probe; a mutated ``None`` mode is a bug.
+        assert mode == os.X_OK
+        return path in present
+
+    monkeypatch.setattr("pyferm.domains.os.access", fake_access)
+
+
 def test_find_tool_test_mode_returns_bare_name() -> None:
     # the reason golden output is path-independent (:883)
     assert find_tool("iptables-save", Options(test=True)) == "iptables-save"
@@ -69,12 +80,10 @@ def test_find_tool_test_mode_returns_bare_name() -> None:
 
 def test_find_tool_prefers_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", "/bin")
-    executable = {"/usr/sbin/iptables-legacy-save", "/usr/sbin/iptables-save"}
-
-    def fake_access(path: str, _mode: int) -> bool:
-        return path in executable
-
-    monkeypatch.setattr("pyferm.domains.os.access", fake_access)
+    _executable_at(
+        monkeypatch,
+        {"/usr/sbin/iptables-legacy-save", "/usr/sbin/iptables-save"},
+    )
     # both exist, but the legacy spelling wins
     assert find_tool("iptables-save", Options()) == (
         "/usr/sbin/iptables-legacy-save"
@@ -85,9 +94,9 @@ def test_find_tool_nolegacy_skips_legacy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PATH", "/bin")
-    executable = {"/usr/sbin/iptables-legacy-save", "/usr/sbin/iptables-save"}
-    monkeypatch.setattr(
-        "pyferm.domains.os.access", lambda p, _m: p in executable
+    _executable_at(
+        monkeypatch,
+        {"/usr/sbin/iptables-legacy-save", "/usr/sbin/iptables-save"},
     )
     # nolegacy: the legacy preference is bypassed, plain name resolves
     assert find_tool("iptables-save", Options(nolegacy=True)) == (
@@ -100,10 +109,7 @@ def test_find_tool_falls_back_to_plain_name(
 ) -> None:
     monkeypatch.setenv("PATH", "/bin")
     # only the non-legacy name exists
-    monkeypatch.setattr(
-        "pyferm.domains.os.access",
-        lambda p, _m: p == "/sbin/iptables-save",
-    )
+    _executable_at(monkeypatch, {"/sbin/iptables-save"})
     assert find_tool("iptables-save", Options()) == "/sbin/iptables-save"
 
 
@@ -112,17 +118,6 @@ def test_find_tool_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pyferm.domains.os.access", lambda _p, _m: False)
     with pytest.raises(FermError, match="not found in PATH"):
         find_tool("nosuchtool", Options())
-
-
-def _executable_at(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
-    """Make ``os.access`` report *present* paths executable, pinning X_OK."""
-
-    def fake_access(path: str, mode: int) -> bool:
-        # X_OK is the only correct probe; a mutated ``None`` mode is a bug.
-        assert mode == os.X_OK
-        return path in present
-
-    monkeypatch.setattr("pyferm.domains.os.access", fake_access)
 
 
 def test_find_tool_path_unset_uses_sbin_defaults(

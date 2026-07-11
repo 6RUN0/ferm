@@ -75,6 +75,11 @@ _EXIT_CODES = {
 
 
 @pytest.fixture
+def tool() -> ModuleType:
+    return _load_tool()
+
+
+@pytest.fixture
 def mutants_dir(tmp_path: Path) -> Path:
     pkg = tmp_path / "mutants" / "src" / "pkg"
     pkg.mkdir(parents=True)
@@ -84,15 +89,13 @@ def mutants_dir(tmp_path: Path) -> Path:
     return tmp_path / "mutants"
 
 
-def test_demangle_module_function() -> None:
-    tool = _load_tool()
+def test_demangle_module_function(tool: ModuleType) -> None:
     assert tool._demangle("x_add__mutmut_3") == "add"
     assert tool._demangle("x__private__mutmut_2") == "_private"
     assert tool._demangle("xǁCǁm__mutmut_1") == "C.m"
 
 
-def test_status_buckets() -> None:
-    tool = _load_tool()
+def test_status_buckets(tool: ModuleType) -> None:
     assert tool._status(0) == "survived"
     assert tool._status(1) == "killed"
     assert tool._status(33) == "no-tests"
@@ -102,9 +105,8 @@ def test_status_buckets() -> None:
 
 
 def test_summary_counts_every_status(
-    mutants_dir: Path, capsys: pytest.CaptureFixture[str]
+    tool: ModuleType, mutants_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
     assert tool.main(["--mutants-dir", str(mutants_dir)]) == 0
     out = capsys.readouterr().out
     total_row = next(
@@ -116,9 +118,8 @@ def test_summary_counts_every_status(
 
 
 def test_module_breakdown_marks_survivors(
-    mutants_dir: Path, capsys: pytest.CaptureFixture[str]
+    tool: ModuleType, mutants_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
     assert (
         tool.main(["--mutants-dir", str(mutants_dir), "--module", "pkg.mod"])
         == 0
@@ -133,9 +134,8 @@ def test_module_breakdown_marks_survivors(
 
 
 def test_module_breakdown_unknown_module(
-    mutants_dir: Path, capsys: pytest.CaptureFixture[str]
+    tool: ModuleType, mutants_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
     assert (
         tool.main(["--mutants-dir", str(mutants_dir), "--module", "no.such"])
         == 0
@@ -144,9 +144,8 @@ def test_module_breakdown_unknown_module(
 
 
 def test_diffs_show_surviving_mutant_only(
-    mutants_dir: Path, capsys: pytest.CaptureFixture[str]
+    tool: ModuleType, mutants_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
     argv = [
         "--mutants-dir",
         str(mutants_dir),
@@ -167,9 +166,8 @@ def test_diffs_show_surviving_mutant_only(
 
 
 def test_diffs_function_filter(
-    mutants_dir: Path, capsys: pytest.CaptureFixture[str]
+    tool: ModuleType, mutants_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
     argv = [
         "--mutants-dir",
         str(mutants_dir),
@@ -186,15 +184,15 @@ def test_diffs_function_filter(
 
 
 def test_missing_results_dir_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
     assert tool.main(["--mutants-dir", str(tmp_path / "absent")]) == 1
     assert "no .meta results" in capsys.readouterr().err
 
 
-def test_diffs_without_module_is_a_usage_error(mutants_dir: Path) -> None:
-    tool = _load_tool()
+def test_diffs_without_module_is_a_usage_error(
+    tool: ModuleType, mutants_dir: Path
+) -> None:
     with pytest.raises(SystemExit) as excinfo:
         tool.main(["--mutants-dir", str(mutants_dir), "--diffs"])
     assert excinfo.value.code == 2

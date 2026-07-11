@@ -6,9 +6,12 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.introspect import (
+    MAX_WIDTH,
     RegistryKind,
+    _fold_columns,
     _render_module,
     describe,
+    list_modules,
     render_params,
 )
 from pyferm.modules import MATCH_DEFS, PROTO_DEFS, KeywordParams, ParamFunction
@@ -57,8 +60,6 @@ def test_render_module_alias_grouping() -> None:
 
 
 def test_render_module_lines_fit_width() -> None:
-    from pyferm.introspect import MAX_WIDTH
-
     # The design spec scopes the 79-column invariant to --list-modules'
     # own name-column layout, not to --describe's per-module option
     # tables. 'set' (ip match, i.e. ipset) combines a 19-char option name
@@ -141,8 +142,6 @@ def test_describe_unknown_raises(name: str) -> None:
 
 
 def test_list_modules_sections_and_width() -> None:
-    from pyferm.introspect import MAX_WIDTH, list_modules
-
     text = list_modules()
     for header in (
         "protocol modules (ip/ip6):",
@@ -165,8 +164,6 @@ def test_list_modules_sections_and_width() -> None:
 
 
 def test_list_modules_first_section_golden() -> None:
-    from pyferm.introspect import list_modules
-
     text = list_modules()
     assert text.startswith(
         "protocol modules (ip/ip6):\n"
@@ -298,8 +295,6 @@ def test_list_modules_full_golden() -> None:
     dropping out (e.g. the built-in keywords fold or an implicit
     base-options fold rendering empty); only full-text equality can.
     """
-    from pyferm.introspect import list_modules
-
     assert list_modules() == _LIST_MODULES_GOLDEN
 
 
@@ -323,8 +318,6 @@ def test_describe_comment_two_block_golden() -> None:
 
 
 def test_fold_columns_floors_at_one_name_per_row() -> None:
-    from pyferm.introspect import _fold_columns
-
     # column (52) exceeds half the width budget: the fold must floor at
     # ONE name per row rather than widen past MAX_WIDTH
     names = ["a" * 50, "b" * 50]
@@ -332,8 +325,6 @@ def test_fold_columns_floors_at_one_name_per_row() -> None:
 
 
 def test_fold_columns_budget_shrinks_with_indent() -> None:
-    from pyferm.introspect import MAX_WIDTH, _fold_columns
-
     # 4 names of width 18 fold at column 20: (79 - 4) // 20 = 3 per row,
     # so the fourth name wraps instead of stretching the row to 82
     rows = _fold_columns(["n" * 18] * 4, 4)

@@ -12,6 +12,8 @@ therefore NOT what this layer catches (that is the live e2e suite's job).
 from __future__ import annotations
 
 import copy
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -106,9 +108,6 @@ _CASES = sorted(_DELTA_DIR.glob("*.ferm"))
 
 def _sides(ferm_file: Path) -> tuple[str, str, str]:
     """Return (previous_text, family, desired_save) for one golden case."""
-    import subprocess
-    import sys
-
     mock: Path | None = None
     family = "ip"
     previous = ""

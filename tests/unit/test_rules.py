@@ -102,13 +102,19 @@ def _chosen(rule: RenderedRule) -> dict[str, object]:
     return {option.name: option.value for option in rule.options}
 
 
+def _unfold(rule: Rule, domain: str = "ip") -> list[RenderedRule]:
+    """Unfold ``rule`` into RenderedRules via a fresh mkrules2 call."""
+    out: list[RenderedRule] = []
+    mkrules2(domain, out, rule)
+    return out
+
+
 def test_scalar_only_emits_single_structural_rule() -> None:
     rule = Rule()
     append_option(rule, "protocol", "tcp")
     append_option(rule, "jump", "ACCEPT")
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     assert len(chain_rules) == 1
     (only,) = chain_rules
@@ -121,8 +127,7 @@ def test_array_options_unfold_in_perl_order() -> None:
     append_option(rule, "sport", ["1", "2"])
     append_option(rule, "dport", ["x", "y"])
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     # outer loop over the first option, inner over the second -> 2x2 product
     assert [_chosen(r) for r in chain_rules] == [
@@ -138,8 +143,7 @@ def test_scalar_value_is_repeated_across_unfolded_rules() -> None:
     append_option(rule, "protocol", "tcp")  # scalar, fixed
     append_option(rule, "dport", ["80", "443"])  # array, unfolds
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     assert [_chosen(r) for r in chain_rules] == [
         {"protocol": "tcp", "dport": "80"},
@@ -153,8 +157,7 @@ def test_empty_array_emits_no_rule() -> None:
     rule = Rule()
     append_option(rule, "dport", [])  # realize_deferred yields nothing
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     assert chain_rules == []
 
@@ -168,8 +171,7 @@ def test_deferred_is_realized_inline_during_unfold() -> None:
     rule = Rule()
     append_option(rule, "saddr", [deferred])
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     assert [_chosen(r) for r in chain_rules] == [
         {"saddr": "10.0.0.1"},
@@ -183,8 +185,7 @@ def test_non_array_refs_are_treated_as_scalars() -> None:
     append_option(rule, "dport", Multi(["80", "443"]))
     append_option(rule, "protocol", Negated("tcp"))
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     assert len(chain_rules) == 1
     (only,) = chain_rules
@@ -200,8 +201,7 @@ def test_kind_and_module_carry_into_rendered_options() -> None:
     append_option(rule, "match", "state", module="state")  # -> "match_module"
     append_option(rule, "jump", "ACCEPT")  # -> kind "target"
 
-    chain_rules: list[RenderedRule] = []
-    mkrules2("ip", chain_rules, rule)
+    chain_rules = _unfold(rule)
 
     (only,) = chain_rules
     by_name = {o.name: o for o in only.options}
@@ -244,8 +244,7 @@ def test_mkrules2_cardinality_equals_array_product() -> None:
     rule = Rule()
     rule.options.append(Option("sport", ["1", "2", "3"]))
     rule.options.append(Option("dport", ["x", "y"]))
-    out: list[RenderedRule] = []
-    mkrules2("ip", out, rule)
+    out = _unfold(rule)
     assert len(out) == 6  # 3 * 2; the invariant must hold, not just the count
 
 
@@ -253,8 +252,7 @@ def test_mkrules2_empty_array_yields_zero_rules() -> None:
     """An empty array option produces no rules (zero-length product)."""
     rule = Rule()
     rule.options.append(Option("dport", []))
-    out: list[RenderedRule] = []
-    mkrules2("ip", out, rule)
+    out = _unfold(rule)
     assert len(out) == 0  # product over a zero-length array
 
 
@@ -278,8 +276,7 @@ def _ipfilter_option(name: str) -> Option:
 def test_mkrules2_threads_family_into_deferred_array() -> None:
     rule = Rule()
     rule.options = [_ipfilter_option("saddr")]
-    out: list[RenderedRule] = []
-    mkrules2("ip6", out, rule)
+    out = _unfold(rule, domain="ip6")
     # one address survives the ip6 filter -> exactly one rule with fe80::1
     assert len(out) == 1
     assert [o.value for o in out[0].options] == ["fe80::1"]
@@ -290,8 +287,7 @@ def test_unfold_rule_threads_family_after_first_array() -> None:
     # must still thread the family, so the deferred yields one value (not two).
     rule = Rule()
     rule.options = [Option("dport", ["80", "443"]), _ipfilter_option("saddr")]
-    out: list[RenderedRule] = []
-    mkrules2("ip6", out, rule)
+    out = _unfold(rule, domain="ip6")
     # 2 dports x 1 surviving addr = 2 rules, all with the ip6 address
     assert len(out) == 2
     saddrs = [o.value for r in out for o in r.options if o.name == "saddr"]

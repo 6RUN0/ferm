@@ -72,12 +72,8 @@ def _evaluator(
 
 
 def test_run_shell_returns_backtick_bytes_as_latin1() -> None:
-    script = Script(filename="<test>", handle=io.StringIO(""))
-    scope = Scope()
-    scope.push(Frame())
-    evaluator = Evaluator(Tokenizer(script), scope)
     # backtick output flows into the tokenizer: byte 0xff must survive
-    assert evaluator._run_shell(r"printf '\377'") == "\xff"
+    assert _evaluator("")._run_shell(r"printf '\377'") == "\xff"
 
 
 # -- ipfilter ----------------------------------------------------------------
