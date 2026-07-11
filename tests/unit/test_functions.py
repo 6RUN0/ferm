@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.functions`.
+"""
+Unit tests for :mod:`pyferm.functions`.
 
 Exercises the value-evaluation layer: the stack lookups, the recursive
 ``getvalues`` reader (scalars, arrays, quotes, ``$`` variables, negation),

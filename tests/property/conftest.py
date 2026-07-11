@@ -1,4 +1,5 @@
-"""Property-suite guard for tests that drive the Perl oracle.
+"""
+Property-suite guard for tests that drive the Perl oracle.
 
 CI's ubuntu runners ship perl in the base image, which makes the
 dependency easy to take for granted; on a host without perl the

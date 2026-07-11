@@ -1,4 +1,5 @@
-"""Output normalizers ported from the Makefile and helper scripts.
+"""
+Output normalizers ported from the Makefile and helper scripts.
 
 Three independent transforms, applied exactly where the Makefile applies
 them (see the per-category pipelines in :mod:`runner`):

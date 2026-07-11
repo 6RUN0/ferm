@@ -1,4 +1,5 @@
-"""Faithful Python port of ``reference/test/sort.pl``.
+"""
+Faithful Python port of ``reference/test/sort.pl``.
 
 ferm emits tables and chains in random order (Perl hash ordering), so
 the golden suite canonicalizes both sides before diffing.  This is NOT a
@@ -45,7 +46,8 @@ _EB_ATOMIC = re.compile(r"^ebtables -t (\w+) --atomic-file (\S+) [^\n]+")
 
 
 def sort_output(text: str, *, eb_group_by_table: bool = False) -> str:
-    """Canonicalize ferm output the way ``sort.pl`` does.
+    """
+    Canonicalize ferm output the way ``sort.pl`` does.
 
     Raises ``ValueError`` on any line the Perl original would ``die`` on,
     so harness drift surfaces loudly instead of silently dropping lines.
@@ -130,7 +132,8 @@ def sort_output(text: str, *, eb_group_by_table: bool = False) -> str:
 
 
 def is_save_line(line: str) -> bool:
-    """Whether :func:`sort_output` recognizes ``line``.
+    """
+    Whether :func:`sort_output` recognizes ``line``.
 
     Not part of sort.pl: the corpus suite uses this to split ferm output
     into sortable save blocks and pass-through lines (``@hook`` commands,

@@ -1,4 +1,5 @@
-"""Live-nft validation of the backend's translated vocabulary.
+"""
+Live-nft validation of the backend's translated vocabulary.
 
 The unit layer pins the emitted *text*; this suite pins that the text is
 *real nft* and that an applied ruleset converges under ``--plan`` (the

@@ -1,4 +1,5 @@
-"""Shared repo-root anchor and source loaders for the packaging tests.
+"""
+Shared repo-root anchor and source loaders for the packaging tests.
 
 The ``packaging/`` scripts (build.py, entry.py, scan_image.py) live outside the
 installed ``pyferm`` package, so the tests load them from source by path.  Both
@@ -16,7 +17,8 @@ if TYPE_CHECKING:
 
 
 def find_repo_root() -> Path:
-    """Return the checkout root: the nearest ancestor holding ``packaging/``.
+    """
+    Return the checkout root: the nearest ancestor holding ``packaging/``.
 
     Anchor on the ``packaging/`` tree rather than a fixed parent depth: the
     mutmut sandbox copies only ``src`` + ``tests`` into ``mutants/``, so the

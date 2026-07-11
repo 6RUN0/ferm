@@ -1,4 +1,5 @@
-"""Structural coverage for the eval-free Parser.parse_to_block.
+"""
+Structural coverage for the eval-free Parser.parse_to_block.
 
 parse_to_block builds a retained tree over BOTH @if branches without
 evaluating conditions, substituting variables, loading modules or resolving

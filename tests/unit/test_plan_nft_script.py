@@ -1,4 +1,5 @@
-"""Unit tests for parse_nft_script: the parser for the desired-side nft script.
+"""
+Unit tests for parse_nft_script: the parser for the desired-side nft script.
 
 The desired side is the output of NftBackend.render().save -- an nft -f
 script produced by serialize_table.  parse_nft_script returns a
@@ -76,7 +77,8 @@ def test_user_chain_rules_appended() -> None:
 
 
 def test_add_table_and_flush_table_materialize_empty_table() -> None:
-    """add table / flush table carry no rules but declare the ferm table.
+    """
+    add table / flush table carry no rules but declare the ferm table.
 
     The envelope lines produce no chains or sets, yet declaring the table
     materializes a present-but-empty ferm entry.  diff_tables iterates desired
@@ -241,7 +243,8 @@ def test_add_chain_extra_token_before_brace_raises() -> None:
 
 
 def test_envelope_only_desired_surfaces_live_foreign_chain() -> None:
-    """The end-to-end payoff of materializing the envelope-only table.
+    """
+    The end-to-end payoff of materializing the envelope-only table.
 
     A chainless config diffed against a live ferm table that still holds a
     user chain reports that chain as foreign (an apply would flush it) rather
@@ -256,7 +259,8 @@ def test_envelope_only_desired_surfaces_live_foreign_chain() -> None:
 
 
 def test_envelope_only_desired_surfaces_live_foreign_set() -> None:
-    """The set path is the symmetric payoff of materializing the envelope.
+    """
+    The set path is the symmetric payoff of materializing the envelope.
 
     diff_tables iterates the desired table's sets the same way it iterates its
     chains, so a chainless, setless config diffed against a live ferm table
@@ -278,7 +282,8 @@ def test_envelope_only_desired_surfaces_live_foreign_set() -> None:
 
 
 def test_envelope_only_desired_emits_delete_chain_delta() -> None:
-    """build_nft_delta also consumes parse_nft_script, so the materialized
+    """
+    build_nft_delta also consumes parse_nft_script, so the materialized
     empty table propagates to the apply path: an envelope-only config against a
     live ferm table holding a user chain emits a `delete chain` delta instead
     of an empty (no-op) delta.  This locks the apply-path reachability of the
@@ -292,7 +297,8 @@ def test_envelope_only_desired_emits_delete_chain_delta() -> None:
 
 
 def test_parse_error_carries_line_number_and_excerpt() -> None:
-    """A non-'add' verb raises a parse error naming the 1-based line number
+    """
+    A non-'add' verb raises a parse error naming the 1-based line number
     and echoing the offending line text."""
     text = "add table ip ferm\nbogus line here\n"
     with pytest.raises(FermError) as exc:
@@ -303,7 +309,8 @@ def test_parse_error_carries_line_number_and_excerpt() -> None:
 
 
 def test_rule_for_unknown_chain_reports_line_and_excerpt() -> None:
-    """A rule referencing a chain that was never declared raises a parse
+    """
+    A rule referencing a chain that was never declared raises a parse
     error carrying its line number and text."""
     text = "add table ip ferm\nadd rule ip ferm NOPE accept\n"
     with pytest.raises(FermError) as exc:
@@ -314,7 +321,8 @@ def test_rule_for_unknown_chain_reports_line_and_excerpt() -> None:
 
 
 def test_minimal_six_part_rule_is_accepted() -> None:
-    """A rule line of exactly six whitespace tokens (single-token body) is a
+    """
+    A rule line of exactly six whitespace tokens (single-token body) is a
     valid rule, not a parse error: the length gate is '>=', not '>'."""
     text = (
         "add table ip ferm\n"

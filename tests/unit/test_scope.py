@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.scope`.
+"""
+Unit tests for :mod:`pyferm.scope`.
 
 Locks the copy-on-write scoping semantics ported from
 ``reference/src/ferm`` (``:2033-2068``): ``new_level`` inheritance and what

@@ -88,7 +88,8 @@ def test_builtin_categories_match_the_dispatch_tables() -> None:
 
 
 def test_scan_layer_keyword_sets_track_the_parser() -> None:
-    """The eval-free scan layer's keyword mirrors follow the tables.
+    """
+    The eval-free scan layer's keyword mirrors follow the tables.
 
     ``_treescan`` keeps its own literal subchain/jump sets (and graph.py
     its EdgeKind maps) so the minimal scan core stays parser-free.  The
@@ -209,7 +210,8 @@ def _collect_keywords(source_path: Path) -> set[str]:
 
 
 def test_no_keyword_dispatch_outside_the_tables() -> None:
-    """No fixed keyword is dispatched via an ad-hoc string compare.
+    """
+    No fixed keyword is dispatched via an ad-hoc string compare.
 
     The equality gate above only sees the tables, so a hand-written
     ``if tok == "newkw"`` branch handling a keyword absent from both

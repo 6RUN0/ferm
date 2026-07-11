@@ -1,4 +1,5 @@
-"""Consistency gate for the corpus provenance manifest.
+"""
+Consistency gate for the corpus provenance manifest.
 
 Validates ``provenance.yaml`` against the vendored ``configs/`` tree
 without any golden files: the manifest must cover exactly the checked-in
@@ -37,7 +38,8 @@ def _load_manifest() -> list[dict[str, object]]:
 
 
 def _vendored_files() -> dict[str, Path]:
-    """Map manifest-relative names to the vendored files they describe.
+    """
+    Map manifest-relative names to the vendored files they describe.
 
     Top level: the ``*.ferm`` configs (the ``zonefile`` DNS mock is
     support data, not a config).  Entry directories: every file,
@@ -57,7 +59,8 @@ def _vendored_files() -> dict[str, Path]:
 
 
 def test_manifest_bijection() -> None:
-    """Manifest covers exactly the vendored configs.
+    """
+    Manifest covers exactly the vendored configs.
 
     The set of declared ``file`` names must equal the set of vendored
     config files (top-level ``*.ferm`` plus every file of each entry
@@ -70,7 +73,8 @@ def test_manifest_bijection() -> None:
 
 
 def test_required_fields() -> None:
-    """Every entry carries the required provenance fields.
+    """
+    Every entry carries the required provenance fields.
 
     The ``commit`` must be a 40-hex revision pin and ``features`` a
     non-empty list; the ``license`` key must be present.
@@ -87,7 +91,8 @@ def test_required_fields() -> None:
 
 
 def test_sink_absence() -> None:
-    """Every config keeps its sanitization sinks neutralized.
+    """
+    Every config keeps its sanitization sinks neutralized.
 
     For each vendored file the comment is stripped from the first ``#``
     of every line, and the surviving code must contain no backtick and
@@ -125,7 +130,8 @@ def test_sink_absence() -> None:
 
 
 def test_translated_configs_documented_and_sink_free() -> None:
-    """Hand-translated configs carry an Origin header and no sinks.
+    """
+    Hand-translated configs carry an Origin header and no sinks.
 
     ``translated/*.ferm`` are authored for this repository (real-world
     iptables/nft setups rewritten into ferm), so they have no upstream

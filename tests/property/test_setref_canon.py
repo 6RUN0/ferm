@@ -1,4 +1,5 @@
-"""Named-set canonicalization and conflict-predicate properties.
+"""
+Named-set canonicalization and conflict-predicate properties.
 
 Two properties guard the named-set machinery:
 

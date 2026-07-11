@@ -1,4 +1,5 @@
-"""Shared CLI-level differential helper: run one config through the port and
+"""
+Shared CLI-level differential helper: run one config through the port and
 the Perl oracle with --test --noexec --lines and assert byte-parity under the
 corpus contract (exit verdict + normalized stderr + canonicalized stdout).
 Reuses the compilers of test_config_differential; used by the diagnostic-order

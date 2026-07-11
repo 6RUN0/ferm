@@ -1,4 +1,5 @@
-"""Targeted differential cases for diagnostic ordering.
+"""
+Targeted differential cases for diagnostic ordering.
 
 These are NOT fuzz cases: they pin the exact stderr ordering the streaming
 oracle produces when an eval error precedes a structural one (and vice versa),

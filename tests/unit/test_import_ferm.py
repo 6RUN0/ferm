@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.import_ferm`.
+"""
+Unit tests for :mod:`pyferm.import_ferm`.
 
 Covers the pure helpers (``ferm_escape``, ``format_array``, the tokenizer),
 the structural rule equality feeding the merge tests, the two-pass

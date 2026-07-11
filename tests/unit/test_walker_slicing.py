@@ -1,4 +1,5 @@
-"""Per-keyword rule slicing parity (both negation forms), vs the oracle.
+"""
+Per-keyword rule slicing parity (both negation forms), vs the oracle.
 
 These are differential cases pinned before RuleNode is promoted: the raw rule
 span is sliced into keyword arguments on the walk, after modules load, so arity

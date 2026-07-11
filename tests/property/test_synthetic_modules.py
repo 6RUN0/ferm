@@ -1,4 +1,5 @@
-"""Synthetic parametric differential test: port vs oracle for thin modules.
+"""
+Synthetic parametric differential test: port vs oracle for thin modules.
 
 The corpus (:mod:`tests.corpus.test_corpus`) exercises real-world ferm
 configs, but some netfilter modules have *no* public wild configuration to
@@ -48,7 +49,8 @@ REPO_ROOT = _HERE.parents[1]
 
 @dataclass(frozen=True)
 class Case:
-    """A synthesized ferm config and the id under which it is reported.
+    """
+    A synthesized ferm config and the id under which it is reported.
 
     ``modules`` names the registered netfilter module(s) the case is
     specifically designed to exercise.  It drives the completeness gate
@@ -2071,7 +2073,8 @@ def _registry_module_names() -> set[str]:
 
 
 def _tagged_modules() -> set[str]:
-    """Modules explicitly claimed by a Case via its ``modules`` field.
+    """
+    Modules explicitly claimed by a Case via its ``modules`` field.
 
     This is the *only* coverage signal: a module counts as covered iff a
     Case is deliberately tagged with its name.  Incidental token
@@ -2087,7 +2090,8 @@ def _tagged_modules() -> set[str]:
 def _uncovered_modules(
     registry: set[str], tagged: set[str], waivers: set[str]
 ) -> set[str]:
-    """Registry modules neither tagged by a Case nor explicitly waived.
+    """
+    Registry modules neither tagged by a Case nor explicitly waived.
 
     Pure set arithmetic so the gate and its self-test share one definition
     of "uncovered" and cannot drift apart.
@@ -2096,7 +2100,8 @@ def _uncovered_modules(
 
 
 def test_case_tags_name_only_real_modules() -> None:
-    """Every ``modules`` tag must name a registered module.
+    """
+    Every ``modules`` tag must name a registered module.
 
     A typo'd or stale tag would otherwise silently "cover" nothing while
     leaving the real module uncovered -- defeating the gate.
@@ -2109,7 +2114,8 @@ def test_case_tags_name_only_real_modules() -> None:
 
 
 def test_every_registered_module_has_a_synthetic_case() -> None:
-    """Guard the matrix's completeness: a new module must gain a tagged Case.
+    """
+    Guard the matrix's completeness: a new module must gain a tagged Case.
 
     ``_CASES`` is hand-maintained, so a freshly registered module would
     otherwise carry zero differential coverage with nothing to flag it.
@@ -2142,7 +2148,8 @@ def test_every_registered_module_has_a_synthetic_case() -> None:
 
 
 def test_gate_flags_an_untagged_module() -> None:
-    """Self-test: the gate's logic must flag a module that no Case tags.
+    """
+    Self-test: the gate's logic must flag a module that no Case tags.
 
     Feeds the coverage computation a synthetic registry containing a module
     name that appears in no ``Case.modules`` tuple, and asserts it is

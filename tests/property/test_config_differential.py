@@ -1,4 +1,5 @@
-"""Grammar-based config fuzzing: whole configs, the port vs the oracle.
+"""
+Grammar-based config fuzzing: whole configs, the port vs the oracle.
 
 Hypothesis assembles whole ferm configurations from a small grammar of
 the constructs the corpus suite saw in the wild -- domains, tables,
@@ -305,7 +306,8 @@ def _normalize_stderr(text: str) -> str:
 
 @pytest.fixture(scope="module")
 def fuzz_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One temp directory per module; each example overwrites its file.
+    """
+    One temp directory per module; each example overwrites its file.
 
     Also seeds the ``@include`` target next to the fuzzed configs so a
     generated ``@include`` resolves (relative to the including file's dir)

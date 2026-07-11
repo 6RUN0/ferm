@@ -1,4 +1,5 @@
-"""Differential end-to-end run of real-world configs: port vs oracle.
+"""
+Differential end-to-end run of real-world configs: port vs oracle.
 
 Every corpus config (see ``README.md`` for provenance) plus the upstream
 ``reference/examples/`` set is compiled by both the frozen Perl oracle
@@ -47,7 +48,8 @@ _EXCLUDED_EXAMPLES = {"resolve.ferm"}
 
 
 def flat_and_nested_configs(root: Path) -> list[Path]:
-    """Flat ``*.ferm`` files plus each subdir's same-named entry file.
+    """
+    Flat ``*.ferm`` files plus each subdir's same-named entry file.
 
     The multi-file convention: a config directory holds an entry file named
     after it, with its @include targets beside it (resolved relative to the

@@ -39,7 +39,8 @@ _CORPUS_ENV = "FERM_NFT_CORPUS"
 
 @functools.cache
 def _load_corpus() -> list[RuleCase | HeaderCase]:
-    """Parse every ``.t`` file under ``$FERM_NFT_CORPUS`` (lazy).
+    """
+    Parse every ``.t`` file under ``$FERM_NFT_CORPUS`` (lazy).
 
     The whole ``tests/py`` tree is scanned recursively, NOT just the
     ``ip``/``ip6``/``inet`` directories: the ``any/`` tree declares those
@@ -166,7 +167,8 @@ def _extract_rule(listing: str) -> str | None:
 
 
 def _nft_readback(family: str, header: str, rule: str) -> str | None:
-    """Apply *rule* in a rootless netns and return nft's canonical readback.
+    """
+    Apply *rule* in a rootless netns and return nft's canonical readback.
 
     Returns ``None`` when nft rejects the wrapped rule (a corpus rule not
     valid in our minimal chain) -- those are skipped, not failed.
@@ -200,7 +202,8 @@ def _allow_list_rule_cases() -> list[RuleCase]:
 
 
 def _measure_layer2() -> tuple[set[str], int]:
-    """Return (diverging input rules, count compared) against live nft.
+    """
+    Return (diverging input rules, count compared) against live nft.
 
     For each allow-listed corpus rule, apply it in a minimal ``hook input``
     chain and compare the production invariant ``canon(input) ==
@@ -232,7 +235,8 @@ def _measure_layer2() -> tuple[set[str], int]:
     not _NETNS_OK, reason="rootless network namespace unavailable"
 )
 def test_layer2_divergences_match_baseline() -> None:
-    """Census the canon-vs-live-nft divergences against the known baseline.
+    """
+    Census the canon-vs-live-nft divergences against the known baseline.
 
     The differential is a GAP CENSUS, not a universal-equality assertion: the
     three transforms the allow-list gates (ct-state / reject-with / limit-rate)

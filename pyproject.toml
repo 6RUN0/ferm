@@ -173,7 +173,17 @@ known-first-party = ["pyferm"]
 # True, ...)) is that same literal-as-input pattern, not a boolean trap
 # (FBT). Probing a module's private helpers (SLF001) is legitimate: a unit
 # test exists to pin internal logic like packaging.build._expected_version.
-"tests/*" = ["D", "PLR2004", "FBT", "SLF001"]
+# The D ignore enumerates everything EXCEPT D213: docstrings stay optional
+# and free-form in tests, but the ones that exist keep the project-wide
+# summary-on-second-line shape.
+"tests/*" = [
+  "D1",
+  "D200", "D201", "D202", "D203", "D204", "D205", "D206", "D207",
+  "D208", "D209", "D210", "D211", "D212", "D214", "D215",
+  "D3",
+  "D4",
+  "PLR2004", "FBT", "SLF001",
+]
 # The Walker is a NodeVisitor: its methods MUST be named visit_<ClassName>
 # to match the getattr dispatch, so mixed-case method names (N802) are the
 # required idiom, not a style slip. The Walker is the evaluator half of the

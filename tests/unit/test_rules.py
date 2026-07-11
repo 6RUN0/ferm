@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.rules`.
+"""
+Unit tests for :mod:`pyferm.rules`.
 
 Covers the netfilter predicates ported from ``reference/src/ferm``
 (``:1766-1803``) and the render/commit split: the cartesian unfold must

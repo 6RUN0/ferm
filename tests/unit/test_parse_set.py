@@ -77,7 +77,8 @@ table filter chain INPUT mod set {
 
 
 def test_bareword_set_in_mod_set_still_compiles() -> None:
-    """ipset ``set`` inside ``mod set {}`` must not be hijacked by ``@set``.
+    """
+    ipset ``set`` inside ``mod set {}`` must not be hijacked by ``@set``.
 
     Confirms the bareword-only dispatch invariant.
     """

@@ -1,4 +1,5 @@
-"""Differential fuzzing: the port vs the Perl oracle on pure functions.
+"""
+Differential fuzzing: the port vs the Perl oracle on pure functions.
 
 Arbitrary inputs through the pure lexing/escaping helpers must behave
 identically in the Python port and in the frozen oracle (bug-for-bug,

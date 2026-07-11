@@ -1,4 +1,5 @@
-"""Default-suite safety net for nft delta-apply: idempotency + convergence.
+"""
+Default-suite safety net for nft delta-apply: idempotency + convergence.
 
 These run without a kernel.  The convergence interpreter is an independent
 reimplementation of the delta's STRUCTURE -- the order in which flush/add/
@@ -163,7 +164,8 @@ def test_delta_converges_to_desired(ferm_file: Path) -> None:
 
 
 def test_delta_idempotent_case_emits_empty() -> None:
-    """Idempotency gate: live snapshot already equal to desired -> empty delta.
+    """
+    Idempotency gate: live snapshot already equal to desired -> empty delta.
 
     Keyed to the golden ``idempotent`` case, whose ``.save`` is a REAL
     ``nft list`` snapshot describing exactly the desired state.  Feeding that

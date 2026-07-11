@@ -1,4 +1,5 @@
-"""Opt-in live proof that delta-apply preserves counters and set state.
+"""
+Opt-in live proof that delta-apply preserves counters and set state.
 
 Requires a real ``nft`` and rootless netns.  NOT in the default suite --
 gated behind ``nox -s delta_apply_e2e``.  Each test does ALL its nft work
@@ -68,7 +69,8 @@ def _run_in_netns(script: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_empty_delta_leaves_rule_handles_unchanged(tmp_path: Path) -> None:
-    """An empty delta (unchanged config) does not touch kernel rules.
+    """
+    An empty delta (unchanged config) does not touch kernel rules.
 
     pyferm skips ``nft -f`` entirely when ``build_nft_delta`` returns ``""``,
     so rule handles are the same before and after the second apply.  A changed
@@ -97,7 +99,8 @@ def test_empty_delta_leaves_rule_handles_unchanged(tmp_path: Path) -> None:
 
 
 def test_full_reload_rebuilds_the_table(tmp_path: Path) -> None:
-    """``--full-reload`` tears the whole table down and rebuilds it.
+    """
+    ``--full-reload`` tears the whole table down and rebuilds it.
 
     The full reload emits ``delete table`` + ``add table``, so every object is
     replaced (rule counters are lost).  A rule's handle NUMBER can coincide
@@ -144,7 +147,8 @@ domain ip table filter {
 
 
 def test_full_reload_removes_dropped_base_chain(tmp_path: Path) -> None:
-    """A base chain removed from config must NOT survive a full reload.
+    """
+    A base chain removed from config must NOT survive a full reload.
 
     ``flush table`` empties chains of rules but keeps their declarations, so a
     removed base chain with ``policy drop`` would stay bound to its hook and
@@ -173,7 +177,8 @@ def test_full_reload_removes_dropped_base_chain(tmp_path: Path) -> None:
 
 
 def test_delta_preserves_named_set_handle(tmp_path: Path) -> None:
-    """A config with a named set produces an empty delta on the second apply.
+    """
+    A config with a named set produces an empty delta on the second apply.
 
     ``build_nft_delta`` must parse the set correctly and return ``""`` when
     nothing changed -- proving the set diff path does not falsely trigger a
@@ -215,7 +220,8 @@ def test_delta_preserves_named_set_handle(tmp_path: Path) -> None:
 
 
 def test_nft_delete_of_absent_object_fails_closed(tmp_path: Path) -> None:
-    """Back the fail-closed safety claim empirically.
+    """
+    Back the fail-closed safety claim empirically.
 
     A delta that adds a rule AND deletes an object removed out-of-band must
     abort the WHOLE transaction (no partial apply): the added rule must not

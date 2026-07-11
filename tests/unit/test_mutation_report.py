@@ -1,4 +1,5 @@
-"""Unit tests for tools/mutation_report.py (the mutmut triage report).
+"""
+Unit tests for tools/mutation_report.py (the mutmut triage report).
 
 The tool is a standalone script outside the pyferm package, so it is
 loaded by file path, mirroring the packaging/entry.py test idiom. All

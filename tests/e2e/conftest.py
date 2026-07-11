@@ -1,4 +1,5 @@
-"""Turn a silent all-skip of the opt-in kernel e2e suite into a hard failure.
+"""
+Turn a silent all-skip of the opt-in kernel e2e suite into a hard failure.
 
 The kernel e2e tests self-skip when their prerequisites (rootless user
 namespaces, nftables, docker, ...) are absent, so a CI leg meant to exercise a

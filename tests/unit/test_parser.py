@@ -1,4 +1,5 @@
-"""Unit tests for the parser (``enter`` and its helpers).
+"""
+Unit tests for the parser (``enter`` and its helpers).
 
 The parser ties the whole front end together, so these tests drive it
 end to end: feed a ferm source string, run :meth:`Parser.enter`, and
@@ -1078,7 +1079,8 @@ def test_gotosubchain_emits_goto_target() -> None:
 def test_new_subchain_name_does_not_warn(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A first-seen sub-chain is created silently (``subchain in chains`` is
+    """
+    A first-seen sub-chain is created silently (``subchain in chains`` is
     False), with no 'already exists' warning."""
     _parse('chain INPUT proto tcp @subchain "fresh" { ACCEPT; }')
     assert "already exists" not in capsys.readouterr().err
@@ -1096,7 +1098,8 @@ def test_duplicate_subchain_name_warns(
 
 
 def test_function_multi_token_arg_realigns_later_param() -> None:
-    """A multi-token array arg is parenthesised (``len(tokens) != 1``) before
+    """
+    A multi-token array arg is parenthesised (``len(tokens) != 1``) before
     splicing so ``dport`` sees ``(22 80)`` and a later ``$b`` still binds."""
     parser = _parse(
         "@def &two($a, $b) = proto tcp dport $a sport $b ACCEPT;"

@@ -1,4 +1,5 @@
-"""Shared pytest fixtures.
+"""
+Shared pytest fixtures.
 
 The golden-file harness (mock resolver reading the reference zonefile,
 paths into ``reference/test``) is added as the port grows; this scaffold
@@ -35,7 +36,8 @@ if _UNDER_MUTMUT:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Give each mutmut worker process a private pytest tmp base.
+    """
+    Give each mutmut worker process a private pytest tmp base.
 
     mutmut 3.6 runs mutants across concurrent worker processes that all share
     pytest's default ``/tmp/pytest-of-<user>`` base.  Their numbered-dir

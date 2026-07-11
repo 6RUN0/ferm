@@ -1,4 +1,5 @@
-"""Port-only golden tests for ``ferm --plan --nft``.
+"""
+Port-only golden tests for ``ferm --plan --nft``.
 
 Each case drives::
 
@@ -49,7 +50,8 @@ _DIFF_FORMAT_STEMS = frozenset({"diff_format"})
 
 
 def _run_plan_nft(ferm_file: Path, fmt: str) -> tuple[int, str]:
-    """Run ``--plan --nft`` over one fixture, return ``(exit_code, stdout)``.
+    """
+    Run ``--plan --nft`` over one fixture, return ``(exit_code, stdout)``.
 
     Detects which mock siblings are present and passes each as a
     ``--test-mock-previous=<fam>=<path>`` argument.

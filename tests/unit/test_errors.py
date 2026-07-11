@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.errors` (the ``error``/``warning`` port).
+"""
+Unit tests for :mod:`pyferm.errors` (the ``error``/``warning`` port).
 
 Locks the exit-code contract (``error`` raises :class:`FermError`) and
 the byte-exact stderr layout of the re-indented code context, so a future

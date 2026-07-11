@@ -289,7 +289,8 @@ option 'saddr' of the implicit base match (eb):
 
 
 def test_list_modules_full_golden() -> None:
-    """Pin the complete catalogue text, not just the first section.
+    """
+    Pin the complete catalogue text, not just the first section.
 
     The shape test above cannot notice a whole name list silently
     dropping out (e.g. the built-in keywords fold or an implicit

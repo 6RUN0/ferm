@@ -1,4 +1,5 @@
-"""Invoke the ferm-under-test and replicate the Makefile pipelines.
+"""
+Invoke the ferm-under-test and replicate the Makefile pipelines.
 
 Each ``*_case`` helper reproduces one Makefile rule from
 ``reference/Makefile`` exactly - including the deliberate SED/sort
@@ -40,7 +41,8 @@ _MOCK_SUFFIXES: tuple[tuple[str, str], ...] = (
 
 
 def mock_previous_args(ferm_file: Path) -> list[str]:
-    """Build ``--test-mock-previous`` flags for each mock sibling present.
+    """
+    Build ``--test-mock-previous`` flags for each mock sibling present.
 
     Detects which ``<stem>.save*`` mocks sit beside ``ferm_file`` and maps
     each to its ferm family token; a fixture targeting one family carries
@@ -195,7 +197,8 @@ def preserve_case(
 
 
 def diagnostics_case(target: FermTarget, ferm_file: Path) -> tuple[int, str]:
-    """negative/params/warning: return ``(exit code, stderr)``, no raise.
+    """
+    negative/params/warning: return ``(exit code, stderr)``, no raise.
 
     Unlike :func:`_run`, a non-zero exit is the expected outcome here,
     so the verdict is returned for the test to assert on.

@@ -1,4 +1,5 @@
-"""Pin the hand-transcribed oracle snippets to their Perl source.
+"""
+Pin the hand-transcribed oracle snippets to their Perl source.
 
 Most oracles in :mod:`tests.property.oracle_driver` are regex-extracted
 verbatim from the frozen Perl source at run time, so they cannot drift.

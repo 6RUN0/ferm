@@ -1,4 +1,5 @@
-"""Port-only golden tests for ``ferm --plan`` (no Perl oracle exists).
+"""
+Port-only golden tests for ``ferm --plan`` (no Perl oracle exists).
 
 Each case drives ``python -m pyferm --plan --test --test-mock-previous=ip=...``
 over a ``.ferm`` input and a hand-written short-form ``.save`` mock, and diffs
@@ -35,7 +36,8 @@ _NOFLUSH_STEMS = frozenset({"noflush"})
 def _run_plan(
     ferm_file: Path, fmt: str, *, noflush: bool = False
 ) -> tuple[int, str]:
-    """Run ``--plan`` over one fixture, returning ``(exit_code, stdout)``.
+    """
+    Run ``--plan`` over one fixture, returning ``(exit_code, stdout)``.
 
     Passes an ``ip`` mock from the ``.save`` sibling and, when a ``.save6``
     sibling exists, a second ``ip6`` mock so dual-stack cases render both

@@ -1,4 +1,5 @@
-"""Unit tests for the nft canonicalizer: canonicalize_nft_rule and
+"""
+Unit tests for the nft canonicalizer: canonicalize_nft_rule and
 canonicalize_nft_header.
 
 These tests drive TDD: written before the implementation and document the

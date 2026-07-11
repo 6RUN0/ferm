@@ -1,4 +1,5 @@
-"""nft-backend gate over the corpus: translate cleanly or refuse cleanly.
+"""
+nft-backend gate over the corpus: translate cleanly or refuse cleanly.
 
 Unlike :mod:`tests.corpus.test_corpus` there is no oracle here (Perl
 ferm has no nft backend), so the contract is weaker but still
@@ -90,7 +91,8 @@ def _live_nft_usable() -> bool:
 
 
 def assert_live_nft_accepts(script: str, label: str = "") -> None:
-    """Feed an nft script to a live ``nft -c`` in a rootless netns.
+    """
+    Feed an nft script to a live ``nft -c`` in a rootless netns.
 
     A no-op where ``unshare -rn``/``nft`` are unavailable -- the same
     graceful degradation the corpus and packaged-config gates share.

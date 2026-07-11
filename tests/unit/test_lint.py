@@ -35,7 +35,8 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 
 def _parse_and_resolve(argv: list[str]) -> Options:
-    """Parse ``argv`` and derive Options.
+    """
+    Parse ``argv`` and derive Options.
 
     No tty patching: the ``--lint`` conflict guard now runs before the
     apply-path timeout/interactive-tty checks (hoisted to the top of
@@ -110,7 +111,8 @@ def test_undefined_chain_jump_warns(
 def test_mixed_findings_are_grouped_and_sorted(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Fixed order: ALL unused-definition lines (sorted) first, THEN all
+    """
+    Fixed order: ALL unused-definition lines (sorted) first, THEN all
     jump-to-undefined-chain lines (sorted) -- never interleaved."""
     conf = _write(
         tmp_path,
@@ -156,7 +158,8 @@ def test_stdin_dash_is_read_as_the_source(
 def test_lint_accepts_and_ignores_timeout(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``--timeout`` is apply-path-only (needs ``--interactive`` there) but is
+    """
+    ``--timeout`` is apply-path-only (needs ``--interactive`` there) but is
     accepted-and-ignored under ``--lint``, which never reaches that guard."""
     conf = _write(tmp_path, "chain INPUT ACCEPT;\n")
     assert main(["--lint", "--timeout", "5", str(conf)]) == 0
@@ -169,7 +172,8 @@ def test_lint_accepts_and_ignores_timeout(
 def test_lint_accepts_and_ignores_harmless_flags(
     flag: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Spec's accepted-but-ignored list: harmless under eval-free analysis,
+    """
+    Spec's accepted-but-ignored list: harmless under eval-free analysis,
     so none of them may raise or otherwise disturb the lint result."""
     conf = _write(tmp_path, "chain INPUT ACCEPT;\n")
     assert main(["--lint", flag, str(conf)]) == 0
@@ -206,7 +210,8 @@ def test_lint_rejects_incompatible_flags_via_main(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Apply/plan modes and eval-dependent flags are rejected outright --
+    """
+    Apply/plan modes and eval-dependent flags are rejected outright --
     accepting them would silently no-op under eval-free analysis. Covers all
     nine reject-loop switches (``--fast``/``--flush``/``--noflush`` included so
     a mutant swapping or dropping any tuple entry is caught), worker-1's
@@ -220,7 +225,8 @@ def test_lint_rejects_incompatible_flags_via_main(
 
 @pytest.mark.parametrize("flag", ["--slow", "--interactive"])
 def test_lint_rejects_other_apply_mode_flags(flag: str) -> None:
-    """Same rejection for the remaining apply-mode-only switches -- no tty
+    """
+    Same rejection for the remaining apply-mode-only switches -- no tty
     patching required now that the guard is hoisted above the tty checks."""
     with pytest.raises(FermError, match=f"cannot be combined with {flag}"):
         _parse_and_resolve(["--lint", flag, "f.ferm"])
@@ -229,7 +235,8 @@ def test_lint_rejects_other_apply_mode_flags(flag: str) -> None:
 def test_lint_interactive_rejected_in_non_tty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Proves the hoist: even with neither stream a tty, ``--lint
+    """
+    Proves the hoist: even with neither stream a tty, ``--lint
     --interactive`` raises the LINT message, not the unrelated apply-path
     "not a tty" guard -- the two guards must never race."""
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
@@ -246,7 +253,8 @@ def test_lint_interactive_rejected_in_non_tty(
 def test_malformed_config_never_raises_and_stays_exit_zero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The structural parser is error-tolerant: an unbalanced ``{`` yields a
+    """
+    The structural parser is error-tolerant: an unbalanced ``{`` yields a
     partial tree, not a diagnostic, so ``--lint`` degrades to a best-effort
     result instead of raising or reporting a syntax error as exit 1. Default
     (non-strict) mode never returns 2, findings or not, so this pins exit 0
@@ -262,7 +270,8 @@ def test_malformed_config_never_raises_and_stays_exit_zero(
 def test_lint_rejects_pipe_path_without_running_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A trailing-``|`` path is a shell pipe-include on the apply/plan path;
+    """
+    A trailing-``|`` path is a shell pipe-include on the apply/plan path;
     under ``--lint`` -- advertised read-only and subprocess-free -- it must be
     rejected before ``open_script`` runs it, and the side-effect must not
     happen."""
@@ -275,7 +284,8 @@ def test_lint_rejects_pipe_path_without_running_it(
 def test_lint_escapes_control_chars_in_finding_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A quoted chain name may carry an ESC byte (latin-1 admits any byte);
+    """
+    A quoted chain name may carry an ESC byte (latin-1 admits any byte);
     the printed warning must escape it so a crafted config cannot inject a
     terminal-control sequence into a CI log line."""
     conf = _write(tmp_path, 'table filter chain INPUT { jump "A\x1bB"; }\n')
@@ -292,7 +302,8 @@ def test_lint_escapes_control_chars_in_finding_names(
 def test_lint_with_wrong_file_count_prints_usage_and_exits_one(
     files: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The whole-CLI ``exactly one file`` guard fires before the ``--lint``
+    """
+    The whole-CLI ``exactly one file`` guard fires before the ``--lint``
     dispatch, so zero or multiple files print the usage text to stdout and
     exit 1 -- the documented usage-error tier, never a crash on
     ``args.files[0]``."""
@@ -340,7 +351,8 @@ def test_fail_level_without_lint_is_rejected() -> None:
 def test_invalid_fail_level_literal_dies_in_argparse(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Pinned, documented behaviour: a bogus level dies inside argparse
+    """
+    Pinned, documented behaviour: a bogus level dies inside argparse
     (SystemExit 2) BEFORE the FermError exit-1 contract -- the same
     pre-existing pattern as ``--plan-format=bogus``. The stderr assert
     distinguishes the real cause (invalid choice) from the vacuous
@@ -365,7 +377,8 @@ def test_unused_function_prints_with_sigil(
 def test_info_finding_prints_with_info_prefix(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """FOO is declared and reached via realgoto, so the deprecated info
+    """
+    FOO is declared and reached via realgoto, so the deprecated info
     line is the ONLY output -- pinned exactly."""
     conf = _write(tmp_path, _REALGOTO_INFO_CFG)
     assert main(["--lint", str(conf)]) == 0
@@ -387,7 +400,8 @@ def test_info_gates_under_fail_level_info(tmp_path: Path) -> None:
 def test_error_finding_prints_error_prefix_and_gates_on_error_level(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A self-loop is the minimal error finding: FOO is declared and
+    """
+    A self-loop is the minimal error finding: FOO is declared and
     self-reached, so the cycle line is the only output."""
     conf = _write(tmp_path, "table filter chain FOO { jump FOO; }\n")
     assert main(["--lint", "--lint-fail-level=error", str(conf)]) == 2
@@ -403,7 +417,8 @@ def test_error_finding_still_exits_zero_by_default(tmp_path: Path) -> None:
 def test_cross_scope_duplicates_print_one_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Messages carry no positions, so two REAL same-name duplicates in
+    """
+    Messages carry no positions, so two REAL same-name duplicates in
     two different scopes collapse into one printed line -- the accepted,
     documented dedup collision."""
     conf = _write(
@@ -421,7 +436,8 @@ def test_cross_scope_duplicates_print_one_line(
 def test_severity_order_error_then_warning_then_info(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """One finding of each tier on one config: the output order is the
+    """
+    One finding of each tier on one config: the output order is the
     severity order, regardless of source order."""
     conf = _write(
         tmp_path,

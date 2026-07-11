@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.values` (the value model + deferred layer).
+"""
+Unit tests for :mod:`pyferm.values` (the value model + deferred layer).
 
 Targets the documented Perl-isms: Perl truthiness vs Python, the uniform
 splice in ``realize_deferred`` (including ``resolve``'s ``[[]]`` empty

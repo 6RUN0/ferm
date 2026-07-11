@@ -1,4 +1,5 @@
-"""Unit tests for the native-library CVE scanner (packaging/scan_image.py).
+"""
+Unit tests for the native-library CVE scanner (packaging/scan_image.py).
 
 The docker/Trivy-calling parts are exercised by the opt-in ``image_scan`` nox
 session; here we pin down the PURE logic -- digest extraction, the

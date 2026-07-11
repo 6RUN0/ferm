@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.modules` (the option-encoding DSL + tables).
+"""
+Unit tests for :mod:`pyferm.modules` (the option-encoding DSL + tables).
 
 Locks the encoding rules of ``add_*_def`` (``reference/src/ferm:154``):
 the ``params`` forms, leading/trailing ``!`` negation, ``:=`` aliasing

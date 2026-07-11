@@ -1,4 +1,5 @@
-"""Re-route invariant: a promoted keyword over-captured into a rule span.
+"""
+Re-route invariant: a promoted keyword over-captured into a rule span.
 
 The subchain over-read in _capture_rule_span can absorb the statements that
 follow a block-terminated subchain (no trailing ';') into the SAME rule span.

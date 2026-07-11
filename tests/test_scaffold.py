@@ -1,4 +1,5 @@
-"""Scaffold tests: prove the package imports and the layout is intact.
+"""
+Scaffold tests: prove the package imports and the layout is intact.
 
 These are placeholders so ``nox -s tests`` is green on the empty skeleton;
 they are replaced/augmented by the golden-file harness as the port lands.

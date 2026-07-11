@@ -1,4 +1,5 @@
-"""Shared oracle/port subprocess seam for the differential suites.
+"""
+Shared oracle/port subprocess seam for the differential suites.
 
 The corpus, packaged-config, synthetic-module and grammar-fuzzer suites all
 shell out to the frozen Perl oracle (``reference/src/ferm``) and the Python
@@ -64,7 +65,8 @@ def assert_oracle_parity(
     *,
     normalize_stderr: Callable[[str], str] = _identity,
 ) -> None:
-    """Assert port and oracle agree on verdict, stderr and canonical stdout.
+    """
+    Assert port and oracle agree on verdict, stderr and canonical stdout.
 
     ``normalize_stderr`` selects the stderr contract and must be passed
     explicitly to loosen it: the default identity is the byte-for-byte

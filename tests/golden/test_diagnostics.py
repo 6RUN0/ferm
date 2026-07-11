@@ -1,4 +1,5 @@
-"""Diagnostics parity over ``reference/test/{negative,params,warning}``.
+"""
+Diagnostics parity over ``reference/test/{negative,params,warning}``.
 
 Upstream ``make check`` never runs these directories; here they pin the
 port's diagnostics.  stderr must match the checked-in ``.stderr``

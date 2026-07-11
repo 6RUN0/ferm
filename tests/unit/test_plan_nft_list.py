@@ -1,4 +1,5 @@
-"""Unit tests for parse_nft_list: the parser for the current-side nft snapshot.
+"""
+Unit tests for parse_nft_list: the parser for the current-side nft snapshot.
 
 The current side is the output of ``nft list table <fam> ferm`` -- a
 brace-delimited block.  parse_nft_list returns the same {table: ParsedTable}
@@ -127,7 +128,8 @@ def test_base_chain_detected_by_type_hook_priority_line() -> None:
 
 
 def test_user_chain_first_line_becomes_rule() -> None:
-    """A chain whose first line is a rule (not a type/hook/priority header)
+    """
+    A chain whose first line is a rule (not a type/hook/priority header)
     is a user chain; that first line is itself canonicalized as a rule."""
     text = "table ip ferm {\n\tchain logdrop {\n\t\tlog drop\n\t}\n}\n"
     tables = parse_nft_list(text, family="ip")
@@ -174,7 +176,8 @@ def test_inline_family_matches_kwarg_ok() -> None:
 
 
 def test_anonymous_set_in_rule_body_does_not_break_depth() -> None:
-    """An anonymous set '{22, 80}' inside a rule body is NOT a block opener.
+    """
+    An anonymous set '{22, 80}' inside a rule body is NOT a block opener.
 
     The chain must contain exactly one rule, not be prematurely closed.
     """
@@ -273,7 +276,8 @@ def test_extra_close_brace_after_table_raises() -> None:
 
 
 def test_parse_error_carries_line_number_and_excerpt() -> None:
-    """A parse error inside the table block names the 1-based line number
+    """
+    A parse error inside the table block names the 1-based line number
     and echoes the offending text, so a malformed snapshot is diagnosable."""
     text = "table ip ferm {\nnotachain foo\n}\n"
     with pytest.raises(FermError) as exc:

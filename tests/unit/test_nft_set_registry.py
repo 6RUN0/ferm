@@ -1,4 +1,5 @@
-"""Named-set declaration registry: emit and conflict detection.
+"""
+Named-set declaration registry: emit and conflict detection.
 
 Drives the nft backend through the real CLI so the assertions exercise the
 whole render path (translate -> collect declarations -> serialize).  A

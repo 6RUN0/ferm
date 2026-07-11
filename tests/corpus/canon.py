@@ -1,4 +1,5 @@
-"""Canonicalize whole-run ferm output for cross-implementation diffs.
+"""
+Canonicalize whole-run ferm output for cross-implementation diffs.
 
 Shared by the corpus suite and the grammar-based config fuzzer
 (:mod:`tests.property.test_config_differential`): both compare the

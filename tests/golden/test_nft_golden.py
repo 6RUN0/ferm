@@ -1,4 +1,5 @@
-"""Golden text harness for the nft backend.
+"""
+Golden text harness for the nft backend.
 
 Pure string comparison of ``--nft --noexec --lines`` output against a
 checked-in, manually-verified ``.nft`` expectation -- no kernel, no caps,

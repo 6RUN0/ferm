@@ -1,4 +1,5 @@
-"""Gates over the packaged default config, on both backends.
+"""
+Gates over the packaged default config, on both backends.
 
 ``packaging/deb/ferm.conf`` is the starter ruleset every package (deb,
 rpm, apk) installs as ``/etc/ferm/ferm.conf``, and

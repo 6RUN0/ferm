@@ -14,7 +14,8 @@ from pyferm.tokenizer import Script, Tokenizer
 def build_parser(
     source: str, *, filename: str = "<test>", options: Options | None = None
 ) -> Parser:
-    """Build a parser over *source* without running :meth:`Parser.enter`.
+    """
+    Build a parser over *source* without running :meth:`Parser.enter`.
 
     Returns the parser primed with a fresh tokenizer, scope, and evaluator so
     the caller can drive ``enter`` itself (e.g. to assert on a parse abort).

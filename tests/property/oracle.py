@@ -1,4 +1,5 @@
-"""Coprocess bridge to pure functions of the frozen Perl oracle.
+"""
+Coprocess bridge to pure functions of the frozen Perl oracle.
 
 ``oracle_driver.pl`` extracts subs (``tokenize_string``,
 ``shell_escape``, import-ferm's ``tokenize``) verbatim from the frozen
@@ -37,7 +38,8 @@ class OracleProcess:
         )
 
     def query(self, record: str) -> str:
-        """Send one record and return the oracle's reply.
+        """
+        Send one record and return the oracle's reply.
 
         Latin-1 is a bijective byte-to-char mapping, so the oracle lexes
         the very same bytes the port sees (the byte model).

@@ -1,4 +1,5 @@
-"""Fixtures for the golden-file harness.
+"""
+Fixtures for the golden-file harness.
 
 Selects the ferm implementation under test and builds the shared
 preserve mock once per session.  ``reference_root`` and

@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.domains`.
+"""
+Unit tests for :mod:`pyferm.domains`.
 
 Covers the domain layer ported from ``reference/src/ferm`` (``:881-974``):
 ``find_tool`` in test mode and its ``*-legacy`` preference (incl. the

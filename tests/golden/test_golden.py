@@ -1,4 +1,5 @@
-"""Golden-file tests, parametrized over ``reference/test/**/*.ferm``.
+"""
+Golden-file tests, parametrized over ``reference/test/**/*.ferm``.
 
 Each test reproduces one Makefile pipeline (see :mod:`runner`) and diffs
 the generated output against the checked-in ``.result``.  Pointed at the
@@ -60,7 +61,8 @@ def _maybe_xfail_resolve(
     target: FermTarget,
     request: pytest.FixtureRequest,
 ) -> None:
-    """xfail resolve cases on Perl when its mock resolver is unavailable.
+    """
+    xfail resolve cases on Perl when its mock resolver is unavailable.
 
     Mirrors ``make check`` on a machine lacking
     ``Net::DNS::Resolver::Mock`` without leaving the suite red.  Scoped

@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.tokenizer`.
+"""
+Unit tests for :mod:`pyferm.tokenizer`.
 
 Covers the lexer pattern, the lazy line-numbered token stream, the
 ``past_tokens`` reconstruction, the peek/expect/require helpers, the stop

@@ -1,4 +1,5 @@
-"""nft-backend dichotomy gate over the synthetic module matrix.
+"""
+nft-backend dichotomy gate over the synthetic module matrix.
 
 :mod:`tests.corpus.test_corpus_nft` pins translate-or-refuse-cleanly over
 the real-world corpus; this gate pins the same dichotomy over the FULL

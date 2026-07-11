@@ -1,4 +1,5 @@
-"""Equivalence gate: a named set expands to the same iptables ruleset.
+"""
+Equivalence gate: a named set expands to the same iptables ruleset.
 
 Under the default iptables backend a ``@set`` reference is expanded back
 to its element list in a parse-phase pre-pass, so a config that names a

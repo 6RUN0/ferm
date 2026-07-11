@@ -1,4 +1,5 @@
-"""Arity-agnostic rule-span capture: boundary parity with the oracle.
+"""
+Arity-agnostic rule-span capture: boundary parity with the oracle.
 
 _capture_rule_span never decides operand-vs-block; it keeps every top-level
 {...} block in the span and lets the replay (visit_RuleNode) decide token by

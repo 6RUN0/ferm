@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.resolver`.
+"""
+Unit tests for :mod:`pyferm.resolver`.
 
 Covers the numeric-address classifier, the Net::DNS-style IPv6 expansion,
 zone-file parsing, and the ``resolve`` control flow: family-default record

@@ -1,4 +1,5 @@
-"""Unit tests for the eval-free analyzers behind ``ferm --lint``.
+"""
+Unit tests for the eval-free analyzers behind ``ferm --lint``.
 
 Every analyzer consumes Parser.parse_to_block (both @if branches, never
 the walk tree). The CLI wrapper contract (output format, exit codes,

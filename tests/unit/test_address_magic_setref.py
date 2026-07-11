@@ -68,7 +68,8 @@ def test_single_family_domain_setref_unchanged() -> None:
 
 
 def test_nft_v4_only_set_emits_no_ip6_set_or_rule() -> None:
-    """A v4-only dual-stack set must leave the ip6 family with no set/rule.
+    """
+    A v4-only dual-stack set must leave the ip6 family with no set/rule.
 
     Under ``--nft`` the per-family filter empties the set for ip6; the rule
     references nothing and must be dropped along with the (empty) declaration,

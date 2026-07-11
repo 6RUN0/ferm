@@ -1709,7 +1709,8 @@ def test_build_verdict_ip6_reject_accepts_ip4_spelling() -> None:
 
 
 def test_build_verdict_log_prefix_bare_keyword_is_quoted() -> None:
-    """A log prefix that is itself an nft keyword must be double-quoted.
+    """
+    A log prefix that is itself an nft keyword must be double-quoted.
 
     nft's grammar requires a quoted string after ``log prefix``; emitting a
     bare word such as ``drop`` or ``tcp`` is syntactically invalid/ambiguous.

@@ -1,4 +1,5 @@
-"""Wiring gate: every oracle-driven property module opts into require_perl.
+"""
+Wiring gate: every oracle-driven property module opts into require_perl.
 
 The perl guard is opt-in (``pytestmark = usefixtures("require_perl")``) so
 the oracle-free property tests keep running on hosts without perl.  The

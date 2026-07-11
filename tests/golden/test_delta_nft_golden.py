@@ -1,4 +1,5 @@
-"""Golden tests for the nft delta-apply emitter (apply path).
+"""
+Golden tests for the nft delta-apply emitter (apply path).
 
 Each case drives::
 

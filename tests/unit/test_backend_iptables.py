@@ -1,4 +1,5 @@
-"""Unit tests for :mod:`pyferm.backend.iptables`.
+"""
+Unit tests for :mod:`pyferm.backend.iptables`.
 
 Covers the emit/execute layer ported from ``reference/src/ferm``
 (``:1806-3183``): the value formatters and their bless-tag branches, the

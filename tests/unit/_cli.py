@@ -9,7 +9,8 @@ import sys
 def run_pyferm(
     src: str, *extra_flags: str
 ) -> subprocess.CompletedProcess[str]:
-    """Run pyferm on *src* via the hermetic ``--test --noexec --lines`` path.
+    """
+    Run pyferm on *src* via the hermetic ``--test --noexec --lines`` path.
 
     Feeds *src* on stdin to ``python -m pyferm`` with any *extra_flags*
     (e.g. ``"--nft"``) appended.  Never raises on a non-zero exit: a child
