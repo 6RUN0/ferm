@@ -9,6 +9,7 @@ Examples::
 
     uv run nox                       # default: lint + tests + typecheck
     uv run nox -s preflight          # everything a push should pass
+    uv run nox -s everything         # every check incl. the heavy opt-ins
     uv run nox -s lint               # pre-commit hooks on all files
     uv run nox -s tests              # unit + golden against the port
     uv run nox -s tests -- tests/unit              # subset
@@ -973,23 +974,73 @@ def image_scan(session: nox.Session) -> None:
     )
 
 
+#: `coverage` rather than `tests`: the same suite, but the coverage
+#: floor (fail_under) is actually enforced before a push.  Parametrized
+#: sessions are notified per signature; the bare name would not expand
+#: to the variants.
+_PREFLIGHT_QUEUE = (
+    "lint",
+    "typecheck",
+    "coverage",
+    "golden_oracle",
+    "fuzz",
+    "workflows",
+    "deps_lowest",
+    "build",
+    *(f"matrix(python='{python}')" for python in _SUPPORTED_PYTHONS),
+)
+
+#: Light to heavy, and every artifact builder before its smokes
+#: (``binary`` feeds ``binary_glibc``/``binary_dns``, ``build_deb``
+#: feeds ``deb_smoke``, ...).  Deliberately excluded: ``mutation`` /
+#: ``mutation_report`` (a multi-hour resumable sweep, periodic rather
+#: than a gate) and ``datapath_e2e_matrix`` (the single-distro
+#: ``datapath_e2e`` is queued; the 8-distro matrix is release-time).
+_EVERYTHING_QUEUE = (
+    *_PREFLIGHT_QUEUE,
+    "audit",
+    "crashfuzz",
+    "nft_conformance",
+    "delta_apply_e2e",
+    "recent_calibration_e2e",
+    "lockout",
+    "nft_e2e",
+    "nft_readback_e2e",
+    "etckeeper_e2e",
+    "datapath_e2e",
+    "docker_coexistence_e2e",
+    "binary",
+    "binary_glibc",
+    "binary_dns",
+    "build_deb",
+    "deb_smoke",
+    "build_rpm",
+    "rpm_smoke",
+    "build_apk",
+    "apk_smoke",
+    "image_scan",
+)
+
+
 @nox.session
 def preflight(session: nox.Session) -> None:
     """Queue everything a push should pass: lint, typecheck, tests."""
-    # `coverage` rather than `tests`: the same suite, but the coverage
-    # floor (fail_under) is actually enforced before a push.
-    queue = (
-        "lint",
-        "typecheck",
-        "coverage",
-        "golden_oracle",
-        "fuzz",
-        "workflows",
-        "deps_lowest",
-        "build",
-        # Parametrized sessions are notified per signature; the bare
-        # name would not expand to the variants.
-        *(f"matrix(python='{python}')" for python in _SUPPORTED_PYTHONS),
-    )
-    for name in queue:
+    for name in _PREFLIGHT_QUEUE:
+        session.notify(name)
+
+
+@nox.session
+def everything(session: nox.Session) -> None:
+    """
+    Queue every check, light and heavy (needs perl, docker, network).
+
+    The ``preflight`` set plus the opt-in suites: security audits, crash
+    fuzzing, nft conformance, the containerized e2e layers and the full
+    packaging pipeline with its install smokes.  The heavy sessions
+    guard themselves -- the docker-backed ones skip when the daemon is
+    absent -- so the queue degrades gracefully on a lean machine; see
+    ``_EVERYTHING_QUEUE`` for the ordering and the deliberate
+    exclusions (``mutation``, ``datapath_e2e_matrix``).
+    """
+    for name in _EVERYTHING_QUEUE:
         session.notify(name)
