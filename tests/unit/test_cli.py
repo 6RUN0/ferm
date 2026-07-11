@@ -46,6 +46,14 @@ def _resolve(
     return _resolve_options(_build_parser().parse_args(argv))
 
 
+@pytest.fixture
+def trivial_conf(tmp_path: Path) -> Path:
+    """A minimal config: one ACCEPT rule in the builtin INPUT chain."""
+    conf = tmp_path / "t.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    return conf
+
+
 def test_noexec_suppresses_interactive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -123,38 +131,26 @@ def test_invalid_mock_previous_spec(
 
 
 def test_invalid_def_specification(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    trivial_conf: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from pyferm.cli import main
-
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert main(["--test", "--def", "noequalssign", str(conf)]) == 1
+    assert main(["--test", "--def", "noequalssign", str(trivial_conf)]) == 1
     assert "Invalid --def specification" in capsys.readouterr().err
 
 
 def test_extra_tokens_after_def(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    trivial_conf: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from pyferm.cli import main
-
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert main(["--test", "--def", "$x=1 2", str(conf)]) == 1
+    assert main(["--test", "--def", "$x=1 2", str(trivial_conf)]) == 1
     assert "Extra tokens after --def" in capsys.readouterr().err
 
 
-def test_def_is_evaluated_without_script_context(tmp_path: Path) -> None:
+def test_def_is_evaluated_without_script_context(trivial_conf: Path) -> None:
     # Perl evaluates --def inside GetOptions, before open_script: plain
     # values work, while script-context built-ins ($LINE, @glob, anything
     # reading the token stream) abort the run.
-    from pyferm.cli import main
-
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert main(["--test", "--def", "$x=(1 2)", str(conf)]) == 0
-    assert main(["--test", "--def", "$x=$LINE", str(conf)]) == 1
-    assert main(["--test", "--def", "$x=@glob(x*)", str(conf)]) == 1
+    assert main(["--test", "--def", "$x=(1 2)", str(trivial_conf)]) == 0
+    assert main(["--test", "--def", "$x=$LINE", str(trivial_conf)]) == 1
+    assert main(["--test", "--def", "$x=@glob(x*)", str(trivial_conf)]) == 1
 
 
 def test_invalid_domain_keeps_perl_blank_line(
@@ -163,8 +159,6 @@ def test_invalid_domain_keeps_perl_blank_line(
     # check_domain re-raises through error(): Perl's $@ keeps the die's
     # trailing newline and error() appends its own, so the oracle prints
     # a blank line after the message (found by the config fuzzer).
-    from pyferm.cli import main
-
     conf = tmp_path / "t.ferm"
     conf.write_text(
         "domain p { table filter { chain INPUT { } } }\n", encoding="utf-8"
@@ -178,8 +172,6 @@ def test_hooks_echo_under_lines_without_execution(
 ) -> None:
     # @hook commands echo under --lines and are skipped under --noexec
     # (Perl :777-794); their status never feeds the rollback decision.
-    from pyferm.cli import main
-
     conf = tmp_path / "t.ferm"
     conf.write_text(
         '@hook pre "echo pre-marker";\n'
@@ -194,7 +186,7 @@ def test_hooks_echo_under_lines_without_execution(
 
 
 def test_interactive_shell_emits_confirmation_block(
-    tmp_path: Path,
+    trivial_conf: Path,
     capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -202,13 +194,13 @@ def test_interactive_shell_emits_confirmation_block(
     # script (Perl :806-813): a confirm prompt, a sleep, and one
     # *-restore line per domain reading the mktemp'd previous ruleset.
     # capfd, not capsys: the LINES sink dups fd 1 below sys.stdout.
-    from pyferm.cli import main
-
+    #
+    # The isatty patch stays inline (not a fixture): capfd swaps sys.stderr
+    # for a fresh object between fixture setup and this call phase, so a
+    # fixture-time patch would land on the pre-swap object and never apply.
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert main(["--test", "--interactive", "--shell", str(conf)]) == 0
+    assert main(["--test", "--interactive", "--shell", str(trivial_conf)]) == 0
     out = capfd.readouterr().out
     assert "echo 'Please press Ctrl-C to confirm.'\n" in out
     assert "sleep 30\n" in out
@@ -223,8 +215,6 @@ def test_interactive_shell_nft_emits_anti_lockout_net(
     # finding C2: under --nft the anti-lockout net was silently absent.  The
     # nft snapshot must now appear in the emitted script: a `list table` save
     # before, and a `delete table` + `nft -f` restore after the sleep.
-    from pyferm.cli import main
-
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
     conf = tmp_path / "t.ferm"
@@ -249,20 +239,16 @@ def test_interactive_shell_nft_emits_anti_lockout_net(
 
 
 def test_interactive_shell_iptables_has_no_rollback_notice(
-    tmp_path: Path,
+    trivial_conf: Path,
     capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The notice is nft-only: the x_tables --shell script must stay
     # byte-identical to the Perl oracle (reference/src/ferm:803-814), which
     # emits no rollback announcement.
-    from pyferm.cli import main
-
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert main(["--test", "--interactive", "--shell", str(conf)]) == 0
+    assert main(["--test", "--interactive", "--shell", str(trivial_conf)]) == 0
     out = capfd.readouterr().out
     assert "rolled back" not in out
 
@@ -298,10 +284,6 @@ def test_main_restores_streams_after_shell(
     # After an in-process --shell run fd 1 must point at the original
     # stdout again (and the duplicated fd must be closed), or every
     # later write of the caller (and its children) lands on stderr.
-    import os
-
-    from pyferm.cli import main
-
     conf = tmp_path / "t.ferm"
     conf.write_text(
         "domain ip table filter chain INPUT ACCEPT;\n", encoding="utf-8"
@@ -339,8 +321,6 @@ def test_read_save_keeps_output_on_nonzero_exit(tmp_path: Path) -> None:
     # Perl reads the *-save pipe and never checks the exit status
     # (:950-955): a partial dump still becomes {previous}, keeping
     # @preserve and rollback working.
-    from pyferm.cli import _make_io
-
     tool = tmp_path / "save-tool"
     tool.write_text("#!/bin/sh\necho '*filter'\nexit 1\n", encoding="utf-8")
     tool.chmod(0o755)
@@ -351,8 +331,6 @@ def test_read_save_keeps_output_on_nonzero_exit(tmp_path: Path) -> None:
 def test_read_save_unexecutable_tool_reads_empty() -> None:
     # Perl's pipe-open forks fine and the child's exec fails: the parent
     # reads EOF, so {previous} is set to the empty string, not unset.
-    from pyferm.cli import _make_io
-
     io = _make_io(Options(), sys.stdout)
     assert io.read_save("/nonexistent/ferm-no-such-tool") == ""
 
@@ -363,8 +341,6 @@ def test_execute_exec_failure_is_fatal(
     # Perl system() execs a metachar-free command directly; when that
     # exec fails it prints 'failed to execute: ...' and exits 1 at once
     # (:2903-2905) -- no status bookkeeping, no rollback.
-    from pyferm.cli import _make_io
-
     io = _make_io(Options(), sys.stdout)
     with pytest.raises(SystemExit) as excinfo:
         io.execute("/nonexistent/ferm-no-such-tool -A INPUT")
@@ -373,8 +349,6 @@ def test_execute_exec_failure_is_fatal(
 
 
 def test_execute_returns_status_of_plain_command() -> None:
-    from pyferm.cli import _make_io
-
     io = _make_io(Options(), sys.stdout)
     assert io.execute("true") is None
     assert io.execute("false") == 1
@@ -387,8 +361,6 @@ def test_execute_signal_death_reports_and_returns_one(
     # Perl maps a signal-killed child ($? & 0x7f) to 'child died with
     # signal N' and a status of 1 (:2906-2908); subprocess models the
     # same child as a negative returncode.
-    from pyferm.cli import _make_io
-
     monkeypatch.setattr(subprocess, "run", _RunRecorder(returncode=-9))
     io = _make_io(Options(), sys.stdout)
     assert io.execute("iptables -A INPUT") == 1
@@ -401,10 +373,7 @@ def test_execute_routes_metachar_commands_through_shell(
     # Perl system() (:2901) hands a metachar command to /bin/sh verbatim
     # but execs a plain one directly: the shell branch must keep the raw
     # string, the direct branch must split the argv.
-    from pyferm.cli import _make_io
-
-    recorder = _RunRecorder(returncode=0)
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0)
     io = _make_io(Options(), sys.stdout)
     assert io.execute("a | b") is None
     assert io.execute("iptables -L") is None
@@ -424,8 +393,6 @@ def test_help_prints_full_options_block(
 ) -> None:
     # Perl's pod2usage(-exitstatus => 0) prints the whole OPTIONS table
     # from the POD to stdout (:666-668).
-    from pyferm.cli import main
-
     assert main(["--help"]) == 0
     out = capsys.readouterr().out
     assert "-t, --timeout s" in out
@@ -437,8 +404,6 @@ def test_wrong_argument_count_prints_usage_to_stdout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # pod2usage(-exitstatus => 1) writes to STDOUT too (status < 2).
-    from pyferm.cli import main
-
     assert main([]) == 1
     captured = capsys.readouterr()
     assert HELP_SNIPPET in captured.out
@@ -451,7 +416,6 @@ def test_version_prints_perl_banner(
     # Perl printversion: the banner is verbatim oracle output (stdout,
     # exit 0, nothing else runs), so it is pinned byte-exactly.
     from pyferm import __version__
-    from pyferm.cli import main
 
     assert main(["--version"]) == 0
     assert capsys.readouterr().out == (
@@ -813,8 +777,6 @@ def test_main_nft_end_to_end_resolves_and_emits(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from pyferm.cli import main
-
     cfg = tmp_path / "e.ferm"
     cfg.write_text(
         "domain ip table filter chain INPUT { proto tcp dport 22 ACCEPT; }\n",
@@ -828,8 +790,6 @@ def test_main_nft_end_to_end_resolves_and_emits(
 
 
 def test_nft_with_nolegacy_is_noop(tmp_path: Path) -> None:
-    from pyferm.cli import main
-
     cfg = tmp_path / "e.ferm"
     cfg.write_text(
         "domain ip table filter chain INPUT { ACCEPT; }\n",
@@ -880,6 +840,27 @@ class _RunRecorder:
         )
 
 
+def _install_run(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    returncode: int = 0,
+    returncodes: Sequence[int] | None = None,
+    stdout: str = "",
+    stderr: str | bytes = "",
+    raises: type[OSError] | None = None,
+) -> _RunRecorder:
+    """Install a ``_RunRecorder`` on ``subprocess.run`` and return it."""
+    recorder = _RunRecorder(
+        returncode=returncode,
+        returncodes=returncodes,
+        stdout=stdout,
+        stderr=stderr,
+        raises=raises,
+    )
+    monkeypatch.setattr(subprocess, "run", recorder)
+    return recorder
+
+
 def _nft_domain_info() -> DomainInfo:
     """A ``DomainInfo`` whose nft tool resolves to a fixed bare path."""
     from pyferm.backend.nft import TOOL_NFT
@@ -896,8 +877,7 @@ def test_make_nft_restore_checks_then_applies_as_latin1_bytes(
     # runs are fed the rendered save as one-byte-per-char latin-1 on stdin.
     from pyferm.cli import _make_nft_restore
 
-    recorder = _RunRecorder(returncode=0)
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0)
     restore = _make_nft_restore(Options(nft=True))
     restore(_nft_domain_info(), "add table ip ferm\nh\xfc\n")
     assert [call[0][0] for call in recorder.calls] == [
@@ -916,10 +896,11 @@ def test_make_nft_restore_failed_check_surfaces_nft_diagnostic(
     # never reaches `nft -f -` -- so the kernel is untouched.
     from pyferm.cli import _make_nft_restore
 
-    recorder = _RunRecorder(
-        returncode=1, stderr=b"Error: syntax error, unexpected newline\n"
+    recorder = _install_run(
+        monkeypatch,
+        returncode=1,
+        stderr=b"Error: syntax error, unexpected newline\n",
     )
-    monkeypatch.setattr(subprocess, "run", recorder)
     restore = _make_nft_restore(Options(nft=True))
     with pytest.raises(FermError, match="syntax error, unexpected newline"):
         restore(_nft_domain_info(), "bogus\n")
@@ -965,8 +946,7 @@ def test_make_nft_restore_apply_failure_after_check_raises(
     # by an `-f -` that fails (1) is still a rollback-triggering FermError.
     from pyferm.cli import _make_nft_restore
 
-    recorder = _RunRecorder(returncodes=[0, 1])
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncodes=[0, 1])
     restore = _make_nft_restore(Options(nft=True))
     with pytest.raises(FermError, match="Failed to run nft"):
         restore(_nft_domain_info(), "add table ip ferm\n")
@@ -985,10 +965,9 @@ def test_nft_subprocesses_pin_utc_timezone(
     # on any host.  All three spawn sites must carry env["TZ"] == "UTC" --
     # the apply path's `nft -c` and `nft -f -`, and the backend-agnostic
     # capture() snapshot closure whose body names no "nft" string.
-    from pyferm.cli import _make_io, _make_nft_restore
+    from pyferm.cli import _make_nft_restore
 
-    recorder = _RunRecorder(returncode=0)
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0)
     restore = _make_nft_restore(Options(nft=True))
     restore(_nft_domain_info(), "add table ip ferm\n")
     io = _make_io(Options(nft=True, plan=True), sys.stdout)
@@ -1010,8 +989,7 @@ def test_validate_desired_nft_skips_under_test(
     # the --plan pre-validation is therefore a no-op in test mode.
     from pyferm.cli import _validate_desired_nft
 
-    recorder = _RunRecorder(returncode=0)
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0)
     _validate_desired_nft(Options(nft=True, test=True), "nft", "add table\n")
     assert recorder.calls == []
 
@@ -1023,8 +1001,7 @@ def test_validate_desired_nft_runs_check_when_not_test(
     # the plan is trusted -- an un-appliable ruleset must not be advertised.
     from pyferm.cli import _validate_desired_nft
 
-    recorder = _RunRecorder(returncode=0)
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0)
     _validate_desired_nft(Options(nft=True), "nft", "add table ip ferm\n")
     assert [call[0][0] for call in recorder.calls] == [
         ["nft", "-c", "-f", "-"]
@@ -1038,11 +1015,11 @@ def test_validate_desired_nft_rejected_surfaces_diagnostic(
     # own diagnostic, so an un-appliable plan exits 1 instead of exit 2.
     from pyferm.cli import _validate_desired_nft
 
-    recorder = _RunRecorder(
+    _install_run(
+        monkeypatch,
         returncode=1,
         stderr=b"Error: conflicting protocols specified: arp vs. tcp\n",
     )
-    monkeypatch.setattr(subprocess, "run", recorder)
     with pytest.raises(FermError, match="conflicting protocols"):
         _validate_desired_nft(Options(nft=True), "nft", "bad\n")
 
@@ -1052,10 +1029,7 @@ def test_restore_dispatch_routes_to_nft_applier(
 ) -> None:
     # With --nft the restore closure routes to the nft applier: it spawns
     # `nft -c -f -` then `nft -f -`, never an iptables-restore call.
-    from pyferm.cli import _make_io
-
-    recorder = _RunRecorder(returncode=0)
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0)
     io = _make_io(Options(nft=True), sys.stdout)
     io.restore(_nft_domain_info(), "add table ip ferm\n")
     assert [call[0][0] for call in recorder.calls] == [
@@ -1070,7 +1044,6 @@ def test_restore_dispatch_default_skips_nft_applier(
     # The default (iptables) restore routes to restore_domain, never the
     # nft applier; we observe that restore_domain is the call target.
     from pyferm import cli
-    from pyferm.cli import _make_io
 
     calls: list[tuple[DomainInfo, str, Options]] = []
 
@@ -1100,8 +1073,6 @@ def test_capture_noexec_returns_none_without_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Under --noexec capture snapshots nothing and never spawns a child.
-    from pyferm.cli import _make_io
-
     def fail_run(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("capture must not spawn under --noexec")
 
@@ -1116,8 +1087,6 @@ def test_capture_oserror_raises(
     # finding C3: an unspawnable snapshot tool (OSError) must NOT collapse to
     # "no previous table" -- that would let the nft rollback delete an
     # existing table.  It aborts before any kernel change instead.
-    from pyferm.cli import _make_io
-
     monkeypatch.setattr(
         subprocess, "run", _RunRecorder(raises=FileNotFoundError)
     )
@@ -1131,10 +1100,7 @@ def test_capture_returns_stdout_or_none(
 ) -> None:
     # Non-empty stdout is the snapshot; empty stdout (exit 0) collapses to
     # None, splitting the command on whitespace for the child.
-    from pyferm.cli import _make_io
-
-    recorder = _RunRecorder(returncode=0, stdout="X")
-    monkeypatch.setattr(subprocess, "run", recorder)
+    recorder = _install_run(monkeypatch, returncode=0, stdout="X")
     io = _make_io(Options(), sys.stdout)
     assert io.capture("nft list ruleset") == "X"
     assert recorder.calls[0][0][0] == ["nft", "list", "ruleset"]
@@ -1152,8 +1118,6 @@ def test_capture_absent_table_is_first_run_none(
     # finding C3: a genuinely-absent table (nft exits 1 with ENOECT on
     # stderr) is the legitimate first run -> None, so rollback may delete
     # ferm's own freshly-created table.
-    from pyferm.cli import _make_io
-
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -1171,8 +1135,6 @@ def test_capture_genuine_failure_raises(
     # finding C3: a non-ENOENT failure (exit 1 with some other error) must
     # NOT masquerade as a first run -- it aborts so the destructive rollback
     # never deletes an existing populated table on a transient capture error.
-    from pyferm.cli import _make_io
-
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -1613,7 +1575,7 @@ def _patch_apply_seam(
 
 
 def test_apply_rollback_path_never_reaches_commit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # When an apply rolls back (backend.commit returns non-None -> status set
     # -> _rollback_all raises SystemExit), the commit hook's call site is
@@ -1621,24 +1583,22 @@ def test_apply_rollback_path_never_reaches_commit(
     from pyferm.cli import _apply_config
 
     commit_calls = _patch_apply_seam(monkeypatch, commit_result=1)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     with pytest.raises(SystemExit):
-        _apply_config(str(conf), Options(), sys.stdout, defs=[])
+        _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[])
     assert commit_calls == []
 
 
 def test_apply_success_path_reaches_commit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The counterpart: a clean apply (commit returns None) reaches the hook,
     # so the rollback test's emptiness is a real signal, not a dead call site.
     from pyferm.cli import _apply_config
 
     commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert _apply_config(str(conf), Options(), sys.stdout, defs=[]) == 0
+    assert (
+        _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[]) == 0
+    )
     assert len(commit_calls) == 1
 
 
@@ -1646,7 +1606,7 @@ def test_apply_success_path_reaches_commit(
 
 
 def test_interactive_decline_triggers_rollback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # When the admin declines confirmation _rollback_all fires and raises
     # SystemExit.  The commit hook must not be reached (the safety invariant).
@@ -1655,17 +1615,15 @@ def test_interactive_decline_triggers_rollback(
 
     commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
     monkeypatch.setattr(cli_mod, "_confirm_rules", lambda _opts: False)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         _apply_config(
-            str(conf), Options(interactive=True), sys.stdout, defs=[]
+            str(trivial_conf), Options(interactive=True), sys.stdout, defs=[]
         )
     assert commit_calls == []
 
 
 def test_interactive_confirm_skips_rollback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Counterpart: confirming keeps the rules; no SystemExit, commit hook
     # reached exactly once (proving the decline test's assertion is real).
@@ -1674,11 +1632,9 @@ def test_interactive_confirm_skips_rollback(
 
     commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
     monkeypatch.setattr(cli_mod, "_confirm_rules", lambda _opts: True)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     assert (
         _apply_config(
-            str(conf), Options(interactive=True), sys.stdout, defs=[]
+            str(trivial_conf), Options(interactive=True), sys.stdout, defs=[]
         )
         == 0
     )
@@ -1699,7 +1655,7 @@ class _SeededParser(_FakeParser):
 
 
 def test_flush_clears_pre_and_post_hooks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # --flush clears pre_hooks and post_hooks so they are not executed;
     # flush_hooks are retained and run instead.
@@ -1712,10 +1668,11 @@ def test_flush_clears_pre_and_post_hooks(
     monkeypatch.setattr(
         cli_mod, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
     )
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     assert (
-        _apply_config(str(conf), Options(flush=True), sys.stdout, defs=[]) == 0
+        _apply_config(
+            str(trivial_conf), Options(flush=True), sys.stdout, defs=[]
+        )
+        == 0
     )
     assert "echo pre" not in executed
     assert "echo post" not in executed
@@ -1723,7 +1680,7 @@ def test_flush_clears_pre_and_post_hooks(
 
 
 def test_no_flush_retains_pre_and_post_hooks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Without --flush, pre_hooks and post_hooks are executed; flush_hooks are
     # cleared and never run.
@@ -1736,10 +1693,10 @@ def test_no_flush_retains_pre_and_post_hooks(
     monkeypatch.setattr(
         cli_mod, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
     )
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     assert (
-        _apply_config(str(conf), Options(flush=False), sys.stdout, defs=[])
+        _apply_config(
+            str(trivial_conf), Options(flush=False), sys.stdout, defs=[]
+        )
         == 0
     )
     assert "echo pre" in executed
@@ -1761,7 +1718,7 @@ class _TwoDomainParser(_SeededParser):
 
 
 def test_post_hooks_run_after_all_domain_commits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Perl runs @post_hooks only after the domain loop (:776-793): a post
     # hook (say, reloading fail2ban) must observe every family's new
@@ -1787,10 +1744,10 @@ def test_post_hooks_run_after_all_domain_commits(
     )
     monkeypatch.setattr(cli_mod, "Parser", _TwoDomainParser)
     monkeypatch.setattr(cli_mod, "_run_hook", record_hook)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     assert (
-        _apply_config(str(conf), Options(flush=False), sys.stdout, defs=[])
+        _apply_config(
+            str(trivial_conf), Options(flush=False), sys.stdout, defs=[]
+        )
         == 0
     )
     assert events == [
@@ -2182,8 +2139,6 @@ def test_run_hook_noexec_echoes_but_does_not_run(
 ) -> None:
     # Under --noexec (implied by --test) the hook echoes but must not run: a
     # side-effecting command leaves no trace.
-    from pyferm.cli import main
-
     marker = tmp_path / "hook-ran"
     conf = tmp_path / "t.ferm"
     conf.write_text(
@@ -2202,8 +2157,6 @@ def test_def_binds_name_and_value(
 ) -> None:
     # --def X=1234 binds group(1) as the name and the parsed group(2) as the
     # value; a hook interpolating $X echoes it under --test --lines.
-    from pyferm.cli import main
-
     conf = tmp_path / "t.ferm"
     conf.write_text(
         '@hook pre "echo mark-$X-end";\nchain INPUT ACCEPT;\n',
@@ -2221,7 +2174,6 @@ def test_apply_config_binds_path_auto_variables(
 ) -> None:
     # FILENAME/FILEBNAME/DIRNAME are seeded on the script frame (Perl :751);
     # a hook echoing them under --test --lines shows the exact values.
-    from pyferm.cli import main
     from pyferm.functions import splitpath_dir, splitpath_file
 
     sub = tmp_path / "sub"
@@ -2458,7 +2410,7 @@ def test_commit_history_forwards_backend_with_enabled_domains(
 
 
 def test_apply_disabled_family_is_skipped_not_break(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A disabled family sorted before an enabled one must be skipped
     # (continue), not break the loop -- breaking would leave the enabled
@@ -2490,9 +2442,9 @@ def test_apply_disabled_family_is_skipped_not_break(
     )
     monkeypatch.setattr(cli_mod, "Parser", _MultiParser)
     monkeypatch.setattr(cli_mod, "_commit_history", lambda *_a, **_k: None)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert _apply_config(str(conf), Options(), sys.stdout, defs=[]) == 0
+    assert (
+        _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[]) == 0
+    )
     assert committed == [Family.IP]
 
 
@@ -2522,7 +2474,7 @@ def _patch_seam_backend(
 
 
 def test_apply_status_rollback_receives_real_seams(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A non-None commit result triggers _rollback_all; it must be handed the
     # real options/execute/restore, not None.
@@ -2530,17 +2482,15 @@ def test_apply_status_rollback_receives_real_seams(
 
     backend = _SeamRecordingBackend(commit_result=1)
     _patch_seam_backend(monkeypatch, backend)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     with pytest.raises(SystemExit):
-        _apply_config(str(conf), Options(), sys.stdout, defs=[])
+        _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[])
     assert backend.seen["options"] is not None
     assert backend.seen["execute"] is not None
     assert backend.seen["restore"] is not None
 
 
 def test_apply_interactive_decline_receives_real_seams(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Declining confirmation rolls back; _confirm_rules is passed the real
     # options and _rollback_all the real seams.
@@ -2556,11 +2506,9 @@ def test_apply_interactive_decline_receives_real_seams(
         return False
 
     monkeypatch.setattr(cli_mod, "_confirm_rules", _decline)
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         _apply_config(
-            str(conf), Options(interactive=True), sys.stdout, defs=[]
+            str(trivial_conf), Options(interactive=True), sys.stdout, defs=[]
         )
     assert confirm_args
     assert confirm_args[0] is not None
@@ -2710,14 +2658,10 @@ def test_rollback_options_etckeeper_from_no_etckeeper() -> None:
 
 
 def test_def_name_rejects_non_ascii_word_chars(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    trivial_conf: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Perl matches --def in byte mode, where \w is [A-Za-z0-9_].  The
     # argv byte view of 'ª' is two latin-1 letters that Unicode \w would
     # accept as a name, so the pattern must stay pinned to re.ASCII.
-    from pyferm.cli import main
-
-    conf = tmp_path / "t.ferm"
-    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
-    assert main(["--test", "--def", "ª=1", str(conf)]) == 1
+    assert main(["--test", "--def", "ª=1", str(trivial_conf)]) == 1
     assert "Invalid --def specification" in capsys.readouterr().err

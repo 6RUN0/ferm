@@ -13,7 +13,9 @@ import re
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -48,6 +50,9 @@ from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
 from pyferm.scope import OptionKind
 from pyferm.values import Multi, Negated, Params, PreNegated
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 # --- shell_escape ----------------------------------------------------------
 
@@ -282,9 +287,21 @@ def test_rules_to_save_builtin_default_accept() -> None:
 _SLOW = Options(fast=False)
 
 
+@contextmanager
+def _render(
+    domain: Family, domain_info: DomainInfo, options: Options = _SLOW
+) -> Generator[Rendered]:
+    """Render ``domain_info`` and yield the ``Rendered``, closing on exit."""
+    rendered = IptablesBackend().render(domain, domain_info, options)
+    try:
+        yield rendered
+    finally:
+        rendered.close()
+
+
 def _slow_texts(domain: Family, domain_info: DomainInfo) -> list[str]:
-    rendered = IptablesBackend().render(domain, domain_info, _SLOW)
-    return [command.text for command in rendered.commands]
+    with _render(domain, domain_info) as rendered:
+        return [command.text for command in rendered.commands]
 
 
 def test_render_slow_builtin_walk_order() -> None:
@@ -338,16 +355,13 @@ def test_render_slow_eb_atomic_framing_is_unguarded() -> None:
         tools={"tables": "ebtables"},
         tables={"filter": TableInfo(chains={})},
     )
-    rendered = IptablesBackend().render(Family.EB, domain_info, _SLOW)
-    try:
+    with _render(Family.EB, domain_info) as rendered:
         # the atomic init/commit framing must run unconditionally
         framing = [c for c in rendered.commands if not c.guarded]
         assert any("--atomic-init" in c.text for c in framing)
         assert any("--atomic-commit" in c.text for c in framing)
         # one atomic tempfile per eb table, kept alive on the Rendered
         assert len(rendered.resources) == 3
-    finally:
-        rendered.close()
 
 
 _PREVIOUS = (
@@ -378,13 +392,11 @@ def test_render_fast_preserve_keeps_domain_state_intact() -> None:
             )
         },
     )
-    backend = IptablesBackend()
     first = rules_to_save(Family.IP, domain_info, Options(), now="WHEN")
     assert "-A docker -j RETURN" in first
     assert domain_info.tables["filter"].chains["docker"].preserve is True
     second = rules_to_save(Family.IP, domain_info, Options(), now="WHEN")
     assert first == second
-    del backend
 
 
 def test_render_fast_dynamic_preserve_leaves_chains_untouched() -> None:
@@ -1164,8 +1176,7 @@ def test_render_slow_full_command_list_and_walk_order() -> None:
             "nat": TableInfo(chains={"PREROUTING": ChainInfo(builtin=True)}),
         },
     )
-    rendered = IptablesBackend().render(Family.IP, domain_info, _SLOW)
-    try:
+    with _render(Family.IP, domain_info) as rendered:
         assert [(c.text, c.guarded) for c in rendered.commands] == [
             ("iptables -t filter -P INPUT ACCEPT", True),
             ("iptables -t filter -P FORWARD ACCEPT", True),
@@ -1179,8 +1190,6 @@ def test_render_slow_full_command_list_and_walk_order() -> None:
             ("iptables -t nat -F", True),
             ("iptables -t nat -X", True),
         ]
-    finally:
-        rendered.close()
 
 
 def test_render_slow_auto_detects_builtin_without_flag() -> None:
@@ -1201,8 +1210,7 @@ def test_render_slow_auto_detects_builtin_without_flag() -> None:
             )
         },
     )
-    rendered = IptablesBackend().render(Family.IP, domain_info, _SLOW)
-    try:
+    with _render(Family.IP, domain_info) as rendered:
         assert [c.text for c in rendered.commands] == [
             "iptables -t filter -P INPUT ACCEPT",
             "iptables -t filter -F",
@@ -1211,8 +1219,6 @@ def test_render_slow_auto_detects_builtin_without_flag() -> None:
             "iptables -t filter -N custom",
             "iptables -t filter -A INPUT --jump ACCEPT",
         ]
-    finally:
-        rendered.close()
 
 
 def test_render_slow_resets_builtin_after_a_leading_custom_chain() -> None:
@@ -1229,12 +1235,9 @@ def test_render_slow_resets_builtin_after_a_leading_custom_chain() -> None:
             )
         },
     )
-    rendered = IptablesBackend().render(Family.IP, domain_info, _SLOW)
-    try:
+    with _render(Family.IP, domain_info) as rendered:
         reset = [c.text for c in rendered.commands if " -P " in c.text]
         assert reset == ["iptables -t filter -P INPUT ACCEPT"]
-    finally:
-        rendered.close()
 
 
 def test_render_slow_ip6_reject_maps_to_icmp6() -> None:
@@ -1257,16 +1260,13 @@ def test_render_slow_ip6_reject_maps_to_icmp6() -> None:
             )
         },
     )
-    rendered = IptablesBackend().render(Family.IP6, domain_info, _SLOW)
-    try:
+    with _render(Family.IP6, domain_info) as rendered:
         rule_lines = [
             c.text for c in rendered.commands if "-A INPUT" in c.text
         ]
         assert rule_lines == [
             "ip6tables -t filter -A INPUT --reject-with icmp6-port-unreachable"
         ]
-    finally:
-        rendered.close()
 
 
 def test_render_slow_flush_still_walks_every_table() -> None:
@@ -1283,10 +1283,9 @@ def test_render_slow_flush_still_walks_every_table() -> None:
             "nat": TableInfo(chains={"PREROUTING": ChainInfo(builtin=True)}),
         },
     )
-    rendered = IptablesBackend().render(
+    with _render(
         Family.IP, domain_info, Options(fast=False, flush=True)
-    )
-    try:
+    ) as rendered:
         assert [c.text for c in rendered.commands] == [
             "iptables -t filter -P INPUT ACCEPT",
             "iptables -t filter -F",
@@ -1295,8 +1294,6 @@ def test_render_slow_flush_still_walks_every_table() -> None:
             "iptables -t nat -F",
             "iptables -t nat -X",
         ]
-    finally:
-        rendered.close()
 
 
 def test_render_slow_eb_full_framing_and_guard_flags() -> None:
@@ -1314,8 +1311,7 @@ def test_render_slow_eb_full_framing_and_guard_flags() -> None:
             )
         },
     )
-    rendered = IptablesBackend().render(Family.EB, domain_info, _SLOW)
-    try:
+    with _render(Family.EB, domain_info) as rendered:
         assert [(_norm(c.text), c.guarded) for c in rendered.commands] == [
             ("ebtables -t filter --atomic-file TMP --atomic-init", False),
             ("ebtables -t filter --atomic-file TMP --init-table", False),
@@ -1334,8 +1330,6 @@ def test_render_slow_eb_full_framing_and_guard_flags() -> None:
             ("ebtables -t nat --atomic-file TMP --atomic-commit", False),
             ("ebtables -t broute --atomic-file TMP --atomic-commit", False),
         ]
-    finally:
-        rendered.close()
 
 
 # --- rules_to_save: header, ip6 mapping, preserve + flush branches ----------
@@ -1385,14 +1379,9 @@ def test_rules_to_save_ip6_reject_maps_to_icmp6() -> None:
 def test_render_fast_ip6_reject_maps_to_icmp6() -> None:
     # render() -> rules_to_save must pass the family through, so the fast save
     # carries the icmp6 name (a mutant nulling the family gives icmp-...).
-    rendered = IptablesBackend().render(
-        Family.IP6, _reject_ip6_domain(), Options()
-    )
-    try:
+    with _render(Family.IP6, _reject_ip6_domain(), Options()) as rendered:
         assert rendered.save is not None
         assert "-A INPUT --reject-with icmp6-port-unreachable" in rendered.save
-    finally:
-        rendered.close()
 
 
 _PREV_DISTINCT = (
