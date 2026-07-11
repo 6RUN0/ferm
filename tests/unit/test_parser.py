@@ -12,7 +12,6 @@ negation, function token splicing, ``@if``/``@else``, sub-chains, shortcuts,
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
 import pytest
@@ -20,31 +19,23 @@ import pytest
 from pyferm.config import Options
 from pyferm.domains import Family
 from pyferm.errors import FermError
-from pyferm.functions import Evaluator
 from pyferm.modules import TARGET_DEFS
 from pyferm.parser import MAX_BLOCK_DEPTH, Parser, collect_filenames
 from pyferm.rules import CORE_TARGETS
-from pyferm.scope import Frame, OptionKind, Scope
-from pyferm.tokenizer import Script, Tokenizer
+from pyferm.scope import OptionKind
 from pyferm.values import Multi, Negated, Params, PreNegated
+from tests.unit._parse import build_parser, parse_source
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from pyferm.rules import RenderedRule
+    from pyferm.tokenizer import Script
 
 
 def _parse(source: str, *, options: Options | None = None) -> Parser:
     """Parse ``source`` and return the populated parser."""
-    options = options if options is not None else Options(test=True)
-    script = Script(filename="<test>", handle=io.StringIO(source))
-    tokenizer = Tokenizer(script)
-    scope = Scope()
-    scope.push(Frame())
-    evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options)
-    parser.enter(0, None)
-    return parser
+    return parse_source(source, options=options)
 
 
 def _rules(
@@ -292,11 +283,8 @@ def test_function_expands_list_argument_into_each_rule() -> None:
     )
     dports = [
         value
-        for name, value, _ in [
-            opt
-            for rule in _rules(parser, Family.IP, "filter", "INPUT")
-            for opt in _options(rule)
-        ]
+        for rule in _rules(parser, Family.IP, "filter", "INPUT")
+        for name, value, _ in _options(rule)
         if name == "dport"
     ]
     assert dports == ["22", "80"]
@@ -370,12 +358,7 @@ def test_if_false_keeps_following_non_else_statement() -> None:
 
 def test_value_negation_wraps_the_value() -> None:
     parser = _parse("chain INPUT proto tcp dport ! 22 ACCEPT;")
-    options = {
-        name: value
-        for name, value, _ in _options(
-            _rules(parser, Family.IP, "filter", "INPUT")[0]
-        )
-    }
+    options = _option_values(parser, "INPUT")
     assert options["dport"] == Negated("22")
 
 
@@ -594,35 +577,20 @@ def test_shortcut_module_deduped_against_explicit_mod() -> None:
 
 def test_address_magic_realizes_a_list() -> None:
     parser = _parse("chain INPUT saddr 1.2.3.4 ACCEPT;")
-    options = {
-        name: value
-        for name, value, _ in _options(
-            _rules(parser, Family.IP, "filter", "INPUT")[0]
-        )
-    }
+    options = _option_values(parser, "INPUT")
     assert options["source"] == "1.2.3.4"
 
 
 def test_address_magic_internal_negation() -> None:
     parser = _parse("chain INPUT saddr ! 1.2.3.4 ACCEPT;")
-    options = {
-        name: value
-        for name, value, _ in _options(
-            _rules(parser, Family.IP, "filter", "INPUT")[0]
-        )
-    }
+    options = _option_values(parser, "INPUT")
     assert options["source"] == Negated(["1.2.3.4"])
 
 
 def test_multiport_shortcut_chunks_ports() -> None:
     ports = " ".join(str(n) for n in range(1, 20))
     parser = _parse(f"chain INPUT proto tcp dports ({ports}) ACCEPT;")
-    options = {
-        name: value
-        for name, value, _ in _options(
-            _rules(parser, Family.IP, "filter", "INPUT")[0]
-        )
-    }
+    options = _option_values(parser, "INPUT")
     # 19 single ports split into chunks of <= 15 -> an array (unfolds).
     assert isinstance(options.get("destination-ports"), str)
 
@@ -875,12 +843,7 @@ def test_log_prefix_is_not_truncated() -> None:
     # never fires (verified against the oracle).  The value is kept whole.
     long_prefix = "x" * 40
     parser = _parse(f'chain INPUT LOG log-prefix "{long_prefix}";')
-    options = {
-        name: value
-        for name, value, _ in _options(
-            _rules(parser, Family.IP, "filter", "INPUT")[0]
-        )
-    }
+    options = _option_values(parser, "INPUT")
     assert options["log-prefix"] == long_prefix
 
 
@@ -912,16 +875,7 @@ def test_include_pulls_in_another_file(tmp_path: Path) -> None:
     main = tmp_path / "main.ferm"
     main.write_text(f'@include "{included}";\n', encoding="utf-8")
 
-    options = Options(test=True)
-    handle = main.open(encoding="utf-8")
-    script = Script(filename=str(main), handle=handle)
-    tokenizer = Tokenizer(script)
-    scope = Scope()
-    scope.push(Frame())
-    evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options)
-    parser.enter(0, None)
-    handle.close()
+    parser = _parse_file(main)
 
     rules = parser.domains[Family.IP].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", OptionKind.TARGET)]
@@ -929,20 +883,17 @@ def test_include_pulls_in_another_file(tmp_path: Path) -> None:
 
 def _parse_file(main: Path, *, options: Options | None = None) -> Parser:
     """Parse a ferm file from disk (the @include tests' harness)."""
-    options = options if options is not None else Options(test=True)
-    handle = main.open(encoding="utf-8")
-    script = Script(filename=str(main), handle=handle)
-    tokenizer = Tokenizer(script)
-    scope = Scope()
-    scope.push(Frame())
-    evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options)
+    parser = build_parser(
+        main.read_text(encoding="utf-8"),
+        filename=str(main),
+        options=options,
+    )
     # finally: like cli.main, close the whole include chain even when a
     # parse abort is the expected outcome (ResourceWarning is an error).
     try:
         parser.enter(0, None)
     finally:
-        node: Script | None = tokenizer.script
+        node: Script | None = parser.evaluator.tokenizer.script
         while node is not None:
             node.close()
             node = node.parent
@@ -999,13 +950,7 @@ def test_enter_depth_over_limit_is_located_ferm_error(
 
 
 def test_enter_depth_counter_recovers_after_error() -> None:
-    script = Script(
-        filename="<test>", handle=io.StringIO(_nested(MAX_BLOCK_DEPTH))
-    )
-    tokenizer = Tokenizer(script)
-    scope = Scope()
-    scope.push(Frame())
-    parser = Parser(Evaluator(tokenizer, scope), {}, Options(test=True))
+    parser = build_parser(_nested(MAX_BLOCK_DEPTH))
     with pytest.raises(FermError):
         parser.enter(0, None)
     # the finally chain unwound every frame

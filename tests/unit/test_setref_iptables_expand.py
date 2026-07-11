@@ -2,38 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 from pyferm.errors import FermError
 from pyferm.parser import Parser
 from pyferm.scope import Option, Rule
 from pyferm.values import Params, PreNegated, SetRef
-
-
-def _run(
-    src: str, extra_flags: list[str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    """Run pyferm in --test --noexec --lines mode on *src* via stdin."""
-    flags = extra_flags or []
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--test",
-            "--noexec",
-            "--lines",
-            *flags,
-            "-",
-        ],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
+from tests.unit._cli import run_pyferm
 
 
 def _strip_generated_comment(text: str) -> str:
@@ -51,11 +26,11 @@ def _strip_generated_comment(text: str) -> str:
 
 def test_setref_expands_like_literal_list() -> None:
     """A named set as a selector expands identically to a literal list."""
-    with_set = _run(
+    with_set = run_pyferm(
         "@set $p = (22 80);\n"
         "domain ip table filter chain INPUT { proto tcp dport $p ACCEPT; }\n"
     )
-    literal = _run(
+    literal = run_pyferm(
         "domain ip table filter chain INPUT "
         "{ proto tcp dport (22 80) ACCEPT; }\n"
     )
@@ -74,12 +49,12 @@ def test_setref_expands_like_literal_list() -> None:
 
 def test_lone_parenthesised_set_ok() -> None:
     """Lone ``($p)`` is accepted and equals bare ``$p`` output."""
-    with_parens = _run(
+    with_parens = run_pyferm(
         "@set $p = (22 80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport ($p) ACCEPT; }\n"
     )
-    without_parens = _run(
+    without_parens = run_pyferm(
         "@set $p = (22 80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport $p ACCEPT; }\n"
@@ -101,7 +76,7 @@ def test_lone_parenthesised_set_ok() -> None:
 
 def test_mixed_literal_before_set_rejected() -> None:
     """Literal before a set in one selector is rejected at parse time."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport (22 $p) ACCEPT; }\n"
@@ -114,7 +89,7 @@ def test_mixed_literal_before_set_rejected() -> None:
 
 def test_mixed_set_before_literal_rejected() -> None:
     """Set before a literal in one selector is rejected at parse time."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport ($p 22) ACCEPT; }\n"
@@ -127,11 +102,11 @@ def test_mixed_set_before_literal_rejected() -> None:
 
 def test_mixed_set_before_literal_rejected_under_nft() -> None:
     """The mixed-selector guard fires under --nft (backend-agnostic gate)."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport ($p 22) ACCEPT; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode != 0, (
         "expected rejection of set+literal mix under --nft"
@@ -147,11 +122,11 @@ def test_mixed_literal_before_set_rejected_under_nft() -> None:
     This covers the (22 $set) ordering under --nft (regression for the
     _REF_TYPES omission that let this slip past the parse-time guard).
     """
-    proc = _run(
+    proc = run_pyferm(
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport (22 $p) ACCEPT; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode != 0, (
         "expected rejection of literal+set mix under --nft"
@@ -169,12 +144,12 @@ def test_mixed_set_before_list_rejected_under_nft() -> None:
     this silently emitted a ``@name`` rule plus a separate set rule for the
     leaked list, instead of failing closed.  Regression for that hole.
     """
-    proc = _run(
+    proc = run_pyferm(
         "@def $hosts = (1.1.1.1 2.2.2.2);\n"
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp saddr ($p $hosts) ACCEPT; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode != 0, (
         f"expected rejection of set+list mix under --nft, got:\n{proc.stdout}"
@@ -186,7 +161,7 @@ def test_mixed_set_before_list_rejected_under_nft() -> None:
 
 def test_mixed_set_before_list_rejected_under_iptables() -> None:
     """The same set+list selector is rejected under the default backend too."""
-    proc = _run(
+    proc = run_pyferm(
         "@def $hosts = (1.1.1.1 2.2.2.2);\n"
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
@@ -209,11 +184,11 @@ def test_nft_does_not_silently_expand_set() -> None:
     than expanding it into concrete rules -- confirming the gate is real and
     the backends diverge intentionally here.
     """
-    proc = _run(
+    proc = run_pyferm(
         "@set $p = (22 80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport $p ACCEPT; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode == 0, (
         f"nft SetRef translation failed:\n{proc.stderr}"
@@ -272,7 +247,7 @@ def test_expand_setrefs_rejects_two_sets_in_one_rule() -> None:
 
 def test_match_set_setref_refused_under_iptables_cli() -> None:
     """`match-set $var` under the default backend refuses cleanly."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $badguys = (10.1.2.3);\n"
         "domain ip table filter chain INPUT "
         "{ mod set match-set $badguys src DROP; }\n",
@@ -285,7 +260,7 @@ def test_match_set_setref_refused_under_iptables_cli() -> None:
 
 def test_negated_match_set_setref_refused_under_iptables_cli() -> None:
     """The `! match-set $var` (PreNegated) form refuses the same way."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $friends = (172.16.0.1);\n"
         "domain ip table filter chain INPUT "
         "{ mod set ! match-set $friends dst DROP; }\n",

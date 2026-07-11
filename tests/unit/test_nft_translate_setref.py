@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 from pyferm.backend.nft import _validate_set_name
 from pyferm.errors import FermError
+from tests.unit._cli import run_pyferm
 
 
 def test_validate_set_name_accepts_plain() -> None:
@@ -45,36 +43,13 @@ def test_validate_set_name_accepts_maxlen_minus_one() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run(
-    src: str, extra_flags: list[str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    """Run pyferm in --test --noexec --lines mode on *src* via stdin."""
-    flags = extra_flags or []
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--test",
-            "--noexec",
-            "--lines",
-            *flags,
-            "-",
-        ],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-
-
 def test_nft_setref_renders_at_name_reference() -> None:
     """Under --nft a named set is rendered as @name, not expanded."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $p = (22 80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport $p ACCEPT; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode == 0, (
         f"nft SetRef translation failed:\n{proc.stderr}"
@@ -86,12 +61,12 @@ def test_nft_setref_renders_at_name_reference() -> None:
 
 def test_nft_setref_two_sets_per_rule_rejected() -> None:
     """Two SetRef options on one rule is rejected under --nft."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $a = (10.0.0.1);\n"
         "@set $b = (10.0.0.2);\n"
         "domain ip table filter chain INPUT "
         "{ source $a destination $b ACCEPT; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode != 0, (
         "expected rejection of two SetRefs on one nft rule"
@@ -109,11 +84,11 @@ def test_nft_setref_two_sets_per_rule_rejected() -> None:
 
 def test_nft_match_set_src_renders_saddr_reference() -> None:
     """`match-set $s src` becomes `ip saddr @s`."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $badguys = (10.1.2.3 192.168.0.0/24);\n"
         "domain ip table filter chain INPUT "
         "{ mod set match-set $badguys src DROP; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode == 0, f"match-set src failed:\n{proc.stderr}"
     assert "ip saddr @badguys drop" in proc.stdout, (
@@ -123,11 +98,11 @@ def test_nft_match_set_src_renders_saddr_reference() -> None:
 
 def test_nft_match_set_negated_dst_renders_inequality() -> None:
     """`mod set ! match-set $s dst` becomes `ip daddr != @s`."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $friends = (172.16.0.1);\n"
         "domain ip table filter chain INPUT "
         "{ mod set ! match-set $friends dst DROP; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode == 0, f"negated match-set failed:\n{proc.stderr}"
     assert "ip daddr != @friends drop" in proc.stdout, (
@@ -137,10 +112,10 @@ def test_nft_match_set_negated_dst_renders_inequality() -> None:
 
 def test_nft_match_set_external_ipset_refused() -> None:
     """A bare (non-$var) set name is an external ipset and refuses."""
-    proc = _run(
+    proc = run_pyferm(
         "domain ip table filter chain INPUT "
         "{ mod set match-set blocklist src DROP; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode != 0, "expected external-ipset refusal"
     assert (
@@ -151,11 +126,11 @@ def test_nft_match_set_external_ipset_refused() -> None:
 
 def test_nft_match_set_multi_flag_refused() -> None:
     """`(src dst)` needs a concatenated set type @set does not declare."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $x = (10.1.2.3);\n"
         "domain ip table filter chain INPUT "
         "{ mod set match-set $x (src dst) DROP; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode != 0, "expected multi-flag refusal"
     assert "multiple set-match flags need" in proc.stderr, (
@@ -165,11 +140,11 @@ def test_nft_match_set_multi_flag_refused() -> None:
 
 def test_nft_match_set_dual_stack_filters_per_family() -> None:
     """A mixed-family set emits only its own family's elements per pass."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $mixed = (10.1.2.3 fe80::1 192.168.0.0/24 2001:db8::/32);\n"
         "domain (ip ip6) table filter chain INPUT "
         "{ mod set match-set $mixed src DROP; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode == 0, f"dual-stack match-set failed:\n{proc.stderr}"
     out = proc.stdout
@@ -183,11 +158,11 @@ def test_nft_match_set_dual_stack_filters_per_family() -> None:
 
 def test_nft_match_set_one_family_set_drops_other_family_rule() -> None:
     """A v4-only set under dual-stack drops (does not crash) the ip6 rule."""
-    proc = _run(
+    proc = run_pyferm(
         "@set $v4only = (10.1.2.3 192.168.0.0/24);\n"
         "domain (ip ip6) table filter chain INPUT "
         "{ mod set match-set $v4only src DROP; }\n",
-        extra_flags=["--nft"],
+        "--nft",
     )
     assert proc.returncode == 0, f"one-family match-set failed:\n{proc.stderr}"
     out = proc.stdout

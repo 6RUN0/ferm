@@ -2,62 +2,20 @@
 
 from __future__ import annotations
 
-import io
 import subprocess
 import sys
 
 import pytest
 
 from pyferm.backend.nft import _validate_set_name
-from pyferm.config import Options
 from pyferm.errors import FermError
-from pyferm.functions import Evaluator
-from pyferm.parser import Parser
-from pyferm.scope import Frame, Scope
-from pyferm.tokenizer import Script, Tokenizer
 from pyferm.values import SetRef, negate_value
-
-
-def _run_nft(src: str) -> subprocess.CompletedProcess[str]:
-    """Compile *src* through the nft backend; return the finished process.
-
-    Errors raised inside the child do not propagate as :class:`FermError`
-    to this parent process, so a rejection is asserted on a non-zero
-    ``returncode`` plus a ``stderr`` substring rather than ``pytest.raises``.
-    """
-    return subprocess.run(  # fixed argv, no shell
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--nft",
-            "--test",
-            "--noexec",
-            "--lines",
-            "-",
-        ],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-
-
-def _parse(source: str, *, options: Options | None = None) -> Parser:
-    """Parse ``source`` and return the populated parser."""
-    options = options if options is not None else Options(test=True)
-    script = Script(filename="<test>", handle=io.StringIO(source))
-    tokenizer = Tokenizer(script)
-    scope = Scope()
-    scope.push(Frame())
-    evaluator = Evaluator(tokenizer, scope)
-    parser = Parser(evaluator, {}, options)
-    parser.enter(0, None)
-    return parser
+from tests.unit._cli import run_pyferm
+from tests.unit._parse import parse_source
 
 
 def _set_var(src: str, name: str) -> object:
-    p = _parse(src)
+    p = parse_source(src)
     return p.evaluator.scope.top.vars.get(name)
 
 
@@ -147,9 +105,10 @@ def test_negated_setref_rejected() -> None:
 
 def test_second_setref_per_rule_rejected() -> None:
     """At most one named set may appear in a single rule."""
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $a = (10.0.0.1);\n@set $b = (10.0.0.2);\n"
-        "domain ip table filter chain INPUT { saddr $a daddr $b ACCEPT; }\n"
+        "domain ip table filter chain INPUT { saddr $a daddr $b ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "at most one named set" in proc.stderr
@@ -157,9 +116,10 @@ def test_second_setref_per_rule_rejected() -> None:
 
 def test_protocol_name_in_port_set_rejected() -> None:
     """A service/protocol name in a port set is rejected (fail-closed)."""
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $s = (ssh http);\n"
-        "domain ip table filter chain INPUT { proto tcp dport $s ACCEPT; }\n"
+        "domain ip table filter chain INPUT { proto tcp dport $s ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "numeric port or range" in proc.stderr
@@ -167,9 +127,10 @@ def test_protocol_name_in_port_set_rejected() -> None:
 
 def test_setref_in_string_context_rejected() -> None:
     """A named set fed to ``@cat`` is rejected in a string context."""
-    proc = _run_nft(
+    proc = run_pyferm(
         '@set $s = (22);\n@def $x = @cat($s, "x");\n'
-        "domain ip table filter chain INPUT { proto tcp dport $x ACCEPT; }\n"
+        "domain ip table filter chain INPUT { proto tcp dport $x ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "string context" in proc.stderr
@@ -177,10 +138,11 @@ def test_setref_in_string_context_rejected() -> None:
 
 def test_mixed_literal_and_setref_in_selector_rejected() -> None:
     """A literal mixed with a named set in one selector is rejected."""
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $s = (22);\n"
         "domain ip table filter chain INPUT "
-        "{ proto tcp dport (22 $s) ACCEPT; }\n"
+        "{ proto tcp dport (22 $s) ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "cannot be mixed with other values" in proc.stderr
@@ -188,9 +150,10 @@ def test_mixed_literal_and_setref_in_selector_rejected() -> None:
 
 def test_deferred_value_in_set_rejected() -> None:
     """A deferred value (``@resolve``) inside a ``@set`` is rejected."""
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $s = (@resolve(localhost));\n"
-        "domain ip table filter chain INPUT { saddr $s ACCEPT; }\n"
+        "domain ip table filter chain INPUT { saddr $s ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "deferred values are not allowed in a named set" in proc.stderr
@@ -198,9 +161,10 @@ def test_deferred_value_in_set_rejected() -> None:
 
 def test_numeric_set_name_rejected() -> None:
     """A digit-leading set name is rejected as a non-identifier."""
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $22 = (10.0.0.1);\n"
-        "domain ip table filter chain INPUT { saddr $22 ACCEPT; }\n"
+        "domain ip table filter chain INPUT { saddr $22 ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "letter-led identifier" in proc.stderr

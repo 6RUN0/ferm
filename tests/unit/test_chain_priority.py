@@ -12,7 +12,6 @@ rejects it outright (chains have no priority there).
 
 from __future__ import annotations
 
-import io
 import re
 import shutil
 import subprocess
@@ -30,8 +29,6 @@ from pyferm.domains import (
     resolve_chain_priority,
 )
 from pyferm.errors import FermError
-from pyferm.functions import Evaluator
-from pyferm.parser import Parser
 from pyferm.plan import (
     build_nft_delta,
     canonicalize_nft_header,
@@ -39,8 +36,7 @@ from pyferm.plan import (
     parse_nft_list,
     parse_nft_script,
 )
-from pyferm.scope import Frame, Scope
-from pyferm.tokenizer import Script, Tokenizer
+from tests.unit._parse import parse_source
 
 #: A live ``nft list table`` snapshot of FORWARD at a given priority.
 _SNAPSHOT = (
@@ -62,21 +58,11 @@ _DESIRED = (
 )
 
 
-def _parse(source: str, *, options: Options | None = None) -> Parser:
-    options = options if options is not None else Options(test=True)
-    script = Script(filename="<test>", handle=io.StringIO(source))
-    scope = Scope()
-    scope.push(Frame())
-    parser = Parser(Evaluator(Tokenizer(script), scope), {}, options)
-    parser.enter(0, None)
-    return parser
-
-
 # --- parser: store the integer (form A: `priority -N` before `{`) ----------
 
 
 def test_parser_stores_negative_priority() -> None:
-    parser = _parse(
+    parser = parse_source(
         "domain ip table filter chain FORWARD priority -1 {\n"
         "    policy ACCEPT;\n"
         "}\n"
@@ -88,7 +74,7 @@ def test_parser_stores_negative_priority() -> None:
 
 
 def test_parser_stores_explicit_positive_priority() -> None:
-    parser = _parse(
+    parser = parse_source(
         "domain ip table filter chain INPUT priority 10 { policy DROP; }\n"
     )
     chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
@@ -96,14 +82,16 @@ def test_parser_stores_explicit_positive_priority() -> None:
 
 
 def test_parser_default_priority_is_none() -> None:
-    parser = _parse("domain ip table filter chain INPUT { policy DROP; }\n")
+    parser = parse_source(
+        "domain ip table filter chain INPUT { policy DROP; }\n"
+    )
     chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
     assert chain.priority is None
 
 
 def test_parser_rejects_non_integer_priority() -> None:
     with pytest.raises(FermError, match="priority"):
-        _parse("domain ip table filter chain FORWARD priority foo { }\n")
+        parse_source("domain ip table filter chain FORWARD priority foo { }\n")
 
 
 # --- nft backend: emit the override, reject on a non-base chain ------------
@@ -291,7 +279,7 @@ def test_priority_offset_kernel_form_is_idempotent_delta() -> None:
 def test_parser_resolves_landmark_priority(syntax: str, expected: int) -> None:
     # nft displays priorities by landmark name; ferm must accept the same
     # spelling on input and resolve it to the integer netfilter stores.
-    parser = _parse(
+    parser = parse_source(
         f"domain ip table filter chain FORWARD priority {syntax} {{\n"
         "    policy ACCEPT;\n"
         "}\n"
@@ -303,7 +291,7 @@ def test_parser_resolves_landmark_priority(syntax: str, expected: int) -> None:
 def test_parser_resolves_landmark_per_family() -> None:
     # bridge landmarks differ from inet: `filter` is -200 there, 0 for ip.
     # The resolver keys off the ferm domain, so each family gets its own value.
-    parser = _parse(
+    parser = parse_source(
         "domain eb table filter chain FORWARD priority filter { }\n"
     )
     chain = parser.domains[Family.EB].tables["filter"].chains["FORWARD"]
@@ -312,14 +300,16 @@ def test_parser_resolves_landmark_per_family() -> None:
 
 def test_parser_rejects_unknown_landmark() -> None:
     with pytest.raises(FermError, match="Invalid chain priority: bogus"):
-        _parse("domain ip table filter chain FORWARD priority bogus { }\n")
+        parse_source(
+            "domain ip table filter chain FORWARD priority bogus { }\n"
+        )
 
 
 # --- hardening: priority distributes over chain arrays and dual-stack -------
 
 
 def test_priority_applies_to_each_chain_in_array() -> None:
-    parser = _parse(
+    parser = parse_source(
         "domain ip table filter chain (FORWARD OUTPUT) priority -1 {\n"
         "    policy ACCEPT;\n"
         "}\n"
@@ -330,7 +320,7 @@ def test_priority_applies_to_each_chain_in_array() -> None:
 
 
 def test_priority_applies_to_each_family_in_dual_stack() -> None:
-    parser = _parse(
+    parser = parse_source(
         "domain (ip ip6) table filter chain FORWARD priority -1 {\n"
         "    policy ACCEPT;\n"
         "}\n"
@@ -343,7 +333,7 @@ def test_priority_applies_to_each_family_in_dual_stack() -> None:
 
 def test_dual_stack_landmark_resolves_per_family() -> None:
     # ip and ip6 share inet landmarks, so `filter - 1` is -1 on both.
-    parser = _parse(
+    parser = parse_source(
         "domain (ip ip6) table filter chain FORWARD priority filter - 1 {\n"
         "    policy ACCEPT;\n"
         "}\n"
@@ -463,7 +453,7 @@ def test_parser_accepts_glued_sign_after_landmark(
     # nft pretty-prints `filter - 1`, but a user may glue the sign to the
     # number (`filter -1`); accept it rather than failing with a confusing
     # "Unrecognized keyword: -1".
-    parser = _parse(
+    parser = parse_source(
         f"domain ip table filter chain FORWARD priority {syntax} {{\n"
         "    policy ACCEPT;\n"
         "}\n"
@@ -476,7 +466,7 @@ def test_parser_accepts_glued_sign_after_landmark(
 
 
 def test_parser_accepts_filter_landmark_on_arp() -> None:
-    parser = _parse(
+    parser = parse_source(
         "domain arp table filter chain INPUT priority filter { }\n"
     )
     chain = parser.domains[Family.ARP].tables["filter"].chains["INPUT"]
@@ -489,7 +479,7 @@ def test_parser_rejects_inet_landmark_on_arp(landmark: str) -> None:
     # landmarks are meaningless there (nft: "invalid priority expression
     # value in this context"), so ferm rejects them at the border.
     with pytest.raises(FermError, match="Invalid chain priority"):
-        _parse(
+        parse_source(
             f"domain arp table filter chain INPUT priority {landmark} {{ }}\n"
         )
 
@@ -537,7 +527,7 @@ def test_resolve_priority_offset_overflow_rejected() -> None:
 def test_duplicate_priority_warns(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    parser = _parse(
+    parser = parse_source(
         "domain ip table filter chain FORWARD priority -1 priority -2 {\n"
         "    policy ACCEPT;\n"
         "}\n"

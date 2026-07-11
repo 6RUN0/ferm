@@ -8,9 +8,6 @@ type can be inferred from the use-site selector.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 from pyferm.backend.nft import (
@@ -23,33 +20,15 @@ from pyferm.backend.nft import (
 from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.values import SetRef
-
-
-def _run_nft(src: str) -> subprocess.CompletedProcess[str]:
-    """Run the nft backend on *src* via the hermetic ``--test`` path."""
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--nft",
-            "--test",
-            "--noexec",
-            "--lines",
-            "-",
-        ],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
+from tests.unit._cli import run_pyferm
 
 
 def test_emit_add_set_and_element() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $ssh = (22 2222);\n"
         "domain ip table filter chain INPUT "
-        "{ proto tcp dport $ssh ACCEPT; }\n"
+        "{ proto tcp dport $ssh ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
@@ -59,10 +38,11 @@ def test_emit_add_set_and_element() -> None:
 
 
 def test_emit_address_set() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $hosts = (10.0.0.1 10.0.0.2);\n"
         "domain ip table filter chain INPUT "
-        "{ saddr $hosts ACCEPT; }\n"
+        "{ saddr $hosts ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
@@ -72,10 +52,11 @@ def test_emit_address_set() -> None:
 
 
 def test_emit_interval_flag_for_range() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $ports = (1024-2048);\n"
         "domain ip table filter chain INPUT "
-        "{ proto tcp dport $ports ACCEPT; }\n"
+        "{ proto tcp dport $ports ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
@@ -86,33 +67,36 @@ def test_emit_interval_flag_for_range() -> None:
 
 
 def test_phantom_service_name_rejected() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $ssh = (ssh 2222);\n"
         "domain ip table filter chain INPUT "
-        "{ proto tcp dport $ssh ACCEPT; }\n"
+        "{ proto tcp dport $ssh ACCEPT; }\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "numeric port or range" in proc.stderr
 
 
 def test_element_conflict_errors() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "domain ip table filter {\n"
         "  chain INPUT { @set $x = (22); proto tcp dport $x ACCEPT; }\n"
         "  chain OUTPUT { @set $x = (80); proto tcp dport $x ACCEPT; }\n"
-        "}\n"
+        "}\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "conflicting" in proc.stderr
 
 
 def test_selector_conflict_errors() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $x = (22);\n"
         "domain ip table filter chain INPUT {\n"
         "  proto tcp dport $x ACCEPT;\n"
         "  saddr $x ACCEPT;\n"
-        "}\n"
+        "}\n",
+        "--nft",
     )
     assert proc.returncode != 0
     assert "conflicting" in proc.stderr
@@ -120,12 +104,13 @@ def test_selector_conflict_errors() -> None:
 
 
 def test_dedup_same_name_across_chains() -> None:
-    proc = _run_nft(
+    proc = run_pyferm(
         "@set $ssh = (22 2222);\n"
         "domain ip table filter {\n"
         "  chain INPUT { proto tcp dport $ssh ACCEPT; }\n"
         "  chain OUTPUT { proto tcp dport $ssh ACCEPT; }\n"
-        "}\n"
+        "}\n",
+        "--nft",
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout

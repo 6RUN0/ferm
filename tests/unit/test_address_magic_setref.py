@@ -1,18 +1,6 @@
 """address_magic per-family filter for SetRef values."""
 
-import subprocess
-import sys
-
-
-def _run_ferm(src: str) -> subprocess.CompletedProcess[str]:
-    """Run pyferm in test/noexec/lines mode on stdin input."""
-    return subprocess.run(
-        [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
+from tests.unit._cli import run_pyferm
 
 
 def _split_families(stdout: str) -> tuple[str, str]:
@@ -36,7 +24,7 @@ def test_dual_stack_setref_splits_by_family() -> None:
         "@set $m = (10.0.0.1 2001:db8::1);\n"
         "domain (ip ip6) table filter chain INPUT { saddr $m ACCEPT; }\n"
     )
-    proc = _run_ferm(src)
+    proc = run_pyferm(src)
     assert proc.returncode == 0, proc.stderr
 
     ip_section, ip6_section = _split_families(proc.stdout)
@@ -54,7 +42,7 @@ def test_v4_only_set_absent_from_ip6() -> None:
         "@set $v4only = (10.0.0.1 192.168.1.1);\n"
         "domain (ip ip6) table filter chain INPUT { saddr $v4only ACCEPT; }\n"
     )
-    proc = _run_ferm(src)
+    proc = run_pyferm(src)
     assert proc.returncode == 0, proc.stderr
 
     ip_section, ip6_section = _split_families(proc.stdout)
@@ -72,31 +60,11 @@ def test_single_family_domain_setref_unchanged() -> None:
         "@set $m = (10.0.0.1 192.168.0.1);\n"
         "domain ip table filter chain INPUT { saddr $m ACCEPT; }\n"
     )
-    proc = _run_ferm(src)
+    proc = run_pyferm(src)
     assert proc.returncode == 0, proc.stderr
 
     assert "10.0.0.1" in proc.stdout
     assert "192.168.0.1" in proc.stdout
-
-
-def _run_nft(src: str) -> subprocess.CompletedProcess[str]:
-    """Run pyferm's nft backend in test/noexec/lines mode on stdin."""
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--nft",
-            "--test",
-            "--noexec",
-            "--lines",
-            "-",
-        ],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
 
 
 def test_nft_v4_only_set_emits_no_ip6_set_or_rule() -> None:
@@ -111,7 +79,7 @@ def test_nft_v4_only_set_emits_no_ip6_set_or_rule() -> None:
         "@set $x = (10.0.0.1 10.0.0.2);\n"
         "domain (ip ip6) table filter chain INPUT { saddr $x ACCEPT; }\n"
     )
-    proc = _run_nft(src)
+    proc = run_pyferm(src, "--nft")
     assert proc.returncode == 0, proc.stderr
 
     ip6_block = proc.stdout[proc.stdout.index("add table ip6 ferm") :]
@@ -129,7 +97,7 @@ def test_nft_empty_named_set_drops_rule() -> None:
         "@set $e = ();\n"
         "domain ip table filter chain INPUT { saddr $e ACCEPT; }\n"
     )
-    proc = _run_nft(src)
+    proc = run_pyferm(src, "--nft")
     assert proc.returncode == 0, proc.stderr
     assert "add set ip ferm e" not in proc.stdout
     assert "@e" not in proc.stdout
