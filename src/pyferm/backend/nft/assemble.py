@@ -58,6 +58,7 @@ from .stateful import (
     _connlimit_update,
     _hashlimit_key_implies_l4proto,
     _hashlimit_update,
+    _nth_match,
     _quota_statement,
     _recent_update,
     _RecentSpec,
@@ -324,6 +325,13 @@ def translate_rule(
         o.name: o for o in rule.options if o.module == "statistic"
     }
 
+    # mod nth folds to the same numgen form as `mod statistic mode nth`; its
+    # every/counter/start/packet options are collected rule-wide (and
+    # module-qualified, since every/packet collide with mod statistic).
+    nth_opts: dict[str, RenderedOption] = {
+        o.name: o for o in rule.options if o.module == "nth"
+    }
+
     # mod time spreads across several options (timestart/timestop/days/...)
     # that fold into up to three independent meta matches, so they are
     # collected rule-wide and emitted at the first time option (the
@@ -383,6 +391,7 @@ def translate_rule(
     target_value: str | None = None
     companions: dict[str, RenderedOption] = {}
     statistic_emitted = False
+    nth_emitted = False
     recent_emitted = False
     hashlimit_emitted = False
     time_emitted = False
@@ -459,6 +468,13 @@ def translate_rule(
             if not statistic_emitted:
                 matches.append(NftMatch(_statistic_match(statistic_opts)))
                 statistic_emitted = True
+            continue
+        if option.module == "nth":
+            # One numgen match, emitted once at the first nth option so it
+            # keeps source order (the statistic precedent).
+            if not nth_emitted:
+                matches.append(NftMatch(_nth_match(nth_opts)))
+                nth_emitted = True
             continue
         if option.module == "time":
             # Up to three meta matches, emitted once at the first time option

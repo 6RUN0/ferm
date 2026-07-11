@@ -116,7 +116,7 @@ def _resolve_port_token(token: str) -> str:
     name it does not know would not parse under ``nft -f`` either, so
     it refuses at translate time.
     """
-    if token.isdigit():
+    if _is_ascii_uint(token):
         return token
     if _NFT_PORT_RE.match(token):
         try:
@@ -454,9 +454,23 @@ def first_scalar(value: Value) -> str:
     raise FermError(_UNSUPPORTED_VALUE_SHAPE)
 
 
+def _is_ascii_uint(text: str) -> bool:
+    """
+    Return whether *text* is ASCII decimal digits ``int()`` will accept.
+
+    ``str.isdigit()`` alone is also true for non-ASCII digits -- notably the
+    latin-1 superscripts ``b2``/``b3``/``b9`` (``2``/``3``/``9``) that a
+    config's latin-1 bytes decode to -- which ``int()`` then rejects with a
+    ``ValueError`` traceback.  Every numeric guard in the nft backend routes
+    through here so a non-ASCII digit becomes a clean ferm refusal, never a
+    crash, and can never be silently accepted (nft takes ASCII digits only).
+    """
+    return text.isascii() and text.isdigit()
+
+
 def _bounded_uint(scalar: str, maximum: int, label: str) -> int:
     """Return *scalar* as an unsigned int in ``[0, maximum]``, else error."""
-    if not scalar.isdigit() or int(scalar) > maximum:
+    if not _is_ascii_uint(scalar) or int(scalar) > maximum:
         raise FermError(f"invalid {label} '{scalar}' for nft backend")
     return int(scalar)
 

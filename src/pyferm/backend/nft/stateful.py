@@ -36,6 +36,7 @@ from .model import (
     NftRule,
     NftSetUpdate,
     _addr_set_type,
+    _is_ascii_uint,
     _nft_time_canon,
     _op,
     _validate_set_name,
@@ -99,29 +100,82 @@ def _statistic_match(options: dict[str, RenderedOption]) -> str:
                 "mod statistic mode nth needs 'every' for the nft backend"
             )
         every_scalar, _ = unwrap_value(every_opt.value)
-        if not every_scalar.isdigit() or int(every_scalar) == 0:
-            raise FermError(
-                f"invalid statistic every '{every_scalar}' for nft backend"
-            )
-        packet_opt = options.get("packet")
         # xt defaults --packet to 0 (0-based) when omitted; ferm passes the
         # bare `mode nth every N` through, so the nft offset defaults to 0.
-        if packet_opt is None:
-            packet_scalar = "0"
-        else:
-            packet_scalar, _ = unwrap_value(packet_opt.value)
-            if not packet_scalar.isdigit():
-                raise FermError(
-                    f"invalid statistic packet '{packet_scalar}' for nft "
-                    "backend"
-                )
-        if int(packet_scalar) >= int(every_scalar):
-            raise FermError(
-                f"statistic packet '{packet_scalar}' must be less than "
-                f"every '{every_scalar}' for the nft backend"
-            )
-        return f"numgen inc mod {int(every_scalar)} {int(packet_scalar)}"
+        packet_opt = options.get("packet")
+        packet_scalar = (
+            "0" if packet_opt is None else unwrap_value(packet_opt.value)[0]
+        )
+        return _nth_numgen("statistic", every_scalar, packet_scalar)
     raise FermError(f"unknown statistic mode '{mode}' for the nft backend")
+
+
+def _nth_numgen(label: str, every_scalar: str, packet_scalar: str) -> str:
+    """
+    xt-nth -> ``numgen inc mod N P`` core, shared by two callers.
+
+    ``mod statistic mode nth`` and the standalone ``mod nth`` match fold to
+    the identical numgen form; keeping the formula and its validation in one
+    place stops the two paths from drifting.  ``label`` names the source
+    module in error text; ``every`` must be a positive integer and ``packet``
+    (xt's 0-based offset, already defaulted by the caller) a digit less than
+    it.
+    """
+    # isascii() before isdigit(): the latter is true for non-ASCII digits
+    # (latin-1 superscripts b2/b3/b9 a config decodes to) that int() then
+    # rejects with a ValueError traceback; the guard makes it a clean refusal.
+    if not _is_ascii_uint(every_scalar) or (int(every_scalar) == 0):
+        raise FermError(
+            f"invalid {label} every '{every_scalar}' for nft backend"
+        )
+    if not _is_ascii_uint(packet_scalar):
+        raise FermError(
+            f"invalid {label} packet '{packet_scalar}' for nft backend"
+        )
+    if int(packet_scalar) >= int(every_scalar):
+        raise FermError(
+            f"{label} packet '{packet_scalar}' must be less than every "
+            f"'{every_scalar}' for the nft backend"
+        )
+    return f"numgen inc mod {int(every_scalar)} {int(packet_scalar)}"
+
+
+def _nth_match(options: dict[str, RenderedOption]) -> str:
+    """
+    Translate a ``mod nth`` match to its nft ``numgen inc mod N P`` expression.
+
+    xt_nth cycles a counter ``0..every-1`` and matches at ``packet``; that is
+    the same every-Nth selection ``mod statistic mode nth`` folds to, so both
+    share :func:`_nth_numgen`.  ``counter`` (which of 16 kernel counters) and
+    ``start`` (its initial value) have no numgen analogue -- a non-zero value
+    refuses rather than silently dropping the per-counter state (fail-open).
+    The options are collected rule-wide by the caller because
+    ``every``/``packet``/``counter``/``start`` collide with mod statistic's
+    keywords and must stay module-qualified.
+    """
+    every_opt = options.get("every")
+    if every_opt is None:
+        raise FermError("mod nth needs 'every' for the nft backend")
+    every_scalar, _ = unwrap_value(every_opt.value)
+    for stateful_name in ("counter", "start"):
+        opt = options.get(stateful_name)
+        if opt is None:
+            continue
+        value, _ = unwrap_value(opt.value)
+        if not _is_ascii_uint(value):
+            raise FermError(
+                f"invalid nth {stateful_name} '{value}' for nft backend"
+            )
+        if int(value) != 0:
+            raise FermError(
+                f"mod nth '{stateful_name}' has no numgen equivalent for the "
+                "nft backend"
+            )
+    packet_opt = options.get("packet")
+    packet_scalar = (
+        "0" if packet_opt is None else unwrap_value(packet_opt.value)[0]
+    )
+    return _nth_numgen("nth", every_scalar, packet_scalar)
 
 
 #: rate unit spans in seconds, smallest first: the reducer picks the smallest
@@ -208,7 +262,7 @@ def _recent_scalar(opts: dict[str, RenderedOption], key: str) -> str | None:
     if option is None:
         return None
     scalar, _ = unwrap_value(option.value)
-    if not scalar.isdigit():
+    if not _is_ascii_uint(scalar):
         raise FermError(f"invalid recent {key} '{scalar}' for the nft backend")
     return scalar
 
@@ -381,7 +435,7 @@ def _recent_update(
 
 def _prefix_length_mask(domain: Family, length: str) -> str:
     """Render a hashlimit prefix length as the nft address mask literal."""
-    if not length.isdigit():
+    if not _is_ascii_uint(length):
         raise FermError(
             f"invalid hashlimit mask '{length}' for the nft backend"
         )
@@ -403,7 +457,7 @@ def _hashlimit_rate(scalar: str) -> tuple[str, str]:
     fractional counts and unknown units -- packet rates over time only.
     """
     number, _, unit = scalar.partition("/")
-    if not number.isdigit() or int(number) < 1:
+    if not _is_ascii_uint(number) or int(number) < 1:
         raise FermError(
             f"unsupported hashlimit rate '{scalar}' for the nft backend"
         )
@@ -479,7 +533,7 @@ def _hashlimit_timeout(
     expire = opts.get("hashlimit-htable-expire")
     if expire is not None:
         milliseconds, _ = unwrap_value(expire.value)
-        if not milliseconds.isdigit():
+        if not _is_ascii_uint(milliseconds):
             raise FermError(
                 f"invalid hashlimit htable-expire '{milliseconds}' for the "
                 "nft backend"
@@ -729,7 +783,7 @@ def _xt_day_index(token: str) -> int:
     lowered = token.strip().lower()
     if lowered in _XT_DAY_TO_NFT:
         return _XT_DAY_TO_NFT[lowered]
-    if lowered.isdigit() and 1 <= int(lowered) <= _DAYS_PER_WEEK:
+    if _is_ascii_uint(lowered) and 1 <= int(lowered) <= _DAYS_PER_WEEK:
         return int(lowered) % _DAYS_PER_WEEK
     raise FermError(f"unknown weekday '{token.strip()}' for nft backend")
 
@@ -786,7 +840,7 @@ _CONNBYTES_MODES: Final[frozenset[str]] = frozenset(
 
 def _connbytes_u64(scalar: str) -> str:
     """Validate a connbytes bound as an unsigned 64-bit integer."""
-    if not scalar.isdigit():
+    if not _is_ascii_uint(scalar):
         raise FermError(
             f"invalid connbytes value '{scalar}' for the nft backend"
         )
@@ -906,7 +960,7 @@ def _quota_statement(option: RenderedOption) -> NftQuota:
     nft's 2^63-1 ceiling and canonicalised to the kernel's printed unit.
     """
     scalar, _ = unwrap_value(option.value)
-    if not scalar.isdigit():
+    if not _is_ascii_uint(scalar):
         raise FermError(f"invalid quota '{scalar}' for the nft backend")
     value = int(scalar)
     if value > _QUOTA_MAX:
@@ -923,7 +977,7 @@ _CONNLIMIT_COUNT_MAX: Final[int] = 0xFFFFFFFF
 
 def _connlimit_count(scalar: str) -> str:
     """Validate a connlimit connection count as an unsigned 32-bit integer."""
-    if not scalar.isdigit():
+    if not _is_ascii_uint(scalar):
         raise FermError(
             f"invalid connlimit count '{scalar}' for the nft backend"
         )
@@ -975,7 +1029,7 @@ def _connlimit_update(domain: Family, rule: RenderedRule) -> NftSetUpdate:
     mask_option = opts.get("connlimit-mask")
     if mask_option is not None:
         length, _ = unwrap_value(mask_option.value)
-        if not length.isdigit():
+        if not _is_ascii_uint(length):
             raise FermError(
                 f"invalid connlimit mask '{length}' for the nft backend"
             )

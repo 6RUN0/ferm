@@ -13,6 +13,24 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **nft backend: the `helper`/`nth` matches and four CT-target options
+  (vocabulary batch 10).** All emissions are the exact kernel-readback
+  spelling (verified live on nft v1.1.6) so `--plan` converges:
+  - `mod helper helper <name>` → `ct helper "<name>"`;
+  - `mod nth every N [packet P]` → `numgen inc mod N P` (the same numgen
+    form as `mod statistic mode nth`; a non-zero `counter`/`start` has no
+    numgen analogue and refuses rather than dropping the per-counter
+    state);
+  - the `CT` target's `ctevents` → `ct event set <bits>` (emitted in the
+    kernel's canonical bit order — `new,related,destroy,reply,assured,`
+    `protoinfo,label` — with the xt event names nft has no bit for,
+    `helper`/`mark`/`natseqinfo`/`secmark`, refusing), `zone` →
+    `ct zone set N`, and `zone-orig`/`zone-reply` → `ct original|reply
+    zone set N`. A CT carrying several emits them in a fixed order
+    (`notrack` → zone → event) so a multi-option CT round-trips. The
+    `helper`/`timeout` options (which need object declarations) and
+    `expevents` (no nft equivalent) still refuse — up front, so a rule
+    mixing one with a translatable option never silently drops it.
 - **nft backend: seventeen more match modules and the AUDIT target
   (vocabulary batch 9).** All emissions are the exact kernel-readback
   spelling (verified live on nft v1.1.6) so `--plan` converges:

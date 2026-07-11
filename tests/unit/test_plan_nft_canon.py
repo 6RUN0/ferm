@@ -621,3 +621,25 @@ def test_header_priority_malformed_offset_left_verbatim() -> None:
 def test_batch9_vocabulary_is_canon_fixed_point(body: str) -> None:
     family = "ip6" if ("ip6" in body or "hdrlength" in body) else "ip"
     assert canonicalize_nft_rule(body, family=family) == body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # batch-10 vocabulary: helper match, nth numgen, CT event/zone mangle.
+        # Each spelling is the live kernel readback (nft v1.1.6), so the
+        # canonicalizer must pass it through untouched -- a mangled token or
+        # reordered event list would surface as a phantom --plan diff.
+        'ct helper "ftp" accept',
+        "numgen inc mod 4 0 accept",
+        "numgen inc mod 8 3 accept",
+        "notrack",
+        "ct event set new,related,destroy",
+        "ct zone set 5",
+        "ct original zone set 5",
+        "ct reply zone set 7",
+        "notrack ct zone set 1 ct event set new,destroy",
+    ],
+)
+def test_batch10_vocabulary_is_canon_fixed_point(body: str) -> None:
+    assert canonicalize_nft_rule(body, family="ip") == body

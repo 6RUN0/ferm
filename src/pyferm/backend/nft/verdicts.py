@@ -43,6 +43,7 @@ from .model import (
     NftVerdict,
     _addr_set_type,
     _bounded_uint,
+    _is_ascii_uint,
     _nft_quote_string,
     _nft_time_canon,
     _validate_address,
@@ -226,7 +227,7 @@ def _nfqueue_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
     if balance is not None:
         scalar, _ = unwrap_value(balance.value)
         low, sep, high = scalar.partition(":")
-        if not (sep and low.isdigit() and high.isdigit()):
+        if not (sep and _is_ascii_uint(low) and _is_ascii_uint(high)):
             raise FermError(
                 f"invalid queue-balance '{scalar}' for nft backend"
             )
@@ -524,7 +525,7 @@ def _set_target_statement(
         comp = companions.get("timeout")
         if comp is not None:
             scalar, _ = unwrap_value(comp.value)
-            if not scalar.isdigit():
+            if not _is_ascii_uint(scalar):
                 raise FermError(
                     f"invalid SET timeout '{scalar}' for nft backend"
                 )
@@ -706,7 +707,7 @@ def _nflog_verdict(companions: dict[str, RenderedOption]) -> NftVerdict:
     threshold = companions.get("nflog-threshold")
     if threshold is not None:
         scalar, _ = unwrap_value(threshold.value)
-        if not scalar.isdigit() or int(scalar) == 0:
+        if not _is_ascii_uint(scalar) or int(scalar) == 0:
             raise FermError(
                 f"invalid nflog-threshold '{scalar}' for nft backend"
             )
@@ -787,6 +788,67 @@ def _nat_to_addr(
     if _nat_has_port(domain, addr) and not has_transport:
         raise FermError(_NAT_PORT_NEEDS_PROTO)
     return NftVerdict(f"{verb} to {addr}{_nat_flags(companions)}")
+
+
+#: nft conntrack zones are a 16-bit id (verified live: 65536 -> range error).
+_CT_ZONE_MAX: Final[int] = 0xFFFF
+
+#: xt_CT ctevents names -> nft ct-event bits, in nft's canonical readback
+#: order (verified live: a fully-reversed input reorders to exactly this).
+#: xt names with no nft event bit (helper/mark/natseqinfo/secmark) are absent,
+#: so a rule naming one refuses rather than silently dropping it.
+_CT_EVENT_ORDER: Final[tuple[str, ...]] = (
+    "new",
+    "related",
+    "destroy",
+    "reply",
+    "assured",
+    "protoinfo",
+    "label",
+)
+_CT_EVENT_RANK: Final[dict[str, int]] = {
+    name: rank for rank, name in enumerate(_CT_EVENT_ORDER)
+}
+
+
+def _ct_zone_value(name: str, scalar: str) -> str:
+    """Validate a CT-target zone id (0-65535), returning its decimal canon."""
+    # `_is_ascii_uint(str)` is true for non-ASCII digits (e.g. the latin-1
+    # superscripts b2/b3/b9 a config's latin-1 bytes decode to) that int()
+    # then rejects; the isascii() guard turns that into a clean refusal
+    # instead of a ValueError traceback.
+    if not _is_ascii_uint(scalar):
+        raise FermError(f"invalid CT {name} '{scalar}' for nft backend")
+    if int(scalar) > _CT_ZONE_MAX:
+        raise FermError(
+            f"CT {name} '{scalar}' exceeds 0-65535 for the nft backend"
+        )
+    return str(int(scalar))
+
+
+def _ct_event_canon(option: RenderedOption) -> str:
+    """
+    Map an xt_CT ``ctevents`` array to nft's canonical event-bit list.
+
+    The ``=c`` array reaches us comma-joined.  Every member must have an nft
+    event bit; the first that does not refuses the whole rule (no partial
+    emission -- dropping an event would silently narrow what fires).  The
+    survivors emit deduplicated in :data:`_CT_EVENT_ORDER`, the order nft
+    prints, so a ``--plan`` over an unchanged ruleset converges.
+    """
+    scalar, neg = unwrap_value(option.value)
+    if neg:
+        raise FermError("CT 'ctevents' cannot be negated for the nft backend")
+    members = [token.strip() for token in scalar.split(",") if token.strip()]
+    if not members:
+        raise FermError(
+            "CT 'ctevents' needs at least one event for the nft backend"
+        )
+    for member in members:
+        if member not in _CT_EVENT_RANK:
+            raise FermError(f"CT event '{member}' has no nft equivalent")
+    ordered = sorted(set(members), key=_CT_EVENT_RANK.__getitem__)
+    return ",".join(ordered)
 
 
 def build_verdict(
@@ -871,7 +933,7 @@ def build_verdict(
             return NftVerdict("tcp option maxseg size set rt mtu")
         if setmss is not None and clamp is None:
             scalar, _ = unwrap_value(setmss.value)
-            if not scalar.isdigit():
+            if not _is_ascii_uint(scalar):
                 raise FermError(f"invalid set-mss '{scalar}' for nft backend")
             return NftVerdict(f"tcp option maxseg size set {scalar}")
         raise FermError("TCPMSS target not yet supported by nft backend")
@@ -969,26 +1031,39 @@ def build_verdict(
     if target_value == "TPROXY" and domain in (Family.IP, Family.IP6):
         return _tproxy_verdict(domain, companions, has_transport=has_transport)
     if target_value == "CT":
-        # Only --notrack has an nft spelling; the remaining CT options need
-        # object declarations (ct helper/timeout/zone) that are out of scope,
-        # and a bare CT is untranslatable (the xt oracle refuses it too).
-        for unsupported in (
-            "helper",
-            "ctevents",
-            "expevents",
-            "zone-orig",
-            "zone-reply",
-            "zone",
-            "timeout",
-        ):
+        # helper/timeout still need object declarations (ct helper/timeout
+        # objects -- batch 11), and expevents has no nft expectation-event
+        # set (`ct expectation event set` is a syntax error).  Refuse these
+        # UP FRONT, before emitting any statement, so a rule that mixes one
+        # with a translatable option (`CT helper ftp zone 1`) never silently
+        # drops the unsupported half -- that would be a fail-open mangle.
+        for unsupported in ("helper", "expevents", "timeout"):
             if unsupported in companions:
                 raise FermError(
                     f"CT target option '{unsupported}' not yet supported by "
                     f"nft backend"
                 )
+        # nft keeps rule-statement order on readback, so the translatable CT
+        # options emit in one fixed order (notrack -> zone forms -> events)
+        # for a rule carrying several; --plan then converges.
+        statements: list[str] = []
         if "notrack" in companions:
-            return NftVerdict("notrack")
-        raise FermError("CT target not yet supported by nft backend")
+            statements.append("notrack")
+        for zone_name, prefix in (
+            ("zone", "ct zone set "),
+            ("zone-orig", "ct original zone set "),
+            ("zone-reply", "ct reply zone set "),
+        ):
+            comp = companions.get(zone_name)
+            if comp is not None:
+                scalar, _ = unwrap_value(comp.value)
+                statements.append(prefix + _ct_zone_value(zone_name, scalar))
+        if "ctevents" in companions:
+            events = _ct_event_canon(companions["ctevents"])
+            statements.append(f"ct event set {events}")
+        if not statements:
+            raise FermError("CT target not yet supported by nft backend")
+        return NftVerdict(" ".join(statements))
     if target_value == "CHECKSUM":
         raise FermError(
             "CHECKSUM target has no nft equivalent (kernels since 4.19 "
@@ -1068,7 +1143,7 @@ def _tcpopt_nft_name(token: str) -> str:
     """Map one xt strip-options token (mnemonic or number) to nft."""
     if token in _TCPOPT_NAME:
         return _TCPOPT_NAME[token]
-    if token.isdigit():
+    if _is_ascii_uint(token):
         number = int(token)
         if number > _TCP_OPTION_MAX:
             raise FermError(f"invalid tcp option '{token}' for nft backend")

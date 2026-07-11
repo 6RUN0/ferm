@@ -469,6 +469,39 @@ def check_batch9_vocab_readback() -> None:
             )
 
 
+BATCH10_IP_LINES = [
+    'ct helper "ftp" accept',
+    "numgen inc mod 4 0 accept",
+    "numgen inc mod 8 3 accept",
+    "notrack",
+    "ct event set new,related,destroy",
+    "ct zone set 5",
+    "ct original zone set 5",
+    "ct reply zone set 7",
+    "notrack ct zone set 1 ct event set new,destroy",
+]
+
+
+def check_batch10_vocab_readback() -> None:
+    # Apply every batch-10 emission (helper match, nth numgen, CT event/zone
+    # mangle) and require the identical line back -- the --plan convergence
+    # contract, including the ctevents canonical reorder and the fixed
+    # multi-statement CT order.
+    body = "\n".join(f" {line}" for line in BATCH10_IP_LINES)
+    script = (
+        "table ip t {\n chain c {\n"
+        " type filter hook input priority 0;\n"
+        f"{body}\n }}\n}}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    for want in BATCH10_IP_LINES:
+        if want not in lines:
+            _fail(
+                f"batch-10 vocab readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -480,6 +513,7 @@ def main() -> None:
     check_ct_queue_netmap_readback()
     check_stateful_dynset_readback()
     check_batch9_vocab_readback()
+    check_batch10_vocab_readback()
     print("NFT-READBACK-PASS")
 
 

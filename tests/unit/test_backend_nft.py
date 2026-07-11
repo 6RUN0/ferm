@@ -4494,25 +4494,20 @@ def test_build_verdict_ct_refusals() -> None:
         FermError, match=r"^CT target not yet supported by nft backend$"
     ):
         build_verdict(Family.IP, "raw", "jump", "CT", {})
-    # every other CT option needs object declarations that are out of scope
-    for option in (
-        "helper",
-        "ctevents",
-        "expevents",
-        "zone-orig",
-        "zone-reply",
-        "zone",
-        "timeout",
-    ):
+    # helper/timeout still need object declarations (batch 11) and expevents
+    # has no nft expectation-event set; all three refuse up front.
+    for option in ("helper", "expevents", "timeout"):
         comp = {option: _opt(option, "x", module="CT")}
         with pytest.raises(
             FermError, match=rf"^CT target option '{option}' not yet"
         ):
             build_verdict(Family.IP, "raw", "jump", "CT", comp)
-    # an unsupported option beside notrack still refuses (refusal wins)
+    # a refused option beside a translatable one still refuses (the refusal
+    # short-circuits, so the unsupported half is never silently dropped --
+    # a partial CT mangle would be a fail-open).
     both = {
-        "notrack": _flag("notrack", "CT"),
         "helper": _opt("helper", "ftp", module="CT"),
+        "zone": _opt("zone", "1", module="CT"),
     }
     with pytest.raises(FermError, match=r"^CT target option 'helper' not yet"):
         build_verdict(Family.IP, "raw", "jump", "CT", both)
@@ -4522,6 +4517,38 @@ def test_build_verdict_checksum_refused() -> None:
     comp = {"checksum-fill": _flag("checksum-fill", "CHECKSUM")}
     with pytest.raises(FermError, match=r"^CHECKSUM target has no nft"):
         build_verdict(Family.IP, "mangle", "jump", "CHECKSUM", comp)
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        _opt("cpu", "²", module="cpu"),
+        _opt("label", "²", module="connlabel"),
+        _opt("tcp-option", "²", module="tcp"),
+    ],
+)
+def test_latin1_superscript_digit_refuses_cleanly_in_match(
+    option: RenderedOption,
+) -> None:
+    # `str.isdigit()` is true for the latin-1 superscripts b2/b3/b9 a config's
+    # latin-1 bytes decode to, but int() rejects them; every numeric validator
+    # routes through `_is_ascii_uint`, so the result is a clean ferm refusal
+    # rather than a ValueError traceback (a class-wide guard, not per-site).
+    with pytest.raises(FermError):
+        translate_match(Family.IP, option, "tcp")
+
+
+def test_latin1_superscript_digit_refuses_cleanly_in_bounded_uint() -> None:
+    # the shared `_bounded_uint` target-side path (TTL/HL/NFQUEUE/...) inherits
+    # the same guard.
+    with pytest.raises(FermError):
+        build_verdict(
+            Family.IP,
+            "mangle",
+            "jump",
+            "TTL",
+            {"ttl-set": _opt("ttl-set", "²", module="TTL")},
+        )
 
 
 def _tproxy(**names: str | None) -> dict[str, RenderedOption]:
@@ -5031,15 +5058,18 @@ def test_translate_rule_statistic_missing_mode_refused() -> None:
 
 
 def test_translate_rule_statistic_module_qualified_collection() -> None:
-    # `every`/`packet` also name mod nth's own keywords; a non-statistic
-    # `every` must NOT be folded into a statistic match (it falls through to
-    # the generic refusal instead).
+    # `every`/`packet` name BOTH mod statistic and mod nth keywords; the
+    # rule-wide collections are module-qualified, so a `mod nth every` folds
+    # into the nth numgen match and never contaminates a statistic match.
+    # (Before mod nth was handled this fell through to the generic refusal.)
     rule = _rule(
         _opt("every", "10", module="nth"),
         _target("ACCEPT"),
     )
-    with pytest.raises(FermError, match=r"^option 'every' not yet"):
-        translate_rule(Family.IP, "filter", rule)
+    assert _texts(translate_rule(Family.IP, "filter", rule)) == [
+        "numgen inc mod 10 0",
+        "accept",
+    ]
 
 
 def test_translate_match_pkttype() -> None:

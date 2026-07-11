@@ -1,0 +1,14 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add chain ip ferm raw_PREROUTING { type filter hook prerouting priority -300; }
+add rule ip ferm INPUT ct helper "ftp" accept
+add rule ip ferm INPUT numgen inc mod 4 0 accept
+add rule ip ferm INPUT numgen inc mod 8 3 accept
+add rule ip ferm raw_PREROUTING notrack
+add rule ip ferm raw_PREROUTING ct event set new,related,destroy
+add rule ip ferm raw_PREROUTING ct zone set 5
+add rule ip ferm raw_PREROUTING ct original zone set 5
+add rule ip ferm raw_PREROUTING ct reply zone set 7
+add rule ip ferm raw_PREROUTING notrack ct zone set 1 ct event set new,destroy

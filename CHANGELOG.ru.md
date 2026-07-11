@@ -13,6 +13,24 @@
 
 ### Добавлено
 
+- **nft-бэкенд: matchи `helper`/`nth` и четыре опции таргета CT (батч
+  словаря 10).** Все эмиссии — точный спеллинг ридбэка ядра (проверено
+  живьём на nft v1.1.6), поэтому `--plan` сходится:
+  - `mod helper helper <имя>` → `ct helper "<имя>"`;
+  - `mod nth every N [packet P]` → `numgen inc mod N P` (та же форма
+    numgen, что и `mod statistic mode nth`; ненулевые `counter`/`start`
+    не имеют numgen-аналога и отказывают, а не теряют per-counter
+    состояние);
+  - опции таргета `CT`: `ctevents` → `ct event set <биты>` (в
+    каноническом порядке бит ядра — `new,related,destroy,reply,assured,`
+    `protoinfo,label` — а xt-имена событий без nft-бита,
+    `helper`/`mark`/`natseqinfo`/`secmark`, отказывают), `zone` →
+    `ct zone set N`, `zone-orig`/`zone-reply` → `ct original|reply zone
+    set N`. CT с несколькими опциями эмитит их в фиксированном порядке
+    (`notrack` → zone → event), поэтому мульти-опция round-trip'ится.
+    Опции `helper`/`timeout` (требуют объявления объектов) и `expevents`
+    (нет nft-эквивалента) по-прежнему отказывают — заранее, поэтому
+    правило, смешавшее их с переводимой опцией, не теряет её молча.
 - **nft-бэкенд: ещё семнадцать match-модулей и таргет AUDIT (батч
   словаря 9).** Все эмиссии — точный спеллинг ридбэка ядра (проверено
   живьём на nft v1.1.6), поэтому `--plan` сходится:

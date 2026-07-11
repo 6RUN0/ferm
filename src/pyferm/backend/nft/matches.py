@@ -30,8 +30,10 @@ if TYPE_CHECKING:
 from .model import (
     _UNSUPPORTED_VALUE_SHAPE,
     NftMatch,
+    _is_ascii_uint,
     _nft_ifname,
     _nft_l4proto,
+    _nft_quote_string,
     _nft_time_canon,
     _op,
     _validate_address,
@@ -561,7 +563,7 @@ def _owner_value(name: str, scalar: str) -> str:
     ``--plan`` diffing forever; numeric ids and dash ranges pass
     through (the readback keeps both).
     """
-    if scalar.isdigit() or _NUMERIC_RANGE_RE.match(scalar):
+    if _is_ascii_uint(scalar) or _NUMERIC_RANGE_RE.match(scalar):
         return scalar
     if name == "uid-owner":
         try:
@@ -862,12 +864,12 @@ def _uint_or_range(name: str, scalar: str, maximum: int) -> str:
     option name (``nft -c`` would reject the overflow only at apply
     time, long after ``--lines``/``--plan`` showed the rule).
     """
-    if scalar.isdigit():
+    if _is_ascii_uint(scalar):
         if int(scalar) > maximum:
             raise FermError(f"invalid {name} '{scalar}' for nft backend")
         return scalar
     low, sep, high = scalar.partition(":")
-    if sep and low.isdigit() and high.isdigit():
+    if sep and _is_ascii_uint(low) and _is_ascii_uint(high):
         if int(low) > maximum or int(high) > maximum:
             raise FermError(f"invalid {name} '{scalar}' for nft backend")
         return f"{low}-{high}"
@@ -909,12 +911,12 @@ def _ct_expiration_operand(scalar: str) -> str:
     formatter for both would leave ``--plan`` diffing forever.  Zero
     decomposes to nothing, but the kernel prints it as ``0s``.
     """
-    if scalar.isdigit():
+    if _is_ascii_uint(scalar):
         if int(scalar) == 0:
             return "0s"
         return _nft_time_canon(int(scalar) * 1000)
     low, sep, high = scalar.partition(":")
-    if sep and low.isdigit() and high.isdigit():
+    if sep and _is_ascii_uint(low) and _is_ascii_uint(high):
         return f"{low}s-{high}s"
     raise FermError(f"invalid ctexpire '{scalar}' for nft backend")
 
@@ -1258,22 +1260,22 @@ def _translate_match_parts(
     if name == "length":
         if ":" in scalar:
             low, _, high = scalar.partition(":")
-            if low.isdigit() and high.isdigit():
+            if _is_ascii_uint(low) and _is_ascii_uint(high):
                 scalar = f"{low}-{high}"
             else:
                 raise FermError(f"invalid length '{scalar}' for nft backend")
-        elif not (scalar.isdigit() or _NUMERIC_RANGE_RE.match(scalar)):
+        elif not (_is_ascii_uint(scalar) or _NUMERIC_RANGE_RE.match(scalar)):
             raise FermError(f"invalid length '{scalar}' for nft backend")
         return (f"meta length {_op(neg)}{scalar}", None, None)
     if name == "opcode":
-        if not scalar.isdigit():
+        if not _is_ascii_uint(scalar):
             raise FermError(f"invalid arp opcode '{scalar}' for nft backend")
         operation = _ARP_OPERATION_BY_NUMBER.get(int(scalar), scalar)
         return (f"arp operation {_op(neg)}{operation}", None, None)
     if name in _TTL_COMPARATOR and domain is not Family.IP6:
         # xt_ttl is ip-only (mod hl is its ip6 twin below), so the ip6
         # pass falls through to the generic refusal.
-        if not scalar.isdigit():
+        if not _is_ascii_uint(scalar):
             raise FermError(f"invalid ttl '{scalar}' for nft backend")
         return (
             f"ip ttl {_op(neg)}{_TTL_COMPARATOR[name]}{scalar}",
@@ -1282,7 +1284,7 @@ def _translate_match_parts(
         )
     if name in _HL_COMPARATOR and domain is Family.IP6:
         # ip6t_hl is ip6-only; the ip pass falls through to the refusal.
-        if not scalar.isdigit():
+        if not _is_ascii_uint(scalar):
             raise FermError(f"invalid hl '{scalar}' for nft backend")
         return (
             f"ip6 hoplimit {_op(neg)}{_HL_COMPARATOR[name]}{scalar}",
@@ -1320,9 +1322,9 @@ def _translate_match_parts(
                 "option 'mss' needs a tcp protocol for the nft backend"
             )
         low, sep, high = scalar.partition(":")
-        if sep and low.isdigit() and high.isdigit():
+        if sep and _is_ascii_uint(low) and _is_ascii_uint(high):
             operand = f"{low}-{high}"
-        elif scalar.isdigit():
+        elif _is_ascii_uint(scalar):
             operand = scalar
         else:
             raise FermError(f"invalid mss '{scalar}' for nft backend")
@@ -1336,7 +1338,7 @@ def _translate_match_parts(
             raise FermError(
                 "option 'tcp-option' needs a tcp protocol for the nft backend"
             )
-        if not scalar.isdigit() or int(scalar) > _TCP_OPTION_KIND_MAX:
+        if not _is_ascii_uint(scalar) or int(scalar) > _TCP_OPTION_KIND_MAX:
             raise FermError(f"invalid tcp-option '{scalar}' for nft backend")
         kind = _TCP_OPTION_KIND.get(int(scalar), scalar)
         state = "missing" if neg else "exists"
@@ -1398,7 +1400,7 @@ def _translate_match_parts(
         # `label` is also IDLETIMER's companion, hence module-qualified.
         # A symbolic label would need connlabel.conf at translate time;
         # nft itself only takes the bit number.
-        if not scalar.isdigit() or int(scalar) > _CT_LABEL_MAX:
+        if not _is_ascii_uint(scalar) or int(scalar) > _CT_LABEL_MAX:
             raise FermError(
                 f"connlabel '{scalar}' needs a numeric label (0-127) "
                 f"for the nft backend"
@@ -1426,7 +1428,7 @@ def _translate_match_parts(
     if name == "cpu":
         # readback KEEPS the `meta` prefix here (unlike iifgroup), so the
         # emission carries it -- verified live.
-        if not scalar.isdigit():
+        if not _is_ascii_uint(scalar):
             raise FermError(f"invalid cpu '{scalar}' for nft backend")
         return (f"meta cpu {_op(neg)}{scalar}", None, None)
     if name in _DEVGROUP_SELECTOR:
@@ -1444,7 +1446,7 @@ def _translate_match_parts(
         )
     if option.module == "cgroup" and name == "cgroup":
         # the parser (cgroup_classid) already folded hex:hex to decimal
-        if not scalar.isdigit():
+        if not _is_ascii_uint(scalar):
             raise FermError(
                 f"invalid cgroup classid '{scalar}' for nft backend"
             )
@@ -1452,7 +1454,7 @@ def _translate_match_parts(
     if name == "mh-type" and domain is Family.IP6:
         # xt_mh is ip6-only; a scalar respells to the kernel-readback
         # name, a range stays numeric (both verified live).
-        if scalar.isdigit():
+        if _is_ascii_uint(scalar):
             number = int(scalar)
             if number > _ICMP_OCTET_MAX:
                 raise FermError(f"invalid mh-type '{scalar}' for nft backend")
@@ -1478,6 +1480,15 @@ def _translate_match_parts(
         if kind is None:
             raise FermError(f"invalid ecn-ip-ect '{scalar}' for nft backend")
         return (f"{domain} ecn {_op(neg)}{kind}", None, None)
+    if option.module == "helper" and name == "helper":
+        # xt_helper matches the ct helper name; nft spells it
+        # `ct helper "<name>"`.  ferm's registry declares no negation, so
+        # only the positive form is reachable (the ecn-ip-ect precedent).
+        if not scalar:
+            raise FermError(
+                "mod helper needs a non-empty helper name for the nft backend"
+            )
+        return (f"ct helper {_nft_quote_string(scalar)}", None, None)
     raise FermError(f"option '{name}' not yet supported by nft backend")
 
 

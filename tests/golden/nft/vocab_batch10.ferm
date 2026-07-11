@@ -1,0 +1,17 @@
+table filter {
+    chain INPUT {
+        mod helper helper ftp ACCEPT;
+        mod nth every 4 ACCEPT;
+        mod nth every 8 packet 3 ACCEPT;
+    }
+}
+table raw {
+    chain PREROUTING {
+        CT notrack;
+        CT ctevents (destroy new related);
+        CT zone 5;
+        CT zone-orig 5;
+        CT zone-reply 7;
+        CT notrack zone 1 ctevents (new destroy);
+    }
+}
