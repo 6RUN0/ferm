@@ -169,7 +169,7 @@ def test_map_base_chain_unmappable_is_error() -> None:
 # ---------------------------------------------------------------------------
 # build_chains + nft_chain_name
 # ---------------------------------------------------------------------------
-from pyferm.backend.nft import build_chains  # noqa: E402
+from pyferm.backend.nft import build_chains, nft_chain_name  # noqa: E402
 from pyferm.domains import ChainInfo, TableInfo  # noqa: E402
 
 
@@ -196,8 +196,6 @@ def test_build_chains_sorted_for_determinism() -> None:
 
 
 def test_nft_chain_name_disambiguates_non_filter() -> None:
-    from pyferm.backend.nft import nft_chain_name
-
     assert nft_chain_name("filter", "INPUT") == "INPUT"
     assert nft_chain_name("mangle", "INPUT") == "mangle_INPUT"
     # mangle/INPUT becomes a distinct base chain, not a collision with filter.
@@ -218,8 +216,6 @@ def test_nft_chain_name_accepts_dashes() -> None:
     # nft's bare-word grammar allows an interior dash (verified against
     # nft v1.1.6: `add chain ip t fail2ban-ssh` and `jump fail2ban-ssh`
     # both apply); fail2ban-style names are common in the wild corpus.
-    from pyferm.backend.nft import nft_chain_name
-
     assert nft_chain_name("filter", "fail2ban-ssh") == "fail2ban-ssh"
     assert nft_chain_name("nat", "pre-routing-x") == "nat_pre-routing-x"
     # whitespace/metacharacters (and a leading dash, which nft would
@@ -1081,8 +1077,6 @@ def test_match_parts_icmp_type_is_not_set_eligible() -> None:
     # (unparsable stays in input order), so a folded { echo-request,
     # echo-reply } set could not converge under --plan; keep the match
     # out of the collapse pass until the canon learns that rank.
-    from pyferm.backend.nft import _translate_match_parts
-
     expr, key, element = _translate_match_parts(
         Family.IP, _opt("icmp-type", "echo-request"), "icmp"
     )
@@ -1757,6 +1751,11 @@ def _target(value: str) -> RenderedOption:
     return _opt("jump", value, kind=OptionKind.TARGET)
 
 
+def _texts(rule: NftRule) -> list[str]:
+    """Return the ``to_text()`` rendering of each statement in a rule."""
+    return [s.to_text() for s in rule.statements]
+
+
 def test_translate_rule_skips_match_module_marker() -> None:
     nft = translate_rule(
         Family.IP,
@@ -1767,7 +1766,7 @@ def test_translate_rule_skips_match_module_marker() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "ct state established,related",
         "accept",
     ]
@@ -1815,7 +1814,7 @@ def test_translate_rule_bare_inert_module_still_skips() -> None:
                 _target("ACCEPT"),
             ),
         )
-        assert [s.to_text() for s in nft.statements] == ["accept"]
+        assert _texts(nft) == ["accept"]
 
 
 def test_translate_rule_eb_mark_target_refuses() -> None:
@@ -1844,7 +1843,7 @@ def test_translate_rule_port_suppresses_redundant_proto() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp dport 22",
         "ip saddr 10.0.0.1",
         "accept",
@@ -1865,7 +1864,7 @@ def test_translate_rule_icmp_type_suppresses_redundant_proto() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "icmp type echo-request",
         "accept",
     ]
@@ -1885,7 +1884,7 @@ def test_translate_rule_tcp_flags_suppresses_redundant_proto() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp flags & (fin | syn | rst | ack) == syn",
         "accept",
     ]
@@ -1905,7 +1904,7 @@ def test_translate_rule_limit_burst_pairs_with_limit() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "limit rate 5/second burst 7 packets",
         "accept",
     ]
@@ -1923,7 +1922,7 @@ def test_translate_rule_limit_burst_without_limit_uses_default_rate() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "limit rate 3/hour burst 7 packets",
         "accept",
     ]
@@ -1988,7 +1987,7 @@ def test_translate_rule_two_limits_without_burst_translate() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "limit rate 3/second",
         "limit rate 10/minute",
         "accept",
@@ -2027,7 +2026,7 @@ def test_translate_rule_bare_proto_emits_l4proto() -> None:
             _target("DROP"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto icmp",
         "drop",
     ]
@@ -2042,7 +2041,7 @@ def test_translate_rule_ip6_icmp_normalized() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto ipv6-icmp",
         "accept",
     ]
@@ -2109,7 +2108,7 @@ def test_translate_rule_legit_protocols_render() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in numeric.statements] == [
+    assert _texts(numeric) == [
         "meta l4proto gre",
         "accept",
     ]
@@ -2121,7 +2120,7 @@ def test_translate_rule_legit_protocols_render() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in named.statements] == [
+    assert _texts(named) == [
         "meta l4proto ipv6-icmp",
         "accept",
     ]
@@ -2133,7 +2132,7 @@ def _addrtype(name: str, value: Value) -> RenderedOption:
 
 def _fib_texts(domain: Family, *options: RenderedOption) -> list[str]:
     rule = translate_rule(domain, "filter", _rule(*options, _target("ACCEPT")))
-    return [s.to_text() for s in rule.statements]
+    return _texts(rule)
 
 
 def test_translate_rule_addrtype_single_type() -> None:
@@ -2323,7 +2322,7 @@ def _dscp_target(domain: Family, *companions: RenderedOption) -> list[str]:
     rule = translate_rule(
         domain, "mangle", _rule(_target("DSCP"), *companions)
     )
-    return [s.to_text() for s in rule.statements]
+    return _texts(rule)
 
 
 def test_build_verdict_dscp_set_dscp_numeric() -> None:
@@ -2367,7 +2366,7 @@ def _classify(value: str) -> list[str]:
             _target("CLASSIFY"), _opt("set-class", value, module="CLASSIFY")
         ),
     )
-    return [s.to_text() for s in rule.statements]
+    return _texts(rule)
 
 
 @pytest.mark.parametrize(
@@ -2431,7 +2430,7 @@ def test_translate_rule_reject_with_companion_order() -> None:
             _opt("reject-with", "icmp-port-unreachable", module="REJECT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp dport 80",
         "reject with icmp type port-unreachable",
     ]
@@ -2447,7 +2446,7 @@ def test_translate_rule_comment_attaches() -> None:
         ),
     )
     assert nft.comment == "allow ssh"
-    assert [s.to_text() for s in nft.statements] == ["accept"]
+    assert _texts(nft) == ["accept"]
 
 
 def test_translate_rule_snat_multi_value() -> None:
@@ -2460,7 +2459,7 @@ def test_translate_rule_snat_multi_value() -> None:
             _opt("to-source", Multi(values=["5.6.7.8"]), module="SNAT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "ip saddr 10.0.0.0/8",
         "snat to 5.6.7.8",
     ]
@@ -2477,7 +2476,7 @@ def test_translate_rule_port_before_proto_is_order_independent() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == ["tcp dport 22", "accept"]
+    assert _texts(nft) == ["tcp dport 22", "accept"]
 
 
 def test_translate_rule_goto_user_chain() -> None:
@@ -2488,13 +2487,12 @@ def test_translate_rule_goto_user_chain() -> None:
             _opt("goto", "mychain", kind=OptionKind.TARGET),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == ["goto mychain"]
+    assert _texts(nft) == ["goto mychain"]
 
 
 # ---------------------------------------------------------------------------
 # Additional coverage tests
 # ---------------------------------------------------------------------------
-from pyferm.backend.nft import build_verdict  # noqa: E402, F811
 
 
 def test_unwrap_value_prenegated() -> None:
@@ -2914,8 +2912,6 @@ def test_capture_previous_mock_open_failure_reports_os_reason(
 # is now escaped (quoted-string contexts) or grammar-validated (bare-token /
 # bare-identifier contexts).  `INJECT` is the canonical exploit payload.
 # ---------------------------------------------------------------------------
-
-from pyferm.backend.nft import nft_chain_name  # noqa: E402
 
 INJECT = "1.2.3.4 accept;#"
 
@@ -3722,7 +3718,7 @@ def test_translate_rule_negated_proto_emits_inequality() -> None:
             _target("DROP"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto != tcp",
         "drop",
     ]
@@ -3735,7 +3731,7 @@ def test_translate_rule_without_target_appends_no_verdict() -> None:
         "filter",
         _rule(_opt("source", "10.0.0.1")),
     )
-    assert [s.to_text() for s in nft.statements] == ["ip saddr 10.0.0.1"]
+    assert _texts(nft) == ["ip saddr 10.0.0.1"]
 
 
 def test_translate_rule_nat_to_ports_uses_transport_context() -> None:
@@ -3750,7 +3746,7 @@ def test_translate_rule_nat_to_ports_uses_transport_context() -> None:
             _opt("to-ports", "8080", module="REDIRECT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto tcp",
         "redirect to :8080",
     ]
@@ -3769,7 +3765,7 @@ def test_translate_rule_verdict_receives_family_domain() -> None:
             _opt("reject-with", "icmp6-port-unreachable", module="REJECT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp dport 80",
         "reject with icmpv6 type port-unreachable",
     ]
@@ -3788,7 +3784,7 @@ def test_translate_rule_comment_before_matches_keeps_matches() -> None:
         ),
     )
     assert nft.comment == "hi"
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "ip saddr 10.0.0.1",
         "accept",
     ]
@@ -3807,7 +3803,7 @@ def test_translate_rule_companion_before_matches_keeps_matches() -> None:
             _opt("source", "10.0.0.1"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto tcp",
         "ip saddr 10.0.0.1",
         "reject with icmp type port-unreachable",
@@ -4668,7 +4664,7 @@ def test_translate_rule_time_hour_day_span() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         'meta hour "09:00"-"18:00"',
         "accept",
     ]
@@ -4745,7 +4741,7 @@ def test_translate_rule_time_hour_day_span() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         'meta hour "09:00"-"17:00"',
         'meta day { "Monday", "Friday" }',
         "accept",
@@ -4840,7 +4836,7 @@ def test_translate_rule_netmap_prefix_map_sides() -> None:
         _netmap_rule("destination", "10.66.0.0/24", "192.0.2.0/24"),
         chain="PREROUTING",
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "ip daddr 10.66.0.0/24",
         "dnat ip prefix to ip daddr map { 10.66.0.0/24 : 192.0.2.0/24 }",
     ]
@@ -4850,7 +4846,7 @@ def test_translate_rule_netmap_prefix_map_sides() -> None:
         _netmap_rule("source", "192.0.2.0/24", "10.66.0.0/24"),
         chain="POSTROUTING",
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "ip saddr 192.0.2.0/24",
         "snat ip prefix to ip saddr map { 192.0.2.0/24 : 10.66.0.0/24 }",
     ]
@@ -4860,7 +4856,7 @@ def test_translate_rule_netmap_prefix_map_sides() -> None:
         _netmap_rule("destination", "fd00:7::/64", "fd00:9::/64"),
         chain="OUTPUT",
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "ip6 daddr fd00:7::/64",
         "dnat ip6 prefix to ip6 daddr map { fd00:7::/64 : fd00:9::/64 }",
     ]
@@ -4911,7 +4907,7 @@ def test_module_qualified_companions_do_not_swallow_match_options() -> None:
         _target("ACCEPT"),
     )
     nft = translate_rule(Family.IP, "filter", tcp_mss, chain="INPUT")
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp option maxseg size 1400",
         "accept",
     ]
@@ -4936,7 +4932,7 @@ def _statistic_texts(*stat_opts: RenderedOption) -> list[str]:
     nft = translate_rule(
         Family.IP, "filter", _rule(*stat_opts, _target("ACCEPT"))
     )
-    return [s.to_text() for s in nft.statements]
+    return _texts(nft)
 
 
 def test_translate_rule_statistic_random() -> None:
@@ -5103,7 +5099,7 @@ def test_translate_rule_tcpoptstrip_names() -> None:
         "mangle",
         _tcpoptstrip_rule("mss,wscale,sack-permitted,sack,timestamp,md5"),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto tcp",
         "reset tcp option maxseg",
         "reset tcp option window",
@@ -5120,7 +5116,7 @@ def test_translate_rule_tcpoptstrip_numbers_respell() -> None:
     nft = translate_rule(
         Family.IP, "mangle", _tcpoptstrip_rule("0,1,2,3,4,5,8,19,30,34")
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto tcp",
         "reset tcp option eol",
         "reset tcp option nop",
@@ -5134,7 +5130,7 @@ def test_translate_rule_tcpoptstrip_numbers_respell() -> None:
         "reset tcp option fastopen",
     ]
     nft = translate_rule(Family.IP, "mangle", _tcpoptstrip_rule("6,254"))
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "meta l4proto tcp",
         "reset tcp option 6",
         "reset tcp option 254",
@@ -5175,6 +5171,10 @@ def _recent(name: str, value: Value = None) -> RenderedOption:
     return _opt(name, value, module="recent")
 
 
+def _hlopt(name: str, value: Value = None) -> RenderedOption:
+    return _opt(name, value, module="hashlimit")
+
+
 def _recent_rule(
     *opts: RenderedOption, verdict: str | None = None
 ) -> RenderedRule:
@@ -5198,12 +5198,11 @@ def _hashlimit_rule(
 def _recent_texts(domain: Family, *rules: RenderedRule) -> list[list[str]]:
     specs = _build_recent_specs(domain, rules)
     return [
-        [
-            s.to_text()
-            for s in translate_rule(
+        _texts(
+            translate_rule(
                 domain, "filter", rule, chain="c", recent_specs=specs
-            ).statements
-        ]
+            )
+        )
         for rule in rules
     ]
 
@@ -5212,10 +5211,7 @@ def _hashlimit_text(
     domain: Family, *opts: RenderedOption, proto: str = "tcp"
 ) -> list[str]:
     rule = _hashlimit_rule(*opts, proto=proto)
-    return [
-        s.to_text()
-        for s in translate_rule(domain, "filter", rule, chain="c").statements
-    ]
+    return _texts(translate_rule(domain, "filter", rule, chain="c"))
 
 
 # --- time canon + rate reducer (the calibration primitives) ---
@@ -5572,9 +5568,9 @@ def test_recent_refuses_non_numeric_seconds() -> None:
 def test_hashlimit_upto_conform_form() -> None:
     assert _hashlimit_text(
         Family.IP,
-        _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-        _opt("hashlimit-name", "ssh_brute", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        _hlopt("hashlimit-upto", "3/minute"),
+        _hlopt("hashlimit-name", "ssh_brute"),
+        _hlopt("hashlimit-mode", "srcip"),
     ) == [
         "meta l4proto tcp",
         "update @hashlimit_ssh_brute { ip saddr timeout 1m "
@@ -5586,10 +5582,10 @@ def test_hashlimit_upto_conform_form() -> None:
 def test_hashlimit_above_over_form_with_burst() -> None:
     assert _hashlimit_text(
         Family.IP,
-        _opt("hashlimit-above", "10/second", module="hashlimit"),
-        _opt("hashlimit-burst", "20", module="hashlimit"),
-        _opt("hashlimit-name", "flood", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        _hlopt("hashlimit-above", "10/second"),
+        _hlopt("hashlimit-burst", "20"),
+        _hlopt("hashlimit-name", "flood"),
+        _hlopt("hashlimit-mode", "srcip"),
     ) == [
         "meta l4proto tcp",
         "update @hashlimit_flood { ip saddr "
@@ -5602,9 +5598,9 @@ def test_hashlimit_persecond_no_timeout() -> None:
     # /second without htable-expire carries no element timeout.
     assert _hashlimit_text(
         Family.IP,
-        _opt("hashlimit-upto", "5/second", module="hashlimit"),
-        _opt("hashlimit-name", "ps", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        _hlopt("hashlimit-upto", "5/second"),
+        _hlopt("hashlimit-name", "ps"),
+        _hlopt("hashlimit-mode", "srcip"),
     ) == [
         "meta l4proto tcp",
         "update @hashlimit_ps { ip saddr "
@@ -5616,11 +5612,11 @@ def test_hashlimit_persecond_no_timeout() -> None:
 def test_hashlimit_concat_key_and_masks_and_expire() -> None:
     texts = _hashlimit_text(
         Family.IP,
-        _opt("hashlimit-above", "10/second", module="hashlimit"),
-        _opt("hashlimit-name", "conc", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip,dstport", module="hashlimit"),
-        _opt("hashlimit-srcmask", "24", module="hashlimit"),
-        _opt("hashlimit-htable-expire", "90000", module="hashlimit"),
+        _hlopt("hashlimit-above", "10/second"),
+        _hlopt("hashlimit-name", "conc"),
+        _hlopt("hashlimit-mode", "srcip,dstport"),
+        _hlopt("hashlimit-srcmask", "24"),
+        _hlopt("hashlimit-htable-expire", "90000"),
     )
     # the port in the key implies l4proto, so no `meta l4proto tcp` prefix
     assert texts == [
@@ -5633,10 +5629,10 @@ def test_hashlimit_concat_key_and_masks_and_expire() -> None:
 def test_hashlimit_ip6_mask() -> None:
     assert _hashlimit_text(
         Family.IP6,
-        _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-        _opt("hashlimit-name", "v6", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip", module="hashlimit"),
-        _opt("hashlimit-srcmask", "64", module="hashlimit"),
+        _hlopt("hashlimit-upto", "3/minute"),
+        _hlopt("hashlimit-name", "v6"),
+        _hlopt("hashlimit-mode", "srcip"),
+        _hlopt("hashlimit-srcmask", "64"),
     ) == [
         "meta l4proto tcp",
         "update @hashlimit_v6 { ip6 saddr & ffff:ffff:ffff:ffff:: "
@@ -5649,19 +5645,15 @@ def test_hashlimit_legacy_synonym() -> None:
     # bare `hashlimit` is xt's legacy synonym for hashlimit-upto
     assert _hashlimit_text(
         Family.IP,
-        _opt("hashlimit", "3/minute", module="hashlimit"),
-        _opt("hashlimit-name", "leg", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        _hlopt("hashlimit", "3/minute"),
+        _hlopt("hashlimit-name", "leg"),
+        _hlopt("hashlimit-mode", "srcip"),
     ) == [
         "meta l4proto tcp",
         "update @hashlimit_leg { ip saddr timeout 1m "
         "limit rate 3/minute burst 5 packets }",
         "accept",
     ]
-
-
-def _hl(*opts: RenderedOption, proto: str = "tcp") -> RenderedRule:
-    return _hashlimit_rule(*opts, proto=proto)
 
 
 def test_hashlimit_refuses_missing_mode() -> None:
@@ -5672,9 +5664,9 @@ def test_hashlimit_refuses_missing_mode() -> None:
         translate_rule(
             Family.IP,
             "filter",
-            _hl(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-name", "x", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-name", "x"),
             ),
             chain="c",
         )
@@ -5688,9 +5680,9 @@ def test_hashlimit_refuses_missing_name() -> None:
         translate_rule(
             Family.IP,
             "filter",
-            _hl(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-mode", "srcip"),
             ),
             chain="c",
         )
@@ -5704,10 +5696,10 @@ def test_hashlimit_refuses_invalid_name() -> None:
         translate_rule(
             Family.IP,
             "filter",
-            _hl(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-name", "bad-x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-name", "bad-x"),
+                _hlopt("hashlimit-mode", "srcip"),
             ),
             chain="c",
         )
@@ -5722,12 +5714,10 @@ def test_hashlimit_refuses_negation() -> None:
         translate_rule(
             Family.IP,
             "filter",
-            _hl(
-                _opt(
-                    "hashlimit-upto", Negated("3/minute"), module="hashlimit"
-                ),
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", Negated("3/minute")),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcip"),
             ),
             chain="c",
         )
@@ -5743,9 +5733,9 @@ def test_hashlimit_refuses_port_mode_without_transport() -> None:
             Family.IP,
             "filter",
             _hashlimit_rule(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcport", module="hashlimit"),
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcport"),
                 proto="icmp",
             ),
             chain="c",
@@ -5770,10 +5760,10 @@ def test_hashlimit_refuses_byte_and_bad_rates() -> None:
             translate_rule(
                 Family.IP,
                 "filter",
-                _hl(
-                    _opt("hashlimit-upto", bad, module="hashlimit"),
-                    _opt("hashlimit-name", "x", module="hashlimit"),
-                    _opt("hashlimit-mode", "srcip", module="hashlimit"),
+                _hashlimit_rule(
+                    _hlopt("hashlimit-upto", bad),
+                    _hlopt("hashlimit-name", "x"),
+                    _hlopt("hashlimit-mode", "srcip"),
                 ),
                 chain="c",
             )
@@ -5788,10 +5778,10 @@ def test_hashlimit_refuses_unknown_mode() -> None:
         translate_rule(
             Family.IP,
             "filter",
-            _hl(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip,banana", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcip,banana"),
             ),
             chain="c",
         )
@@ -5806,11 +5796,11 @@ def test_hashlimit_refuses_upto_and_above_together() -> None:
         translate_rule(
             Family.IP,
             "filter",
-            _hl(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-above", "5/minute", module="hashlimit"),
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-above", "5/minute"),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcip"),
             ),
             chain="c",
         )
@@ -5824,10 +5814,10 @@ def test_hashlimit_refuses_non_ip_family() -> None:
         translate_rule(
             Family.ARP,
             "filter",
-            _hl(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hashlimit_rule(
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcip"),
             ),
             chain="c",
         )
@@ -6560,10 +6550,10 @@ def test_hashlimit_htable_max_refused() -> None:
     ):
         _hashlimit_text(
             Family.IP,
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "x", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
-            _opt("hashlimit-htable-max", "100", module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "x"),
+            _hlopt("hashlimit-mode", "srcip"),
+            _hlopt("hashlimit-htable-max", "100"),
         )
 
 
@@ -6572,16 +6562,16 @@ def test_hashlimit_htable_size_and_gcinterval_ignored() -> None:
     # semantics; nft sizes and expires dynamic sets itself, so a rule
     # carrying them must translate byte-identically to one without them.
     base = (
-        _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-        _opt("hashlimit-name", "ig", module="hashlimit"),
-        _opt("hashlimit-mode", "srcip", module="hashlimit"),
+        _hlopt("hashlimit-upto", "3/minute"),
+        _hlopt("hashlimit-name", "ig"),
+        _hlopt("hashlimit-mode", "srcip"),
     )
     plain = _hashlimit_text(Family.IP, *base)
     tuned = _hashlimit_text(
         Family.IP,
         *base,
-        _opt("hashlimit-htable-size", "4096", module="hashlimit"),
-        _opt("hashlimit-htable-gcinterval", "1000", module="hashlimit"),
+        _hlopt("hashlimit-htable-size", "4096"),
+        _hlopt("hashlimit-htable-gcinterval", "1000"),
     )
     assert tuned == plain
     assert any("update @hashlimit_ig" in t for t in tuned)
@@ -6591,10 +6581,10 @@ def test_hashlimit_htable_expire_boundaries() -> None:
     def hl(expire: str) -> list[str]:
         return _hashlimit_text(
             Family.IP,
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "e", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
-            _opt("hashlimit-htable-expire", expire, module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "e"),
+            _hlopt("hashlimit-mode", "srcip"),
+            _hlopt("hashlimit-htable-expire", expire),
         )
 
     with pytest.raises(
@@ -6686,9 +6676,9 @@ def test_collect_set_declarations_gathers_dynamic_and_static() -> None:
         Family.IP,
         "filter",
         _hashlimit_rule(
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "hl", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "hl"),
+            _hlopt("hashlimit-mode", "srcip"),
         ),
     )
     static = translate_rule(
@@ -6743,22 +6733,14 @@ def test_collect_set_declarations_gathers_dynamic_and_static() -> None:
         (
             Family.IP,
             "srcip",
-            {
-                "hashlimit-srcmask": _opt(
-                    "hashlimit-srcmask", "24", module="hashlimit"
-                )
-            },
+            {"hashlimit-srcmask": _hlopt("hashlimit-srcmask", "24")},
             "tcp",
             ("ip saddr & 255.255.255.0", "ipv4_addr"),
         ),
         (
             Family.IP,
             "dstip",
-            {
-                "hashlimit-dstmask": _opt(
-                    "hashlimit-dstmask", "16", module="hashlimit"
-                )
-            },
+            {"hashlimit-dstmask": _hlopt("hashlimit-dstmask", "16")},
             "tcp",
             ("ip daddr & 255.255.0.0", "ipv4_addr"),
         ),
@@ -6892,7 +6874,7 @@ def test_translate_rule_tcp_flags_option_suppresses_l4proto() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp flags & (syn | rst) == syn",
         "accept",
     ]
@@ -6950,9 +6932,9 @@ def test_dynamic_sets_carry_flags_dynamic() -> None:
         Family.IP,
         "filter",
         _hashlimit_rule(
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "H", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "H"),
+            _hlopt("hashlimit-mode", "srcip"),
         ),
     )
     connlimit_nft = translate_rule(
@@ -6992,12 +6974,12 @@ def test_family_agnostic_constructs_match_under_ip6() -> None:
         _statistic("probability", "0.5"),
         _target("ACCEPT"),
     )
-    assert [
-        s.to_text()
-        for s in translate_rule(Family.IP6, "filter", stat).statements
-    ] == ["meta random & 2147483647 < 1073741824", "accept"]
+    assert _texts(translate_rule(Family.IP6, "filter", stat)) == [
+        "meta random & 2147483647 < 1073741824",
+        "accept",
+    ]
     tcpopt = translate_rule(Family.IP6, "mangle", _tcpoptstrip_rule("mss"))
-    assert [s.to_text() for s in tcpopt.statements] == [
+    assert _texts(tcpopt) == [
         "meta l4proto tcp",
         "reset tcp option maxseg",
     ]
@@ -7493,8 +7475,8 @@ def test_hashlimit_update_refusals_anchored() -> None:
         _hashlimit_update(
             Family.IP,
             _hlrule(
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcip"),
             ),
             "tcp",
         )
@@ -7506,10 +7488,10 @@ def test_hashlimit_update_refusals_anchored() -> None:
         _hashlimit_update(
             Family.IP,
             _hlrule(
-                _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-                _opt("hashlimit-name", "x", module="hashlimit"),
-                _opt("hashlimit-mode", "srcip", module="hashlimit"),
-                _opt("hashlimit-burst", "zz", module="hashlimit"),
+                _hlopt("hashlimit-upto", "3/minute"),
+                _hlopt("hashlimit-name", "x"),
+                _hlopt("hashlimit-mode", "srcip"),
+                _hlopt("hashlimit-burst", "zz"),
             ),
             "tcp",
         )
@@ -7522,9 +7504,9 @@ def test_hashlimit_update_threads_set_type() -> None:
     upd = _hashlimit_update(
         Family.IP,
         _hlrule(
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "h", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "h"),
+            _hlopt("hashlimit-mode", "srcip"),
         ),
         "tcp",
     )
@@ -7537,12 +7519,10 @@ def test_hashlimit_update_threads_set_type() -> None:
 def test_hashlimit_key_implies_l4proto_requires_both() -> None:
     # only a `hashlimit`-module `hashlimit-mode` option carrying a port token
     # implies l4proto; a same-named option from another module must NOT.
-    port_mode = _opt("hashlimit-mode", "srcport", module="hashlimit")
+    port_mode = _hlopt("hashlimit-mode", "srcport")
     assert _hashlimit_key_implies_l4proto([port_mode]) is True
     assert (
-        _hashlimit_key_implies_l4proto(
-            [_opt("hashlimit-mode", "dstport", module="hashlimit")]
-        )
+        _hashlimit_key_implies_l4proto([_hlopt("hashlimit-mode", "dstport")])
         is True
     )
     # wrong module -> the AND guard rejects it
@@ -7554,9 +7534,7 @@ def test_hashlimit_key_implies_l4proto_requires_both() -> None:
     )
     # right module/name but an address-only key -> no port token
     assert (
-        _hashlimit_key_implies_l4proto(
-            [_opt("hashlimit-mode", "srcip", module="hashlimit")]
-        )
+        _hashlimit_key_implies_l4proto([_hlopt("hashlimit-mode", "srcip")])
         is False
     )
 
@@ -8177,18 +8155,18 @@ def test_serialize_table_emits_all_dynamic_declarations() -> None:
         Family.IP,
         "filter",
         _hashlimit_rule(
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "aaa", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "aaa"),
+            _hlopt("hashlimit-mode", "srcip"),
         ),
     )
     hl_b = translate_rule(
         Family.IP,
         "filter",
         _hashlimit_rule(
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", "bbb", module="hashlimit"),
-            _opt("hashlimit-mode", "srcip", module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", "bbb"),
+            _hlopt("hashlimit-mode", "srcip"),
         ),
     )
     lines = _dynamic_add_set_lines(Family.IP, "c", [hl_a, hl_b])
@@ -8288,9 +8266,9 @@ def _hl_named(name: str, mode: str) -> NftRule:
         "filter",
         _rule(
             _opt("protocol", "tcp", kind=OptionKind.PROTO),
-            _opt("hashlimit-upto", "3/minute", module="hashlimit"),
-            _opt("hashlimit-name", name, module="hashlimit"),
-            _opt("hashlimit-mode", mode, module="hashlimit"),
+            _hlopt("hashlimit-upto", "3/minute"),
+            _hlopt("hashlimit-name", name),
+            _hlopt("hashlimit-mode", mode),
             _target("ACCEPT"),
         ),
     )
@@ -8408,24 +8386,18 @@ def _translate_set_rule(domain: Family, rule: RenderedRule) -> NftRule:
 def test_set_target_add_update_delete_verbs() -> None:
     bucket = SetRef("badguys", [])
     add = _translate_set_rule(Family.IP, _set_target_rule("add-set", bucket))
-    assert [s.to_text() for s in add.statements] == [
-        "add @badguys { ip saddr }"
-    ]
+    assert _texts(add) == ["add @badguys { ip saddr }"]
     update = _translate_set_rule(
         Family.IP,
         _set_target_rule(
             "add-set", bucket, "src", _opt("exist", None, module="SET")
         ),
     )
-    assert [s.to_text() for s in update.statements] == [
-        "update @badguys { ip saddr }"
-    ]
+    assert _texts(update) == ["update @badguys { ip saddr }"]
     delete = _translate_set_rule(
         Family.IP6, _set_target_rule("del-set", bucket, "dst")
     )
-    assert [s.to_text() for s in delete.statements] == [
-        "delete @badguys { ip6 daddr }"
-    ]
+    assert _texts(delete) == ["delete @badguys { ip6 daddr }"]
 
 
 def test_set_target_timeout_respells_to_readback() -> None:
@@ -8438,9 +8410,7 @@ def test_set_target_timeout_respells_to_readback() -> None:
             _opt("timeout", "3600", module="SET"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
-        "add @badguys { ip saddr timeout 1h }"
-    ]
+    assert _texts(nft) == ["add @badguys { ip saddr timeout 1h }"]
     stmt = nft.statements[0]
     assert isinstance(stmt, NftSetUpdate)
     assert not stmt.owned
@@ -8458,9 +8428,7 @@ def test_set_target_timeout_zero_means_permanent() -> None:
             _opt("timeout", "0", module="SET"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
-        "add @badguys { ip saddr }"
-    ]
+    assert _texts(nft) == ["add @badguys { ip saddr }"]
 
 
 def test_set_target_refusals() -> None:
@@ -8694,7 +8662,7 @@ def test_tcp_option_match_implies_l4proto() -> None:
             _target("ACCEPT"),
         ),
     )
-    assert [s.to_text() for s in nft.statements] == [
+    assert _texts(nft) == [
         "tcp option maxseg size 536",
         "accept",
     ]
@@ -8709,6 +8677,4 @@ def test_tcp_option_match_implies_l4proto() -> None:
             _target("SYNPROXY"),
         ),
     )
-    assert "synproxy mss 1460 wscale 7" in [
-        s.to_text() for s in synproxy.statements
-    ]
+    assert "synproxy mss 1460 wscale 7" in _texts(synproxy)
