@@ -1,0 +1,41 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm INPUT { type filter hook input priority 0; }
+add rule ip ferm INPUT meta cpu 0 accept
+add rule ip ferm INPUT iifgroup 5 accept
+add rule ip ferm INPUT meta rtclassid != 42 drop
+add rule ip ferm INPUT meta cgroup 1048577 accept
+add rule ip ferm INPUT socket wildcard 0 socket transparent 1 accept
+add rule ip ferm INPUT socket wildcard 0 accept
+add rule ip ferm INPUT ct original ip saddr 192.0.2.1 ct original ip daddr != 198.51.100.1 accept
+add rule ip ferm INPUT ct original proto-src 80-90 accept
+add rule ip ferm INPUT ct protocol tcp accept
+add rule ip ferm INPUT ct expiration 1m40s accept
+add rule ip ferm INPUT ct expiration 3600s-7200s accept
+add rule ip ferm INPUT ct direction original accept
+add rule ip ferm INPUT ct label 40 accept
+add rule ip ferm INPUT ct label & 7 != 7 drop
+add rule ip ferm INPUT ah spi 1-1000 accept
+add rule ip ferm INPUT esp spi 500 accept
+add rule ip ferm INPUT dccp type { request, response } drop
+add rule ip ferm INPUT dccp type != { reset, sync } accept
+add rule ip ferm INPUT meta ipsec exists accept
+add rule ip ferm INPUT meta ipsec missing drop
+add rule ip ferm INPUT fib saddr . iif oif != 0 accept
+add rule ip ferm INPUT fib saddr oif 0 drop
+add rule ip ferm INPUT ip option lsrr exists drop
+add rule ip ferm INPUT ip ecn not-ect accept
+add rule ip ferm INPUT tcp flags cwr accept
+add rule ip ferm INPUT log level audit
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm INPUT { type filter hook input priority 0; }
+add rule ip6 ferm INPUT meta l4proto mobility-header mh type binding-update accept
+add rule ip6 ferm INPUT meta l4proto mobility-header mh type != careof-test-init drop
+add rule ip6 ferm INPUT hbh hdrlength 8 accept
+add rule ip6 ferm INPUT dst hdrlength 8 accept
+add rule ip6 ferm INPUT rt type 0 rt seg-left 1 accept
+add rule ip6 ferm INPUT exthdr frag exists exthdr mh exists accept
+add rule ip6 ferm INPUT meta l4proto mobility-header accept

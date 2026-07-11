@@ -883,6 +883,18 @@ def build_verdict(
         return NftVerdict(f"dup to {addr}")
     if target_value == "NOTRACK":
         return NftVerdict("notrack")
+    if target_value == "AUDIT":
+        # xt_AUDIT records identically for every --type since kernel 4.12
+        # (the type is parsed and ignored), and nft has the one spelling;
+        # the type still validates so a typo fails loud.  Like LOG, this
+        # is a non-terminating log statement in verdict position.
+        comp = companions.get("type")
+        if comp is None:
+            raise FermError("AUDIT needs 'type' for the nft backend")
+        scalar, _ = unwrap_value(comp.value)
+        if scalar.lower() not in ("accept", "drop", "reject"):
+            raise FermError(f"invalid AUDIT type '{scalar}' for nft backend")
+        return NftVerdict("log level audit")
     if target_value == "TRACE":
         return NftVerdict("meta nftrace set 1")
     if target_value == "CONNMARK":

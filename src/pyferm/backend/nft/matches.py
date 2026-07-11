@@ -31,9 +31,12 @@ from .model import (
     _UNSUPPORTED_VALUE_SHAPE,
     NftMatch,
     _nft_ifname,
+    _nft_l4proto,
+    _nft_time_canon,
     _op,
     _validate_address,
     _validate_port,
+    _validate_protocol,
     _validate_set_name,
     unwrap_value,
 )
@@ -194,6 +197,9 @@ _TCP_OPTION_KIND: Final[dict[int, str]] = {
 
 #: A packet/ct mark is a 32-bit value.
 _MARK_MAX: Final[int] = 0xFFFFFFFF
+
+#: An IPsec SPI (AH/ESP) is a 32-bit field.
+_SPI_MAX: Final[int] = 0xFFFFFFFF
 
 #: u16 ceiling shared by NFQUEUE queue numbers and synproxy mss/wscale.
 _U16_MAX: Final[int] = 0xFFFF
@@ -380,6 +386,114 @@ _DSCP_CLASS: Final[dict[str, int]] = {
 
 #: max dscp codepoint (the 6-bit DSCP field).
 _DSCP_MAX: Final[int] = 0x3F
+
+#: xt_conntrack tuple-address option -> (ct direction keyword, side).
+#: The kernel readback family-qualifies the selector (``ct original ip
+#: saddr``), so the emitter adds the rule's family the same way.
+_CT_TUPLE_ADDR: Final[dict[str, tuple[str, str]]] = {
+    "ctorigsrc": ("original", "saddr"),
+    "ctorigdst": ("original", "daddr"),
+    "ctreplsrc": ("reply", "saddr"),
+    "ctrepldst": ("reply", "daddr"),
+}
+
+#: xt_conntrack tuple-port option -> (ct direction keyword, port side).
+_CT_TUPLE_PORT: Final[dict[str, tuple[str, str]]] = {
+    "ctorigsrcport": ("original", "proto-src"),
+    "ctorigdstport": ("original", "proto-dst"),
+    "ctreplsrcport": ("reply", "proto-src"),
+    "ctrepldstport": ("reply", "proto-dst"),
+}
+
+#: A ct label is one bit of the 128-bit ct label register.
+_CT_LABEL_MAX: Final[int] = 127
+
+#: mod devgroup option -> the interface-group meta selector.  The kernel
+#: readback prints these WITHOUT the ``meta`` prefix and in decimal
+#: (verified live on nft v1.1.6), unlike ``meta cpu``/``meta rtclassid``.
+_DEVGROUP_SELECTOR: Final[dict[str, str]] = {
+    "src-group": "iifgroup",
+    "dst-group": "oifgroup",
+}
+
+#: --dccp-types names xt_dccp accepts, keyed to their DCCP packet-type
+#: numbers -- the ascending readback order of a folded nft set (the
+#: _CT_STATE_RANK pattern).  nft spells the same lowercase names; xt's
+#: INVALID pseudo-type (unassigned values) has no nft spelling and
+#: refuses (nft v1.1.6: "Could not parse DCCP packet type").
+_DCCP_TYPE_RANK: Final[dict[str, int]] = {
+    "request": 0,
+    "response": 1,
+    "data": 2,
+    "ack": 3,
+    "dataack": 4,
+    "closereq": 5,
+    "close": 6,
+    "reset": 7,
+    "sync": 8,
+    "syncack": 9,
+}
+
+#: mh type number -> the name the kernel readback respells it to
+#: (captured live from nft v1.1.6); unknown numbers and ranges stay
+#: numeric.
+_MH_TYPE_BY_NUMBER: Final[dict[int, str]] = {
+    0: "binding-refresh-request",
+    1: "home-test-init",
+    2: "careof-test-init",
+    3: "home-test",
+    4: "careof-test",
+    5: "binding-update",
+    6: "binding-acknowledgement",
+    7: "binding-error",
+    8: "fast-binding-update",
+}
+
+#: ip6 extension-header numeric field option -> nft selector.  hbh/dst
+#: carry only their hdrlength; rt adds type and segments-left (all
+#: readback-stable, verified live).
+_EXTHDR_SELECTOR: Final[dict[str, str]] = {
+    "hbh-len": "hbh hdrlength",
+    "dst-len": "dst hdrlength",
+    "rt-len": "rt hdrlength",
+    "rt-type": "rt type",
+    "rt-segsleft": "rt seg-left",
+}
+
+#: --ecn-ip-ect value -> nft ``ip ecn`` keyword (the two ECN header
+#: bits: 00 not-ect, 01 ect1, 10 ect0, 11 ce).
+_ECN_ECT_NAMES: Final[dict[str, str]] = {
+    "0": "not-ect",
+    "1": "ect1",
+    "2": "ect0",
+    "3": "ce",
+}
+
+#: iptables ipv6header name -> nft exthdr keyword.  ``auth``/``esp``
+#: have no exthdr spelling in nft v1.1.6 (``exthdr ah`` is a syntax
+#: error) and ``none``/``proto`` name the final no-next-header slot,
+#: not an extension header; all four refuse.
+_IPV6HEADER_NAME: Final[dict[str, str]] = {
+    "hop": "hbh",
+    "hop-by-hop": "hbh",
+    "route": "rt",
+    "frag": "frag",
+    "dst": "dst",
+    "mh": "mh",
+}
+
+#: xt ipv4options flag -> nft ``ip option`` keyword (router-alert is
+#: nft's ``ra``; both verified live).  ``no-srr``/``cipso``/``sec`` and
+#: anything else refuse by name.
+_IPV4OPTIONS_NAME: Final[dict[str, str]] = {
+    "lsrr": "lsrr",
+    "ssrr": "ssrr",
+    "rr": "rr",
+    "ts": "timestamp",
+    "timestamp": "timestamp",
+    "ro": "ra",
+    "router-alert": "ra",
+}
 
 #: tc classid handle for CLASSIFY: two 1-4 hex-digit halves.  A wider half
 #: is rejected -- the kernel refuses it too.
@@ -739,6 +853,278 @@ def _iprange_bound(domain: Family, scalar: str) -> str:
     return safe
 
 
+def _uint_or_range(name: str, scalar: str, maximum: int) -> str:
+    """
+    Canonicalize a numeric ``N``/``a:b`` operand to nft's ``N``/``a-b``.
+
+    The iptables colon range becomes nft's dash form (the readback keeps
+    it); anything non-numeric or beyond the field width refuses by
+    option name (``nft -c`` would reject the overflow only at apply
+    time, long after ``--lines``/``--plan`` showed the rule).
+    """
+    if scalar.isdigit():
+        if int(scalar) > maximum:
+            raise FermError(f"invalid {name} '{scalar}' for nft backend")
+        return scalar
+    low, sep, high = scalar.partition(":")
+    if sep and low.isdigit() and high.isdigit():
+        if int(low) > maximum or int(high) > maximum:
+            raise FermError(f"invalid {name} '{scalar}' for nft backend")
+        return f"{low}-{high}"
+    raise FermError(f"invalid {name} '{scalar}' for nft backend")
+
+
+def _group_value(name: str, scalar: str) -> str:
+    """
+    Canonicalize a devgroup/realm operand to the decimal readback form.
+
+    iptables accepts hex, decimal, a ``value/mask`` pair and symbolic
+    names (/etc/iproute2); the kernel readback prints plain decimal.
+    A mask has no single infix spelling pinned yet and a name would
+    need the iproute2 table at translate time -- both refuse.
+    """
+    if "/" in scalar:
+        raise FermError(
+            f"masked {name} '{scalar}' not yet supported by nft backend"
+        )
+    try:
+        value = int(scalar, 0)
+    except ValueError:
+        raise FermError(
+            f"symbolic {name} '{scalar}' not yet supported by nft backend"
+        ) from None
+    if not 0 <= value <= _MARK_MAX:
+        raise FermError(f"invalid {name} '{scalar}' for nft backend")
+    return str(value)
+
+
+def _ct_expiration_operand(scalar: str) -> str:
+    """
+    Canonicalize a ``--ctexpire`` operand to the kernel readback form.
+
+    The readback is asymmetric (verified live on nft v1.1.6 at several
+    magnitudes): a scalar prints as the decomposed time literal
+    (``100`` -> ``1m40s``, ``3600`` -> ``1h``) while a RANGE keeps bare
+    seconds on both bounds (``3600:7200`` -> ``3600s-7200s``).  One
+    formatter for both would leave ``--plan`` diffing forever.  Zero
+    decomposes to nothing, but the kernel prints it as ``0s``.
+    """
+    if scalar.isdigit():
+        if int(scalar) == 0:
+            return "0s"
+        return _nft_time_canon(int(scalar) * 1000)
+    low, sep, high = scalar.partition(":")
+    if sep and low.isdigit() and high.isdigit():
+        return f"{low}s-{high}s"
+    raise FermError(f"invalid ctexpire '{scalar}' for nft backend")
+
+
+def _dccp_types_expr(scalar: str, neg: bool) -> str:
+    """
+    Translate a ``--dccp-types`` comma list to the nft set spelling.
+
+    xt_dccp matches a bitmask of packet types; the members emit
+    deduplicated in ascending type order (the readback order of the
+    folded set).  ``INVALID`` has no nft spelling and refuses.
+    """
+    members: set[str] = set()
+    for raw in scalar.split(","):
+        token = raw.strip().lower()
+        if token not in _DCCP_TYPE_RANK:
+            raise FermError(f"dccp type '{raw}' has no nft equivalent")
+        members.add(token)
+    ordered = sorted(members, key=_DCCP_TYPE_RANK.__getitem__)
+    if len(ordered) == 1:
+        return f"dccp type {_op(neg)}{ordered[0]}"
+    return f"dccp type {_op(neg)}{{ {', '.join(ordered)} }}"
+
+
+def _policy_match(opts: dict[str, RenderedOption]) -> str:
+    """
+    Translate ``mod policy`` to ``meta ipsec exists``/``missing``.
+
+    Only the ``dir in`` + ``pol ipsec|none`` pair translates: the meta
+    expression tests the input secpath, so ``dir out`` (the OUTPUT-side
+    policy) has no equivalent (iptables-translate refuses it too), and
+    the element options (reqid/spi/...) plus strict/next describe
+    per-element checks nft's ipsec expression spells differently.  Any
+    incompatible sibling refuses HERE, before a partial translation
+    could silently widen the match (fail-open guard).
+    """
+    unsupported = sorted(set(opts) - {"dir", "pol"})
+    if unsupported:
+        raise FermError(
+            f"mod policy option '{unsupported[0]}' not yet supported "
+            f"by nft backend"
+        )
+    direction = opts.get("dir")
+    pol = opts.get("pol")
+    if direction is None or pol is None:
+        raise FermError(
+            "mod policy needs both 'dir' and 'pol' for the nft backend"
+        )
+    dir_scalar, _ = unwrap_value(direction.value)
+    pol_scalar, _ = unwrap_value(pol.value)
+    if dir_scalar != "in":
+        raise FermError(
+            f"mod policy 'dir {dir_scalar}' has no nft equivalent "
+            f"(meta ipsec tests the input secpath only)"
+        )
+    if pol_scalar == "ipsec":
+        return "meta ipsec exists"
+    if pol_scalar == "none":
+        return "meta ipsec missing"
+    raise FermError(f"invalid policy pol '{pol_scalar}' for nft backend")
+
+
+def _ipv6header_matches(
+    domain: Family, opts: dict[str, RenderedOption]
+) -> list[NftMatch]:
+    """
+    Translate ``mod ipv6header`` to a chain of ``exthdr X exists``.
+
+    Only the ``soft`` form ("contains at least these headers") is an
+    AND of presence tests; without ``soft`` xt matches the EXACT header
+    set, which nft cannot spell -- refusing beats silently widening the
+    match.  A negated list means "misses at least one" (an OR), so only
+    a single negated member translates (``exthdr X missing``).
+    """
+    if domain is not Family.IP6:
+        raise FermError("mod ipv6header is ip6-only for the nft backend")
+    header = opts.get("header")
+    if header is None:
+        raise FermError("mod ipv6header needs 'header' for the nft backend")
+    if "soft" not in opts:
+        raise FermError(
+            "mod ipv6header without 'soft' matches the exact header set; "
+            "nft exthdr cannot express it"
+        )
+    scalar, neg = unwrap_value(header.value)
+    names = [raw.strip().lower() for raw in scalar.split(",")]
+    mapped: list[str] = []
+    for name in names:
+        keyword = _IPV6HEADER_NAME.get(name)
+        if keyword is None:
+            raise FermError(
+                f"ipv6header header '{name}' has no nft exthdr equivalent"
+            )
+        if keyword not in mapped:
+            mapped.append(keyword)
+    if neg:
+        if len(mapped) == 1:
+            return [NftMatch(f"exthdr {mapped[0]} missing")]
+        raise FermError(
+            "negated ipv6header header list (misses at least one) cannot "
+            "be expressed as infix nft matches"
+        )
+    return [NftMatch(f"exthdr {keyword} exists") for keyword in mapped]
+
+
+def _ipv4options_matches(
+    domain: Family, opts: dict[str, RenderedOption]
+) -> list[NftMatch]:
+    """
+    Translate ``mod ipv4options`` flags to ``ip option X exists`` tests.
+
+    The flag list is an AND of per-option presence tests; a ``!``-prefixed
+    member tests absence.  The ``any`` sibling ORs the members, which one
+    nft rule cannot spell, and a negated whole list means "misses at
+    least one" -- both refuse (single negated member translates).
+    """
+    if domain is not Family.IP:
+        raise FermError("mod ipv4options is ip-only for the nft backend")
+    if "any" in opts:
+        raise FermError(
+            "ipv4options 'any' ORs the option flags; nft cannot OR "
+            "header-option presence in one rule"
+        )
+    flags = opts.get("flags")
+    if flags is None:
+        raise FermError("mod ipv4options needs 'flags' for the nft backend")
+    scalar, neg = unwrap_value(flags.value)
+    members = [raw.strip() for raw in scalar.split(",")]
+    if neg:
+        if len(members) == 1 and not members[0].startswith("!"):
+            keyword = _IPV4OPTIONS_NAME.get(members[0].lower())
+            if keyword is None:
+                raise FermError(
+                    f"ipv4options flag '{members[0]}' has no nft equivalent"
+                )
+            return [NftMatch(f"ip option {keyword} missing")]
+        raise FermError(
+            "negated ipv4options flag list (misses at least one) cannot "
+            "be expressed as infix nft matches"
+        )
+    out: list[NftMatch] = []
+    for raw in members:
+        token, state = raw, "exists"
+        if token.startswith("!"):
+            token, state = token[1:], "missing"
+        keyword = _IPV4OPTIONS_NAME.get(token.lower())
+        if keyword is None:
+            raise FermError(f"ipv4options flag '{raw}' has no nft equivalent")
+        out.append(NftMatch(f"ip option {keyword} {state}"))
+    return out
+
+
+def _rpfilter_match(domain: Family, names: frozenset[str]) -> str:
+    """
+    Translate ``mod rpfilter`` (bare or with flags) to a fib match.
+
+    The flag combinations pin iptables-translate's forms, all verified
+    live: the bare load is ``fib saddr . iif oif != 0``; ``loose``
+    drops the ``. iif`` key, ``validmark`` adds ``. mark``, ``invert``
+    flips the comparison to ``0``.  ``accept-local`` also passes
+    locally-sourced packets -- a second OR-ed condition one fib match
+    cannot spell (iptables-translate refuses it too).
+    """
+    if domain not in (Family.IP, Family.IP6):
+        raise FermError("mod rpfilter is ip/ip6-only for the nft backend")
+    if "accept-local" in names:
+        raise FermError(
+            "rpfilter 'accept-local' ORs a second local-source condition; "
+            "nft cannot express it in one fib match"
+        )
+    selector = "fib saddr"
+    if "validmark" in names:
+        selector += " . mark"
+    if "loose" not in names:
+        selector += " . iif"
+    comparator = "0" if "invert" in names else "!= 0"
+    return f"{selector} oif {comparator}"
+
+
+def _socket_matches(domain: Family, names: frozenset[str]) -> list[NftMatch]:
+    """
+    Translate ``mod socket`` (bare or with flags) to socket matches.
+
+    xt_socket ignores zero-bound (wildcard) listeners by default, so the
+    bare load is ``socket wildcard 0``; ``nowildcard`` lifts that to
+    ``socket wildcard <= 1`` (the readback spelling of translate's
+    ``le 1``), and ``transparent`` adds its own test -- alongside
+    ``nowildcard`` the tautological wildcard bound drops entirely (all
+    forms from iptables-translate, readback-verified live).
+    """
+    if domain not in (Family.IP, Family.IP6):
+        raise FermError("mod socket is ip/ip6-only for the nft backend")
+    if "restore-skmark" in names:
+        raise FermError(
+            "socket 'restore-skmark' not yet supported by nft backend"
+        )
+    transparent = "transparent" in names
+    nowildcard = "nowildcard" in names
+    if transparent and nowildcard:
+        return [NftMatch("socket transparent 1")]
+    if transparent:
+        return [
+            NftMatch("socket wildcard 0"),
+            NftMatch("socket transparent 1"),
+        ]
+    if nowildcard:
+        return [NftMatch("socket wildcard <= 1")]
+    return [NftMatch("socket wildcard 0")]
+
+
 def _translate_match_parts(
     domain: Family, option: RenderedOption, protocol: str | None
 ) -> tuple[str, str | None, str | None]:
@@ -751,7 +1137,23 @@ def _translate_match_parts(
     """
     name = option.name
     # The tcp-flags/syn shapes carry Params/None values that unwrap_value
-    # refuses, so they dispatch before it.
+    # refuses, so they dispatch before it; the no-arg ecn/connlabel flags
+    # carry None the same way.
+    if name in ("ecn-tcp-cwr", "ecn-tcp-ece"):
+        # The single-bit test spells as the any-of flag form; the ferm
+        # registry declares no negation for these, so only the positive
+        # form is reachable.
+        if protocol != "tcp":
+            raise FermError(
+                f"option '{name}' needs a tcp protocol for the nft backend"
+            )
+        flag = "cwr" if name == "ecn-tcp-cwr" else "ece"
+        return (f"tcp flags {flag}", None, None)
+    if option.module == "connlabel" and name == "set":
+        raise FermError(
+            "connlabel 'set' (add the label on match) has no nft match "
+            "equivalent"
+        )
     if name == "tcp-flags":
         return (_tcp_flags_expr(option.value), None, None)
     if name == "syn":
@@ -957,6 +1359,125 @@ def _translate_match_parts(
             None,
             None,
         )
+    if name in _CT_TUPLE_ADDR and domain in (Family.IP, Family.IP6):
+        # xt_conntrack tuple addresses; the readback family-qualifies the
+        # selector.  arp/eb track no conntrack and fall to the refusal.
+        direction, side = _CT_TUPLE_ADDR[name]
+        addr = _validate_address(scalar)
+        return (
+            f"ct {direction} {domain} {side} {_op(neg)}{addr}",
+            None,
+            None,
+        )
+    if name in _CT_TUPLE_PORT and domain in (Family.IP, Family.IP6):
+        direction, side = _CT_TUPLE_PORT[name]
+        port = _validate_port(scalar)
+        return (f"ct {direction} {side} {_op(neg)}{port}", None, None)
+    if name == "ctproto":
+        # The kernel readback drops the direction (both tuples share the
+        # protocol) and respells a known number as its name.
+        proto_name = _validate_protocol(scalar)
+        return (
+            f"ct protocol {_op(neg)}{_nft_l4proto(domain, proto_name)}",
+            None,
+            None,
+        )
+    if name == "ctexpire":
+        return (
+            f"ct expiration {_op(neg)}{_ct_expiration_operand(scalar)}",
+            None,
+            None,
+        )
+    if name == "ctdir":
+        # not negatable in xt_conntrack (no `!` in the registry)
+        token = scalar.lower()
+        if token not in ("original", "reply"):
+            raise FermError(f"invalid ctdir '{scalar}' for nft backend")
+        return (f"ct direction {token}", None, None)
+    if option.module == "connlabel" and name == "label":
+        # `label` is also IDLETIMER's companion, hence module-qualified.
+        # A symbolic label would need connlabel.conf at translate time;
+        # nft itself only takes the bit number.
+        if not scalar.isdigit() or int(scalar) > _CT_LABEL_MAX:
+            raise FermError(
+                f"connlabel '{scalar}' needs a numeric label (0-127) "
+                f"for the nft backend"
+            )
+        if neg:
+            # nft `ct label != N` compares the WHOLE 128-bit register
+            # against "only bit N" and so matches (accepts) any
+            # connection carrying bit N plus another label; xt clears
+            # one bit.  The bang form tests the single bit (readback
+            # spelling verified live, nft v1.1.6).
+            return (f"ct label & {scalar} != {scalar}", None, None)
+        return (f"ct label {scalar}", None, None)
+    if name == "ahspi":
+        return (
+            f"ah spi {_op(neg)}{_uint_or_range(name, scalar, _SPI_MAX)}",
+            None,
+            None,
+        )
+    if name == "espspi":
+        return (
+            f"esp spi {_op(neg)}{_uint_or_range(name, scalar, _SPI_MAX)}",
+            None,
+            None,
+        )
+    if name == "cpu":
+        # readback KEEPS the `meta` prefix here (unlike iifgroup), so the
+        # emission carries it -- verified live.
+        if not scalar.isdigit():
+            raise FermError(f"invalid cpu '{scalar}' for nft backend")
+        return (f"meta cpu {_op(neg)}{scalar}", None, None)
+    if name in _DEVGROUP_SELECTOR:
+        return (
+            f"{_DEVGROUP_SELECTOR[name]} "
+            f"{_op(neg)}{_group_value(name, scalar)}",
+            None,
+            None,
+        )
+    if name == "realm":
+        return (
+            f"meta rtclassid {_op(neg)}{_group_value(name, scalar)}",
+            None,
+            None,
+        )
+    if option.module == "cgroup" and name == "cgroup":
+        # the parser (cgroup_classid) already folded hex:hex to decimal
+        if not scalar.isdigit():
+            raise FermError(
+                f"invalid cgroup classid '{scalar}' for nft backend"
+            )
+        return (f"meta cgroup {_op(neg)}{scalar}", None, None)
+    if name == "mh-type" and domain is Family.IP6:
+        # xt_mh is ip6-only; a scalar respells to the kernel-readback
+        # name, a range stays numeric (both verified live).
+        if scalar.isdigit():
+            number = int(scalar)
+            if number > _ICMP_OCTET_MAX:
+                raise FermError(f"invalid mh-type '{scalar}' for nft backend")
+            text = _MH_TYPE_BY_NUMBER.get(number, scalar)
+            return (f"mh type {_op(neg)}{text}", None, None)
+        operand = _uint_or_range(name, scalar, _ICMP_OCTET_MAX)
+        return (f"mh type {_op(neg)}{operand}", None, None)
+    if name in _EXTHDR_SELECTOR and domain is Family.IP6:
+        # hbh/dst/rt numeric header fields (ip6-only xt matches); their
+        # option-data siblings (hbh-opts/dst-opts/rt-0-*) keep refusing.
+        return (
+            f"{_EXTHDR_SELECTOR[name]} "
+            f"{_op(neg)}{_uint_or_range(name, scalar, _ICMP_OCTET_MAX)}",
+            None,
+            None,
+        )
+    if name == "dccp-types":
+        return (_dccp_types_expr(scalar, neg), None, None)
+    if name == "ecn-ip-ect" and domain in (Family.IP, Family.IP6):
+        # ferm's registry declares no negation for ecn-ip-ect, so only
+        # the positive form is reachable; arp/eb fall to the refusal.
+        kind = _ECN_ECT_NAMES.get(scalar)
+        if kind is None:
+            raise FermError(f"invalid ecn-ip-ect '{scalar}' for nft backend")
+        return (f"{domain} ecn {_op(neg)}{kind}", None, None)
     raise FermError(f"option '{name}' not yet supported by nft backend")
 
 

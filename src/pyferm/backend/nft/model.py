@@ -483,6 +483,15 @@ def _nft_l4proto(domain: Family, proto: str) -> str:
     """
     if domain == "ip6" and proto in ("icmp", "icmpv6", "ipv6-icmp"):
         return "ipv6-icmp"
+    # `mh` is the /etc/protocols name for 135, but it is an nft KEYWORD (the
+    # mobility-header expression), so `meta l4proto mh` is a syntax error the
+    # script would hit only at apply time; nft spells the protocol
+    # `mobility-header` (kernel readback, v1.1.6).  `hopopt` parses but
+    # reads back as `ip` (protocol 0's canonical nft name).
+    if proto == "mh":
+        return "mobility-header"
+    if proto == "hopopt":
+        return "ip"
     # A bare protocol NUMBER reads back from the kernel as its canonical nft
     # name (`meta l4proto 6` -> `tcp`); fold a known number so the desired side
     # matches the readback and --plan shows no phantom change.

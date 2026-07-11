@@ -399,6 +399,76 @@ def check_stateful_dynset_readback() -> None:
         _fail("update form respelled into a legacy meter", "\n".join(lines))
 
 
+#: Batch-9 vocabulary lines: the emitter's exact output, which must read
+#: back verbatim (a respelled token = --plan/delta phantom diff forever).
+#: Captured from nft v1.1.6; re-capture on an nft bump, do not hand-edit.
+BATCH9_IP_LINES = [
+    "meta cpu 0 accept",
+    "iifgroup 5 accept",
+    "oifgroup != 16 accept",
+    "meta rtclassid 42 accept",
+    "meta cgroup 1048577 accept",
+    "socket wildcard 0 socket transparent 1 accept",
+    "socket wildcard <= 1 accept",
+    "ct original ip saddr 192.0.2.1 accept",
+    "ct original proto-src 80-90 accept",
+    "ct protocol tcp accept",
+    "ct expiration 1m40s accept",
+    "ct expiration 0s accept",
+    "ct expiration 3600s-7200s accept",
+    "ct direction original accept",
+    "ct label 40 accept",
+    "ct label & 7 != 7 drop",
+    "ah spi 1-1000 accept",
+    "esp spi 500 accept",
+    "dccp type { request, response } drop",
+    "dccp type != { reset, sync } accept",
+    "meta ipsec exists accept",
+    "meta ipsec missing drop",
+    "fib saddr . iif oif != 0 accept",
+    "fib saddr . mark oif 0 drop",
+    "ip option lsrr exists drop",
+    "ip option ra missing accept",
+    "ip ecn not-ect accept",
+    "tcp flags cwr accept",
+    "log level audit",
+]
+
+BATCH9_IP6_LINES = [
+    "meta l4proto mobility-header mh type binding-update accept",
+    "meta l4proto mobility-header mh type != careof-test-init drop",
+    "mh type 2-4 accept",
+    "hbh hdrlength 8 accept",
+    "dst hdrlength 8 accept",
+    "rt type 0 rt seg-left 1 accept",
+    "exthdr frag exists exthdr mh exists accept",
+    "ct reply ip6 saddr 2001:db8::1 accept",
+    "ip6 ecn ect0 accept",
+]
+
+
+def check_batch9_vocab_readback() -> None:
+    # Apply every batch-9 emission and require the identical line back:
+    # this is the whole batch's --plan convergence contract in one pass.
+    body_ip = "\n".join(f" {line}" for line in BATCH9_IP_LINES)
+    body_ip6 = "\n".join(f" {line}" for line in BATCH9_IP6_LINES)
+    script = (
+        "table ip t {\n chain c {\n"
+        " type filter hook input priority 0;\n"
+        f"{body_ip}\n }}\n}}\n"
+        "table ip6 t6 {\n chain c {\n"
+        " type filter hook input priority 0;\n"
+        f"{body_ip6}\n }}\n}}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    for want in BATCH9_IP_LINES + BATCH9_IP6_LINES:
+        if want not in lines:
+            _fail(
+                f"batch-9 vocab readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -409,6 +479,7 @@ def main() -> None:
     check_classify_readback()
     check_ct_queue_netmap_readback()
     check_stateful_dynset_readback()
+    check_batch9_vocab_readback()
     print("NFT-READBACK-PASS")
 
 

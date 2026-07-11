@@ -1,0 +1,39 @@
+table filter {
+    chain INPUT {
+        mod cpu cpu 0 ACCEPT;
+        mod devgroup src-group 5 ACCEPT;
+        mod realm realm ! 42 DROP;
+        mod cgroup cgroup 1048577 ACCEPT;
+        mod socket transparent ACCEPT;
+        mod socket ACCEPT;
+        mod conntrack ctorigsrc 192.0.2.1 ctorigdst ! 198.51.100.1 ACCEPT;
+        mod conntrack ctorigsrcport 80:90 ACCEPT;
+        mod conntrack ctproto tcp ACCEPT;
+        mod conntrack ctexpire 100 ACCEPT;
+        mod conntrack ctexpire 3600:7200 ACCEPT;
+        mod conntrack ctdir ORIGINAL ACCEPT;
+        mod connlabel label 40 ACCEPT;
+        mod connlabel label ! 7 DROP;
+        proto ah mod ah ahspi 1:1000 ACCEPT;
+        proto esp mod esp espspi 500 ACCEPT;
+        proto dccp dccp-types (REQUEST RESPONSE) DROP;
+        proto dccp dccp-types ! (RESET SYNC) ACCEPT;
+        mod policy dir in pol ipsec ACCEPT;
+        mod policy dir in pol none DROP;
+        mod rpfilter ACCEPT;
+        mod rpfilter loose invert DROP;
+        mod ipv4options flags lsrr DROP;
+        mod ecn ecn-ip-ect 0 ACCEPT;
+        proto tcp mod ecn ecn-tcp-cwr ACCEPT;
+        AUDIT type accept;
+    }
+}
+domain ip6 table filter chain INPUT {
+    proto mh mh-type 5 ACCEPT;
+    proto mh mh-type ! 2 DROP;
+    mod hbh hbh-len 8 ACCEPT;
+    mod dst dst-len 8 ACCEPT;
+    mod rt rt-type 0 rt-segsleft 1 ACCEPT;
+    mod ipv6header header (frag mh) soft ACCEPT;
+    proto mh ACCEPT;
+}

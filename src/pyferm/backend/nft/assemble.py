@@ -31,7 +31,12 @@ from .matches import (
     _NFT_DEFAULT_LIMIT_RATE,
     _PORT_KEYWORD,
     _fib_type_match,
+    _ipv4options_matches,
+    _ipv6header_matches,
+    _policy_match,
+    _rpfilter_match,
     _setref_selector,
+    _socket_matches,
     _translate_match_parts,
     _translate_match_set,
 )
@@ -133,6 +138,9 @@ _TARGET_COMPANIONS: Final[frozenset[str]] = frozenset(
         # CHECKSUM's only option; collected so the target refuses with the
         # CHECKSUM message rather than a generic match-path "not supported".
         "checksum-fill",
+        # AUDIT's only option (`type`); no match module spells it, so the
+        # plain name is collision-free.
+        "type",
     }
 )
 
@@ -219,9 +227,24 @@ def translate_rule(
     # module-qualified: SYNPROXY's `mss` companion and the TCPMSS verdict
     # are `tcp option maxseg` SET-statements, whose readback KEEPS the
     # prefix -- both facts verified live.
+    # `dccp type`, `ah spi` and `esp spi` suppress their prefix the same
+    # way (verified live); `mh type` does NOT (the readback keeps
+    # `meta l4proto mobility-header`), so mh stays off this list.  The
+    # ecn tcp-flag forms are `tcp flags` matches and inherit that
+    # suppression.
     has_implied_l4proto = any(
-        o.name in ("icmp-type", "tcp-flags", "syn")
+        o.name
+        in (
+            "icmp-type",
+            "tcp-flags",
+            "syn",
+            "ecn-tcp-cwr",
+            "ecn-tcp-ece",
+            "ahspi",
+            "espspi",
+        )
         or (o.name in ("mss", "tcp-option") and o.module in ("tcp", "tcpmss"))
+        or (o.name == "dccp-types" and o.module == "dccp")
         for o in rule.options
     ) or _hashlimit_key_implies_l4proto(rule.options)
     # `--limit-burst` is a companion of the SAME xt_limit match, folded
@@ -316,6 +339,43 @@ def translate_rule(
         o.name: o for o in rule.options if o.module == "connbytes"
     }
 
+    # mod policy / ipv6header / ipv4options: interdependent sibling options
+    # the per-name match path structurally cannot see (`header` without
+    # `soft`, `pol` without `dir`, `flags` next to `any` all flip the
+    # semantics), so each is collected rule-wide and its builder actively
+    # refuses on an incompatible sibling rather than translating a wider
+    # match (fail-open guard).
+    policy_opts: dict[str, RenderedOption] = {
+        o.name: o
+        for o in rule.options
+        if o.module == "policy" and o.kind is not OptionKind.MATCH_MODULE
+    }
+    ipv6header_opts: dict[str, RenderedOption] = {
+        o.name: o
+        for o in rule.options
+        if o.module == "ipv6header" and o.kind is not OptionKind.MATCH_MODULE
+    }
+    ipv4options_opts: dict[str, RenderedOption] = {
+        o.name: o
+        for o in rule.options
+        if o.module == "ipv4options" and o.kind is not OptionKind.MATCH_MODULE
+    }
+
+    # mod rpfilter / mod socket: the BARE load already is the match (a fib
+    # route check, a socket lookup) and the no-arg flags only modulate its
+    # shape, so presence sets suffice and the match emits at the module
+    # marker (keeping `-m X` source order).
+    rpfilter_names: frozenset[str] = frozenset(
+        o.name
+        for o in rule.options
+        if o.module == "rpfilter" and o.kind is not OptionKind.MATCH_MODULE
+    )
+    socket_names: frozenset[str] = frozenset(
+        o.name
+        for o in rule.options
+        if o.module == "socket" and o.kind is not OptionKind.MATCH_MODULE
+    )
+
     # Second pass: emit matches in source order; verdict appended last.
     matches: list[NftStatement] = []
     comment: str | None = None
@@ -328,14 +388,34 @@ def translate_rule(
     time_emitted = False
     connbytes_emitted = False
     connlimit_emitted = False
+    policy_emitted = False
+    ipv6header_emitted = False
+    ipv4options_emitted = False
+    rpfilter_emitted = False
+    socket_emitted = False
 
     for option in rule.options:
         name, kind = option.name, option.kind
         if kind is OptionKind.MATCH_MODULE:
+            module_name, _ = unwrap_value(option.value)
+            # rpfilter/socket: the bare load IS the match, so it emits at
+            # the marker (its flags, collected above, only modulate the
+            # shape); every other module keeps the inert/refuse split.
+            if module_name == "rpfilter":
+                if not rpfilter_emitted:
+                    matches.append(
+                        NftMatch(_rpfilter_match(domain, rpfilter_names))
+                    )
+                    rpfilter_emitted = True
+                continue
+            if module_name == "socket":
+                if not socket_emitted:
+                    matches.extend(_socket_matches(domain, socket_names))
+                    socket_emitted = True
+                continue
             # The -m marker is implicit in nft only when the module's
             # options carry the semantics; a bare load of anything outside
             # the inert set is itself the match and must not drop.
-            module_name, _ = unwrap_value(option.value)
             if module_name not in _BARE_INERT_MATCH_MODULES and not any(
                 o.module == module_name
                 and o.kind is not OptionKind.MATCH_MODULE
@@ -412,6 +492,35 @@ def translate_rule(
             if not connlimit_emitted:
                 matches.append(_connlimit_update(domain, rule))
                 connlimit_emitted = True
+            continue
+        if option.module == "policy":
+            if not policy_emitted:
+                matches.append(NftMatch(_policy_match(policy_opts)))
+                policy_emitted = True
+            continue
+        if option.module == "ipv6header":
+            if not ipv6header_emitted:
+                matches.extend(_ipv6header_matches(domain, ipv6header_opts))
+                ipv6header_emitted = True
+            continue
+        if option.module == "ipv4options":
+            if not ipv4options_emitted:
+                matches.extend(_ipv4options_matches(domain, ipv4options_opts))
+                ipv4options_emitted = True
+            continue
+        if option.module == "rpfilter":
+            # normally consumed at the module marker above; a marker-less
+            # rendering still emits once at the first flag
+            if not rpfilter_emitted:
+                matches.append(
+                    NftMatch(_rpfilter_match(domain, rpfilter_names))
+                )
+                rpfilter_emitted = True
+            continue
+        if option.module == "socket":
+            if not socket_emitted:
+                matches.extend(_socket_matches(domain, socket_names))
+                socket_emitted = True
             continue
         if option.module == "quota":
             # A stateful quota statement, kept off NftMatch so collapse/vmap

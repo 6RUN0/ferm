@@ -6,6 +6,8 @@ These tests drive TDD: written before the implementation and document the
 exact transforms applied on each side (desired=our emitter, current=nft list).
 """
 
+import pytest
+
 from pyferm.plan import canonicalize_nft_header, canonicalize_nft_rule
 
 
@@ -572,3 +574,50 @@ def test_header_priority_malformed_offset_left_verbatim() -> None:
         "type filter hook input priority filter + xx;", family="ip"
     )
     assert out == "type filter hook input priority filter + xx policy accept"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # batch-9 vocabulary: emission equals the kernel readback verbatim
+        # (captured live, nft v1.1.6), so the canonicalizer must pass every
+        # spelling through untouched -- a mangled token would surface as a
+        # phantom --plan diff on an applied ruleset.
+        "meta cpu 0 accept",
+        "iifgroup 5 accept",
+        "oifgroup != 16 accept",
+        "meta rtclassid 42 accept",
+        "meta cgroup 1048577 accept",
+        "socket wildcard 0 socket transparent 1 accept",
+        "socket wildcard <= 1 accept",
+        "ct original ip saddr 192.0.2.1 accept",
+        "ct reply ip6 saddr 2001:db8::1 accept",
+        "ct original proto-src 80-90 accept",
+        "ct protocol tcp accept",
+        "ct expiration 1m40s accept",
+        "ct expiration 3600s-7200s accept",
+        "ct direction original accept",
+        "ct label 40 accept",
+        "ct label & 7 != 7 drop",
+        "ah spi 1-1000 accept",
+        "esp spi 500 accept",
+        "mh type binding-update accept",
+        "meta l4proto mobility-header mh type != careof-test-init drop",
+        "hbh hdrlength 8 accept",
+        "dst hdrlength 8 accept",
+        "rt type 0 rt seg-left 1 accept",
+        "exthdr frag exists exthdr mh exists accept",
+        "dccp type { request, response } drop",
+        "dccp type != { reset, sync } accept",
+        "meta ipsec exists accept",
+        "meta ipsec missing drop",
+        "fib saddr . iif oif != 0 accept",
+        "fib saddr . mark oif 0 drop",
+        "ip option lsrr exists drop",
+        "ip ecn not-ect accept",
+        "log level audit",
+    ],
+)
+def test_batch9_vocabulary_is_canon_fixed_point(body: str) -> None:
+    family = "ip6" if ("ip6" in body or "hdrlength" in body) else "ip"
+    assert canonicalize_nft_rule(body, family=family) == body

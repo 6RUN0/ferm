@@ -13,6 +13,45 @@
 
 ### Добавлено
 
+- **nft-бэкенд: ещё семнадцать match-модулей и таргет AUDIT (батч
+  словаря 9).** Все эмиссии — точный спеллинг ридбэка ядра (проверено
+  живьём на nft v1.1.6), поэтому `--plan` сходится:
+  - `mod cpu` → `meta cpu`, `mod devgroup` → `iifgroup`/`oifgroup`
+    (десятичные; маски и символьные группы отказывают), `mod realm` →
+    `meta rtclassid`, `mod cgroup` (classid) → `meta cgroup`;
+  - `mod socket`, включая голую загрузку → `socket wildcard 0`,
+    `nowildcard` → `socket wildcard <= 1`, `transparent` →
+    `socket transparent 1` (`restore-skmark` отказывает);
+  - расширенные tuple-опции `mod conntrack`: `ctorigsrc`/`ctorigdst`/
+    `ctreplsrc`/`ctrepldst` (+ их `...port`-близнецы) →
+    `ct original|reply [ip|ip6] saddr|daddr / proto-src|proto-dst`,
+    `ctproto` → `ct protocol`, `ctdir` → `ct direction`, а `ctexpire`
+    → `ct expiration` с асимметричным временным каноном ядра (скаляр
+    `100` → `1m40s`, диапазон `3600:7200` → `3600s-7200s`);
+  - `mod connlabel` (числовые метки) → `ct label`;
+  - `ahspi`/`espspi` → `ah spi`/`esp spi` (оба подразумевают свой
+    l4proto — ридбэк дропает префикс `meta l4proto ah|esp`);
+  - поля ip6-заголовков расширения: `mh-type` → `mh type` (числа
+    респеллятся в имена ридбэка, напр. 5 → `binding-update`),
+    `hbh-len`/`dst-len`/`rt-len` → `hdrlength`, `rt-type` → `rt type`,
+    `rt-segsleft` → `rt seg-left`, а `mod ipv6header ... soft` →
+    цепочки `exthdr X exists` (форма точного набора без `soft` и
+    заголовки `auth`/`esp` отказывают);
+  - `proto dccp dccp-types` → `dccp type { ... }` в порядке возрастания
+    типов пакетов, с подразумеваемым l4proto (`INVALID` отказывает —
+    nft его не парсит);
+  - `mod policy dir in pol ipsec|none` → `meta ipsec exists|missing`
+    (`dir out` и поэлементные опции отказывают — fail-loud, никогда
+    fail-open);
+  - `mod rpfilter`, включая голую загрузку → формы `fib saddr [. mark]
+    [. iif] oif` с `loose`/`invert`/`validmark` (`accept-local`
+    отказывает);
+  - `mod ecn`: `ecn-ip-ect N` → `ip|ip6 ecn not-ect|ect1|ect0|ce`,
+    `ecn-tcp-cwr|ece` → `tcp flags cwr|ece`;
+  - `mod ipv4options flags` → цепочки `ip option
+    lsrr|ssrr|rr|timestamp|ra exists|missing` (`any` отказывает);
+  - `AUDIT type accept|drop|reject` → `log level audit` (ядро с 4.12
+    аудирует одинаково для любого типа).
 - **nft-бэкенд: таргет SET и паттерн бан-листа.** `SET add-set $x src
   timeout N` / `add-set ... exist` / `del-set` транслируются в
   nft-стейтменты `add`/`update`/`delete @x { ip saddr [timeout ...] }`
@@ -263,6 +302,14 @@
   `--def`) молча принимался там, где Perl предупреждает или отклоняет.
   Диспетч-паттерны запинены на `re.ASCII` — байтовый паритет
   восстановлен.
+- **nft-бэкенд: `proto mh` эмитил скрипт, который nft отвергает на
+  этапе применения.** `mh` — ключевое слово nft, поэтому эмиссия
+  `meta l4proto mh` была синтаксической ошибкой, которую
+  `--lines`/`--plan` никогда не показывали; протокол теперь эмитится
+  ядровым написанием `mobility-header`. Тот же класс: `hopopt` теперь
+  эмитится как `ip` (имя протокола 0 в ридбэке), а номера протоколов
+  ipv6-route/ipv6-frag/ipv6-nonxt/ipv6-opts респеллятся в имена
+  ридбэка вместо числа.
 - **nft-бэкенд: голые загрузки матч-модулей больше не выпадают
   молча.** `mod hbh`, `mod dst`, `mod eui64` (у которых голая загрузка
   и ЕСТЬ матч: наличие extension-заголовка, проверка EUI-64) и

@@ -36,6 +36,7 @@ RANK_UNPARSABLE: Final[int] = 5
 #: Spellings and numbers are nft's own (verified against nft v1.1.6); a name
 #: nft does not know cannot survive a readback, so it stays unparsable.
 _NFT_L4PROTO_NUMBER: Final[dict[str, int]] = {
+    "ip": 0,
     "icmp": 1,
     "igmp": 2,
     "ipencap": 4,
@@ -44,11 +45,15 @@ _NFT_L4PROTO_NUMBER: Final[dict[str, int]] = {
     "udp": 17,
     "dccp": 33,
     "ipv6": 41,
+    "ipv6-route": 43,
+    "ipv6-frag": 44,
     "rsvp": 46,
     "gre": 47,
     "esp": 50,
     "ah": 51,
     "ipv6-icmp": 58,
+    "ipv6-nonxt": 59,
+    "ipv6-opts": 60,
     "ospf": 89,
     "mtp": 92,
     "ipip": 94,

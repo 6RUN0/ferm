@@ -13,6 +13,46 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **nft backend: seventeen more match modules and the AUDIT target
+  (vocabulary batch 9).** All emissions are the exact kernel-readback
+  spelling (verified live on nft v1.1.6) so `--plan` converges:
+  - `mod cpu` → `meta cpu`, `mod devgroup` → `iifgroup`/`oifgroup`
+    (decimal; masks and symbolic groups refuse), `mod realm` →
+    `meta rtclassid`, `mod cgroup` (classid) → `meta cgroup`;
+  - `mod socket` incl. the bare load → `socket wildcard 0`,
+    `nowildcard` → `socket wildcard <= 1`, `transparent` →
+    `socket transparent 1` (`restore-skmark` refuses);
+  - the extended `mod conntrack` tuple options: `ctorigsrc`/`ctorigdst`/
+    `ctreplsrc`/`ctrepldst` (+ their `...port` twins) →
+    `ct original|reply [ip|ip6] saddr|daddr / proto-src|proto-dst`,
+    `ctproto` → `ct protocol`, `ctdir` → `ct direction`, and `ctexpire`
+    → `ct expiration` with the kernel's asymmetric time canon (scalar
+    `100` → `1m40s`, range `3600:7200` → `3600s-7200s`);
+  - `mod connlabel` (numeric labels) → `ct label`;
+  - `ahspi`/`espspi` → `ah spi`/`esp spi` (both imply their l4proto —
+    the readback drops the `meta l4proto ah|esp` prefix);
+  - the ip6 extension-header fields: `mh-type` → `mh type` (numbers
+    respell to the readback names, e.g. 5 → `binding-update`),
+    `hbh-len`/`dst-len`/`rt-len` → `hdrlength`, `rt-type` → `rt type`,
+    `rt-segsleft` → `rt seg-left`, and `mod ipv6header ... soft` →
+    `exthdr X exists` chains (the exact-set form without `soft`, and
+    `auth`/`esp` headers, refuse);
+  - `proto dccp dccp-types` → `dccp type { ... }` in ascending
+    packet-type order, implying its l4proto (`INVALID` refuses — nft
+    cannot parse it);
+  - `mod policy dir in pol ipsec|none` → `meta ipsec exists|missing`
+    (`dir out` and the per-element options refuse — fail-loud, never
+    fail-open);
+  - `mod rpfilter` incl. the bare load → the `fib saddr [. mark]
+    [. iif] oif` forms with `loose`/`invert`/`validmark`
+    (`accept-local` refuses);
+  - `mod ecn`: `ecn-ip-ect N` → `ip|ip6 ecn not-ect|ect1|ect0|ce`,
+    `ecn-tcp-cwr|ece` → `tcp flags cwr|ece`;
+  - `mod ipv4options flags` → `ip option lsrr|ssrr|rr|timestamp|ra
+    exists|missing` chains (`any` refuses);
+  - `AUDIT type accept|drop|reject` → `log level audit` (the kernel
+    audits identically for every type since 4.12).
+
 - **nft backend: the SET target and the ban-list pattern.** `SET
   add-set $x src timeout N` / `add-set ... exist` / `del-set` translate
   to nft `add`/`update`/`delete @x { ip saddr [timeout ...] }`
@@ -255,6 +295,13 @@ For the history of the original Perl implementation, see
   non-ASCII byte in a table or chain name (or a `--def` name) was
   silently accepted where Perl warns or rejects. The dispatch patterns
   are pinned to `re.ASCII`, restoring byte parity.
+- **nft backend: `proto mh` emitted a script nft rejects at apply
+  time.** `mh` is an nft keyword, so the emitted `meta l4proto mh` was
+  a syntax error that `--lines`/`--plan` never surfaced; the protocol
+  now emits the kernel spelling `mobility-header`.  Same class:
+  `hopopt` now emits `ip` (protocol 0's readback name) and the
+  ipv6-route/ipv6-frag/ipv6-nonxt/ipv6-opts protocol numbers respell
+  to their readback names instead of staying numeric.
 - **nft backend: bare match-module loads no longer silently drop.**
   `mod hbh`, `mod dst`, `mod eui64` (whose bare load IS the match:
   extension-header presence, EUI-64 check) and `mod limit` (whose bare

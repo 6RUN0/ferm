@@ -1317,7 +1317,6 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
         (Family.IP, "TARPIT"),
         (Family.IP, "MIRROR"),
         (Family.IP, "SET"),
-        (Family.IP, "AUDIT"),
         # HL translates only under ip6 (its xt family); the ip pass must
         # keep refusing via the folded "ip" registry (parser convention)
         (Family.IP, "HL"),
