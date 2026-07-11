@@ -19,7 +19,6 @@ growth would churn it without adding safety) and no live ``nft -c`` half
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import sys
@@ -28,15 +27,12 @@ from pathlib import Path
 import pytest
 
 from pyferm.modules import TARGET_DEFS
+from tests._oracle import ORACLE_ENV
+from tests.corpus.test_corpus_nft import _NFT_LINE
 from tests.property.test_synthetic_modules import _CASES, Case
 
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
-
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
-
-#: Ruleset lines the backend feeds to ``nft -f`` on the apply path.
-_NFT_LINE = re.compile(r"^(add|create|delete|insert|flush|replace) ")
 
 #: Every registered target keyword of every family: a translating rule
 #: must never carry one as a jump/goto operand.
@@ -67,7 +63,7 @@ def test_synthetic_case_translates_or_refuses_cleanly(
         capture_output=True,
         encoding="utf-8",
         check=False,
-        env=_ENV,
+        env=ORACLE_ENV,
         cwd=REPO_ROOT,
     )
     if proc.returncode != 0:

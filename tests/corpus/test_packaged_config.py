@@ -26,16 +26,22 @@ populated form.
 
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests._oracle import (
+    PORT_FERM,
+    compile_config,
+    oracle_ferm,
+)
 from tests.corpus.canon import canonicalize
-from tests.corpus.test_corpus_nft import _NFT_LINE, _live_nft_usable
+from tests.corpus.test_corpus_nft import (
+    _NFT_LINE,
+    _live_nft_usable,
+    assert_live_nft_accepts,
+)
 
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
@@ -43,8 +49,6 @@ PACKAGED_CONF = REPO_ROOT / "packaging" / "deb" / "ferm.conf"
 THROTTLE_EXAMPLE = (
     REPO_ROOT / "packaging" / "deb" / "examples" / "ssh-throttle.conf.example"
 )
-
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
 #: Deployment layouts: the pristine install, and the install after the
 #: user copies the advertised throttle example into ``ferm.d/``.
@@ -63,29 +67,13 @@ def deployed_conf(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
     return conf
 
 
-def _compile(
-    prefix: tuple[str, ...], args: list[str]
-) -> tuple[bool, str, str]:
-    proc = subprocess.run(  # fixed argv, no shell
-        [*prefix, *args],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=_ENV,
-        cwd=REPO_ROOT,
-    )
-    return proc.returncode == 0, proc.stdout, proc.stderr
-
-
 @pytest.mark.parametrize("mode_args", [[], ["--slow"]], ids=["fast", "slow"])
 def test_packaged_config_matches_oracle(
     deployed_conf: Path, mode_args: list[str]
 ) -> None:
     args = ["--test", "--noexec", "--lines", *mode_args, str(deployed_conf)]
-    oracle = _compile(
-        ("perl", str(REPO_ROOT / "reference" / "src" / "ferm")), args
-    )
-    port = _compile((sys.executable, "-m", "pyferm"), args)
+    oracle = compile_config(oracle_ferm(REPO_ROOT), args)
+    port = compile_config(PORT_FERM, args)
 
     # The packaged default must actually compile, not merely agree with
     # the oracle on a failure.
@@ -96,8 +84,8 @@ def test_packaged_config_matches_oracle(
 
 
 def _translate_nft(conf: Path) -> str:
-    ok, stdout, stderr = _compile(
-        (sys.executable, "-m", "pyferm"),
+    ok, stdout, stderr = compile_config(
+        PORT_FERM,
         ["--nft", "--test", "--lines", str(conf)],
     )
     assert ok, f"nft backend refused the packaged config\n{stderr}"
@@ -155,11 +143,4 @@ def test_packaged_config_live_nft_accepts(deployed_conf: Path) -> None:
         line for line in output.splitlines() if _NFT_LINE.match(line)
     )
     assert script, "empty nft ruleset"
-    check = subprocess.run(  # fixed argv, no shell
-        ["unshare", "-rn", "nft", "-c", "-f", "-"],
-        input=script + "\n",
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert check.returncode == 0, f"live nft -c rejected:\n{check.stderr}"
+    assert_live_nft_accepts(script)

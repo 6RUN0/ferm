@@ -21,7 +21,6 @@ this gate documents the port's own nft surface over the corpus it owns.
 from __future__ import annotations
 
 import functools
-import os
 import re
 import shutil
 import subprocess
@@ -30,12 +29,13 @@ from pathlib import Path
 
 import pytest
 
+from tests._oracle import ORACLE_ENV
+from tests.corpus.test_corpus import flat_and_nested_configs
+
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
 CONFIGS = _HERE / "configs"
 TRANSLATED = _HERE / "translated"
-
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
 #: Configs the nft backend currently refuses (clean FermError). Every
 #: entry documents a known translation gap ("not yet supported",
@@ -67,16 +67,9 @@ _NFT_LINE = re.compile(r"^(add|create|delete|insert|flush|replace) ")
 
 
 def _corpus_owned_configs() -> list[Path]:
-    flat = sorted(CONFIGS.glob("*.ferm"))
-    # Same multi-file convention as test_corpus._corpus_configs: each
-    # directory must hold a same-named entry file, and a missing one
-    # fails loudly downstream (FileNotFoundError), never skips.
-    nested = sorted(
-        path / f"{path.name}.ferm"
-        for path in CONFIGS.iterdir()
-        if path.is_dir() and not path.name.startswith(".")
-    )
-    return flat + nested + sorted(TRANSLATED.glob("*.ferm"))
+    # Upstream reference/examples is out of scope here (see module
+    # docstring); only the corpus the port owns plus the translated set.
+    return flat_and_nested_configs(CONFIGS) + sorted(TRANSLATED.glob("*.ferm"))
 
 
 @functools.cache
@@ -94,6 +87,30 @@ def _live_nft_usable() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return probe.returncode == 0
+
+
+def assert_live_nft_accepts(script: str, label: str = "") -> None:
+    """Feed an nft script to a live ``nft -c`` in a rootless netns.
+
+    A no-op where ``unshare -rn``/``nft`` are unavailable -- the same
+    graceful degradation the corpus and packaged-config gates share.
+    ``label`` is appended to the failure message to name the offending
+    config.
+    """
+    if not _live_nft_usable():
+        return
+    payload = script if script.endswith("\n") else script + "\n"
+    check = subprocess.run(  # fixed argv, no shell
+        ["unshare", "-rn", "nft", "-c", "-f", "-"],
+        input=payload,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    assert check.returncode == 0, (
+        f"live nft -c rejected{label}:\n{check.stderr}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -114,7 +131,7 @@ def test_corpus_config_translates_or_refuses_cleanly(config: Path) -> None:
         capture_output=True,
         encoding="utf-8",
         check=False,
-        env=_ENV,
+        env=ORACLE_ENV,
         cwd=REPO_ROOT,
     )
     expected_refusal = config.stem in _EXPECTED_NFT_REFUSALS
@@ -137,16 +154,4 @@ def test_corpus_config_translates_or_refuses_cleanly(config: Path) -> None:
         if _NFT_LINE.match(line)
     )
     assert script, f"{config.stem}: empty nft ruleset"
-    if not _live_nft_usable():
-        return
-    check = subprocess.run(
-        ["unshare", "-rn", "nft", "-c", "-f", "-"],
-        input=script,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        timeout=60,
-    )
-    assert check.returncode == 0, (
-        f"live nft -c rejected {config.stem}:\n{check.stderr}"
-    )
+    assert_live_nft_accepts(script, f" {config.stem}")

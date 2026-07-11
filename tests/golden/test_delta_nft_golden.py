@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from .runner import mock_previous_args
+
 # This module drives the pyferm CLI as ``python -m pyferm`` (the source
 # module), not the packaged binary, so it cannot run in the binary
 # verify-golden venv, which is deliberately pyferm-free. Skip there; the
@@ -31,15 +33,6 @@ pytest.importorskip("pyferm")
 _HERE = Path(__file__).resolve().parent
 _DELTA_DIR = _HERE / "delta_nft"
 _CASES = sorted(_DELTA_DIR.glob("*.ferm"))
-# ip/ip6 are exercised by fixtures below; arp/eb are accepted extension
-# points (named-set deltas are rare there) -- add a .savearp/.saveeb fixture
-# to cover them, no runner change needed.
-_MOCK_SUFFIXES: list[tuple[str, str]] = [
-    (".save", "ip"),
-    (".save6", "ip6"),
-    (".savearp", "arp"),
-    (".saveeb", "eb"),
-]
 
 
 def _run_delta(ferm_file: Path) -> str:
@@ -51,12 +44,9 @@ def _run_delta(ferm_file: Path) -> str:
         "--test",
         "--noexec",
         "--lines",
+        *mock_previous_args(ferm_file),
+        str(ferm_file),
     ]
-    for suffix, family in _MOCK_SUFFIXES:
-        mock = ferm_file.with_suffix(suffix)
-        if mock.exists():
-            cmd.append(f"--test-mock-previous={family}={mock}")
-    cmd.append(str(ferm_file))
     proc = subprocess.run(
         cmd, capture_output=True, encoding="utf-8", check=False
     )

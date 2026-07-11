@@ -18,6 +18,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests._oracle import ORACLE_ENV
+
 from .normalize import eb_arp_sed, ebtables_tempfile_rename, result_sed
 from .sortpl import sort_output
 
@@ -26,10 +28,30 @@ REPO_ROOT = _HERE.parents[2]
 REFERENCE_ROOT = REPO_ROOT / "reference"
 REFERENCE_TEST = REFERENCE_ROOT / "test"
 
-# Force a deterministic locale: ferm's @include directory walk and the
-# localtime banner both depend on collation/formatting that must not vary
-# with the developer's environment.
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+# Map from mock-file suffix to the ferm family token it stands in for.
+# ip/ip6 are the common ones; arp/eb are accepted extension points (add a
+# .savearp/.saveeb fixture to cover them, no runner change needed).
+_MOCK_SUFFIXES: tuple[tuple[str, str], ...] = (
+    (".save", "ip"),
+    (".save6", "ip6"),
+    (".savearp", "arp"),
+    (".saveeb", "eb"),
+)
+
+
+def mock_previous_args(ferm_file: Path) -> list[str]:
+    """Build ``--test-mock-previous`` flags for each mock sibling present.
+
+    Detects which ``<stem>.save*`` mocks sit beside ``ferm_file`` and maps
+    each to its ferm family token; a fixture targeting one family carries
+    only the relevant sibling.
+    """
+    args: list[str] = []
+    for suffix, family in _MOCK_SUFFIXES:
+        mock = ferm_file.with_suffix(suffix)
+        if mock.exists():
+            args.append(f"--test-mock-previous={family}={mock}")
+    return args
 
 
 @dataclass(frozen=True)
@@ -97,7 +119,7 @@ def _run(prefix: tuple[str, ...], args: list[str]) -> str:
         capture_output=True,
         encoding="utf-8",
         check=False,
-        env=_ENV,
+        env=ORACLE_ENV,
         cwd=REFERENCE_ROOT,
     )
     if proc.returncode != 0:
@@ -184,7 +206,7 @@ def diagnostics_case(target: FermTarget, ferm_file: Path) -> tuple[int, str]:
         capture_output=True,
         encoding="utf-8",
         check=False,
-        env=_ENV,
+        env=ORACLE_ENV,
         cwd=REFERENCE_ROOT,
     )
     return proc.returncode, proc.stderr

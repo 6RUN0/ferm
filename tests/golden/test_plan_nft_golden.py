@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from .runner import mock_previous_args
+
 # This module drives the pyferm CLI as ``python -m pyferm`` (the source
 # module), not the packaged binary, so it cannot run in the binary
 # verify-golden venv, which is deliberately pyferm-free. Skip there; the
@@ -41,14 +43,6 @@ pytest.importorskip("pyferm")
 _HERE = Path(__file__).resolve().parent
 _PLAN_NFT_DIR = _HERE / "plan_nft"
 _CASES = sorted(_PLAN_NFT_DIR.glob("*.ferm"))
-
-# Map from mock-file suffix to ferm family token.
-_MOCK_SUFFIXES: list[tuple[str, str]] = [
-    (".save", "ip"),
-    (".save6", "ip6"),
-    (".savearp", "arp"),
-    (".saveeb", "eb"),
-]
 
 # Cases that run with --plan-format=diff instead of structured.
 _DIFF_FORMAT_STEMS = frozenset({"diff_format"})
@@ -69,12 +63,9 @@ def _run_plan_nft(ferm_file: Path, fmt: str) -> tuple[int, str]:
         fmt,
         "--nft",
         "--test",
+        *mock_previous_args(ferm_file),
+        str(ferm_file),
     ]
-    for suffix, ferm_family in _MOCK_SUFFIXES:
-        mock = ferm_file.with_suffix(suffix)
-        if mock.exists():
-            cmd.append(f"--test-mock-previous={ferm_family}={mock}")
-    cmd.append(str(ferm_file))
     proc = subprocess.run(  # fixed argv, no shell
         cmd, capture_output=True, encoding="utf-8", check=False
     )

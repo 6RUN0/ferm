@@ -26,21 +26,22 @@ stderr, and canonicalized stdout.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from pyferm.modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
+from tests._oracle import (
+    PORT_FERM,
+    assert_oracle_parity,
+    compile_config,
+    oracle_ferm,
+)
 from tests.corpus.canon import canonicalize
 
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
-
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
 
 @dataclass(frozen=True)
@@ -2035,20 +2036,6 @@ _CASES: list[Case] = [
 ]
 
 
-def _compile(
-    prefix: tuple[str, ...], args: list[str]
-) -> tuple[bool, str, str]:
-    proc = subprocess.run(  # fixed argv, no shell
-        [*prefix, *args],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=_ENV,
-        cwd=REPO_ROOT,
-    )
-    return proc.returncode == 0, proc.stdout, proc.stderr
-
-
 @pytest.mark.parametrize("mode_args", [[], ["--slow"]], ids=["fast", "slow"])
 @pytest.mark.parametrize("case", _CASES, ids=lambda case: case.case_id)
 def test_synthetic_module_matches_oracle(
@@ -2058,14 +2045,10 @@ def test_synthetic_module_matches_oracle(
     config_path.write_text(case.config, encoding="utf-8")
 
     args = ["--test", "--noexec", "--lines", *mode_args, str(config_path)]
-    oracle = _compile(
-        ("perl", str(REPO_ROOT / "reference" / "src" / "ferm")), args
-    )
-    port = _compile((sys.executable, "-m", "pyferm"), args)
+    oracle = compile_config(oracle_ferm(REPO_ROOT), args)
+    port = compile_config(PORT_FERM, args)
 
-    assert port[0] == oracle[0], f"exit verdict differs\n{port[2]}{oracle[2]}"
-    assert port[2] == oracle[2], "stderr differs"
-    assert canonicalize(port[1]) == canonicalize(oracle[1])
+    assert_oracle_parity(port, oracle, canonicalize)
 
 
 #: Module names the differential matrix deliberately does not synthesize.

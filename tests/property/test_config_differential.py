@@ -33,9 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import io
-import os
 import re
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +42,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from pyferm.parser import MAX_BLOCK_DEPTH
+from tests._oracle import compile_config, oracle_ferm
 from tests.corpus.canon import canonicalize
 
 if TYPE_CHECKING:
@@ -57,8 +56,7 @@ _repo_root = Path(__file__).resolve().parents[2]
 if not (_repo_root / "reference").is_dir() and _repo_root.name == "mutants":
     _repo_root = _repo_root.parent
 REPO_ROOT = _repo_root
-_ORACLE = ("perl", str(REPO_ROOT / "reference" / "src" / "ferm"))
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+_ORACLE = oracle_ferm(REPO_ROOT)
 
 # Every example costs a full oracle process (~150ms), three orders of
 # magnitude above the coprocess-based property tests, so the example
@@ -317,15 +315,7 @@ def fuzz_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _compile_oracle(args: Sequence[str]) -> tuple[bool, str, str]:
-    proc = subprocess.run(  # fixed argv, no shell
-        [*_ORACLE, *args],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=_ENV,
-        cwd=REPO_ROOT,
-    )
-    return proc.returncode == 0, proc.stdout, proc.stderr
+    return compile_config(_ORACLE, args, cwd=REPO_ROOT)
 
 
 def _compile_port(args: Sequence[str]) -> tuple[bool, str, str]:

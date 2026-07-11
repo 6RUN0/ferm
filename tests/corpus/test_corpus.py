@@ -22,13 +22,16 @@ save blocks around them are sorted.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests._oracle import (
+    PORT_FERM,
+    assert_oracle_parity,
+    compile_config,
+    oracle_ferm,
+)
 from tests.corpus.canon import canonicalize
 
 _HERE = Path(__file__).resolve().parent
@@ -42,21 +45,26 @@ EXAMPLES = REPO_ROOT / "reference" / "examples"
 #: carries a copy (``upstream-resolve.ferm``) with its own zonefile.
 _EXCLUDED_EXAMPLES = {"resolve.ferm"}
 
-_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+
+def flat_and_nested_configs(root: Path) -> list[Path]:
+    """Flat ``*.ferm`` files plus each subdir's same-named entry file.
+
+    The multi-file convention: a config directory holds an entry file named
+    after it, with its @include targets beside it (resolved relative to the
+    entry file by both implementations).  A directory without that
+    same-named entry file fails loudly downstream (FileNotFoundError), by
+    design -- never silently skipped.
+    """
+    flat = sorted(root.glob("*.ferm"))
+    nested = sorted(
+        path / f"{path.name}.ferm"
+        for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    )
+    return flat + nested
 
 
 def _corpus_configs() -> list[Path]:
-    wild = sorted(CONFIGS.glob("*.ferm"))
-    # Multi-file entries: a directory per config, entry point named after
-    # it, vendored @include targets beside it (resolved relative to the
-    # entry file by both implementations).  A directory without its
-    # same-named entry file fails loudly downstream (FileNotFoundError),
-    # by design -- never silently skipped.
-    nested = sorted(
-        path / f"{path.name}.ferm"
-        for path in CONFIGS.iterdir()
-        if path.is_dir() and not path.name.startswith(".")
-    )
     # Hand-translated adversarial configs (see translated/ headers):
     # real-world iptables/nft setups rewritten into ferm to stress
     # unusual structure -- chain mazes, multi-stage NAT, raw/mangle.
@@ -66,21 +74,7 @@ def _corpus_configs() -> list[Path]:
         for path in EXAMPLES.glob("*.ferm")
         if path.name not in _EXCLUDED_EXAMPLES
     )
-    return wild + nested + translated + upstream
-
-
-def _compile(
-    prefix: tuple[str, ...], args: list[str]
-) -> tuple[bool, str, str]:
-    proc = subprocess.run(  # fixed argv, no shell
-        [*prefix, *args],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=_ENV,
-        cwd=REPO_ROOT,
-    )
-    return proc.returncode == 0, proc.stdout, proc.stderr
+    return flat_and_nested_configs(CONFIGS) + translated + upstream
 
 
 @pytest.mark.parametrize("mode_args", [[], ["--slow"]], ids=["fast", "slow"])
@@ -94,11 +88,7 @@ def test_corpus_config_matches_oracle(
         pytest.skip("Net::DNS::Resolver::Mock not installed")
 
     args = ["--test", "--noexec", "--lines", *mode_args, str(config)]
-    oracle = _compile(
-        ("perl", str(REPO_ROOT / "reference" / "src" / "ferm")), args
-    )
-    port = _compile((sys.executable, "-m", "pyferm"), args)
+    oracle = compile_config(oracle_ferm(REPO_ROOT), args)
+    port = compile_config(PORT_FERM, args)
 
-    assert port[0] == oracle[0], f"exit verdict differs\n{port[2]}{oracle[2]}"
-    assert port[2] == oracle[2], "stderr differs"
-    assert canonicalize(port[1]) == canonicalize(oracle[1])
+    assert_oracle_parity(port, oracle, canonicalize)
