@@ -13,6 +13,17 @@
 
 ### Добавлено
 
+- **nft-бэкенд: таргеты CONNSECMARK и HMARK (батч словаря 11a).** Ни
+  одному не нужен table-объект; проверено живьём на nft v1.1.6:
+  - `CONNSECMARK --save`/`--restore` → `ct secmark set meta secmark` /
+    `meta secmark set ct secmark` (форма CONNMARK save/restore);
+  - `HMARK` → `meta mark set jhash <поля> mod M seed S [offset O]`:
+    кортеж (`src`/`dst`/`sport`/`dport`/`proto`) отображается в
+    jhash-селекторы, seed — в `0x`-hex, нулевой offset опускается. Это
+    отображает *распределение* хеша, а не точное значение mark из xt (та
+    же nft-планка, что recent/hashlimit). Per-field маска/префикс (jhash
+    хеширует поля целиком) и поля кортежа `spi`/`ct` nft-формы не имеют и
+    отказывают.
 - **nft-бэкенд: matchи `helper`/`nth` и четыре опции таргета CT (батч
   словаря 10).** Все эмиссии — точный спеллинг ридбэка ядра (проверено
   живьём на nft v1.1.6), поэтому `--plan` сходится:

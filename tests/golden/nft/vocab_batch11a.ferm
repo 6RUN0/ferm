@@ -1,0 +1,11 @@
+table mangle {
+    chain PREROUTING {
+        CONNSECMARK save;
+        CONNSECMARK restore;
+        HMARK hmark-tuple "src,dst,sport,dport,proto" hmark-mod 10 hmark-rnd 0xabc hmark-offset 100;
+        HMARK hmark-tuple "src,dst" hmark-mod 8 hmark-rnd 2748;
+    }
+}
+domain ip6 table mangle chain PREROUTING {
+    HMARK hmark-tuple "src,dst" hmark-mod 8 hmark-rnd 0xabc;
+}

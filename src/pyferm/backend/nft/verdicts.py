@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import Final
 
 from ...domains import (
@@ -851,6 +852,121 @@ def _ct_event_canon(option: RenderedOption) -> str:
     return ",".join(ordered)
 
 
+#: xt HMARK tuple field spellings that map to a fixed nft jhash selector.
+_HMARK_FIXED_FIELD: Final[dict[str, str]] = {
+    "sport": "th sport",
+    "dport": "th dport",
+    "proto": "meta l4proto",
+}
+
+
+def _hmark_field(domain: Family, token: str) -> str:
+    """
+    Map one xt HMARK tuple field to its nft jhash selector.
+
+    The address fields are family-prefixed (``ip``/``ip6``); ``spi``/``ct``
+    have no clean jhash selector and refuse rather than hash a wrong field.
+    """
+    if token in ("src", "dst"):
+        side = "saddr" if token == "src" else "daddr"
+        return f"{domain} {side}"
+    if token in _HMARK_FIXED_FIELD:
+        return _HMARK_FIXED_FIELD[token]
+    raise FermError(
+        f"HMARK tuple field '{token}' has no nft jhash equivalent for the "
+        "nft backend"
+    )
+
+
+#: HMARK operands (mod/seed/offset) are 32-bit; nft rejects a value above u32
+#: ("Numerical result out of range"), so ferm bounds them rather than emit a
+#: value the kernel would reject or (for a modulus) silently wrap.
+_HMARK_U32_MAX: Final[int] = 0xFFFFFFFF
+
+#: Decimal or 0x-hex only: matches what iptables ``--hmark-rnd`` accepts and,
+#: by pinning ASCII ``[0-9]``, rejects both the non-ASCII digits and the
+#: ``1_000``/``0o17`` lexical sugar ``int(scalar, 0)`` would otherwise take.
+_HMARK_U32_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+|0[xX][0-9a-fA-F]+")
+
+
+def _hmark_u32(name: str, scalar: str) -> int:
+    """Parse an HMARK 32-bit operand (decimal or 0x-hex), else refuse."""
+    if not _HMARK_U32_RE.fullmatch(scalar):
+        raise FermError(f"invalid HMARK {name} '{scalar}' for nft backend")
+    value = int(scalar, 0)
+    if value > _HMARK_U32_MAX:
+        raise FermError(f"invalid HMARK {name} '{scalar}' for nft backend")
+    return value
+
+
+def _hmark_verdict(
+    domain: Family, companions: dict[str, RenderedOption]
+) -> NftVerdict:
+    """
+    Spell HMARK as ``meta mark set jhash <fields> mod M seed S [offset O]``.
+
+    xt_HMARK masks each tuple field before hashing; nft jhash hashes the
+    concatenated fields whole, so any per-field mask/prefix has no faithful
+    nft form and refuses (rather than silently hashing an unmasked field).
+    xt makes ``--hmark-mod`` and ``--hmark-rnd`` mandatory, so both are
+    required.  ``offset`` is dropped when zero (the readback omits it) and the
+    seed canonicalizes to ``0x``-hex.  nft jhash yields a different value than
+    xt's hash: this maps the hash DISTRIBUTION, not the exact mark (the same
+    nft bar as recent/hashlimit, which do not reproduce runtime state either).
+    """
+    for masked in (
+        "hmark-src-prefix",
+        "hmark-dst-prefix",
+        "hmark-sport-mask",
+        "hmark-dport-mask",
+        "hmark-spi-mask",
+        "hmark-proto-mask",
+    ):
+        if masked in companions:
+            raise FermError(
+                f"HMARK '{masked}' has no nft jhash equivalent (jhash hashes "
+                "fields whole) for the nft backend"
+            )
+    tuple_opt = companions.get("hmark-tuple")
+    mod_opt = companions.get("hmark-mod")
+    rnd_opt = companions.get("hmark-rnd")
+    if tuple_opt is None or mod_opt is None or rnd_opt is None:
+        raise FermError(
+            "HMARK needs 'hmark-tuple', 'hmark-mod', and 'hmark-rnd' for the "
+            "nft backend"
+        )
+    tuple_scalar, _ = unwrap_value(tuple_opt.value)
+    fields = [
+        _hmark_field(domain, token.strip())
+        for token in tuple_scalar.split(",")
+        if token.strip()
+    ]
+    if not fields:
+        raise FermError("HMARK 'hmark-tuple' is empty for the nft backend")
+    mod_scalar, _ = unwrap_value(mod_opt.value)
+    if not _is_ascii_uint(mod_scalar) or not (
+        1 <= int(mod_scalar) <= _HMARK_U32_MAX
+    ):
+        raise FermError(
+            f"invalid HMARK hmark-mod '{mod_scalar}' for nft backend"
+        )
+    seed = _hmark_u32("hmark-rnd", unwrap_value(rnd_opt.value)[0])
+    expr = (
+        f"meta mark set jhash {' . '.join(fields)} "
+        f"mod {int(mod_scalar)} seed 0x{seed:x}"
+    )
+    offset_opt = companions.get("hmark-offset")
+    if offset_opt is not None:
+        off_scalar, _ = unwrap_value(offset_opt.value)
+        if not _is_ascii_uint(off_scalar) or int(off_scalar) > _HMARK_U32_MAX:
+            raise FermError(
+                f"invalid HMARK hmark-offset '{off_scalar}' for nft backend"
+            )
+        if int(off_scalar) != 0:
+            expr += f" offset {int(off_scalar)}"
+    return NftVerdict(expr)
+
+
 def build_verdict(
     domain: Family,
     table: str,
@@ -990,11 +1106,25 @@ def build_verdict(
         if has_restore:
             return NftVerdict("meta mark set ct mark")
         return NftVerdict(_mark_arith_set("ct mark", "CONNMARK", companions))
+    if target_value == "CONNSECMARK":
+        # save copies the packet secmark to the ct entry, restore copies it
+        # back (the CONNMARK save/restore shape); exactly one applies.
+        has_save = "save" in companions
+        has_restore = "restore" in companions
+        if has_save == has_restore:
+            raise FermError(
+                "CONNSECMARK target not yet supported by nft backend"
+            )
+        if has_save:
+            return NftVerdict("ct secmark set meta secmark")
+        return NftVerdict("meta secmark set ct secmark")
     # The eb-family MARK keyword stays under the eb guard below (its
     # companion spellings are ebtables-specific), so this branch handles
     # the ip/ip6/arp target only.
     if target_value == "MARK" and domain is not Family.EB:
         return NftVerdict(_mark_arith_set("meta mark", "MARK", companions))
+    if target_value == "HMARK" and domain in (Family.IP, Family.IP6):
+        return _hmark_verdict(domain, companions)
     if target_value == "DSCP" and domain in (Family.IP, Family.IP6):
         # Exactly one of set-dscp / set-dscp-class (TCPMSS/CONNMARK pattern);
         # the selector is family-prefixed like the dscp match.  arp/eb fall

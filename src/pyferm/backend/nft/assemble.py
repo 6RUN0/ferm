@@ -142,6 +142,22 @@ _TARGET_COMPANIONS: Final[frozenset[str]] = frozenset(
         # AUDIT's only option (`type`); no match module spells it, so the
         # plain name is collision-free.
         "type",
+        # CONNSECMARK save/restore (collision-free bare flags).
+        "save",
+        "restore",
+        # HMARK companions (all `hmark-` prefixed, collision-free); the
+        # masks/prefixes are collected so the target refuses with the HMARK
+        # message rather than a generic match-path "not supported".
+        "hmark-tuple",
+        "hmark-mod",
+        "hmark-offset",
+        "hmark-rnd",
+        "hmark-src-prefix",
+        "hmark-dst-prefix",
+        "hmark-sport-mask",
+        "hmark-dport-mask",
+        "hmark-spi-mask",
+        "hmark-proto-mask",
     }
 )
 

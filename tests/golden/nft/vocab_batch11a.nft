@@ -1,0 +1,13 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add chain ip ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add rule ip ferm mangle_PREROUTING ct secmark set meta secmark
+add rule ip ferm mangle_PREROUTING meta secmark set ct secmark
+add rule ip ferm mangle_PREROUTING meta mark set jhash ip saddr . ip daddr . th sport . th dport . meta l4proto mod 10 seed 0xabc offset 100
+add rule ip ferm mangle_PREROUTING meta mark set jhash ip saddr . ip daddr mod 8 seed 0xabc
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add chain ip6 ferm mangle_PREROUTING { type filter hook prerouting priority -150; }
+add rule ip6 ferm mangle_PREROUTING meta mark set jhash ip6 saddr . ip6 daddr mod 8 seed 0xabc

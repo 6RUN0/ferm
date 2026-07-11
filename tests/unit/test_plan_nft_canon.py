@@ -643,3 +643,26 @@ def test_batch9_vocabulary_is_canon_fixed_point(body: str) -> None:
 )
 def test_batch10_vocabulary_is_canon_fixed_point(body: str) -> None:
     assert canonicalize_nft_rule(body, family="ip") == body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # batch-11a vocabulary: CONNSECMARK secmark moves and HMARK jhash.
+        # Each spelling is the live kernel readback (nft v1.1.6); the seed
+        # 0x-hex canon and dropped `offset 0` must pass through untouched.
+        "ct secmark set meta secmark",
+        "meta secmark set ct secmark",
+        (
+            "meta mark set jhash ip saddr . ip daddr . th sport . th dport . "
+            "meta l4proto mod 10 seed 0xabc offset 100"
+        ),
+        "meta mark set jhash ip saddr . ip daddr mod 8 seed 0xabc",
+        # a zero seed reads back as `seed 0x0` (not dropped, unlike offset 0).
+        "meta mark set jhash th dport mod 4 seed 0x0",
+        "meta mark set jhash ip6 saddr . ip6 daddr mod 8 seed 0xabc",
+    ],
+)
+def test_batch11a_vocabulary_is_canon_fixed_point(body: str) -> None:
+    family = "ip6" if "ip6" in body else "ip"
+    assert canonicalize_nft_rule(body, family=family) == body

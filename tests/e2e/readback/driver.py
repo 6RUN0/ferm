@@ -502,6 +502,44 @@ def check_batch10_vocab_readback() -> None:
             )
 
 
+BATCH11A_IP_LINES = [
+    "ct secmark set meta secmark",
+    "meta secmark set ct secmark",
+    (
+        "meta mark set jhash ip saddr . ip daddr . th sport . th dport . "
+        "meta l4proto mod 10 seed 0xabc offset 100"
+    ),
+    "meta mark set jhash ip saddr . ip daddr mod 8 seed 0xabc",
+]
+
+BATCH11A_IP6_LINES = [
+    "meta mark set jhash ip6 saddr . ip6 daddr mod 8 seed 0xabc",
+]
+
+
+def check_batch11a_vocab_readback() -> None:
+    # CONNSECMARK secmark moves and HMARK jhash mangles in a prerouting hook;
+    # require each emission back verbatim (the --plan convergence contract,
+    # including the seed 0x-hex canon and the dropped `offset 0`).
+    body_ip = "\n".join(f" {line}" for line in BATCH11A_IP_LINES)
+    body_ip6 = "\n".join(f" {line}" for line in BATCH11A_IP6_LINES)
+    script = (
+        "table ip t {\n chain c {\n"
+        " type filter hook prerouting priority -150;\n"
+        f"{body_ip}\n }}\n}}\n"
+        "table ip6 t6 {\n chain c {\n"
+        " type filter hook prerouting priority -150;\n"
+        f"{body_ip6}\n }}\n}}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    for want in BATCH11A_IP_LINES + BATCH11A_IP6_LINES:
+        if want not in lines:
+            _fail(
+                f"batch-11a vocab readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -514,6 +552,7 @@ def main() -> None:
     check_stateful_dynset_readback()
     check_batch9_vocab_readback()
     check_batch10_vocab_readback()
+    check_batch11a_vocab_readback()
     print("NFT-READBACK-PASS")
 
 
