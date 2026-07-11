@@ -11,6 +11,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from tests._oracle import assert_oracle_parity
 from tests.corpus.canon import canonicalize
 from tests.property.test_config_differential import (
     _compile_oracle,
@@ -28,14 +29,10 @@ def assert_cli_parity(
         args = ["--test", "--noexec", "--lines", *extra_args, str(path)]
         port = _compile_port(args)
         oracle = _compile_oracle(args)
-    assert port[0] == oracle[0], (  # exit verdict (bool), not numeric code
-        f"exit verdict differs\nconfig:\n{config}\n"
-        f"port stderr:\n{port[2]}\noracle stderr:\n{oracle[2]}"
-    )
-    assert _normalize_stderr(port[2]) == _normalize_stderr(oracle[2]), (
-        f"stderr order differs\nconfig:\n{config}\n"
-        f"port:\n{port[2]}\noracle:\n{oracle[2]}"
-    )
-    assert canonicalize(port[1]) == canonicalize(oracle[1]), (
-        f"stdout differs\nconfig:\n{config}"
+    assert_oracle_parity(
+        port,
+        oracle,
+        canonicalize,
+        normalize_stderr=_normalize_stderr,
+        context=f"config:\n{config}",
     )

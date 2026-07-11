@@ -64,6 +64,7 @@ def assert_oracle_parity(
     canonicalize: Callable[[str], str],
     *,
     normalize_stderr: Callable[[str], str] = _identity,
+    context: str = "",
 ) -> None:
     """
     Assert port and oracle agree on verdict, stderr and canonical stdout.
@@ -73,9 +74,20 @@ def assert_oracle_parity(
     contract (corpus, synthetic modules), while the grammar fuzzer folds
     both internal-crash renderings to a common marker first. The two
     contracts are deliberately distinct and must never be merged into one.
+
+    ``context`` is appended to every failure message.  This module is not
+    assertion-rewritten by pytest (it is not a test module), so a bare
+    assert here degrades to a message-less ``AssertionError`` -- the
+    explicit messages are the only diagnostics a failure carries.
     """
-    assert port[0] == oracle[0], f"exit verdict differs\n{port[2]}{oracle[2]}"
-    assert normalize_stderr(port[2]) == normalize_stderr(oracle[2]), (
-        "stderr differs"
+    suffix = f"\n{context}" if context else ""
+    assert port[0] == oracle[0], (
+        f"exit verdict differs\n"
+        f"port stderr:\n{port[2]}\noracle stderr:\n{oracle[2]}{suffix}"
     )
-    assert canonicalize(port[1]) == canonicalize(oracle[1])
+    assert normalize_stderr(port[2]) == normalize_stderr(oracle[2]), (
+        f"stderr differs\nport:\n{port[2]}\noracle:\n{oracle[2]}{suffix}"
+    )
+    assert canonicalize(port[1]) == canonicalize(oracle[1]), (
+        f"stdout differs{suffix}"
+    )

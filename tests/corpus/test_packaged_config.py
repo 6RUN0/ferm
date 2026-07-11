@@ -68,6 +68,9 @@ def deployed_conf(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
     return conf
 
 
+# Module-level pytestmark would over-skip: the nft-translation tests below
+# never touch the oracle and must keep running on perl-less hosts.
+@pytest.mark.usefixtures("require_perl")
 @pytest.mark.parametrize("mode_args", [[], ["--slow"]], ids=["fast", "slow"])
 def test_packaged_config_matches_oracle(
     deployed_conf: Path, mode_args: list[str]

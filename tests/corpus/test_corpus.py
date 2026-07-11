@@ -35,6 +35,8 @@ from tests._oracle import (
 )
 from tests.corpus.canon import canonicalize
 
+pytestmark = pytest.mark.usefixtures("require_perl")
+
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
 CONFIGS = _HERE / "configs"

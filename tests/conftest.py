@@ -87,6 +87,23 @@ def reference_root() -> Path:
 
 
 @pytest.fixture(scope="session")
+def require_perl() -> None:
+    """
+    Skip oracle-driven tests when the Perl oracle cannot run.
+
+    CI's ubuntu runners ship perl in the base image, which makes the
+    dependency easy to take for granted; on a host without perl the
+    oracle spawn would die with a bare ``FileNotFoundError`` deep inside
+    a test.  Modules that shell out to the oracle declare
+    ``pytestmark = pytest.mark.usefixtures("require_perl")`` so only
+    they skip -- the oracle-free tests keep running without perl.  The
+    wiring is pinned by ``tests/property/test_perl_gate.py``.
+    """
+    if shutil.which("perl") is None:
+        pytest.skip("perl not on PATH; the differential oracle needs it")
+
+
+@pytest.fixture(scope="session")
 def perl_has_resolver_mock() -> bool:
     """Whether Perl can load Net::DNS::Resolver::Mock on this machine."""
     if shutil.which("perl") is None:

@@ -7,7 +7,11 @@ depends on runtime-loaded modules (mod $var) and a negated keyword identity
 must resolve via getvar BEFORE its arity is known (! $var).
 """
 
+import pytest
+
 from tests.property.differential_cli import assert_cli_parity
+
+pytestmark = pytest.mark.usefixtures("require_perl")
 
 
 def test_mod_var_gates_keyword_arity() -> None:
