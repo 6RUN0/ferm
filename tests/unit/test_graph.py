@@ -162,6 +162,11 @@ def test_kw_has_params_union_includes_target_keys() -> None:
     assert "redirect-target" in _KW_HAS_PARAMS["eb"]  # target-module keyword
 
 
+def _graph(config: str) -> ChainGraph:
+    """Parse ``config`` and collect its graph in one call."""
+    return collect_graph(Parser.parse_to_block(config))
+
+
 def _cluster(graph: ChainGraph, domain: str, table: str) -> Cluster:
     return next(
         c for c in graph.clusters if c.domain == domain and c.table == table
@@ -169,10 +174,8 @@ def _cluster(graph: ChainGraph, domain: str, table: str) -> Cluster:
 
 
 def test_collect_graph_defaults_cluster_and_classifies_nodes() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { jump ssh_guard; jump nowhere; }chain ssh_guard { }"
-        )
+    g = _graph(
+        "chain INPUT { jump ssh_guard; jump nowhere; }chain ssh_guard { }"
     )
     c = _cluster(g, "ip", "filter")  # oracle defaults
     nodes = dict(c.nodes)
@@ -184,9 +187,7 @@ def test_collect_graph_defaults_cluster_and_classifies_nodes() -> None:
 
 
 def test_collect_graph_policy_inblock_and_array() -> None:
-    g = collect_graph(
-        Parser.parse_to_block("chain (INPUT OUTPUT) { policy DROP; }")
-    )
+    g = _graph("chain (INPUT OUTPUT) { policy DROP; }")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "DROP", EdgeKind.POLICY) in c.edges
     assert ("OUTPUT", "DROP", EdgeKind.POLICY) in c.edges
@@ -194,11 +195,9 @@ def test_collect_graph_policy_inblock_and_array() -> None:
 
 
 def test_collect_graph_no_cross_table_edges() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "table filter { chain INPUT { jump a; } chain a {} }"
-            "table nat { chain PREROUTING { jump b; } chain b {} }"
-        )
+    g = _graph(
+        "table filter { chain INPUT { jump a; } chain a {} }"
+        "table nat { chain PREROUTING { jump b; } chain b {} }"
     )
     filt = _cluster(g, "ip", "filter")
     nat = _cluster(g, "ip", "nat")
@@ -227,7 +226,7 @@ def test_scan_verdicts_basic_and_suppressions() -> None:
 
 
 def test_collect_graph_verdict_leaf_and_nonterminal() -> None:
-    g = collect_graph(Parser.parse_to_block("chain INPUT { LOG; DROP; }"))
+    g = _graph("chain INPUT { LOG; DROP; }")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "LOG", EdgeKind.VERDICT) in c.edges
     assert ("INPUT", "DROP", EdgeKind.VERDICT) in c.edges
@@ -239,17 +238,15 @@ def test_collect_graph_verdict_leaf_and_nonterminal() -> None:
 def test_collect_graph_pinned_nonregistry_boundary() -> None:
     # spec §4 pinned boundary: value after a NON-registry key is NOT
     # suppressed, so a value spelled like a target false-fires a leaf.
-    g = collect_graph(Parser.parse_to_block("chain INPUT { dport DROP; }"))
+    g = _graph("chain INPUT { dport DROP; }")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "DROP", EdgeKind.VERDICT) in c.edges  # accepted boundary
 
 
 def test_render_dot_golden() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { jump ssh_guard; jump block; DROP; policy DROP; }"
-            "chain ssh_guard { }"
-        )
+    g = _graph(
+        "chain INPUT { jump ssh_guard; jump block; DROP; policy DROP; }"
+        "chain ssh_guard { }"
     )
     assert render_dot(g) == (
         "digraph ferm {\n"
@@ -269,11 +266,9 @@ def test_render_dot_golden() -> None:
 
 
 def test_render_d2_golden() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { jump ssh_guard; jump block; DROP; policy DROP; }"
-            "chain ssh_guard { }"
-        )
+    g = _graph(
+        "chain INPUT { jump ssh_guard; jump block; DROP; policy DROP; }"
+        "chain ssh_guard { }"
     )
     assert render_d2(g) == (
         'ip__filter: "ip/filter" {\n'
@@ -290,11 +285,8 @@ def test_render_d2_golden() -> None:
 
 
 def test_dual_stack_and_joint_cartesian() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "domain (ip ip6) table (filter nat) chain OUTPUT { jump x; }"
-            "chain x {}"
-        )
+    g = _graph(
+        "domain (ip ip6) table (filter nat) chain OUTPUT { jump x; }chain x {}"
     )
     keys = {(c.domain, c.table) for c in g.clusters}
     assert keys == {
@@ -306,18 +298,14 @@ def test_dual_stack_and_joint_cartesian() -> None:
 
 
 def test_realgoto_renders_as_goto_edge() -> None:
-    g = collect_graph(
-        Parser.parse_to_block("chain INPUT { realgoto other; } chain other {}")
-    )
+    g = _graph("chain INPUT { realgoto other; } chain other {}")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "other", EdgeKind.GOTO) in c.edges
 
 
 def test_edge_dedup_and_jump_plus_verdict() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { jump a; jump a; ACCEPT; jump ACCEPT; } chain a {}"
-        )
+    g = _graph(
+        "chain INPUT { jump a; jump a; ACCEPT; jump ACCEPT; } chain a {}"
     )
     c = _cluster(g, "ip", "filter")
     a_edges = [e for e in c.edges if e[:2] == ("INPUT", "a")]
@@ -330,11 +318,9 @@ def test_edge_dedup_and_jump_plus_verdict() -> None:
 
 
 def test_undefined_is_per_cluster() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "table filter { chain INPUT { jump shared; } }"
-            "table nat { chain PREROUTING {} chain shared {} }"
-        )
+    g = _graph(
+        "table filter { chain INPUT { jump shared; } }"
+        "table nat { chain PREROUTING {} chain shared {} }"
     )
     filt = _cluster(g, "ip", "filter")
     assert (
@@ -343,11 +329,7 @@ def test_undefined_is_per_cluster() -> None:
 
 
 def test_subchain_edge_and_user_node() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            'chain INPUT { proto tcp @subchain "sc" { ACCEPT; } }'
-        )
-    )
+    g = _graph('chain INPUT { proto tcp @subchain "sc" { ACCEPT; } }')
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "sc", EdgeKind.SUBCHAIN) in c.edges
     assert dict(c.nodes)["sc"] == NodeKind.USER
@@ -356,11 +338,7 @@ def test_subchain_edge_and_user_node() -> None:
 def test_gotosubchain_edge_carries_goto_kind() -> None:
     # The parser gives goto jumptype to subchain keywords starting with
     # "@go", so the @gotosubchain edge must render as GOTO, not SUBCHAIN.
-    g = collect_graph(
-        Parser.parse_to_block(
-            'chain INPUT { proto tcp @gotosubchain "sc" { ACCEPT; } }'
-        )
-    )
+    g = _graph('chain INPUT { proto tcp @gotosubchain "sc" { ACCEPT; } }')
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "sc", EdgeKind.GOTO) in c.edges
     assert dict(c.nodes)["sc"] == NodeKind.USER
@@ -370,11 +348,9 @@ def test_gotosubchain_edge_carries_goto_kind() -> None:
 
 def test_subchain_and_gotosubchain_edges_coexist() -> None:
     # Both keywords side by side must keep their own distinct edge kind.
-    g = collect_graph(
-        Parser.parse_to_block(
-            'chain INPUT { proto tcp @subchain "s1" { ACCEPT; }'
-            ' proto udp @gotosubchain "s2" { ACCEPT; } }'
-        )
+    g = _graph(
+        'chain INPUT { proto tcp @subchain "s1" { ACCEPT; }'
+        ' proto udp @gotosubchain "s2" { ACCEPT; } }'
     )
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "s1", EdgeKind.SUBCHAIN) in c.edges
@@ -386,20 +362,14 @@ def test_quoted_interpolation_chain_header_makes_no_phantom_node() -> None:
     # literal chain name -- it must not fabricate a "$x" node/cluster
     # entry (graph.py's own _header_value harvests header names
     # independently of the _treescan.py scanners).
-    g = collect_graph(
-        Parser.parse_to_block(
-            '@def $x = FOO;\nchain "$x" { ACCEPT; }\nchain INPUT { }\n'
-        )
-    )
+    g = _graph('@def $x = FOO;\nchain "$x" { ACCEPT; }\nchain INPUT { }\n')
     c = _cluster(g, "ip", "filter")
     assert "$x" not in dict(c.nodes)
 
 
 def test_quoted_interpolation_jump_target_makes_no_phantom_edge() -> None:
     # `jump "$x"` must not create an edge/node for the literal "$x".
-    g = collect_graph(
-        Parser.parse_to_block('@def $x = FOO;\nchain INPUT { jump "$x"; }\n')
-    )
+    g = _graph('@def $x = FOO;\nchain INPUT { jump "$x"; }\n')
     c = _cluster(g, "ip", "filter")
     assert c.edges == ()
     assert dict(c.nodes).keys() == {"INPUT"}
@@ -410,20 +380,13 @@ def test_empty_and_chainless_configs() -> None:
     # empty line list ("") and appends the trailing newline -> "\n". A
     # chainless `table nat;` sets context but declares no chain -> also
     # zero clusters (edges live only inside chains).
-    assert render_dot(collect_graph(Parser.parse_to_block(""))) == (
-        "digraph ferm {\n}\n"
-    )
-    assert (
-        render_d2(collect_graph(Parser.parse_to_block("# just a comment\n")))
-        == "\n"
-    )
-    assert collect_graph(Parser.parse_to_block("table nat;")).clusters == ()
+    assert render_dot(_graph("")) == ("digraph ferm {\n}\n")
+    assert render_d2(_graph("# just a comment\n")) == "\n"
+    assert _graph("table nat;").clusters == ()
 
 
 def test_single_domain_ip6_keeps_literal_key() -> None:
-    g = collect_graph(
-        Parser.parse_to_block("domain ip6 chain INPUT { REJECT; }")
-    )
+    g = _graph("domain ip6 chain INPUT { REJECT; }")
     c = _cluster(g, "ip6", "filter")  # literal ip6 key...
     assert (
         dict(c.nodes)["REJECT"] == NodeKind.VERDICT
@@ -434,17 +397,13 @@ def test_backslash_and_quote_escaping() -> None:
     # _unquote strips the quotes but does NOT process escapes, so the ferm
     # file content `jump "a\b"` names the chain `a\b` (ONE raw backslash);
     # the DOT renderer doubles it (review-verified end-to-end).
-    g = collect_graph(Parser.parse_to_block('chain INPUT { jump "a\\b"; }'))
+    g = _graph('chain INPUT { jump "a\\b"; }')
     dot = render_dot(g)
     assert '"a\\\\b"' in dot  # backslash doubled, not breaking the quote
 
 
 def test_mod_policy_no_policy_edge() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "table filter chain INPUT mod policy dir in { ACCEPT; }"
-        )
-    )
+    g = _graph("table filter chain INPUT mod policy dir in { ACCEPT; }")
     c = _cluster(g, "ip", "filter")
     assert all(k != EdgeKind.POLICY for _, _, k in c.edges)  # M2 regression
 
@@ -452,9 +411,7 @@ def test_mod_policy_no_policy_edge() -> None:
 def test_cycle_within_table_renders_both_edges() -> None:
     # spec section 7: A -> B -> A cycle inside one table; the collector
     # records plain edges (no cycle detection), both must survive.
-    g = collect_graph(
-        Parser.parse_to_block("chain A { jump B; } chain B { jump A; }")
-    )
+    g = _graph("chain A { jump B; } chain B { jump A; }")
     c = _cluster(g, "ip", "filter")
     assert ("A", "B", EdgeKind.JUMP) in c.edges
     assert ("B", "A", EdgeKind.JUMP) in c.edges
@@ -463,7 +420,7 @@ def test_cycle_within_table_renders_both_edges() -> None:
 def test_jump_var_target_is_invisible() -> None:
     # real-parse pin for the eval-free contract: `$v` lexes as TWO tokens
     # ('$', 'v'), the target is non-literal -> no edge, no phantom node.
-    g = collect_graph(Parser.parse_to_block("chain INPUT { jump $v; }"))
+    g = _graph("chain INPUT { jump $v; }")
     c = _cluster(g, "ip", "filter")
     assert c.edges == ()
     assert dict(c.nodes).keys() == {"INPUT"}
@@ -472,11 +429,9 @@ def test_jump_var_target_is_invisible() -> None:
 def test_subchain_body_attributed_to_subchain_not_outer() -> None:
     # review regression: the body of a rule-prefixed @subchain is a SIBLING
     # BlockNode; its edges belong to the subchain, not the outer chain.
-    g = collect_graph(
-        Parser.parse_to_block(
-            'chain INPUT { proto tcp @subchain "sc" { ACCEPT; jump other; } }'
-            "chain other {}"
-        )
+    g = _graph(
+        'chain INPUT { proto tcp @subchain "sc" { ACCEPT; jump other; } }'
+        "chain other {}"
     )
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "sc", EdgeKind.SUBCHAIN) in c.edges
@@ -487,11 +442,9 @@ def test_subchain_body_attributed_to_subchain_not_outer() -> None:
 
 
 def test_nested_subchain_bodies_are_per_subchain() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            'chain INPUT { proto tcp @subchain "sc" {'
-            ' proto udp @subchain "inner" { jump deep; } } } chain deep {}'
-        )
+    g = _graph(
+        'chain INPUT { proto tcp @subchain "sc" {'
+        ' proto udp @subchain "inner" { jump deep; } } } chain deep {}'
     )
     c = _cluster(g, "ip", "filter")
     assert ("sc", "inner", EdgeKind.SUBCHAIN) in c.edges
@@ -503,11 +456,7 @@ def test_rule_group_block_stays_in_outer_chain() -> None:
     # guard for the lookbehind: a rule-group `proto tcp { ... }` has the
     # SAME RuleNode+BlockNode shape as a rule-prefixed @subchain but its
     # body legitimately belongs to the outer chain.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { proto tcp { jump grp; } } chain grp {}"
-        )
-    )
+    g = _graph("chain INPUT { proto tcp { jump grp; } } chain grp {}")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "grp", EdgeKind.JUMP) in c.edges
 
@@ -515,11 +464,9 @@ def test_rule_group_block_stays_in_outer_chain() -> None:
 def test_scalar_def_rhs_makes_no_edge() -> None:
     # review regression: a scalar @def RHS is a stored value, not a rule --
     # neither its jump nor its verdict tokens may leak as edges.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { @def $X = jump foo; @def $Y = ACCEPT; jump real; }"
-            "chain real {}"
-        )
+    g = _graph(
+        "chain INPUT { @def $X = jump foo; @def $Y = ACCEPT; jump real; }"
+        "chain real {}"
     )
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "real", EdgeKind.JUMP) in c.edges
@@ -530,11 +477,7 @@ def test_scalar_def_rhs_makes_no_edge() -> None:
 def test_function_def_body_attributed_to_chain() -> None:
     # function @def keeps the lexical attribution the spec pins: the body
     # lives inside the DefNode span and is replayed in the caller's chain.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT { @def &G() = { jump g; } &G(); } chain g {}"
-        )
-    )
+    g = _graph("chain INPUT { @def &G() = { jump g; } &G(); } chain g {}")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "g", EdgeKind.JUMP) in c.edges
 
@@ -574,9 +517,7 @@ def test_header_context_returns_inline_rule_tail() -> None:
 def test_flat_inline_dport_domain_no_phantom_cluster() -> None:
     # bug #1: `dport domain` (domain is /etc/services for DNS) must not be
     # misread as a header keyword and fabricate a `domain=)`/`ACCEPT` cluster.
-    g = collect_graph(
-        Parser.parse_to_block("chain INPUT proto udp dport domain ACCEPT;")
-    )
+    g = _graph("chain INPUT proto udp dport domain ACCEPT;")
     keys = {(c.domain, c.table) for c in g.clusters}
     assert keys == {("ip", "filter")}  # no phantom cluster
     c = _cluster(g, "ip", "filter")
@@ -585,19 +526,13 @@ def test_flat_inline_dport_domain_no_phantom_cluster() -> None:
 
 def test_flat_inline_table_chain_verdict_edge() -> None:
     # bug #2: the fused rule's verdict edge must not be dropped.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "table filter chain INPUT proto tcp dport 22 ACCEPT;"
-        )
-    )
+    g = _graph("table filter chain INPUT proto tcp dport 22 ACCEPT;")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "ACCEPT", EdgeKind.VERDICT) in c.edges
 
 
 def test_flat_inline_jump_edge_and_user_node() -> None:
-    g = collect_graph(
-        Parser.parse_to_block("chain INPUT jump foo; chain foo {}")
-    )
+    g = _graph("chain INPUT jump foo; chain foo {}")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "foo", EdgeKind.JUMP) in c.edges
     assert dict(c.nodes)["foo"] == NodeKind.USER
@@ -607,17 +542,15 @@ def test_flat_inline_quoted_jump_target() -> None:
     # token-representation pin: the flat tail keeps its quoting, so the
     # quoted target `"a\b"` names chain `a\b` and the renderer doubles the
     # backslash (mirrors test_backslash_and_quote_escaping for braced form).
-    g = collect_graph(Parser.parse_to_block('chain INPUT jump "a\\b";'))
+    g = _graph('chain INPUT jump "a\\b";')
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "a\\b", EdgeKind.JUMP) in c.edges
     assert '"a\\\\b"' in render_dot(g)
 
 
 def test_flat_inline_array_header_all_clusters() -> None:
-    g = collect_graph(
-        Parser.parse_to_block(
-            "domain (ip ip6) table (filter nat) chain OUTPUT jump x;chain x {}"
-        )
+    g = _graph(
+        "domain (ip ip6) table (filter nat) chain OUTPUT jump x;chain x {}"
     )
     for domain in ("ip", "ip6"):
         for table in ("filter", "nat"):
@@ -629,11 +562,7 @@ def test_flat_inline_no_body_stays_out_of_outer_chain() -> None:
     # a flat rule ends in `;` with no sibling block, so the pending-subchain
     # lookbehind must not fire on it: the following braced chain's body is
     # its own, not re-attributed.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "chain INPUT jump foo; chain foo { jump bar; } chain bar {}"
-        )
-    )
+    g = _graph("chain INPUT jump foo; chain foo { jump bar; } chain bar {}")
     c = _cluster(g, "ip", "filter")
     assert ("foo", "bar", EdgeKind.JUMP) in c.edges
     assert ("INPUT", "bar", EdgeKind.JUMP) not in c.edges
@@ -644,9 +573,7 @@ def test_bare_subchain_without_rule_prefix() -> None:
     # SubchainNode, exercising the _scan_span SubchainNode branch that the
     # rule-prefixed form never reaches: only the pre-`{` head (the subchain
     # edge + name) is attributed to the outer chain; the body is elided.
-    g = collect_graph(
-        Parser.parse_to_block('chain INPUT { @subchain "sc" { ACCEPT; } }')
-    )
+    g = _graph('chain INPUT { @subchain "sc" { ACCEPT; } }')
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "sc", EdgeKind.SUBCHAIN) in c.edges
     assert dict(c.nodes)["sc"] == NodeKind.USER
@@ -690,9 +617,7 @@ def test_family_targets_family_absent_from_target_defs() -> None:
     # arp has no key in TARGET_DEFS; the default must be an empty mapping,
     # not None (frozenset(None) would raise).
     assert "ACCEPT" in _family_targets("arp")
-    g = collect_graph(
-        Parser.parse_to_block("domain arp chain INPUT { ACCEPT; }")
-    )
+    g = _graph("domain arp chain INPUT { ACCEPT; }")
     c = _cluster(g, "arp", "filter")
     assert ("INPUT", "ACCEPT", EdgeKind.VERDICT) in c.edges
 
@@ -700,9 +625,7 @@ def test_family_targets_family_absent_from_target_defs() -> None:
 def test_walk_bare_block_is_not_a_subchain_body() -> None:
     # pending_subchain starts as None; a leading bare `{ ... }` block must be
     # walked in the outer chain, not mistaken for a subchain body.
-    g = collect_graph(
-        Parser.parse_to_block("chain INPUT { { jump foo; } } chain foo {}")
-    )
+    g = _graph("chain INPUT { { jump foo; } } chain foo {}")
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "foo", EdgeKind.JUMP) in c.edges
 
@@ -710,11 +633,9 @@ def test_walk_bare_block_is_not_a_subchain_body() -> None:
 def test_walk_subchain_body_keeps_inherited_table() -> None:
     # a rule-prefixed subchain body in a non-filter table must recurse with
     # the inherited table, not fall back to filter.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "table nat { chain PREROUTING {"
-            ' proto tcp @subchain "sc" { jump foo; } } chain foo {} }'
-        )
+    g = _graph(
+        "table nat { chain PREROUTING {"
+        ' proto tcp @subchain "sc" { jump foo; } } chain foo {} }'
     )
     nat = _cluster(g, "ip", "nat")
     assert ("sc", "foo", EdgeKind.JUMP) in nat.edges
@@ -725,11 +646,9 @@ def test_walk_subchain_body_keeps_inherited_table() -> None:
 def test_walk_statement_after_rule_subchain_is_kept() -> None:
     # the subchain-body branch must `continue`, not `break`: a statement
     # after the rule-prefixed subchain block still belongs to the chain.
-    g = collect_graph(
-        Parser.parse_to_block(
-            'chain INPUT { proto tcp @subchain "sc" { ACCEPT; } jump after; }'
-            "chain after {}"
-        )
+    g = _graph(
+        'chain INPUT { proto tcp @subchain "sc" { ACCEPT; } jump after; }'
+        "chain after {}"
     )
     c = _cluster(g, "ip", "filter")
     assert ("INPUT", "after", EdgeKind.JUMP) in c.edges
@@ -738,9 +657,7 @@ def test_walk_statement_after_rule_subchain_is_kept() -> None:
 def test_walk_policy_in_non_filter_table() -> None:
     # a policy edge in a nat chain must land in the nat cluster: the
     # effective-table fallback is `t or (filter,)`, so a set `t` wins.
-    g = collect_graph(
-        Parser.parse_to_block("table nat chain POSTROUTING { policy ACCEPT; }")
-    )
+    g = _graph("table nat chain POSTROUTING { policy ACCEPT; }")
     nat = _cluster(g, "ip", "nat")
     assert ("POSTROUTING", "ACCEPT", EdgeKind.POLICY) in nat.edges
 
@@ -748,7 +665,7 @@ def test_walk_policy_in_non_filter_table() -> None:
 def test_walk_chainless_flat_rule_makes_no_cluster() -> None:
     # a flat inline rule with no chain context emits nothing (`tail and c`);
     # it must not fabricate an empty cluster.
-    g = collect_graph(Parser.parse_to_block("table filter proto tcp ACCEPT;"))
+    g = _graph("table filter proto tcp ACCEPT;")
     assert g.clusters == ()
 
 
@@ -816,7 +733,7 @@ def test_corpus_stuart_has_no_garbage_clusters() -> None:
     src = Path("tests/corpus/configs/stuart-ha-server.ferm").read_text(
         encoding="utf-8"
     )
-    g = collect_graph(Parser.parse_to_block(src))
+    g = _graph(src)
     valid_domains = {"ip", "ip6", "arp", "eb"}
     for c in g.clusters:
         assert c.domain in valid_domains, f"garbage domain {c.domain!r}"
@@ -829,11 +746,9 @@ def test_collect_graph_header_array_keeps_literal_after_var() -> None:
     # FOO)` -- must still collect FOO after skipping the non-literal $x, so
     # FOO's own body (the ACCEPT verdict) is attributed to it and it stays a
     # user chain rather than collapsing to an undefined node.
-    g = collect_graph(
-        Parser.parse_to_block(
-            "table filter chain ($x FOO) { ACCEPT; }"
-            "table filter chain INPUT { jump FOO; }"
-        )
+    g = _graph(
+        "table filter chain ($x FOO) { ACCEPT; }"
+        "table filter chain INPUT { jump FOO; }"
     )
     c = _cluster(g, "ip", "filter")
     assert dict(c.nodes)["FOO"] == NodeKind.USER

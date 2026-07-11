@@ -60,6 +60,24 @@ def _patch(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -> None:
     monkeypatch.setattr("pyferm.etckeeper.subprocess.run", recorder)
 
 
+# The three-step clean-revert argv sequence issued by etckeeper.rollback for
+# subpath "ferm" at revision "deadbeef": unstage, checkout, clean.
+_ROLLBACK_ARGV = [
+    [
+        "etckeeper",
+        "vcs",
+        "rm",
+        "-r",
+        "--cached",
+        "--ignore-unmatch",
+        "--",
+        "ferm",
+    ],
+    ["etckeeper", "vcs", "checkout", "deadbeef", "--", "ferm"],
+    ["etckeeper", "vcs", "clean", "-f", "-d", "--", "ferm"],
+]
+
+
 # --- find_etckeeper -------------------------------------------------------
 
 
@@ -293,20 +311,7 @@ def test_rollback_clean_revert_sequence(
     recorder = _Recorder([_ok(), _ok(), _ok()])
     _patch(monkeypatch, recorder)
     etckeeper.rollback("deadbeef", "ferm")
-    assert recorder.calls == [
-        [
-            "etckeeper",
-            "vcs",
-            "rm",
-            "-r",
-            "--cached",
-            "--ignore-unmatch",
-            "--",
-            "ferm",
-        ],
-        ["etckeeper", "vcs", "checkout", "deadbeef", "--", "ferm"],
-        ["etckeeper", "vcs", "clean", "-f", "-d", "--", "ferm"],
-    ]
+    assert recorder.calls == _ROLLBACK_ARGV
 
 
 def test_rollback_injected_runner_replaces_subprocess() -> None:
@@ -315,20 +320,7 @@ def test_rollback_injected_runner_replaces_subprocess() -> None:
     # assertion cannot leak a patched subprocess.run into later tests.
     recorder = _Recorder([_ok(), _ok(), _ok()])
     etckeeper.rollback("deadbeef", "ferm", runner=recorder)
-    assert recorder.calls == [
-        [
-            "etckeeper",
-            "vcs",
-            "rm",
-            "-r",
-            "--cached",
-            "--ignore-unmatch",
-            "--",
-            "ferm",
-        ],
-        ["etckeeper", "vcs", "checkout", "deadbeef", "--", "ferm"],
-        ["etckeeper", "vcs", "clean", "-f", "-d", "--", "ferm"],
-    ]
+    assert recorder.calls == _ROLLBACK_ARGV
 
 
 def test_rollback_includes_clean_step_removing_post_sha_files(

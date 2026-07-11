@@ -44,6 +44,17 @@ def _parse_and_resolve(argv: list[str]) -> Options:
     return _resolve_options(_build_parser().parse_args(argv))
 
 
+# FOO is declared and reached only via the deprecated `realgoto` keyword, so
+# the deprecated-keyword info finding is the sole output across all three
+# fail-level thresholds that exercise it.
+_REALGOTO_INFO_CFG = (
+    "table filter {\n"
+    "  chain FOO { ACCEPT; }\n"
+    "  chain INPUT { realgoto FOO; }\n"
+    "}\n"
+)
+
+
 # --- mode behaviour: findings, ordering, exit codes -------------------------
 
 
@@ -356,13 +367,7 @@ def test_info_finding_prints_with_info_prefix(
 ) -> None:
     """FOO is declared and reached via realgoto, so the deprecated info
     line is the ONLY output -- pinned exactly."""
-    conf = _write(
-        tmp_path,
-        "table filter {\n"
-        "  chain FOO { ACCEPT; }\n"
-        "  chain INPUT { realgoto FOO; }\n"
-        "}\n",
-    )
+    conf = _write(tmp_path, _REALGOTO_INFO_CFG)
     assert main(["--lint", str(conf)]) == 0
     out = capsys.readouterr().out
     assert out == "info: deprecated keyword: realgoto (use goto)\n"
@@ -370,24 +375,12 @@ def test_info_finding_prints_with_info_prefix(
 
 def test_info_does_not_gate_under_bare_strict(tmp_path: Path) -> None:
     """--lint-strict thresholds at warning; an info finding passes."""
-    conf = _write(
-        tmp_path,
-        "table filter {\n"
-        "  chain FOO { ACCEPT; }\n"
-        "  chain INPUT { realgoto FOO; }\n"
-        "}\n",
-    )
+    conf = _write(tmp_path, _REALGOTO_INFO_CFG)
     assert main(["--lint", "--lint-strict", str(conf)]) == 0
 
 
 def test_info_gates_under_fail_level_info(tmp_path: Path) -> None:
-    conf = _write(
-        tmp_path,
-        "table filter {\n"
-        "  chain FOO { ACCEPT; }\n"
-        "  chain INPUT { realgoto FOO; }\n"
-        "}\n",
-    )
+    conf = _write(tmp_path, _REALGOTO_INFO_CFG)
     assert main(["--lint", "--lint-fail-level=info", str(conf)]) == 2
 
 
