@@ -31,6 +31,8 @@ from tests._oracle import ORACLE_ENV
 from tests.corpus.test_corpus_nft import _NFT_LINE
 from tests.property.test_synthetic_modules import _CASES, Case
 
+pytestmark = pytest.mark.usefixtures("require_perl")
+
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
 

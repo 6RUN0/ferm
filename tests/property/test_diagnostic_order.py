@@ -6,7 +6,11 @@ and the @if branch-swallow window (eval error in a condition over a brace
 imbalance in the branch). Runs port vs Perl oracle, not a self-snapshot.
 """
 
+import pytest
+
 from tests.property.differential_cli import assert_cli_parity
+
+pytestmark = pytest.mark.usefixtures("require_perl")
 
 
 def test_eval_error_before_structural_error() -> None:

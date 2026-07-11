@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
     from pyferm.domains import DomainInfo
 
+pytestmark = pytest.mark.usefixtures("require_perl")
+
 _BYTE_TEXT = st.text(
     alphabet=st.characters(min_codepoint=2, max_codepoint=0xFF),
     max_size=60,

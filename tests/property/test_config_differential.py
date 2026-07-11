@@ -48,6 +48,8 @@ from tests.corpus.canon import canonicalize
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+pytestmark = pytest.mark.usefixtures("require_perl")
+
 _repo_root = Path(__file__).resolve().parents[2]
 # Under a mutmut sweep this module is imported (via differential_cli) by the
 # copy in <repo>/mutants/tests, so parents[2] is <repo>/mutants, which has no

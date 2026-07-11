@@ -8,7 +8,11 @@ while between keywords a `{` re-routes to a nested block. These pin byte-parity
 (stderr + exit verdict) for the whole boundary class the capture used to miss.
 """
 
+import pytest
+
 from tests.property.differential_cli import assert_cli_parity
+
+pytestmark = pytest.mark.usefixtures("require_perl")
 
 
 def test_proto_operand_is_brace() -> None:

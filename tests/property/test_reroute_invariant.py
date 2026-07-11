@@ -8,7 +8,11 @@ bypass its typed path once handle() is gone. These pin byte-parity with the
 Perl oracle for those over-read shapes.
 """
 
+import pytest
+
 from tests.property.differential_cli import assert_cli_parity
+
+pytestmark = pytest.mark.usefixtures("require_perl")
 
 
 def test_subchain_then_plain_rule() -> None:
