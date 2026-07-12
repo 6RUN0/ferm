@@ -75,104 +75,65 @@ def test_lone_parenthesised_set_ok() -> None:
     )
 
 
-def test_mixed_literal_before_set_rejected() -> None:
-    """Literal before a set in one selector is rejected at parse time."""
-    proc = run_pyferm(
-        "@set $p = (80);\n"
-        "domain ip table filter chain INPUT "
-        "{ proto tcp dport (22 $p) ACCEPT; }\n"
-    )
-    assert proc.returncode != 0, "expected rejection of mixed literal+set"
-    assert "mixed with other values" in proc.stderr, (
-        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
-    )
-
-
-def test_mixed_set_before_literal_rejected() -> None:
-    """Set before a literal in one selector is rejected at parse time."""
-    proc = run_pyferm(
-        "@set $p = (80);\n"
-        "domain ip table filter chain INPUT "
-        "{ proto tcp dport ($p 22) ACCEPT; }\n"
-    )
-    assert proc.returncode != 0, "expected rejection of set+literal mix"
-    assert "mixed with other values" in proc.stderr, (
-        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
-    )
-
-
-def test_mixed_set_before_literal_rejected_under_nft() -> None:
-    """The mixed-selector guard fires under --nft (backend-agnostic gate)."""
-    proc = run_pyferm(
-        "@set $p = (80);\n"
-        "domain ip table filter chain INPUT "
-        "{ proto tcp dport ($p 22) ACCEPT; }\n",
-        "--nft",
-    )
-    assert proc.returncode != 0, (
-        "expected rejection of set+literal mix under --nft"
-    )
-    assert "mixed with other values" in proc.stderr, (
-        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
-    )
-
-
-def test_mixed_literal_before_set_rejected_under_nft() -> None:
-    """
-    Literal before a named set in one selector is rejected at parse time.
-
-    This covers the (22 $set) ordering under --nft (regression for the
-    _REF_TYPES omission that let this slip past the parse-time guard).
-    """
-    proc = run_pyferm(
+_MIXED_SELECTOR_CASES = [
+    pytest.param(
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp dport (22 $p) ACCEPT; }\n",
-        "--nft",
-    )
-    assert proc.returncode != 0, (
-        "expected rejection of literal+set mix under --nft"
-    )
-    assert "mixed with other values" in proc.stderr, (
-        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
-    )
-
-
-def test_mixed_set_before_list_rejected_under_nft() -> None:
-    """
-    A set followed by a list variable in one selector is rejected.
-
-    The list branch of ``_read_array`` extends ``wordlist`` without its own
-    prior-SetRef guard; under --nft (where the iptables pre-pass does not run)
-    this silently emitted a ``@name`` rule plus a separate set rule for the
-    leaked list, instead of failing closed.  Regression for that hole.
-    """
-    proc = run_pyferm(
+        (),
+        id="literal-before-set-iptables",
+    ),
+    pytest.param(
+        "@set $p = (80);\n"
+        "domain ip table filter chain INPUT "
+        "{ proto tcp dport ($p 22) ACCEPT; }\n",
+        (),
+        id="set-before-literal-iptables",
+    ),
+    pytest.param(
+        # backend-agnostic gate: the guard fires under --nft too
+        "@set $p = (80);\n"
+        "domain ip table filter chain INPUT "
+        "{ proto tcp dport ($p 22) ACCEPT; }\n",
+        ("--nft",),
+        id="set-before-literal-nft",
+    ),
+    pytest.param(
+        # regression for the _REF_TYPES omission that let the (22 $set)
+        # ordering slip past the parse-time guard under --nft
+        "@set $p = (80);\n"
+        "domain ip table filter chain INPUT "
+        "{ proto tcp dport (22 $p) ACCEPT; }\n",
+        ("--nft",),
+        id="literal-before-set-nft",
+    ),
+    pytest.param(
+        # regression for the _read_array list-branch hole: a set followed by a
+        # list variable silently emitted a @name rule plus a separate set rule
+        # under --nft (where the iptables pre-pass does not run)
         "@def $hosts = (1.1.1.1 2.2.2.2);\n"
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp saddr ($p $hosts) ACCEPT; }\n",
-        "--nft",
-    )
-    assert proc.returncode != 0, (
-        f"expected rejection of set+list mix under --nft, got:\n{proc.stdout}"
-    )
-    assert "mixed with other values" in proc.stderr, (
-        f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
-    )
-
-
-def test_mixed_set_before_list_rejected_under_iptables() -> None:
-    """The same set+list selector is rejected under the default backend too."""
-    proc = run_pyferm(
+        ("--nft",),
+        id="set-before-list-nft",
+    ),
+    pytest.param(
         "@def $hosts = (1.1.1.1 2.2.2.2);\n"
         "@set $p = (80);\n"
         "domain ip table filter chain INPUT "
         "{ proto tcp saddr ($p $hosts) ACCEPT; }\n",
-    )
-    assert proc.returncode != 0, (
-        "expected rejection of set+list mix under iptables"
-    )
+        (),
+        id="set-before-list-iptables",
+    ),
+]
+
+
+@pytest.mark.parametrize(("source", "flags"), _MIXED_SELECTOR_CASES)
+def test_mixed_selector_rejected(source: str, flags: tuple[str, ...]) -> None:
+    """A literal or list mixed with a named set in one selector is rejected."""
+    proc = run_pyferm(source, *flags)
+    assert proc.returncode != 0, f"expected rejection, got:\n{proc.stdout}"
     assert "mixed with other values" in proc.stderr, (
         f"expected 'mixed with other values' in stderr, got:\n{proc.stderr}"
     )

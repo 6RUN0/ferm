@@ -1,3 +1,5 @@
+import pytest
+
 from pyferm.config import PlanFormat
 from pyferm.plan import (
     ChainRebuild,
@@ -134,77 +136,85 @@ def test_structured_noflush_note_warns_about_reappend_undercount() -> None:
     assert "duplicated" in out
 
 
-def _first_index(text: str, *needles: str) -> list[int]:
-    return [text.index(n) for n in needles]
-
-
-def test_structured_policy_changes_sorted_by_chain() -> None:
-    # Two policy changes given out of order must render sorted by chain, and
-    # the sort key must be present (an absent key raises on the dataclass).
-    diff = PlanDiff(
-        policy_changes=[
-            PolicyChange("filter", "OUTPUT", "ACCEPT", "DROP"),
-            PolicyChange("filter", "INPUT", "ACCEPT", "DROP"),
-        ]
-    )
+@pytest.mark.parametrize(
+    ("diff", "first", "second"),
+    [
+        pytest.param(
+            # Policy changes given out of order render sorted by chain, and
+            # the sort key must be present (an absent key raises on the
+            # dataclass).
+            PlanDiff(
+                policy_changes=[
+                    PolicyChange("filter", "OUTPUT", "ACCEPT", "DROP"),
+                    PolicyChange("filter", "INPUT", "ACCEPT", "DROP"),
+                ]
+            ),
+            "policy filter/INPUT",
+            "policy filter/OUTPUT",
+            id="policy-changes",
+        ),
+        pytest.param(
+            PlanDiff(
+                rules_removed=[
+                    RuleChange("filter", "OUTPUT", "-j A"),
+                    RuleChange("filter", "INPUT", "-j B"),
+                ]
+            ),
+            "-j B",
+            "-j A",
+            id="rules-removed",
+        ),
+        pytest.param(
+            PlanDiff(
+                rules_added=[
+                    RuleChange("filter", "OUTPUT", "-j A"),
+                    RuleChange("filter", "INPUT", "-j B"),
+                ]
+            ),
+            "-j B",
+            "-j A",
+            id="rules-added",
+        ),
+        pytest.param(
+            PlanDiff(
+                foreign_chains=[
+                    ForeignChain("filter", "ZULU"),
+                    ForeignChain("filter", "ALFA"),
+                ]
+            ),
+            "ALFA",
+            "ZULU",
+            id="foreign-chains",
+        ),
+        pytest.param(
+            PlanDiff(
+                desuet_chains=[
+                    DesuetChain("filter", "ZULU"),
+                    DesuetChain("filter", "ALFA"),
+                ]
+            ),
+            "ALFA",
+            "ZULU",
+            id="desuet-chains",
+        ),
+        pytest.param(
+            PlanDiff(
+                chain_rebuilds=[
+                    ChainRebuild("filter", "ZULU", "0", "10"),
+                    ChainRebuild("filter", "ALFA", "0", "10"),
+                ]
+            ),
+            "ALFA",
+            "ZULU",
+            id="chain-rebuilds",
+        ),
+    ],
+)
+def test_structured_sorts_by_chain(
+    diff: PlanDiff, first: str, second: str
+) -> None:
     out = render_structured(plan_ip(diff))
-    a, b = _first_index(out, "policy filter/INPUT", "policy filter/OUTPUT")
-    assert a < b
-
-
-def test_structured_rules_removed_sorted_by_chain() -> None:
-    diff = PlanDiff(
-        rules_removed=[
-            RuleChange("filter", "OUTPUT", "-j A"),
-            RuleChange("filter", "INPUT", "-j B"),
-        ]
-    )
-    out = render_structured(plan_ip(diff))
-    assert out.index("-j B") < out.index("-j A")
-
-
-def test_structured_rules_added_sorted_by_chain() -> None:
-    diff = PlanDiff(
-        rules_added=[
-            RuleChange("filter", "OUTPUT", "-j A"),
-            RuleChange("filter", "INPUT", "-j B"),
-        ]
-    )
-    out = render_structured(plan_ip(diff))
-    assert out.index("-j B") < out.index("-j A")
-
-
-def test_structured_foreign_chains_sorted_by_chain() -> None:
-    diff = PlanDiff(
-        foreign_chains=[
-            ForeignChain("filter", "ZULU"),
-            ForeignChain("filter", "ALFA"),
-        ]
-    )
-    out = render_structured(plan_ip(diff))
-    assert out.index("ALFA") < out.index("ZULU")
-
-
-def test_structured_desuet_chains_sorted_by_chain() -> None:
-    diff = PlanDiff(
-        desuet_chains=[
-            DesuetChain("filter", "ZULU"),
-            DesuetChain("filter", "ALFA"),
-        ]
-    )
-    out = render_structured(plan_ip(diff))
-    assert out.index("ALFA") < out.index("ZULU")
-
-
-def test_structured_chain_rebuilds_sorted_by_chain() -> None:
-    diff = PlanDiff(
-        chain_rebuilds=[
-            ChainRebuild("filter", "ZULU", "0", "10"),
-            ChainRebuild("filter", "ALFA", "0", "10"),
-        ]
-    )
-    out = render_structured(plan_ip(diff))
-    assert out.index("ALFA") < out.index("ZULU")
+    assert out.index(first) < out.index(second)
 
 
 def test_structured_set_changes_sorted_by_name() -> None:

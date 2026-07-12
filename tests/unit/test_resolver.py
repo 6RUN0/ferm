@@ -507,40 +507,28 @@ def _stub_gaierror(
     return StubResolver().search("h.example.com", "A")
 
 
-def test_stub_eai_noname_is_silent_nxdomain(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("errno", "errorstring"),
+    [
+        pytest.param(socket.EAI_NONAME, "NXDOMAIN", id="noname-nxdomain"),
+        pytest.param(
+            # EAI_NODATA/EAI_ADDRFAMILY: name exists, no record of this family.
+            getattr(socket, "EAI_NODATA", None) or socket.EAI_ADDRFAMILY,
+            "NOERROR",
+            id="nodata-noerror",
+        ),
+        pytest.param(socket.EAI_AGAIN, "SERVFAIL", id="again-servfail"),
+        # errno None (any unmapped code) must fail closed, not silent.
+        pytest.param(None, "SERVFAIL", id="unmapped-loud-servfail"),
+    ],
+)
+def test_stub_gaierror_maps_to_errorstring(
+    monkeypatch: pytest.MonkeyPatch, errno: int | None, errorstring: str
 ) -> None:
-    result = _stub_gaierror(monkeypatch, socket.EAI_NONAME)
-    assert result.found is False
-    assert result.answer == []
-    assert result.errorstring == "NXDOMAIN"
-
-
-def test_stub_eai_nodata_is_silent_noerror(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # EAI_NODATA/EAI_ADDRFAMILY: name exists, no record of this family.
-    errno = getattr(socket, "EAI_NODATA", None) or socket.EAI_ADDRFAMILY
     result = _stub_gaierror(monkeypatch, errno)
     assert result.found is False
     assert result.answer == []
-    assert result.errorstring == "NOERROR"
-
-
-def test_stub_eai_again_is_loud_servfail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _stub_gaierror(monkeypatch, socket.EAI_AGAIN)
-    assert result.found is False
-    assert result.answer == []
-    assert result.errorstring == "SERVFAIL"
-
-
-def test_stub_unknown_errno_is_loud(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # errno is None (or any unmapped code) must fail closed, not silent.
-    assert _stub_gaierror(monkeypatch, None).errorstring == "SERVFAIL"
+    assert result.errorstring == errorstring
 
 
 def test_stub_servfail_propagates_through_resolve(
