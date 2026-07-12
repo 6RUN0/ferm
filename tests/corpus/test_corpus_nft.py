@@ -23,13 +23,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from tests._netns import nft_rootless_netns_works
-from tests._oracle import ORACLE_ENV
+from tests._oracle import PORT_FERM, spawn_ferm
 from tests.corpus.test_corpus import flat_and_nested_configs
 
 _HERE = Path(__file__).resolve().parent
@@ -101,21 +100,9 @@ def assert_live_nft_accepts(script: str, label: str = "") -> None:
     "config", _corpus_owned_configs(), ids=lambda path: path.stem
 )
 def test_corpus_config_translates_or_refuses_cleanly(config: Path) -> None:
-    proc = subprocess.run(  # fixed argv, no shell
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--nft",
-            "--test",
-            "--noexec",
-            "--lines",
-            str(config),
-        ],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=ORACLE_ENV,
+    proc = spawn_ferm(
+        PORT_FERM,
+        ["--nft", "--test", "--noexec", "--lines", str(config)],
         cwd=REPO_ROOT,
     )
     expected_refusal = config.stem in _EXPECTED_NFT_REFUSALS

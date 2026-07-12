@@ -37,20 +37,39 @@ def oracle_ferm(repo_root: Path) -> tuple[str, ...]:
     return ("perl", str(repo_root / "reference" / "src" / "ferm"))
 
 
+def spawn_ferm(
+    prefix: Sequence[str],
+    args: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """
+    Spawn a ferm/pyferm ``prefix`` over ``args`` under the pinned oracle env.
+
+    The low-level differential primitive: fixed argv, no shell, captured
+    ``utf-8`` output, forced :data:`ORACLE_ENV`.  Callers keep their own
+    post-processing (verdict tuple, raise-on-error, raw process).  ``cwd``
+    defaults to inherit -- pass it explicitly where the working directory is
+    part of the contract (``@glob``/``@include`` resolve relative to it).
+    """
+    return subprocess.run(  # fixed argv, no shell
+        [*prefix, *args],
+        capture_output=True,
+        encoding="utf-8",
+        check=check,
+        env=ORACLE_ENV,
+        cwd=cwd,
+    )
+
+
 def compile_config(
     prefix: tuple[str, ...],
     args: Sequence[str],
     cwd: Path = REPO_ROOT,
 ) -> tuple[bool, str, str]:
     """Run a ferm ``prefix`` over ``args``; return ``(ok, stdout, stderr)``."""
-    proc = subprocess.run(  # fixed argv, no shell
-        [*prefix, *args],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=ORACLE_ENV,
-        cwd=cwd,
-    )
+    proc = spawn_ferm(prefix, args, cwd=cwd)
     return proc.returncode == 0, proc.stdout, proc.stderr
 
 

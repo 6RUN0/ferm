@@ -21,14 +21,12 @@ growth would churn it without adding safety) and no live ``nft -c`` half
 from __future__ import annotations
 
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from pyferm.modules import TARGET_DEFS
-from tests._oracle import ORACLE_ENV
+from tests._oracle import PORT_FERM, spawn_ferm
 from tests.corpus.test_corpus_nft import _NFT_LINE
 from tests.property.test_synthetic_modules import _CASES, Case
 
@@ -52,21 +50,9 @@ def test_synthetic_case_translates_or_refuses_cleanly(
 ) -> None:
     config = tmp_path / f"{case.case_id}.ferm"
     config.write_text(case.config, encoding="utf-8")
-    proc = subprocess.run(  # fixed argv, no shell
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--nft",
-            "--test",
-            "--noexec",
-            "--lines",
-            str(config),
-        ],
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=ORACLE_ENV,
+    proc = spawn_ferm(
+        PORT_FERM,
+        ["--nft", "--test", "--noexec", "--lines", str(config)],
         cwd=REPO_ROOT,
     )
     if proc.returncode != 0:

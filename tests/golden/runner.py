@@ -14,12 +14,11 @@ Python port later (``FERM_GOLDEN_TARGET=perl|python``).
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests._oracle import ORACLE_ENV
+from tests._oracle import spawn_ferm
 
 from .normalize import eb_arp_sed, ebtables_tempfile_rename, result_sed
 from .sortpl import sort_output
@@ -116,14 +115,7 @@ def _run(prefix: tuple[str, ...], args: list[str]) -> str:
     # Run from the reference tree (like ``make -C reference``): @glob and
     # @include resolve relative to the cwd, and ferm echoes those relative
     # paths into the rules, so the cwd is part of the golden contract.
-    proc = subprocess.run(  # fixed argv, no shell
-        cmd,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=ORACLE_ENV,
-        cwd=REFERENCE_ROOT,
-    )
+    proc = spawn_ferm(prefix, args, cwd=REFERENCE_ROOT)
     if proc.returncode != 0:
         raise FermInvocationError(cmd, proc.returncode, proc.stderr)
     return proc.stdout
@@ -203,13 +195,9 @@ def diagnostics_case(target: FermTarget, ferm_file: Path) -> tuple[int, str]:
     Unlike :func:`_run`, a non-zero exit is the expected outcome here,
     so the verdict is returned for the test to assert on.
     """
-    cmd = [*target.ferm, "--test", "--slow", "--noflush", _rel(ferm_file)]
-    proc = subprocess.run(  # fixed argv, no shell
-        cmd,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-        env=ORACLE_ENV,
+    proc = spawn_ferm(
+        target.ferm,
+        ["--test", "--slow", "--noflush", _rel(ferm_file)],
         cwd=REFERENCE_ROOT,
     )
     return proc.returncode, proc.stderr

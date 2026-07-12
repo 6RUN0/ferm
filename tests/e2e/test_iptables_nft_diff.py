@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests._oracle import ORACLE_ENV, PORT_FERM
+from tests._oracle import PORT_FERM, spawn_ferm
 from tests.e2e.iptables_nft.normalize import _TABLE_CONCEPTS, parse_dump
 
 if TYPE_CHECKING:
@@ -102,12 +102,8 @@ pytestmark = pytest.mark.skipif(
 
 
 def _ferm(config: Path, *nft: str) -> str:
-    proc = subprocess.run(  # fixed argv, no shell
-        [*PORT_FERM, *nft, "--noexec", "--lines", str(config)],
-        capture_output=True,
-        encoding="utf-8",
-        check=True,
-        env=ORACLE_ENV,
+    proc = spawn_ferm(
+        PORT_FERM, [*nft, "--noexec", "--lines", str(config)], check=True
     )
     return proc.stdout
 
