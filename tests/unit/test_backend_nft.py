@@ -4975,17 +4975,54 @@ def test_translate_rule_statistic_nth() -> None:
     ) == ["numgen inc mod 10 0", "accept"]
 
 
-def test_translate_rule_statistic_negated_mode_refused() -> None:
-    with pytest.raises(FermError, match=r"^mod statistic 'mode' cannot be"):
-        _statistic_texts(
-            _statistic("mode", Negated("random")),
-            _statistic("probability", "0.5"),
-        )
-
-
-def test_translate_rule_statistic_nth_without_every_refused() -> None:
-    with pytest.raises(FermError, match=r"^mod statistic mode nth needs"):
-        _statistic_texts(_statistic("mode", "nth"))
+@pytest.mark.parametrize(
+    ("stat_opts", "match"),
+    [
+        pytest.param(
+            [
+                _statistic("mode", Negated("random")),
+                _statistic("probability", "0.5"),
+            ],
+            r"^mod statistic 'mode' cannot be",
+            id="negated-mode",
+        ),
+        pytest.param(
+            [_statistic("mode", "nth")],
+            r"^mod statistic mode nth needs",
+            id="nth-without-every",
+        ),
+        pytest.param(
+            [_statistic("mode", "banana")],
+            r"^unknown statistic mode 'banana'",
+            id="unknown-mode",
+        ),
+        pytest.param(
+            [_statistic("mode", "random")],
+            r"^mod statistic mode random needs a 'probability'",
+            id="random-without-probability",
+        ),
+        pytest.param(
+            # xt requires --packet < --every (packet is 0-based)
+            [
+                _statistic("mode", "nth"),
+                _statistic("every", "10"),
+                _statistic("packet", "10"),
+            ],
+            r"must be less than every",
+            id="packet-ge-every",
+        ),
+        pytest.param(
+            [_statistic("probability", "0.5")],
+            r"^mod statistic needs a 'mode'",
+            id="missing-mode",
+        ),
+    ],
+)
+def test_translate_rule_statistic_refused(
+    stat_opts: list[RenderedOption], match: str
+) -> None:
+    with pytest.raises(FermError, match=match):
+        _statistic_texts(*stat_opts)
 
 
 def test_translate_rule_statistic_probability_out_of_range_refused() -> None:
@@ -4995,28 +5032,6 @@ def test_translate_rule_statistic_probability_out_of_range_refused() -> None:
                 _statistic("mode", "random"),
                 _statistic("probability", bad),
             )
-
-
-def test_translate_rule_statistic_unknown_mode_refused() -> None:
-    with pytest.raises(FermError, match=r"^unknown statistic mode 'banana'"):
-        _statistic_texts(_statistic("mode", "banana"))
-
-
-def test_translate_rule_statistic_random_without_probability_refused() -> None:
-    with pytest.raises(
-        FermError, match=r"^mod statistic mode random needs a 'probability'"
-    ):
-        _statistic_texts(_statistic("mode", "random"))
-
-
-def test_translate_rule_statistic_packet_ge_every_refused() -> None:
-    # xt requires --packet < --every (packet is 0-based)
-    with pytest.raises(FermError, match=r"must be less than every"):
-        _statistic_texts(
-            _statistic("mode", "nth"),
-            _statistic("every", "10"),
-            _statistic("packet", "10"),
-        )
 
 
 def test_translate_rule_statistic_invalid_scalars_refused() -> None:
@@ -5036,11 +5051,6 @@ def test_translate_rule_statistic_invalid_scalars_refused() -> None:
             _statistic("every", "10"),
             _statistic("packet", "abc"),
         )
-
-
-def test_translate_rule_statistic_missing_mode_refused() -> None:
-    with pytest.raises(FermError, match=r"^mod statistic needs a 'mode'"):
-        _statistic_texts(_statistic("probability", "0.5"))
 
 
 def test_translate_rule_statistic_module_qualified_collection() -> None:
