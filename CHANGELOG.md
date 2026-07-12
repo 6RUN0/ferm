@@ -13,6 +13,21 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **nft backend: the CT target's `helper` option (vocabulary batch 11b,
+  the second table object).** `CT --helper <name>` now translates to a
+  native nft `ct helper` table object declaring the helper and its L4
+  protocol, referenced by `ct helper set "<name>"` (live-verified on nft
+  v1.1.6, kernel 6.18.38). The object name is content-addressed
+  (`cthelper_<name>`, dashes folded to underscores), so the `--plan`
+  differ compares it by name alone — which sidesteps the `l3proto` line
+  the kernel adds on readback but the save form omits. The eight helpers
+  the kernel exposes as single-protocol objects are supported (`ftp`,
+  `irc`, `sane`, `pptp` over tcp; `tftp`, `amanda`, `snmp`, `netbios-ns`
+  over udp); `sip` (registers both tcp and udp, so one object would narrow
+  it), `h323` (no loadable object), and any unknown name refuse cleanly
+  rather than emit a rejected load. A rule mixing `helper` with a
+  translatable CT option (`zone`, `ctevents`, …) emits both; mixing it
+  with the still-unsupported `expevents`/`timeout` refuses up front.
 - **nft backend: the SECMARK target and table-object infrastructure
   (vocabulary batch 11b).** `SECMARK --selctx "<context>"` now translates
   to a native nft `secmark` table object holding the context, referenced

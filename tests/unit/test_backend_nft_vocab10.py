@@ -13,10 +13,10 @@ from __future__ import annotations
 import pytest
 
 from pyferm.backend.nft import (
-    build_verdict,
     translate_match,
     translate_rule,
 )
+from pyferm.backend.nft.verdicts import _ct_target_statements
 from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
@@ -47,7 +47,9 @@ def _texts(rule_options: list[RenderedOption], domain: Family) -> list[str]:
 
 
 def _ct(companions: dict[str, RenderedOption]) -> str:
-    return build_verdict(Family.IP, "raw", "jump", "CT", companions).to_text()
+    # CT now builds an ordered statement list (its `helper` knob declares a
+    # table object -- batch 11b), joined here as it would emit in a rule.
+    return " ".join(s.to_text() for s in _ct_target_statements(companions))
 
 
 def _ct_opt(name: str, value: Value) -> RenderedOption:
@@ -344,7 +346,9 @@ def test_ct_bare_refused() -> None:
         _ct({})
 
 
-@pytest.mark.parametrize("unsupported", ["helper", "expevents", "timeout"])
+# `helper` moved to the supported set in batch 11b (a `ct helper` object);
+# only expevents/timeout still lack an nft form.
+@pytest.mark.parametrize("unsupported", ["expevents", "timeout"])
 def test_ct_object_options_refused(unsupported: str) -> None:
     with pytest.raises(
         FermError, match=rf"^CT target option '{unsupported}' not yet"
@@ -353,13 +357,15 @@ def test_ct_object_options_refused(unsupported: str) -> None:
 
 
 def test_ct_refusal_short_circuits_translatable_sibling() -> None:
-    # `CT helper ftp zone 1`: the unsupported helper must refuse UP FRONT --
-    # emitting `ct zone set 1` and dropping the helper would be a fail-open
-    # mangle (the firewall silently loses the helper assignment).
-    with pytest.raises(FermError, match=r"^CT target option 'helper' not yet"):
+    # `CT expevents new zone 1`: the unsupported expevents must refuse UP FRONT
+    # -- emitting `ct zone set 1` and dropping expevents would be a fail-open
+    # mangle (the firewall silently loses the requested behavior).
+    with pytest.raises(
+        FermError, match=r"^CT target option 'expevents' not yet"
+    ):
         _ct(
             {
-                "helper": _ct_opt("helper", "ftp"),
+                "expevents": _ct_opt("expevents", "new"),
                 "zone": _ct_opt("zone", "1"),
             }
         )

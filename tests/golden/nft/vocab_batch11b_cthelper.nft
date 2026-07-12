@@ -1,0 +1,14 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add ct helper ip ferm cthelper_ftp { type "ftp" protocol tcp; }
+add ct helper ip ferm cthelper_irc { type "irc" protocol tcp; }
+add ct helper ip ferm cthelper_netbios_ns { type "netbios-ns" protocol udp; }
+add ct helper ip ferm cthelper_tftp { type "tftp" protocol udp; }
+add chain ip ferm raw_OUTPUT { type filter hook output priority -300; }
+add chain ip ferm raw_PREROUTING { type filter hook prerouting priority -300; }
+add rule ip ferm raw_OUTPUT tcp dport 21 ct zone set 5 ct helper set "cthelper_ftp"
+add rule ip ferm raw_PREROUTING tcp dport 21 ct helper set "cthelper_ftp"
+add rule ip ferm raw_PREROUTING tcp dport 6667 ct helper set "cthelper_irc"
+add rule ip ferm raw_PREROUTING udp dport 69 ct helper set "cthelper_tftp"
+add rule ip ferm raw_PREROUTING udp dport 137 ct helper set "cthelper_netbios_ns"

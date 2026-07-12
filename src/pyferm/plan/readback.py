@@ -567,8 +567,25 @@ _NFT_OBJ_ELEMENT: Final[str] = "element"
 
 _NFT_OBJ_RULE: Final[str] = "rule"
 
-#: Object sub-verbs (single-token; ``ct helper`` is added in a later batch).
+#: Single-token object sub-verb.
 _NFT_OBJ_SECMARK: Final[str] = "secmark"
+
+#: The two-token ``ct helper`` object sub-verb, split across ``parts[1:3]``.
+_NFT_OBJ_CT: Final[str] = "ct"
+
+_NFT_OBJ_HELPER: Final[str] = "helper"
+
+#: ``ParsedObject.kind`` for a conntrack-helper object (the nft keyword).
+_NFT_OBJ_CT_HELPER: Final[str] = "ct helper"
+
+#: Name-token index on an object line: ``add <kind> <fam> ferm <name>`` puts
+#: the name at ``parts[4]`` for a one-word kind; ``ct helper`` shifts it to 5.
+_NFT_OBJ_NAME_INDEX: Final[int] = 4
+
+_NFT_CTHELPER_NAME_INDEX: Final[int] = 5
+
+#: Minimum token count for ``add ct helper <fam> ferm <name> {`` (indices 0-6).
+_NFT_CTHELPER_MIN_PARTS: Final[int] = 7
 
 
 def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
@@ -615,17 +632,25 @@ def _check_family(
 
 
 def _parse_object_head(
-    parts: list[str], family: str | None, lineno: int, raw: str
+    parts: list[str],
+    family: str | None,
+    lineno: int,
+    raw: str,
+    *,
+    name_index: int = _NFT_OBJ_NAME_INDEX,
 ) -> tuple[str, str]:
     """
     Validate the shared ``add <kind> <family> ferm <name>`` line head.
 
-    Every object line in a ferm-generated nft script carries the same
-    5-token head; the non-``ferm`` table check and the cross-line family
-    consistency check are identical for all four kinds.  Returns the
-    narrowed ``(family, name)``.
+    Every single-word object line carries the same 5-token head (name at
+    ``parts[4]``); the two-word ``ct helper`` keyword shifts the family, table,
+    and name one slot right (``name_index=5``).  The non-``ferm`` table check
+    and the cross-line family consistency check are identical for all kinds.
+    Returns the narrowed ``(family, name)``.
     """
-    fam_tok, table_name, name = parts[2], parts[3], parts[4]
+    fam_tok = parts[name_index - 2]
+    table_name = parts[name_index - 1]
+    name = parts[name_index]
     if table_name != NFT_TABLE_NAME:
         raise _parse_error(lineno, raw)
     return _check_family(family, fam_tok, lineno, raw), name
@@ -751,6 +776,30 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             )
             continue
 
+        # -- add ct helper (a two-word table object) -------------------------
+        if (
+            sub == _NFT_OBJ_CT
+            and parts[2:3] == [_NFT_OBJ_HELPER]
+            and len(parts) >= _NFT_CTHELPER_MIN_PARTS
+        ):
+            family, obj_name = _parse_object_head(
+                parts,
+                family,
+                lineno,
+                raw,
+                name_index=_NFT_CTHELPER_NAME_INDEX,
+            )
+            _ensure_ferm_table(tables)
+            brace_open = line.find("{")
+            brace_close = line.rfind("}")
+            body = ""
+            if brace_open != -1 and brace_close > brace_open:
+                body = line[brace_open + 1 : brace_close].strip()
+            tables[NFT_TABLE_NAME].objects[obj_name] = ParsedObject(
+                obj_name, _NFT_OBJ_CT_HELPER, body
+            )
+            continue
+
         # -- add element -----------------------------------------------------
         if sub == _NFT_OBJ_ELEMENT and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, set_name = _parse_object_head(parts, family, lineno, raw)
@@ -815,11 +864,15 @@ _NFT_LIST_CHAIN_RE: Final[re.Pattern[str]] = re.compile(
 
 _NFT_LIST_SET_RE: Final[re.Pattern[str]] = re.compile(r"^set\s+(\S+)\s*\{$")
 
-# A table-object opener: 'secmark <name> {' (ct helper is added later, with a
-# two-word keyword).  Kept distinct from the set opener so the block body is
-# routed to ParsedTable.objects, never mistaken for set elements.
+# Table-object openers: 'secmark <name> {' and the two-word 'ct helper
+# <name> {'.  Kept distinct from the set opener so the block body is routed to
+# ParsedTable.objects, never mistaken for set elements.
 _NFT_LIST_SECMARK_RE: Final[re.Pattern[str]] = re.compile(
     r"^secmark\s+(\S+)\s*\{$"
+)
+
+_NFT_LIST_CTHELPER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^ct helper\s+(\S+)\s*\{$"
 )
 
 # A base-chain header starts with 'type' followed by the hook/priority tokens.
@@ -929,6 +982,15 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                 if not _NFT_LIST_SET_IDENT_RE.match(obj_name):
                     raise _parse_error(lineno, raw)
                 current_object = ParsedObject(obj_name, _NFT_OBJ_SECMARK)
+                tables[NFT_TABLE_NAME].objects[obj_name] = current_object
+                depth = _NL_DEPTH_OBJECT
+                continue
+            m_cth = _NFT_LIST_CTHELPER_RE.match(line)
+            if m_cth:
+                obj_name = m_cth.group(1)
+                if not _NFT_LIST_SET_IDENT_RE.match(obj_name):
+                    raise _parse_error(lineno, raw)
+                current_object = ParsedObject(obj_name, _NFT_OBJ_CT_HELPER)
                 tables[NFT_TABLE_NAME].objects[obj_name] = current_object
                 depth = _NL_DEPTH_OBJECT
                 continue

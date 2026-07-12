@@ -1,0 +1,13 @@
+table raw {
+    chain PREROUTING proto tcp {
+        dport 21 CT helper ftp;
+        dport 6667 CT helper irc;
+    }
+    chain PREROUTING proto udp {
+        dport 69 CT helper tftp;
+        dport 137 CT helper netbios-ns;
+    }
+    chain OUTPUT proto tcp {
+        dport 21 CT helper ftp zone 5;
+    }
+}

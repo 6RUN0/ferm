@@ -4475,12 +4475,20 @@ def test_build_verdict_same_still_refuses_with_random_companion() -> None:
         build_verdict(Family.IP, "nat", "jump", "SAME", same)
 
 
-def test_build_verdict_ct_notrack() -> None:
+from pyferm.backend.nft.verdicts import (  # noqa: E402
+    _ct_target_statements,
+)
+
+
+def _ct_text(companions: dict[str, RenderedOption]) -> str:
+    # CT builds an ordered statement list (its `helper` knob declares a `ct
+    # helper` object -- batch 11b), joined here as it would emit in a rule.
+    return " ".join(s.to_text() for s in _ct_target_statements(companions))
+
+
+def test_ct_target_notrack() -> None:
     notrack = {"notrack": _flag("notrack", "CT")}
-    assert (
-        build_verdict(Family.IP, "raw", "jump", "CT", notrack).to_text()
-        == "notrack"
-    )
+    assert _ct_text(notrack) == "notrack"
     # the CT notrack path emits the same spelling as the standalone NOTRACK
     assert (
         build_verdict(Family.IP, "raw", "jump", "NOTRACK", {}).to_text()
@@ -4488,29 +4496,31 @@ def test_build_verdict_ct_notrack() -> None:
     )
 
 
-def test_build_verdict_ct_refusals() -> None:
+def test_ct_target_refusals() -> None:
     # a bare CT (no companion) has no nft spelling (the xt oracle refuses too)
     with pytest.raises(
         FermError, match=r"^CT target not yet supported by nft backend$"
     ):
-        build_verdict(Family.IP, "raw", "jump", "CT", {})
-    # helper/timeout still need object declarations (batch 11) and expevents
-    # has no nft expectation-event set; all three refuse up front.
-    for option in ("helper", "expevents", "timeout"):
+        _ct_target_statements({})
+    # expevents/timeout have no nft form (a ct-timeout object is a later
+    # batch); both refuse up front.
+    for option in ("expevents", "timeout"):
         comp = {option: _opt(option, "x", module="CT")}
         with pytest.raises(
             FermError, match=rf"^CT target option '{option}' not yet"
         ):
-            build_verdict(Family.IP, "raw", "jump", "CT", comp)
-    # a refused option beside a translatable one still refuses (the refusal
-    # short-circuits, so the unsupported half is never silently dropped --
-    # a partial CT mangle would be a fail-open).
+            _ct_target_statements(comp)
+    # an unsupported option beside a translatable one still refuses (the
+    # refusal short-circuits, so the unsupported half is never silently
+    # dropped -- a partial CT mangle would be a fail-open).
     both = {
-        "helper": _opt("helper", "ftp", module="CT"),
+        "expevents": _opt("expevents", "new", module="CT"),
         "zone": _opt("zone", "1", module="CT"),
     }
-    with pytest.raises(FermError, match=r"^CT target option 'helper' not yet"):
-        build_verdict(Family.IP, "raw", "jump", "CT", both)
+    with pytest.raises(
+        FermError, match=r"^CT target option 'expevents' not yet"
+    ):
+        _ct_target_statements(both)
 
 
 def test_build_verdict_checksum_refused() -> None:

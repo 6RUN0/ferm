@@ -44,6 +44,7 @@ from .model import (
     NftObjectRef,
     NftReset,
     NftSetUpdate,
+    NftStatement,
     NftVerdict,
     _addr_set_type,
     _bounded_uint,
@@ -855,6 +856,113 @@ def _ct_event_canon(option: RenderedOption) -> str:
     return ",".join(ordered)
 
 
+#: xt conntrack-helper name -> the single L4 protocol its nft ``ct helper``
+#: object binds (verified live against kernel 6.18.38: each name loads with
+#: exactly this transport).  ``sip`` and ``h323`` are absent on purpose:
+#: ``sip`` registers for BOTH tcp and udp (a single-protocol object would
+#: silently cover only one transport -- a fail-open narrowing), and ``h323``
+#: exposes no loadable ct-helper object (``type "h323"`` is ENOENT).  A name
+#: outside this map refuses rather than emit an object the kernel rejects.
+_CT_HELPER_PROTO: Final[dict[str, str]] = {
+    "ftp": "tcp",
+    "irc": "tcp",
+    "sane": "tcp",
+    "pptp": "tcp",
+    "tftp": "udp",
+    "amanda": "udp",
+    "snmp": "udp",
+    "netbios-ns": "udp",
+}
+
+
+def _ct_helper_object(helper: RenderedOption) -> NftObjectRef:
+    """
+    Build the ``ct helper`` object-ref statement for a ``CT helper <name>``.
+
+    nft models an assigned conntrack helper as a table ``ct helper`` object
+    declaring the helper's name and L4 protocol, referenced by
+    ``ct helper set "<obj>"``.  The object is content-addressed: the helper
+    name fixes the protocol (:data:`_CT_HELPER_PROTO`), so two sightings dedup
+    and :func:`diff_tables` compares by name alone -- which sidesteps the
+    ``l3proto`` line the kernel adds on readback but the save form omits.  The
+    object name is ``cthelper_<name>`` with dashes folded to underscores
+    (``netbios-ns`` -> ``cthelper_netbios_ns``) so it satisfies the nft
+    bare-identifier grammar the readback validates.  A helper nft cannot model
+    with one protocol refuses rather than narrow the rule (the SECMARK object
+    precedent for a statement that carries a declaration).
+    """
+    name, neg = unwrap_value(helper.value)
+    if neg:
+        raise FermError("CT 'helper' cannot be negated for the nft backend")
+    if not name:
+        raise FermError(
+            "CT target option 'helper' needs a helper name for the nft backend"
+        )
+    proto = _CT_HELPER_PROTO.get(name)
+    if proto is None:
+        supported = ", ".join(sorted(_CT_HELPER_PROTO))
+        raise FermError(
+            f"CT helper '{name}' has no single-protocol nft ct-helper object "
+            f"(supported: {supported}); use the iptables backend for this rule"
+        )
+    obj_name = "cthelper_" + name.replace("-", "_")
+    return NftObjectRef(
+        kind="ct helper",
+        name=obj_name,
+        body=f"type {_nft_quote_string(name)} protocol {proto};",
+        rule_expr=f"ct helper set {_nft_quote_string(obj_name)}",
+    )
+
+
+def _ct_target_statements(
+    companions: dict[str, RenderedOption],
+) -> list[NftStatement]:
+    """
+    Translate the CT target's options into an ordered nft statement list.
+
+    xt_CT carries several independent knobs on one rule; each maps to its own
+    nft statement.  ``expevents`` and ``timeout`` have no nft equivalent
+    (``ct expectation event set`` is a syntax error; a timeout policy needs a
+    ``ct timeout`` object this batch does not build), so they refuse UP FRONT,
+    before any statement is emitted -- a rule mixing one with a translatable
+    option (``CT helper ftp timeout ...``) must fail cleanly, never silently
+    drop the unsupported half (a fail-open mangle).  The translatable knobs
+    emit in one fixed order (notrack -> zone forms -> events -> helper); nft
+    preserves rule-statement order on readback, so ``--plan`` converges.  The
+    helper alone declares a table object, so it rides an :class:`NftObjectRef`;
+    the rest are plain verdict statements joined verbatim.
+    """
+    for unsupported in ("expevents", "timeout"):
+        if unsupported in companions:
+            raise FermError(
+                f"CT target option '{unsupported}' not yet supported by "
+                f"nft backend"
+            )
+    parts: list[str] = []
+    if "notrack" in companions:
+        parts.append("notrack")
+    for zone_name, prefix in (
+        ("zone", "ct zone set "),
+        ("zone-orig", "ct original zone set "),
+        ("zone-reply", "ct reply zone set "),
+    ):
+        comp = companions.get(zone_name)
+        if comp is not None:
+            scalar, _ = unwrap_value(comp.value)
+            parts.append(prefix + _ct_zone_value(zone_name, scalar))
+    if "ctevents" in companions:
+        events = _ct_event_canon(companions["ctevents"])
+        parts.append(f"ct event set {events}")
+    statements: list[NftStatement] = []
+    if parts:
+        statements.append(NftVerdict(" ".join(parts)))
+    if "helper" in companions:
+        statements.append(_ct_helper_object(companions["helper"]))
+    if not statements:
+        raise FermError("CT target not yet supported by nft backend")
+    return statements
+
+
 #: xt HMARK tuple field spellings that map to a fixed nft jhash selector.
 _HMARK_FIXED_FIELD: Final[dict[str, str]] = {
     "sport": "th sport",
@@ -1200,40 +1308,9 @@ def build_verdict(
         return _synproxy_verdict(companions)
     if target_value == "TPROXY" and domain in (Family.IP, Family.IP6):
         return _tproxy_verdict(domain, companions, has_transport=has_transport)
-    if target_value == "CT":
-        # helper/timeout still need object declarations (ct helper/timeout
-        # objects -- batch 11), and expevents has no nft expectation-event
-        # set (`ct expectation event set` is a syntax error).  Refuse these
-        # UP FRONT, before emitting any statement, so a rule that mixes one
-        # with a translatable option (`CT helper ftp zone 1`) never silently
-        # drops the unsupported half -- that would be a fail-open mangle.
-        for unsupported in ("helper", "expevents", "timeout"):
-            if unsupported in companions:
-                raise FermError(
-                    f"CT target option '{unsupported}' not yet supported by "
-                    f"nft backend"
-                )
-        # nft keeps rule-statement order on readback, so the translatable CT
-        # options emit in one fixed order (notrack -> zone forms -> events)
-        # for a rule carrying several; --plan then converges.
-        statements: list[str] = []
-        if "notrack" in companions:
-            statements.append("notrack")
-        for zone_name, prefix in (
-            ("zone", "ct zone set "),
-            ("zone-orig", "ct original zone set "),
-            ("zone-reply", "ct reply zone set "),
-        ):
-            comp = companions.get(zone_name)
-            if comp is not None:
-                scalar, _ = unwrap_value(comp.value)
-                statements.append(prefix + _ct_zone_value(zone_name, scalar))
-        if "ctevents" in companions:
-            events = _ct_event_canon(companions["ctevents"])
-            statements.append(f"ct event set {events}")
-        if not statements:
-            raise FermError("CT target not yet supported by nft backend")
-        return NftVerdict(" ".join(statements))
+    # The CT target declares a table object for its `helper` knob, so it is
+    # intercepted in `translate_rule` (the SECMARK object precedent) and never
+    # reaches build_verdict -- see `_ct_target_statements`.
     if target_value == "CHECKSUM":
         raise FermError(
             "CHECKSUM target has no nft equivalent (kernels since 4.19 "

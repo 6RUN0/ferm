@@ -25,6 +25,7 @@ from pyferm.backend.nft import (
     NftSetType,
     NftSetUpdate,
     NftTable,
+    NftVerdict,
     _DynSetDecl,
     _ObjectDecl,
     _SetDecl,
@@ -433,3 +434,256 @@ def test_parse_captures_object_body() -> None:
     listed = parse_nft_list(listing, family="ip")["ferm"].objects[name]
     assert listed.kind == "secmark"
     assert listed.body == f'"{_SSH_CTX}"'
+
+
+# -- CT helper object (batch 11b, Commit 2) -----------------------------
+#
+# The CT target's `helper` knob is the second table object: `CT helper ftp`
+# emits a `ct helper cthelper_ftp { type "ftp" protocol tcp; }` object plus a
+# `ct helper set "cthelper_ftp"` rule statement.  Every spelling and the
+# helper->protocol map below were captured from a live `nft list` readback on
+# kernel 6.18.38 (nft v1.1.6): each supported name loads with exactly that one
+# transport, `sip` loads under BOTH (so a single-proto object would narrow it),
+# and `h323`/unknown names are ENOENT.  The object name is content-addressed
+# (the name fixes the proto), so the plan differ compares by name alone and
+# never normalizes the `l3proto ip` line the kernel adds on readback.
+
+#: helper -> the single L4 proto its object binds, mirrored from the backend.
+_CT_HELPER_PROTO = {
+    "ftp": "tcp",
+    "irc": "tcp",
+    "sane": "tcp",
+    "pptp": "tcp",
+    "tftp": "udp",
+    "amanda": "udp",
+    "snmp": "udp",
+    "netbios-ns": "udp",
+}
+
+
+def _ct_rule(**companions: str) -> RenderedRule:
+    # A bare `CT` target plus its module-qualified companions (the `helper`
+    # name collides with the `mod helper` match, so it is a companion only
+    # when introduced by the CT target).  No match options: the object/dedup
+    # behavior is what this isolates; the golden pair covers the port path.
+    return RenderedRule(
+        options=[
+            _opt("jump", "CT", kind=OptionKind.TARGET),
+            *(
+                _opt(name, value, module="CT")
+                for name, value in companions.items()
+            ),
+        ],
+        script=None,
+    )
+
+
+def _ct_object(**companions: str) -> NftObjectRef:
+    nft = translate_rule(Family.IP, "raw", _ct_rule(**companions))
+    (obj,) = (s for s in nft.statements if isinstance(s, NftObjectRef))
+    return obj
+
+
+def test_cthelper_object_ref() -> None:
+    obj = _ct_object(helper="ftp")
+    assert obj.kind == "ct helper"
+    assert obj.name == "cthelper_ftp"
+    assert obj.body == 'type "ftp" protocol tcp;'
+    assert obj.to_text() == 'ct helper set "cthelper_ftp"'
+
+
+@pytest.mark.parametrize(("helper", "proto"), sorted(_CT_HELPER_PROTO.items()))
+def test_cthelper_proto_map(helper: str, proto: str) -> None:
+    # every supported helper binds its live-verified transport; the object body
+    # spells `type "<helper>" protocol <proto>;`.
+    obj = _ct_object(helper=helper)
+    assert obj.body == f'type "{helper}" protocol {proto};'
+
+
+def test_cthelper_dash_folded_in_name() -> None:
+    # the object NAME must satisfy the nft bare-identifier grammar (no dash),
+    # so `netbios-ns` folds to `cthelper_netbios_ns`; the TYPE keeps the real
+    # dashed helper name, quoted.
+    obj = _ct_object(helper="netbios-ns")
+    assert obj.name == "cthelper_netbios_ns"
+    assert obj.body == 'type "netbios-ns" protocol udp;'
+    assert obj.to_text() == 'ct helper set "cthelper_netbios_ns"'
+
+
+@pytest.mark.parametrize("helper", ["sip", "h323", "nosuch", "FTP"])
+def test_cthelper_unsupported_name_refused(helper: str) -> None:
+    # sip registers both tcp+udp (a single-proto object would narrow it), h323
+    # has no loadable ct-helper object, an unknown name is ENOENT, and the map
+    # is case-sensitive -- all refuse cleanly rather than emit a rejected load.
+    with pytest.raises(FermError, match=r"no single-protocol nft ct-helper"):
+        _ct_object(helper=helper)
+
+
+def test_cthelper_empty_name_refused() -> None:
+    with pytest.raises(FermError, match=r"needs a helper name"):
+        _ct_object(helper="")
+
+
+def test_cthelper_with_zone_ordering() -> None:
+    # a rule mixing helper with a translatable CT option: the non-helper parts
+    # emit first as one verdict, the helper object-ref last, in a fixed order
+    # so --plan converges.  Both statements are present.
+    nft = translate_rule(Family.IP, "raw", _ct_rule(helper="ftp", zone="5"))
+    tails = [s.to_text() for s in nft.statements]
+    assert tails == ["ct zone set 5", 'ct helper set "cthelper_ftp"']
+    # the helper part rides an object-ref (declares the object); the zone part
+    # is a plain verdict (no declaration).
+    kinds = [type(s).__name__ for s in nft.statements]
+    assert kinds == ["NftVerdict", "NftObjectRef"]
+
+
+@pytest.mark.parametrize("bad", ["expevents", "timeout"])
+def test_ct_unsupported_option_refused_even_with_helper(bad: str) -> None:
+    # expevents/timeout have no nft equivalent; a rule mixing one with a
+    # translatable helper must refuse UP FRONT -- never emit the helper and
+    # silently drop the unsupported half (a fail-open mangle).
+    rule = _ct_rule(helper="ftp", **{bad: "new"})
+    with pytest.raises(FermError, match=rf"CT target option '{bad}'"):
+        translate_rule(Family.IP, "raw", rule)
+
+
+def test_ct_notrack_still_translates_without_helper() -> None:
+    # regression: the non-helper CT path (now living in _ct_target_statements)
+    # still emits its verdict and declares no object.
+    nft = translate_rule(Family.IP, "raw", _ct_rule(notrack=""))
+    assert not any(isinstance(s, NftObjectRef) for s in nft.statements)
+    assert nft.statements[-1] == NftVerdict("notrack")
+
+
+def test_cthelper_dedup_and_emission() -> None:
+    # two rules with the same helper share ONE object; emission declares the
+    # two-word `add ct helper ...` line before chains, sorted by name.
+    rules = {
+        "raw_PREROUTING": [
+            translate_rule(Family.IP, "raw", _ct_rule(helper="ftp")),
+            translate_rule(Family.IP, "raw", _ct_rule(helper="ftp")),
+            translate_rule(Family.IP, "raw", _ct_rule(helper="tftp")),
+        ]
+    }
+    decls = _collect_set_declarations(Family.IP, rules)
+    assert set(decls) == {"cthelper_ftp", "cthelper_tftp"}
+    save = serialize_table(
+        NftTable("ip", "ferm"), [], rules, decls, noflush=False
+    )
+    assert (
+        'add ct helper ip ferm cthelper_ftp { type "ftp" protocol tcp; }'
+        in save
+    )
+    assert (
+        'add ct helper ip ferm cthelper_tftp { type "tftp" protocol udp; }'
+        in save
+    )
+    assert save.count("add ct helper") == 2
+
+
+def test_cthelper_parse_both_forms() -> None:
+    # both readers capture the two-word `ct helper` object.  The render form is
+    # one-line braces; the `nft list` form spans lines and carries the extra
+    # `l3proto ip` the kernel augments -- the name-only diff must ignore it.
+    save = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        'add ct helper ip ferm cthelper_ftp { type "ftp" protocol tcp; }\n'
+    )
+    scripted = parse_nft_script(save)["ferm"].objects["cthelper_ftp"]
+    assert scripted.kind == "ct helper"
+    assert scripted.body == 'type "ftp" protocol tcp;'
+
+    listing = (
+        "table ip ferm {\n"
+        "\tct helper cthelper_ftp {\n"
+        '\t\ttype "ftp" protocol tcp\n'
+        "\t\tl3proto ip\n"
+        "\t}\n}\n"
+    )
+    listed = parse_nft_list(listing, family="ip")["ferm"].objects[
+        "cthelper_ftp"
+    ]
+    assert listed.kind == "ct helper"
+    # the l3proto augmentation is accumulated into the body but never diffed.
+    assert "l3proto ip" in listed.body
+
+
+def test_cthelper_plan_is_fixed_point() -> None:
+    # desired (save form) vs a live readback carrying the `l3proto ip`
+    # augmentation must converge: the object name matches, so no object change.
+    desired = parse_nft_script(
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        'add ct helper ip ferm cthelper_ftp { type "ftp" protocol tcp; }\n'
+        "add chain ip ferm raw_PREROUTING { type filter hook prerouting "
+        "priority -300; }\n"
+        "add rule ip ferm raw_PREROUTING tcp dport 21 ct helper set "
+        '"cthelper_ftp"\n'
+    )
+    current = parse_nft_list(
+        "table ip ferm {\n"
+        "\tct helper cthelper_ftp {\n"
+        '\t\ttype "ftp" protocol tcp\n'
+        "\t\tl3proto ip\n"
+        "\t}\n"
+        "\tchain raw_PREROUTING {\n"
+        "\t\ttype filter hook prerouting priority -300;\n"
+        '\t\ttcp dport 21 ct helper set "cthelper_ftp"\n'
+        "\t}\n}\n",
+        family="ip",
+    )
+    diff = diff_tables(desired, current, noflush=False)
+    assert diff.object_changes == []
+    assert not diff.has_changes()
+
+
+def test_cthelper_steady_state_delta_recognizes_two_word_line() -> None:
+    # an unchanged ct-helper object on both sides: the delta stays surgical and
+    # the desired-side indexer must PARSE the two-word `add ct helper` line
+    # (it is present on every reconcile) without an internal_error, yet never
+    # leak the declaration into the surgical delta.
+    readback = (
+        "table ip ferm {\n"
+        "\tct helper cthelper_ftp {\n"
+        '\t\ttype "ftp" protocol tcp\n'
+        "\t\tl3proto ip\n"
+        "\t}\n"
+        "\tchain raw_PREROUTING {\n"
+        "\t\ttype filter hook prerouting priority -300;\n"
+        '\t\ttcp dport 21 ct helper set "cthelper_ftp"\n'
+        "\t}\n}\n"
+    )
+    desired = (
+        "add table ip ferm\n"
+        "flush table ip ferm\n"
+        'add ct helper ip ferm cthelper_ftp { type "ftp" protocol tcp; }\n'
+        "add chain ip ferm raw_PREROUTING { type filter hook prerouting "
+        "priority -300; }\n"
+        "add rule ip ferm raw_PREROUTING tcp dport 21 ct helper set "
+        '"cthelper_ftp"\n'
+        "add rule ip ferm raw_PREROUTING ip saddr 10.0.0.1 drop\n"
+    )
+    delta = build_nft_delta(readback, desired, family="ip")
+    assert delta is not None
+    assert "add ct helper" not in delta
+    assert "ip saddr 10.0.0.1 drop" in delta
+
+
+def test_cthelper_object_change_render_output() -> None:
+    # a ct-helper object change surfaces in all three renderers with its
+    # two-word kind intact.
+    diff = PlanDiff(
+        object_changes=[
+            ObjectChange("raw", "cthelper_ftp", "ct helper", added=True),
+            ObjectChange("raw", "cthelper_irc", "ct helper", added=False),
+        ]
+    )
+    assert "2 objects changed" in summary_line(diff)
+    plan = Plan(families={"ip": diff})
+    structured = render_structured(plan)
+    assert "  + ct helper raw/cthelper_ftp" in structured
+    assert "  - ct helper raw/cthelper_irc" in structured
+    unified = render_unified(plan)
+    assert "+add ct helper raw cthelper_ftp" in unified
+    assert "-add ct helper raw cthelper_irc" in unified

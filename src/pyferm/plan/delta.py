@@ -15,8 +15,11 @@ from .model import (
     _DesiredIndex,
 )
 from .readback import (
+    _NFT_CTHELPER_NAME_INDEX,
     _NFT_OBJ_CHAIN,
+    _NFT_OBJ_CT,
     _NFT_OBJ_ELEMENT,
+    _NFT_OBJ_HELPER,
     _NFT_OBJ_RULE,
     _NFT_OBJ_SECMARK,
     _NFT_OBJ_SET,
@@ -49,6 +52,18 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:
             continue
         if len(parts) <= _DESIRED_NAME_INDEX or parts[0] != "add":
             raise internal_error(f"unexpected render line: {stripped!r}")
+        # The two-word `ct helper` object keyword shifts the name one slot
+        # right; like every object it only fills the index slot (a real object
+        # change diverts the whole family to a full reload, so the emitter
+        # never reads it) but the line must still be recognized -- it is
+        # present on every unchanged reconcile.
+        if (
+            parts[1] == _NFT_OBJ_CT
+            and parts[2:3] == [_NFT_OBJ_HELPER]
+            and len(parts) > _NFT_CTHELPER_NAME_INDEX
+        ):
+            index.object_decl[parts[_NFT_CTHELPER_NAME_INDEX]] = stripped
+            continue
         sub, name = parts[1], parts[_DESIRED_NAME_INDEX]
         if sub == _NFT_OBJ_CHAIN:
             index.chain_decl[name] = stripped

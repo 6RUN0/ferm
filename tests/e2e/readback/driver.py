@@ -571,6 +571,34 @@ def check_batch11b_vocab_readback() -> None:
             )
 
 
+def check_batch11b_cthelper_readback() -> None:
+    # A ct-helper table object plus the rule that references it.  The kernel
+    # augments the readback body with `l3proto ip` (absent from the save form);
+    # require the object block, that augmentation, AND the `ct helper set` rule
+    # back verbatim -- content-addressed name-only diffing must converge in
+    # spite of the body asymmetry (the --plan contract for a ct-helper object).
+    script = (
+        "table ip t {\n"
+        ' ct helper cthelper_ftp { type "ftp" protocol tcp; }\n'
+        " chain c {\n"
+        " type filter hook prerouting priority -300;\n"
+        ' tcp dport 21 ct helper set "cthelper_ftp"\n'
+        " }\n}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    for want in (
+        "ct helper cthelper_ftp {",
+        'type "ftp" protocol tcp',
+        "l3proto ip",
+        'tcp dport 21 ct helper set "cthelper_ftp"',
+    ):
+        if want not in lines:
+            _fail(
+                f"batch-11b ct-helper readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -585,6 +613,7 @@ def main() -> None:
     check_batch10_vocab_readback()
     check_batch11a_vocab_readback()
     check_batch11b_vocab_readback()
+    check_batch11b_cthelper_readback()
     print("NFT-READBACK-PASS")
 
 

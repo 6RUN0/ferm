@@ -66,6 +66,7 @@ from .stateful import (
     _time_matches,
 )
 from .verdicts import (
+    _ct_target_statements,
     _netmap_verdict,
     _secmark_statement,
     _set_target_statement,
@@ -626,6 +627,14 @@ def translate_rule(
         # statement that carries a declaration).  arp/eb fall through to the
         # registry refusal.
         statements.append(_secmark_statement(companions))
+    elif target_value == "CT":
+        # CT's `helper` knob declares a table `ct helper` object and the rest
+        # of its options are plain statements; one branch builds the ordered
+        # list so a helper-plus-zone rule never splits across two dispatch
+        # sites (the SECMARK object precedent).  No domain guard: CT is a
+        # raw-table target the parser only emits for ip/ip6, matching the
+        # previous build_verdict handling.
+        statements.extend(_ct_target_statements(companions))
     elif target_value is not None:
         statements.append(
             build_verdict(
