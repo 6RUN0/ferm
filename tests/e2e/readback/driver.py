@@ -129,6 +129,33 @@ def _rule_lines(readback: str) -> list[str]:
     return [line.strip() for line in readback.splitlines()]
 
 
+#: Per-family table name for a readback block (one family per block).
+_TABLE_NAME = {"ip": "t", "ip6": "t6"}
+
+
+def _assert_readback(
+    label: str, blocks: list[tuple[str, str, list[str]]]
+) -> None:
+    """
+    Apply one chain per ``(family, hook, lines)`` block and require each back.
+
+    The whole batch's --plan convergence contract in one pass: every emitted
+    spelling must read back verbatim or an applied ruleset would diff forever.
+    """
+    script = ""
+    for family, hook, lines in blocks:
+        body = "\n".join(f" {line}" for line in lines)
+        script += (
+            f"table {family} {_TABLE_NAME[family]} {{\n chain c {{\n"
+            f" {hook};\n{body}\n }}\n}}\n"
+        )
+    got = _rule_lines(_load_and_list(script))
+    for _family, _hook, lines in blocks:
+        for want in lines:
+            if want not in got:
+                _fail(f"{label} readback line missing: {want}", "\n".join(got))
+
+
 def check_fib_type_acceptance() -> None:
     for rtn_type in FIB_ACCEPTED + FIB_REJECTED:
         script = (
@@ -448,25 +475,22 @@ MATCH_MODULES_IP6_LINES = [
 
 
 def check_match_modules_readback() -> None:
-    # Apply every match-module emission and require the identical line back:
-    # this is the whole batch's --plan convergence contract in one pass.
-    body_ip = "\n".join(f" {line}" for line in MATCH_MODULES_IP_LINES)
-    body_ip6 = "\n".join(f" {line}" for line in MATCH_MODULES_IP6_LINES)
-    script = (
-        "table ip t {\n chain c {\n"
-        " type filter hook input priority 0;\n"
-        f"{body_ip}\n }}\n}}\n"
-        "table ip6 t6 {\n chain c {\n"
-        " type filter hook input priority 0;\n"
-        f"{body_ip6}\n }}\n}}\n"
+    # Every match-module emission (meta/ct selectors, ext-header, fib matches).
+    _assert_readback(
+        "match-module",
+        [
+            (
+                "ip",
+                "type filter hook input priority 0",
+                MATCH_MODULES_IP_LINES,
+            ),
+            (
+                "ip6",
+                "type filter hook input priority 0",
+                MATCH_MODULES_IP6_LINES,
+            ),
+        ],
     )
-    lines = _rule_lines(_load_and_list(script))
-    for want in MATCH_MODULES_IP_LINES + MATCH_MODULES_IP6_LINES:
-        if want not in lines:
-            _fail(
-                f"match-module readback line missing: {want}",
-                "\n".join(lines),
-            )
 
 
 MATCH_HELPER_NTH_IP_LINES = [
@@ -483,23 +507,18 @@ MATCH_HELPER_NTH_IP_LINES = [
 
 
 def check_match_helper_nth_readback() -> None:
-    # Apply every helper/nth match + CT-target emission (nth numgen, CT
-    # event/zone mangle) and require the identical line back -- the --plan
-    # convergence contract, including the ctevents canonical reorder and the
-    # fixed multi-statement CT order.
-    body = "\n".join(f" {line}" for line in MATCH_HELPER_NTH_IP_LINES)
-    script = (
-        "table ip t {\n chain c {\n"
-        " type filter hook input priority 0;\n"
-        f"{body}\n }}\n}}\n"
-    )
-    lines = _rule_lines(_load_and_list(script))
-    for want in MATCH_HELPER_NTH_IP_LINES:
-        if want not in lines:
-            _fail(
-                f"helper/nth + CT-target readback line missing: {want}",
-                "\n".join(lines),
+    # helper/nth match + CT-target (nth numgen, CT event/zone mangle),
+    # including the ctevents canonical reorder and the fixed CT order.
+    _assert_readback(
+        "helper/nth + CT-target",
+        [
+            (
+                "ip",
+                "type filter hook input priority 0",
+                MATCH_HELPER_NTH_IP_LINES,
             )
+        ],
+    )
 
 
 OSF_IP_LINES = [
@@ -511,22 +530,12 @@ OSF_IP_LINES = [
 
 
 def check_osf_readback() -> None:
-    # Apply every osf emission (default/loose/skip TTL level, negated genre)
-    # and require the identical line back -- the --plan convergence contract
-    # for the passive-fingerprint match.
-    body = "\n".join(f" {line}" for line in OSF_IP_LINES)
-    script = (
-        "table ip t {\n chain c {\n"
-        " type filter hook input priority 0;\n"
-        f"{body}\n }}\n}}\n"
+    # Every osf emission (default/loose/skip TTL level, negated genre) -- the
+    # passive-fingerprint match.
+    _assert_readback(
+        "osf",
+        [("ip", "type filter hook input priority 0", OSF_IP_LINES)],
     )
-    lines = _rule_lines(_load_and_list(script))
-    for want in OSF_IP_LINES:
-        if want not in lines:
-            _fail(
-                f"osf readback line missing: {want}",
-                "\n".join(lines),
-            )
 
 
 TARGET_CONNSECMARK_HMARK_IP_LINES = [
@@ -545,32 +554,23 @@ TARGET_CONNSECMARK_HMARK_IP6_LINES = [
 
 
 def check_target_connsecmark_hmark_readback() -> None:
-    # CONNSECMARK secmark moves and HMARK jhash mangles in a prerouting hook;
-    # require each emission back verbatim (the --plan convergence contract,
-    # including the seed 0x-hex canon and the dropped `offset 0`).
-    body_ip = "\n".join(
-        f" {line}" for line in TARGET_CONNSECMARK_HMARK_IP_LINES
+    # CONNSECMARK secmark moves and HMARK jhash mangles in a prerouting hook,
+    # including the seed 0x-hex canon and the dropped `offset 0`.
+    _assert_readback(
+        "connsecmark/hmark",
+        [
+            (
+                "ip",
+                "type filter hook prerouting priority -150",
+                TARGET_CONNSECMARK_HMARK_IP_LINES,
+            ),
+            (
+                "ip6",
+                "type filter hook prerouting priority -150",
+                TARGET_CONNSECMARK_HMARK_IP6_LINES,
+            ),
+        ],
     )
-    body_ip6 = "\n".join(
-        f" {line}" for line in TARGET_CONNSECMARK_HMARK_IP6_LINES
-    )
-    script = (
-        "table ip t {\n chain c {\n"
-        " type filter hook prerouting priority -150;\n"
-        f"{body_ip}\n }}\n}}\n"
-        "table ip6 t6 {\n chain c {\n"
-        " type filter hook prerouting priority -150;\n"
-        f"{body_ip6}\n }}\n}}\n"
-    )
-    lines = _rule_lines(_load_and_list(script))
-    for want in (
-        TARGET_CONNSECMARK_HMARK_IP_LINES + TARGET_CONNSECMARK_HMARK_IP6_LINES
-    ):
-        if want not in lines:
-            _fail(
-                f"connsecmark/hmark readback line missing: {want}",
-                "\n".join(lines),
-            )
 
 
 #: SECMARK content-hash object name for the ssh context; the
