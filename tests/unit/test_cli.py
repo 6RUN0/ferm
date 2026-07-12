@@ -22,6 +22,7 @@ from pyferm.cli import (
 )
 from pyferm.config import Options
 from pyferm.errors import FermError
+from tests.unit._cli import run_pyferm_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -640,11 +641,7 @@ def test_cli_file_round_trips_high_bytes(tmp_path: Path) -> None:
     # two bytes (0xc3 0xbc), breaking the verbatim round-trip.
     config = tmp_path / "bytes.ferm"
     config.write_bytes(_BYTE_CONFIG)
-    result = subprocess.run(
-        [sys.executable, "-m", "pyferm", "--test", str(config)],
-        capture_output=True,
-        check=False,
-    )
+    result = run_pyferm_bytes("--test", str(config))
     assert result.returncode == 0, result.stderr
     # fast mode: bare comment value is emitted unquoted; the byte 0xfc must
     # appear verbatim rather than as the utf-8 two-byte sequence 0xc3 0xbc
@@ -654,12 +651,7 @@ def test_cli_file_round_trips_high_bytes(tmp_path: Path) -> None:
 
 def test_cli_stdin_round_trips_high_bytes() -> None:
     # Same round-trip via stdin ("-") so the stdin reconfigure path is hit.
-    result = subprocess.run(
-        [sys.executable, "-m", "pyferm", "--test", "-"],
-        input=_BYTE_CONFIG,
-        capture_output=True,
-        check=False,
-    )
+    result = run_pyferm_bytes("--test", "-", stdin=_BYTE_CONFIG)
     assert result.returncode == 0, result.stderr
     assert b"h\xfc" in result.stdout
     assert b"h\xc3\xbc" not in result.stdout
@@ -668,11 +660,7 @@ def test_cli_stdin_round_trips_high_bytes() -> None:
 def test_cli_error_with_non_latin1_filename_does_not_crash() -> None:
     # argv decodes to U+20AC; the FermError text lands on the
     # backslashreplace stderr instead of raising UnicodeEncodeError
-    result = subprocess.run(
-        [sys.executable, "-m", "pyferm", "--test", "missing-\u20ac.ferm"],
-        capture_output=True,
-        check=False,
-    )
+    result = run_pyferm_bytes("--test", "missing-\u20ac.ferm")
     assert result.returncode == 1
     assert b"Traceback" not in result.stderr
     assert result.stderr  # a usable error message was printed
@@ -690,19 +678,7 @@ def test_cli_def_high_codepoint_is_byte_faithful(tmp_path: Path) -> None:
         "table filter chain INPUT mod comment comment $x ACCEPT;\n",
         encoding="latin-1",
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pyferm",
-            "--test",
-            "--def",
-            '$x="€"',
-            str(config),
-        ],
-        capture_output=True,
-        check=False,
-    )
+    result = run_pyferm_bytes("--test", "--def", '$x="€"', str(config))
     assert result.returncode == 0, result.stderr
     assert b"Traceback" not in result.stderr
     # byte-faithful: the euro's three utf-8 bytes appear verbatim, exactly as

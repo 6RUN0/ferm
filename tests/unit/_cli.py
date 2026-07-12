@@ -33,3 +33,21 @@ def run_pyferm(
         encoding="utf-8",
         check=False,
     )
+
+
+def run_pyferm_bytes(
+    *args: str, stdin: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """
+    Run ``python -m pyferm *args`` in binary mode for byte round-trip tests.
+
+    Unlike :func:`run_pyferm`, stdout/stderr are captured as raw bytes and
+    *args* is passed verbatim (no ``--noexec --lines``), so latin-1 / high-byte
+    fidelity can be asserted on the wire.
+    """
+    return subprocess.run(  # fixed argv, no shell
+        [sys.executable, "-m", "pyferm", *args],
+        input=stdin,
+        capture_output=True,
+        check=False,
+    )
