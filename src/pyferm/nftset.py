@@ -76,6 +76,11 @@ _NFT_L4PROTO_NAME: Final[dict[int, str]] = {
 }
 
 
+def _is_ascii_uint(text: str) -> bool:
+    """Return True for a run of ASCII digits (rejects unicode digits)."""
+    return text.isascii() and text.isdigit()
+
+
 def l4proto_name(proto: str) -> str:
     """
     Map a numeric L4 protocol to the nft name the kernel stores it as.
@@ -85,7 +90,7 @@ def l4proto_name(proto: str) -> str:
     number folds to its name; a name, a range, or an unknown number is returned
     verbatim (nft keeps an unknown number numeric).
     """
-    if proto.isascii() and proto.isdigit():
+    if _is_ascii_uint(proto):
         return _NFT_L4PROTO_NAME.get(int(proto), proto)
     return proto
 
@@ -149,16 +154,11 @@ def classify(element: str) -> tuple[int, object]:
     read back reordered and show a phantom plan change forever (the value
     never matches an input-order-preserving unparsable sort).
     """
-    if element.isascii() and element.isdigit():
+    if _is_ascii_uint(element):
         return RANK_NUMBER, int(element)
     low, dash, high = element.partition("-")
     if dash:
-        if (
-            low.isascii()
-            and low.isdigit()
-            and high.isascii()
-            and high.isdigit()
-        ):
+        if _is_ascii_uint(low) and _is_ascii_uint(high):
             return RANK_INTERVAL, (int(low), int(high))
         address_range = _classify_address_range(low, high)
         if address_range is not None:
@@ -278,7 +278,7 @@ def canonicalize_element(element: str) -> str:
     rank, _ = classify(element)
     if rank == RANK_INTERVAL:
         low, _, high = element.partition("-")
-        if low.isascii() and low.isdigit():
+        if _is_ascii_uint(low):
             return element  # numeric port range: nft keeps it verbatim
         collapsed = _collapse_address_range(low, high)
         return collapsed if collapsed is not None else element

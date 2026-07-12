@@ -350,6 +350,18 @@ class Evaluator:
 
     # -- value readers (:1416-1657) --------------------------------------
 
+    def _read_name(self, message: str, code: TokenSource | None = None) -> str:
+        """
+        Read the next token and require it to be a valid name.
+
+        Raises via ``error(message)`` when the token is missing or not a
+        bare identifier; the narrowed ``str`` is returned otherwise.
+        """
+        name = self.tokenizer.require_next_token(code)
+        if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+            error(message)
+        return name
+
     def getvalues(
         self,
         code: TokenSource | None = None,
@@ -367,90 +379,67 @@ class Evaluator:
         explicit frame counter); every recursion point -- nested arrays via
         :meth:`_read_array`, chained ``!`` negation, and nested ``@`` calls
         via :meth:`get_function_params` -- re-enters here, so one guard
-        covers them all.  Delegates to :meth:`_getvalues_body`.
-        """
-        if self._value_depth >= MAX_VALUE_DEPTH:
-            error(f"values nested too deeply (max {MAX_VALUE_DEPTH})")
-        self._value_depth += 1
-        try:
-            return self._getvalues_body(
-                code,
-                non_empty=non_empty,
-                allow_negation=allow_negation,
-                comma_allowed=comma_allowed,
-                parenthesis_allowed=parenthesis_allowed,
-                allow_array_negation=allow_array_negation,
-            )
-        finally:
-            self._value_depth -= 1
-
-    def _getvalues_body(
-        self,
-        code: TokenSource | None = None,
-        *,
-        non_empty: bool = False,
-        allow_negation: bool = False,
-        comma_allowed: bool = False,
-        parenthesis_allowed: bool = False,
-        allow_array_negation: bool = False,
-    ) -> Value:
-        """
-        Read one value (Perl ``:1416``); see :meth:`getvalues` for the guard.
+        covers them all.
 
         A faithful transcription of ferm's recursive value reader; the
         keyword flags mirror Perl's ``%options`` (``non_empty`` forbids an
         empty array, ``allow_negation`` a leading ``!``, and so on).
         """
-        token = self.tokenizer.require_next_token(code)
-        if not isinstance(token, str):
-            # A deferred value injected into the stream passes straight
-            # through (Perl's final "else" branch); a Line sentinel never
-            # reaches here because ``next_token`` drops sentinels first.
-            assert isinstance(token, Deferred)
-            return token
-
-        if token == "(":
-            return self._read_array(code, non_empty=non_empty)
-        backtick = self._quoted_inside(token, "`")
-        if backtick is not None:
-            return self._run_shell(backtick)
-        single = self._quoted_inside(token, "'")
-        if single is not None:
-            return single
-        double = self._quoted_inside(token, '"')
-        if double is not None:
-            return _DVAR_RE.sub(
-                lambda m: self._interpolate(m.group(1)), double
-            )
-        if token == "!":
-            if not allow_negation:
-                error("negation is not allowed here")
-            inner = self.getvalues(code)
-            return negate_value(inner, None, allow_array_negation)
-        if token == ",":
-            if comma_allowed:
+        if self._value_depth >= MAX_VALUE_DEPTH:
+            error(f"values nested too deeply (max {MAX_VALUE_DEPTH})")
+        self._value_depth += 1
+        try:
+            token = self.tokenizer.require_next_token(code)
+            if not isinstance(token, str):
+                # A deferred value injected into the stream passes straight
+                # through (Perl's final "else" branch); a Line sentinel never
+                # reaches here because ``next_token`` drops sentinels first.
+                assert isinstance(token, Deferred)
                 return token
-            error("comma is not allowed here")
-        if token == "=":
-            error('equals operator ("=") is not allowed here')
-        if token == "$":
-            name = self.tokenizer.require_next_token(code)
-            if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
-                error(
-                    "variable name expected - if you want to concatenate "
-                    "strings, try using double quotes"
+
+            if token == "(":
+                return self._read_array(code, non_empty=non_empty)
+            backtick = self._quoted_inside(token, "`")
+            if backtick is not None:
+                return self._run_shell(backtick)
+            single = self._quoted_inside(token, "'")
+            if single is not None:
+                return single
+            double = self._quoted_inside(token, '"')
+            if double is not None:
+                return _DVAR_RE.sub(
+                    lambda m: self._interpolate(m.group(1)), double
                 )
-            value = self.variable_value(name)
-            if value is None:
-                error(f"no such variable: ${name}")
-            return value
-        if token == "&":
-            error("function calls are not allowed as keyword parameter")
-        if token == ")" and not parenthesis_allowed:
-            error("Syntax error")
-        if token.startswith("@"):
-            return self._call_builtin(token)
-        return token
+            if token == "!":
+                if not allow_negation:
+                    error("negation is not allowed here")
+                inner = self.getvalues(code)
+                return negate_value(inner, None, allow_array_negation)
+            if token == ",":
+                if comma_allowed:
+                    return token
+                error("comma is not allowed here")
+            if token == "=":
+                error('equals operator ("=") is not allowed here')
+            if token == "$":
+                name = self._read_name(
+                    "variable name expected - if you want to concatenate "
+                    "strings, try using double quotes",
+                    code,
+                )
+                value = self.variable_value(name)
+                if value is None:
+                    error(f"no such variable: ${name}")
+                return value
+            if token == "&":
+                error("function calls are not allowed as keyword parameter")
+            if token == ")" and not parenthesis_allowed:
+                error("Syntax error")
+            if token.startswith("@"):
+                return self._call_builtin(token)
+            return token
+        finally:
+            self._value_depth -= 1
 
     def _quoted_inside(self, token: str, quote: str) -> str | None:
         """Return the inside of a ``quote``-delimited token, else ``None``."""
@@ -648,15 +637,11 @@ class Evaluator:
         )
         kind = self.tokenizer.require_next_token()
         if kind == "$":
-            name = self.tokenizer.require_next_token()
-            if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
-                error("variable name expected")
+            name = self._read_name("variable name expected")
             self.tokenizer.expect_token(")")
             return "1" if self.variable_value(name) is not None else ""
         if kind == "&":
-            name = self.tokenizer.require_next_token()
-            if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
-                error("function name expected")
+            name = self._read_name("function name expected")
             self.tokenizer.expect_token(")")
             return "1" if self.lookup_function(name) is not None else ""
         return error("'$' or '&' expected")

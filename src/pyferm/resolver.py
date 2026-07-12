@@ -112,6 +112,11 @@ class SearchResult:
     errorstring: str | None
 
 
+def _miss(errorstring: str) -> SearchResult:
+    """Build a not-found result with an empty answer and the given reason."""
+    return SearchResult(found=False, answer=[], errorstring=errorstring)
+
+
 class Resolver(Protocol):
     """A DNS source: the slice of Net::DNS' resolver that ``resolve`` uses."""
 
@@ -174,15 +179,13 @@ class ZonefileResolver:
         name = _canonical_name(hostname)
         all_records = self.records.get(name)
         if all_records is None:
-            return SearchResult(
-                found=False, answer=[], errorstring=_DNS_NXDOMAIN
-            )
+            return _miss(_DNS_NXDOMAIN)
         matching = [rr for rr in all_records if rr.type == rrtype]
         if matching:
             return SearchResult(
                 found=True, answer=matching, errorstring=_DNS_NOERROR
             )
-        return SearchResult(found=False, answer=[], errorstring=_DNS_NOERROR)
+        return _miss(_DNS_NOERROR)
 
 
 class SystemResolver:
@@ -196,17 +199,11 @@ class SystemResolver:
         try:
             answer = dns.resolver.resolve(hostname, rrtype, search=True)
         except dns.resolver.NXDOMAIN:
-            return SearchResult(
-                found=False, answer=[], errorstring=_DNS_NXDOMAIN
-            )
+            return _miss(_DNS_NXDOMAIN)
         except dns.resolver.NoAnswer:
-            return SearchResult(
-                found=False, answer=[], errorstring=_DNS_NOERROR
-            )
+            return _miss(_DNS_NOERROR)
         except dns.exception.DNSException as exc:
-            return SearchResult(
-                found=False, answer=[], errorstring=str(exc) or _DNS_SERVFAIL
-            )
+            return _miss(str(exc) or _DNS_SERVFAIL)
 
         records: list[ResourceRecord] = []
         for rr in answer:
@@ -284,10 +281,10 @@ _NOERROR_EAI: Final[set[int]] = {
 def _gaierror_result(exc: socket.gaierror) -> SearchResult:
     """Map a getaddrinfo failure onto SearchResult's silent/loud contract."""
     if exc.errno in _NXDOMAIN_EAI:
-        return SearchResult(found=False, answer=[], errorstring=_DNS_NXDOMAIN)
+        return _miss(_DNS_NXDOMAIN)
     if exc.errno in _NOERROR_EAI:
-        return SearchResult(found=False, answer=[], errorstring=_DNS_NOERROR)
-    return SearchResult(found=False, answer=[], errorstring=_DNS_SERVFAIL)
+        return _miss(_DNS_NOERROR)
+    return _miss(_DNS_SERVFAIL)
 
 
 def _canonical_name(name: str) -> str:

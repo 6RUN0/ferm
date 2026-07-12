@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import difflib
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from ..config import PlanFormat
 from .model import Plan, PlanDiff, SetChangeKind
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 
 def _clause(count: int, noun: str, verb: str) -> str:
@@ -126,6 +130,22 @@ def render_structured(plan: Plan) -> str:
     return "\n".join(lines) + "\n"
 
 
+class _TableKeyed(Protocol):
+    """Structural type for diff items exposing a ``table`` field."""
+
+    table: str
+
+
+_ItemT = TypeVar("_ItemT", bound=_TableKeyed)
+
+
+def _in_table(
+    items: Iterable[_ItemT], table: str, key: Callable[[_ItemT], Any]
+) -> list[_ItemT]:
+    """Return ``items`` for ``table`` sorted by ``key`` (stable)."""
+    return sorted((x for x in items if x.table == table), key=key)
+
+
 def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
     """
     Build current/desired line lists for one family, for the unified diff.
@@ -153,50 +173,39 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
     for table in tables:
         current.append(f"*{table}")
         desired.append(f"*{table}")
-        for change in sorted(
-            (c for c in diff.policy_changes if c.table == table),
-            key=lambda c: c.chain,
+        for change in _in_table(
+            diff.policy_changes, table, key=lambda c: c.chain
         ):
             current.append(f":{change.chain} {change.old}")
             desired.append(f":{change.chain} {change.new}")
-        for rebuild in sorted(
-            (cr for cr in diff.chain_rebuilds if cr.table == table),
-            key=lambda cr: cr.chain,
+        for rebuild in _in_table(
+            diff.chain_rebuilds, table, key=lambda cr: cr.chain
         ):
             current.append(f":{rebuild.chain} priority {rebuild.old}")
             desired.append(f":{rebuild.chain} priority {rebuild.new}")
         current.extend(
             f"# foreign chain {fchain.chain} will be flushed"
-            for fchain in sorted(
-                (fc for fc in diff.foreign_chains if fc.table == table),
-                key=lambda fchain: fchain.chain,
+            for fchain in _in_table(
+                diff.foreign_chains, table, key=lambda fchain: fchain.chain
             )
         )
         current.extend(
             f"# base chain {dchain.chain} removed (no longer declared)"
-            for dchain in sorted(
-                (dc for dc in diff.desuet_chains if dc.table == table),
-                key=lambda dchain: dchain.chain,
+            for dchain in _in_table(
+                diff.desuet_chains, table, key=lambda dchain: dchain.chain
             )
         )
         current.extend(
             f"-A {r.chain} {r.rule}"
-            for r in sorted(
-                (r for r in diff.rules_removed if r.table == table),
-                key=lambda r: r.chain,
+            for r in _in_table(
+                diff.rules_removed, table, key=lambda r: r.chain
             )
         )
         desired.extend(
             f"-A {r.chain} {r.rule}"
-            for r in sorted(
-                (r for r in diff.rules_added if r.table == table),
-                key=lambda r: r.chain,
-            )
+            for r in _in_table(diff.rules_added, table, key=lambda r: r.chain)
         )
-        for sc in sorted(
-            (s for s in diff.set_changes if s.table == table),
-            key=lambda s: s.name,
-        ):
+        for sc in _in_table(diff.set_changes, table, key=lambda s: s.name):
             if sc.kind.touches_elements:
                 elems = ", ".join(sc.elements)
                 desired.append(f"add set {table} {sc.name} {{ {elems} }}")
@@ -206,10 +215,7 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
                     current.append(f"add set {table} {sc.name} {{ {elems} }}")
                 else:
                     current.append(f"add set {table} {sc.name}")
-        for oc in sorted(
-            (o for o in diff.object_changes if o.table == table),
-            key=lambda o: o.name,
-        ):
+        for oc in _in_table(diff.object_changes, table, key=lambda o: o.name):
             side = desired if oc.added else current
             side.append(f"add {oc.kind} {table} {oc.name}")
     return current, desired

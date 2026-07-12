@@ -22,15 +22,14 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 from ._treescan import (
     _CHAIN_VALUE_BOUNDARY,
     _JUMP_KW,
-    _NAME_RE,
     _chain_decls,
     _child_blocks,
-    _is_quoted_interpolation,
     _jump_pairs,
     _str_tokens,
     _subchain_names,
     _subchain_pairs,
-    _unquote,
+    _take_value,
+    _take_values,
 )
 from .domains import DEFAULT_TABLE
 from .modules import MATCH_DEFS, PROTO_DEFS, TARGET_DEFS
@@ -147,31 +146,13 @@ def _header_value(toks: list[str], i: int) -> tuple[tuple[str, ...], int]:
     values: list[str] = []
     if i < len(toks) and toks[i] == "(":
         i += 1
-        while i < len(toks) and toks[i] != ")":
-            if toks[i] == "$":
-                i += 1
-                if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
-                    i += 1
-                continue
-            if toks[i].startswith("$"):
-                i += 1  # defensive: a glued "$name" token
-                continue
-            if not _is_quoted_interpolation(toks[i]):
-                values.append(_unquote(toks[i]))
-            i += 1
+        collected, i = _take_values(toks, i, lambda tok: tok == ")")
+        values.extend(collected)
         if i < len(toks) and toks[i] == ")":
             i += 1
     elif i < len(toks) and toks[i] not in _CHAIN_VALUE_BOUNDARY:
-        if toks[i] == "$":
-            i += 1
-            if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
-                i += 1
-        elif not toks[i].startswith("$"):
-            if not _is_quoted_interpolation(toks[i]):
-                values.append(_unquote(toks[i]))
-            i += 1
-        else:
-            i += 1  # defensive: a glued "$name" token
+        collected, i = _take_value(toks, i)
+        values.extend(collected)
     return tuple(values), i
 
 

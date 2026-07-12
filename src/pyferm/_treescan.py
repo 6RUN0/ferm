@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Final
 from .tree import Block
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from .tree import Node
 
@@ -30,6 +30,7 @@ __all__ = [
     "_NAME_RE",
     "_QUOTE_PAIR_MIN_LEN",
     "_SUBCHAIN_KW",
+    "_chain_decls",
     "_child_blocks",
     "_declared_chains",
     "_index_of",
@@ -37,10 +38,14 @@ __all__ = [
     "_is_quoted_interpolation",
     "_iter_func_refs",
     "_iter_var_refs",
+    "_jump_pairs",
     "_jump_targets",
     "_str_tokens",
+    "_subchain_decls",
     "_subchain_names",
     "_subchain_pairs",
+    "_take_value",
+    "_take_values",
     "_unquote",
 ]
 
@@ -170,6 +175,47 @@ def _is_quoted_interpolation(tok: str) -> bool:
     )
 
 
+def _take_value(toks: Sequence[str], i: int) -> tuple[list[str], int]:
+    """
+    Consume one header value group at ``toks[i]``; return (literals, next).
+
+    A ``$name`` reference lexes as the pair ("$", name); both tokens are
+    consumed and nothing is emitted (the eval-free contract). A glued
+    ``$…`` token is consumed defensively. A bare literal is unquoted and
+    emitted, unless it is a double-quote interpolation (``"$x"``/``"@arr"``).
+    The caller guarantees ``i < len(toks)``.
+    """
+    tok = toks[i]
+    if tok == "$":
+        i += 1
+        if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
+            i += 1
+        return [], i
+    if tok.startswith("$"):
+        return [], i + 1
+    if _is_quoted_interpolation(tok):
+        return [], i + 1
+    return [_unquote(tok)], i + 1
+
+
+def _take_values(
+    toks: Sequence[str], i: int, is_boundary: Callable[[str], bool]
+) -> tuple[list[str], int]:
+    """
+    Consume literal value groups until ``is_boundary(tok)`` is true.
+
+    Mirrors the header-value grammar: repeatedly applies :func:`_take_value`
+    (skipping ``$name`` pairs and glued ``$…`` tokens, unquoting bare
+    literals, ignoring quoted interpolations). Returns the collected
+    literals and the index of the boundary token (or ``len(toks)``).
+    """
+    values: list[str] = []
+    while i < len(toks) and not is_boundary(toks[i]):
+        taken, i = _take_value(toks, i)
+        values.extend(taken)
+    return values, i
+
+
 def _declared_chains(span: Sequence[object]) -> Iterator[str]:
     """
     Yield every chain name a token span declares.
@@ -198,34 +244,16 @@ def _chain_decls(toks: Sequence[str]) -> Iterator[str]:
                 # A ``$var`` member lexes as the pair ("$", name); consume
                 # BOTH so the bare name is not leaked as a literal chain.
                 i += 1
-                while i < len(toks) and toks[i] != ")":
-                    if toks[i] == "$":
-                        i += 1
-                        if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
-                            i += 1
-                        continue
-                    if toks[i].startswith("$"):
-                        i += 1  # defensive: a glued "$name" token
-                        continue
-                    if not _is_quoted_interpolation(toks[i]):
-                        yield _unquote(toks[i])
-                    i += 1
+                names, i = _take_values(toks, i, lambda tok: tok == ")")
+                yield from names
                 if i < len(toks) and toks[i] == ")":
                     i += 1
             elif i < len(toks) and toks[i] not in _CHAIN_VALUE_BOUNDARY:
                 # bare form: exactly ONE name, even one spelled like a
                 # keyword. A ``$var`` name is the pair ("$", name); consume
                 # both and yield nothing (non-literal, eval-free contract).
-                if toks[i] == "$":
-                    i += 1
-                    if i < len(toks) and _NAME_RE.fullmatch(toks[i]):
-                        i += 1
-                elif not toks[i].startswith("$"):
-                    if not _is_quoted_interpolation(toks[i]):
-                        yield _unquote(toks[i])
-                    i += 1
-                else:
-                    i += 1  # defensive: a glued "$name" token
+                names, i = _take_value(toks, i)
+                yield from names
             continue
         if tok in _SUBCHAIN_KW:
             i += 1

@@ -44,14 +44,17 @@ from ._treescan import (
     _NAME_RE,
     _QUOTE_PAIR_MIN_LEN,
     _SUBCHAIN_KW,
+    _chain_decls,
     _child_blocks,
     _declared_chains,
     _index_of,
     _is_quoted,
     _iter_func_refs,
     _iter_var_refs,
+    _jump_pairs,
     _jump_targets,
     _str_tokens,
+    _subchain_decls,
     _subchain_names,
     _unquote,
 )
@@ -117,6 +120,16 @@ def _function_def_name(span: Sequence[object]) -> str | None:
     return next(_iter_func_refs(span[:eq_index]), None)
 
 
+def _is_function_def(span: Sequence[object]) -> bool:
+    """
+    Return whether a @def span declares a function (``&``), not a variable.
+
+    A ``&`` left of ``=`` (or anywhere, when there is no ``=``) marks a
+    function def; ``span[:None]`` is the whole span, covering both.
+    """
+    return "&" in span[: _index_of(span, "=")]
+
+
 class _DefCollector(NodeVisitor):
     """
     Collect declared @def names and every name mentioned in leaf spans.
@@ -152,9 +165,7 @@ class _DefCollector(NodeVisitor):
         """
         span = node.span
         eq_index = _index_of(span, "=")
-        # a '&' left of '=' (or anywhere, when there is no '=') marks a
-        # function def; span[:None] is the whole span, covering both.
-        is_function_def = "&" in span[:eq_index]
+        is_function_def = _is_function_def(span)
         body = span[eq_index + 1 :] if eq_index is not None else ()
         if is_function_def:
             name = _function_def_name(span)
@@ -253,10 +264,11 @@ class _ChainCollector(NodeVisitor):
         self, span: Sequence[object], *, with_jumps: bool = True
     ) -> None:
         """Record chain declarations, subchains, and (optionally) jumps."""
-        self.declared.update(_declared_chains(span))
+        toks = list(_str_tokens(span))
+        self.declared.update(_chain_decls(toks))
         if with_jumps:
-            self.jumps.extend(_jump_targets(span))
-        self.subchains.update(_subchain_names(span))
+            self.jumps.extend(target for _kw, target in _jump_pairs(toks))
+        self.subchains.update(_subchain_decls(toks))
 
     def visit_HeaderNode(self, node: HeaderNode) -> None:  # noqa: N802
         """
@@ -601,8 +613,7 @@ def find_jump_cycles(root: Block) -> list[Finding]:
 
 def _declared_def_name(span: Sequence[object]) -> str | None:
     """Return the name a @def span declares ($var or &function)."""
-    eq_index = _index_of(span, "=")
-    if "&" in span[:eq_index]:
+    if _is_function_def(span):
         return _function_def_name(span)
     return next(_iter_var_refs(span), None)
 

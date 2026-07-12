@@ -162,6 +162,20 @@ def _add_def(
     return module
 
 
+#: xt_arp match specs shared verbatim by the ``ARP`` and ``RARP`` protocol
+#: modules below -- the two differ only in the protocol name they register.
+_EB_ARP_MATCH_SPECS: Final[tuple[str, ...]] = (
+    "!arp-gratuitous*0",
+    "arp-opcode!",
+    "arp-htype!=ss",
+    "arp-ptype!=ss",
+    "arp-ip-src!",
+    "arp-ip-dst!",
+    "arp-mac-src!",
+    "arp-mac-dst!",
+)
+
+
 def _build_registry() -> tuple[Registry, Registry, Registry]:
     """Build the protocol/match/target tables (Perl ``:229-440``)."""
     proto_defs: Registry = {}
@@ -588,31 +602,9 @@ def _build_registry() -> tuple[Registry, Registry, Registry]:
         "ip6-dport:=ip6-destination-port",
     )
 
-    proto_x(
-        "eb",
-        "ARP",
-        "!arp-gratuitous*0",
-        "arp-opcode!",
-        "arp-htype!=ss",
-        "arp-ptype!=ss",
-        "arp-ip-src!",
-        "arp-ip-dst!",
-        "arp-mac-src!",
-        "arp-mac-dst!",
-    )
+    proto_x("eb", "ARP", *_EB_ARP_MATCH_SPECS)
 
-    proto_x(
-        "eb",
-        "RARP",
-        "!arp-gratuitous*0",
-        "arp-opcode!",
-        "arp-htype!=ss",
-        "arp-ptype!=ss",
-        "arp-ip-src!",
-        "arp-ip-dst!",
-        "arp-mac-src!",
-        "arp-mac-dst!",
-    )
+    proto_x("eb", "RARP", *_EB_ARP_MATCH_SPECS)
 
     # Upstream (:407) ends "802_1Q" with a stray comma, folding the
     # following add_match_def_x('eb', '', ...) return value in as a junk

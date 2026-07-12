@@ -497,6 +497,60 @@ def restore_domain(
         raise FermError(f"Failed to run {path}")
 
 
+def _ebt_atomic(domain_cmd: str, eb_table: str, name: str, flag: str) -> str:
+    """Build an ebtables ``--atomic-file`` command with the given flag."""
+    return f"{domain_cmd} -t {eb_table} --atomic-file {name} {flag}"
+
+
+def _ebt_open_frames(
+    domain_cmd: str,
+    ebt_current: dict[str, IO[bytes]],
+    commands: list[Command],
+) -> None:
+    """
+    Open a per-table atomic-file frame for each ``eb`` table.
+
+    Creates the long-lived tempfile carrying each table's atomic snapshot
+    (its random name is embedded in the emitted commands, so it must outlive
+    the render) and appends the unguarded init framing.
+    """
+    for eb_table in EB_TABLES:
+        # Long-lived like the rollback snapshots in domains.py: the
+        # tempfile must outlive this call (its name is in the
+        # commands) and auto-unlinks when the Rendered is dropped.
+        current = tempfile.NamedTemporaryFile(prefix="ferm.")  # noqa: SIM115
+        ebt_current[eb_table] = current
+        name = current.name
+        commands.append(
+            Command(
+                _ebt_atomic(domain_cmd, eb_table, name, "--atomic-init"),
+                guarded=False,
+            )
+        )
+        commands.append(
+            Command(
+                _ebt_atomic(domain_cmd, eb_table, name, "--init-table"),
+                guarded=False,
+            )
+        )
+
+
+def _ebt_commit_frames(
+    domain_cmd: str,
+    ebt_current: dict[str, IO[bytes]],
+    commands: list[Command],
+) -> None:
+    """Append the ``--atomic-commit`` frame for each ``eb`` table."""
+    for eb_table in EB_TABLES:
+        name = ebt_current[eb_table].name
+        commands.append(
+            Command(
+                _ebt_atomic(domain_cmd, eb_table, name, "--atomic-commit"),
+                guarded=False,
+            )
+        )
+
+
 class IptablesBackend(Backend):
     """The iptables/ip6tables/arptables/ebtables backend (Phase 1)."""
 
@@ -545,29 +599,7 @@ class IptablesBackend(Backend):
         ebt_current: dict[str, IO[bytes]] = {}
 
         if domain == "eb":
-            for eb_table in EB_TABLES:
-                # Long-lived like the rollback snapshots in domains.py: the
-                # tempfile must outlive this call (its name is in the
-                # commands) and auto-unlinks when the Rendered is dropped.
-                current = tempfile.NamedTemporaryFile(  # noqa: SIM115
-                    prefix="ferm."
-                )
-                ebt_current[eb_table] = current
-                name = current.name
-                commands.append(
-                    Command(
-                        f"{domain_cmd} -t {eb_table} "
-                        f"--atomic-file {name} --atomic-init",
-                        guarded=False,
-                    )
-                )
-                commands.append(
-                    Command(
-                        f"{domain_cmd} -t {eb_table} "
-                        f"--atomic-file {name} --init-table",
-                        guarded=False,
-                    )
-                )
+            _ebt_open_frames(domain_cmd, ebt_current, commands)
 
         for table, table_info in domain_info.tables.items():
             table_cmd = f"{domain_cmd} -t {table}"
@@ -627,15 +659,7 @@ class IptablesBackend(Backend):
                 )
 
         if domain == "eb":
-            for eb_table in EB_TABLES:
-                name = ebt_current[eb_table].name
-                commands.append(
-                    Command(
-                        f"{domain_cmd} -t {eb_table} "
-                        f"--atomic-file {name} --atomic-commit",
-                        guarded=False,
-                    )
-                )
+            _ebt_commit_frames(domain_cmd, ebt_current, commands)
 
         return Rendered(
             commands=commands, resources=list(ebt_current.values())
@@ -757,8 +781,7 @@ class IptablesBackend(Backend):
             for eb_table in EB_TABLES:
                 name = domain_info.ebt_previous[eb_table].name
                 execute(
-                    f"{domain_cmd} -t {eb_table} "
-                    f"--atomic-file {name} --atomic-commit"
+                    _ebt_atomic(domain_cmd, eb_table, name, "--atomic-commit")
                 )
             return
 
@@ -854,8 +877,9 @@ class IptablesBackend(Backend):
                     prefix="ferm."
                 )
                 execute(
-                    f"{domain_cmd} -t {eb_table} "
-                    f"--atomic-file {snapshot.name} --atomic-save"
+                    _ebt_atomic(
+                        domain_cmd, eb_table, snapshot.name, "--atomic-save"
+                    )
                 )
                 domain_info.ebt_previous[eb_table] = snapshot
 

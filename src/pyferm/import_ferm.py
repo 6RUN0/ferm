@@ -92,6 +92,8 @@ _ALIASES: Final[dict[str, str]] = {
 #: ``\S`` includes ``\x1c``-``\x1f`` (found by the differential fuzzer).
 _OPTION_RE: Final[re.Pattern[str]] = re.compile(r"-(\w)\n?", re.ASCII)
 _LONG_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"--(\S+)\n?", re.ASCII)
+#: an argument that looks like an option (leading ``-`` plus one char).
+_OPTIONISH_ARG_RE: Final[re.Pattern[str]] = re.compile(r"-.")
 _ESCAPE_RE: Final[re.Pattern[str]] = re.compile(r"[^-\w.:/]", re.ASCII)
 
 #: ``re.ASCII``: Perl's byte-mode ``\s`` is ``[ \t\n\r\f\x0B]``, so a
@@ -850,7 +852,7 @@ def _choose_input_source(
     """
     if not args and stdin_is_tty:
         return "save"
-    if any(re.match(r"-.", arg) for arg in args):
+    if any(_OPTIONISH_ARG_RE.match(arg) for arg in args):
         return "usage"
     return "files"
 

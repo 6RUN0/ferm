@@ -33,6 +33,8 @@ from .matches import (
     _MATCH_SET_PARAM_COUNT,
     _NFLOG_GROUP_MAX,
     _TC_HANDLE_ROOT,
+    _TCP_OPTION_KIND,
+    _TCP_OPTION_KIND_MAX,
     _U16_MAX,
     _dscp_canon,
     _dscp_class_value,
@@ -1066,11 +1068,11 @@ def _hmark_verdict(
     # mod/rnd/offset share `_hmark_u32`, so all three accept the decimal or
     # 0x-hex iptables takes (nft prints mod/offset back in decimal, the seed
     # in hex).  mod additionally must be >= 1 (a modulus of zero is invalid).
-    mod = _hmark_u32("hmark-mod", unwrap_value(mod_opt.value)[0])
+    mod_scalar = unwrap_value(mod_opt.value)[0]
+    mod = _hmark_u32("hmark-mod", mod_scalar)
     if mod < 1:
         raise FermError(
-            f"invalid HMARK hmark-mod '{unwrap_value(mod_opt.value)[0]}' "
-            "for nft backend"
+            f"invalid HMARK hmark-mod '{mod_scalar}' for nft backend"
         )
     seed = _hmark_u32("hmark-rnd", unwrap_value(rnd_opt.value)[0])
     expr = (
@@ -1372,25 +1374,6 @@ _TCPOPT_NAME: Final[dict[str, str]] = {
     "md5": "md5sig",
 }
 
-#: tcp option NUMBER -> nft ``reset tcp option`` keyword.  The kernel
-#: respells these known option kinds to names on readback (pinned live);
-#: any other number in 0-255 stays numeric.
-_TCPOPT_NUM_NAME: Final[dict[int, str]] = {
-    0: "eol",
-    1: "nop",
-    2: "maxseg",
-    3: "window",
-    4: "sack-perm",
-    5: "sack",
-    8: "timestamp",
-    19: "md5sig",
-    30: "mptcp",
-    34: "fastopen",
-}
-
-#: the highest tcp option kind (a single byte).
-_TCP_OPTION_MAX: Final[int] = 255
-
 
 def _tcpopt_nft_name(token: str) -> str:
     """Map one xt strip-options token (mnemonic or number) to nft."""
@@ -1398,9 +1381,9 @@ def _tcpopt_nft_name(token: str) -> str:
         return _TCPOPT_NAME[token]
     if _is_ascii_uint(token):
         number = int(token)
-        if number > _TCP_OPTION_MAX:
+        if number > _TCP_OPTION_KIND_MAX:
             raise FermError(f"invalid tcp option '{token}' for nft backend")
-        return _TCPOPT_NUM_NAME.get(number, str(number))
+        return _TCP_OPTION_KIND.get(number, str(number))
     raise FermError(f"unknown tcp option '{token}' for nft backend")
 
 

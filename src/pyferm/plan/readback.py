@@ -594,6 +594,36 @@ def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
         tables[NFT_TABLE_NAME] = ParsedTable()
 
 
+def _brace_body(line: str) -> str | None:
+    """
+    Return the raw text between the first ``{`` and the last ``}``.
+
+    ``None`` when the braces are absent or malformed (close at or before
+    open). The slice is returned verbatim; callers strip if they need to.
+    """
+    brace_open = line.find("{")
+    brace_close = line.rfind("}")
+    if brace_open == -1 or brace_close <= brace_open:
+        return None
+    return line[brace_open + 1 : brace_close]
+
+
+def _store_table_object(
+    tables: dict[str, ParsedTable], obj_name: str, kind: str, line: str
+) -> None:
+    """
+    Record a table object (``secmark``/``ct helper``) under ``ferm``.
+
+    Shared tail of the object-line handlers: ensure the table exists, take
+    the stripped brace body, and store a :class:`ParsedObject`.
+    """
+    _ensure_ferm_table(tables)
+    body = (_brace_body(line) or "").strip()
+    tables[NFT_TABLE_NAME].objects[obj_name] = ParsedObject(
+        obj_name, kind, body
+    )
+
+
 def _parse_set_header(inner: str) -> tuple[str | None, tuple[str, ...]]:
     """
     Extract ``(type, flags)`` from a set declaration's brace body.
@@ -755,25 +785,15 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
             set_obj = tables[NFT_TABLE_NAME].sets.setdefault(
                 set_name, ParsedSet(set_name)
             )
-            brace_open = line.find("{")
-            brace_close = line.rfind("}")
-            if brace_open != -1 and brace_close > brace_open:
-                inner = line[brace_open + 1 : brace_close]
-                set_obj.type_, set_obj.flags = _parse_set_header(inner)
+            body = _brace_body(line)
+            if body is not None:
+                set_obj.type_, set_obj.flags = _parse_set_header(body)
             continue
 
         # -- add secmark (a table object) ------------------------------------
         if sub == _NFT_OBJ_SECMARK and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, obj_name = _parse_object_head(parts, family, lineno, raw)
-            _ensure_ferm_table(tables)
-            brace_open = line.find("{")
-            brace_close = line.rfind("}")
-            body = ""
-            if brace_open != -1 and brace_close > brace_open:
-                body = line[brace_open + 1 : brace_close].strip()
-            tables[NFT_TABLE_NAME].objects[obj_name] = ParsedObject(
-                obj_name, _NFT_OBJ_SECMARK, body
-            )
+            _store_table_object(tables, obj_name, _NFT_OBJ_SECMARK, line)
             continue
 
         # -- add ct helper (a two-word table object) -------------------------
@@ -789,26 +809,16 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
                 raw,
                 name_index=_NFT_CTHELPER_NAME_INDEX,
             )
-            _ensure_ferm_table(tables)
-            brace_open = line.find("{")
-            brace_close = line.rfind("}")
-            body = ""
-            if brace_open != -1 and brace_close > brace_open:
-                body = line[brace_open + 1 : brace_close].strip()
-            tables[NFT_TABLE_NAME].objects[obj_name] = ParsedObject(
-                obj_name, _NFT_OBJ_CT_HELPER, body
-            )
+            _store_table_object(tables, obj_name, _NFT_OBJ_CT_HELPER, line)
             continue
 
         # -- add element -----------------------------------------------------
         if sub == _NFT_OBJ_ELEMENT and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, set_name = _parse_object_head(parts, family, lineno, raw)
-            brace_open = line.find("{")
-            brace_close = line.rfind("}")
-            if brace_open == -1 or brace_close <= brace_open:
+            body = _brace_body(line)
+            if body is None:
                 raise _parse_error(lineno, raw)
-            rest = line[brace_open + 1 : brace_close]
-            elements = [e.strip() for e in rest.split(",") if e.strip()]
+            elements = [e.strip() for e in body.split(",") if e.strip()]
             _ensure_ferm_table(tables)
             ps = tables[NFT_TABLE_NAME].sets.setdefault(
                 set_name, ParsedSet(set_name)
@@ -1069,13 +1079,9 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
                 depth = _NL_DEPTH_TABLE
                 continue
             if line.startswith("elements"):
-                brace_open = line.find("{")
-                brace_close = line.rfind("}")
-                if brace_open != -1 and brace_close > brace_open:
-                    inner = line[brace_open + 1 : brace_close]
-                    members = [
-                        e.strip() for e in inner.split(",") if e.strip()
-                    ]
+                body = _brace_body(line)
+                if body is not None:
+                    members = [e.strip() for e in body.split(",") if e.strip()]
                     current_set.elements = canonicalize_set_elements(
                         current_set.elements + members, absorb_contained=False
                     )

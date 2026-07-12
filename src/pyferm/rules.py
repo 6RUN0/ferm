@@ -65,6 +65,17 @@ _BUILTIN_CHAINS: Final[tuple[str, ...]] = (
 )
 
 
+def _require_target(target: str | None) -> str:
+    """
+    Reject an undefined or empty target (Perl ``die unless ...``).
+
+    Returns the narrowed target so callers keep static ``str`` typing.
+    """
+    if target is None or target == "":
+        raise internal_error("undefined or empty target")
+    return target
+
+
 def is_netfilter_core_target(target: str | None) -> bool:
     """
     Whether ``target`` is a built-in netfilter target (Perl ``:1766``).
@@ -73,8 +84,7 @@ def is_netfilter_core_target(target: str | None) -> bool:
     membership test; the Perl ``grep`` is used in boolean context, so this
     returns a plain ``bool``.
     """
-    if target is None or target == "":
-        raise internal_error("undefined or empty target")
+    target = _require_target(target)
     return target in CORE_TARGETS
 
 
@@ -90,8 +100,7 @@ def is_netfilter_module_target(
     callers can write ``if defs := is_netfilter_module_target(...)`` just like
     Perl's ``if (my $defs = ...)``.
     """
-    if target is None or target == "":
-        raise internal_error("undefined or empty target")
+    target = _require_target(target)
     if domain_family is None:
         return None
     return target_defs.get(domain_family, {}).get(target)
@@ -181,16 +190,18 @@ def append_rule(chain_rules: list[RenderedRule], rule: Rule) -> None:
     ``$option->[2]`` slots) into a :class:`RenderedRule`, preserving the
     original option order.  Formatting happens later in the backend.
     """
+    options: list[RenderedOption] = []
     for option in rule.options:
         if isinstance(option.chosen, (list, Deferred)):
             raise internal_error(
                 f"option {option.name!r} reached append_rule with an "
                 f"unrealized {type(option.chosen).__name__} value"
             )
-    options = [
-        RenderedOption(option.name, option.chosen, option.kind, option.module)
-        for option in rule.options
-    ]
+        options.append(
+            RenderedOption(
+                option.name, option.chosen, option.kind, option.module
+            )
+        )
     chain_rules.append(RenderedRule(options=options, script=rule.script))
 
 

@@ -277,6 +277,8 @@ _GLUED_SIGN_RE: Final[re.Pattern[str]] = re.compile(r"[+-][0-9]+")
 _ABS_OR_PIPE_RE: Final[re.Pattern[str]] = re.compile(r"^/|\|$")
 #: dpkg backup files skipped by a directory ``@include`` (Perl ``:1129``).
 _DPKG_RE: Final[re.Pattern[str]] = re.compile(r"\.dpkg-(old|dist|new|tmp)$")
+#: leading directory of a parent filename for relative ``@include`` paths.
+_PARENT_DIR_RE: Final[re.Pattern[str]] = re.compile(r"^(.*/)")
 
 
 def _check_chain_name(name: str) -> None:
@@ -316,7 +318,7 @@ def collect_filenames(
     (sorted, skipping dpkg backups and dot/tilde files); a trailing ``|`` is a
     command pipe kept verbatim; a leading ``|`` is rejected.
     """
-    match = re.match(r"^(.*/)", parent_filename)
+    match = _PARENT_DIR_RE.match(parent_filename)
     parent_dir = match.group(1) if match is not None else "./"
 
     ret: list[str] = []
@@ -983,6 +985,15 @@ class Parser:
             if rule.has_rule and not self.options.flush:
                 mkrules2(domain, chain_info.rules, rule)
 
+    def _iter_table_infos(
+        self, domain: Family, table_value: Value
+    ) -> Iterator[tuple[str, TableInfo]]:
+        """Yield ``(name, table_info)`` per table, creating missing ones."""
+        tables = self.domains[domain].tables
+        for table in to_array(table_value):
+            name = stringify(table)
+            yield name, tables.setdefault(name, TableInfo())
+
     def _walk_chain_infos(
         self, rule: Rule, *, enable: bool = False
     ) -> Iterator[tuple[str, TableInfo, ChainInfo]]:
@@ -994,13 +1005,10 @@ class Parser:
         order.  ``enable`` switches the rule's domain on first (the
         header/mkrules sites); ``@preserve`` walks without enabling.
         """
-        domain_info = self.domains[_domain_key(rule.domain)]
+        domain = _domain_key(rule.domain)
         if enable:
-            domain_info.enabled = True
-        for table in to_array(rule.table):
-            table_info = domain_info.tables.setdefault(
-                stringify(table), TableInfo()
-            )
+            self.domains[domain].enabled = True
+        for _tname, table_info in self._iter_table_infos(domain, rule.table):
             for chain in to_array(rule.chain):
                 name = stringify(chain)
                 yield (
@@ -1265,10 +1273,9 @@ class Parser:
             if rule.table is None:
                 rule.table = DEFAULT_TABLE
             domain = _domain_key(rule.domain)
-            for table in to_array(rule.table):
-                table_info = self.domains[domain].tables.setdefault(
-                    stringify(table), TableInfo()
-                )
+            for _tname, table_info in self._iter_table_infos(
+                domain, rule.table
+            ):
                 for chain in to_array(chains):
                     name = stringify(chain)
                     _check_chain_name(name)
@@ -2037,12 +2044,8 @@ class Parser:
         _check_chain_name(subchain)
 
         domain = _domain_key(rule.domain)
-        for table in to_array(rule.table):
-            chains = (
-                self.domains[domain]
-                .tables.setdefault(stringify(table), TableInfo())
-                .chains
-            )
+        for _tname, table_info in self._iter_table_infos(domain, rule.table):
+            chains = table_info.chains
             if subchain in chains:
                 warning(f"Chain {subchain} already exists")
             else:

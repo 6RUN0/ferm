@@ -74,7 +74,7 @@ from .streams import (
 from .tokenizer import Script, Tokenizer, open_script, tokenize_string
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Iterator
 
     from .backend.base import (
         Backend,
@@ -229,6 +229,44 @@ def _require_interactive_tty(interactive: bool) -> None:
         )
 
 
+def _reject_lint_conflicts(
+    args: argparse.Namespace, plan_format: PlanFormat
+) -> None:
+    """
+    Reject switches that clash with the terminal ``--lint`` mode.
+
+    Raises :class:`FermError` with the oracle's verbatim messages for each
+    apply/plan switch, ``--plan-format``, and the eval-dependent ``--def`` /
+    ``--domain``.  The ``return Options()`` for the lint path stays with the
+    caller in :func:`_resolve_options`.
+    """
+    # apply/plan modes: --lint applies and plans nothing.
+    for flag, switch in (
+        ("--plan", args.plan),
+        ("--nft", args.nft),
+        ("--fast", args.fast),
+        ("--slow", args.slow),
+        ("--shell", args.shell),
+        ("--interactive", args.interactive),
+        ("--flush", args.flush),
+        ("--noflush", args.noflush),
+        ("--full-reload", args.full_reload),
+    ):
+        if switch:
+            raise FermError(f"ferm --lint cannot be combined with {flag}")
+    # --plan-format is plan-only; caught here (before the generic
+    # "no sense without --plan" check below) so the message names --lint.
+    if plan_format != PlanFormat.STRUCTURED:
+        raise FermError("ferm --lint cannot be combined with --plan-format")
+    # eval-dependent flags: --def binds on the eval scope frame and
+    # --domain filters during eval, so neither reaches parse_to_block --
+    # accepting them silently would be a no-op.
+    if args.defs:
+        raise FermError("ferm --lint cannot be combined with --def")
+    if args.domain is not None:
+        raise FermError("ferm --lint cannot be combined with --domain")
+
+
 def _resolve_options(args: argparse.Namespace) -> Options:
     """
     Derive the settled ``%option`` values from raw switches (``:675``).
@@ -259,33 +297,7 @@ def _resolve_options(args: argparse.Namespace) -> Options:
     if args.lint_fail_level is not None and not args.lint:
         raise FermError("ferm --lint-fail-level has no sense without --lint")
     if args.lint:
-        # apply/plan modes: --lint applies and plans nothing.
-        for flag, switch in (
-            ("--plan", args.plan),
-            ("--nft", args.nft),
-            ("--fast", args.fast),
-            ("--slow", args.slow),
-            ("--shell", args.shell),
-            ("--interactive", args.interactive),
-            ("--flush", args.flush),
-            ("--noflush", args.noflush),
-            ("--full-reload", args.full_reload),
-        ):
-            if switch:
-                raise FermError(f"ferm --lint cannot be combined with {flag}")
-        # --plan-format is plan-only; caught here (before the generic
-        # "no sense without --plan" check below) so the message names --lint.
-        if plan_format != PlanFormat.STRUCTURED:
-            raise FermError(
-                "ferm --lint cannot be combined with --plan-format"
-            )
-        # eval-dependent flags: --def binds on the eval scope frame and
-        # --domain filters during eval, so neither reaches parse_to_block --
-        # accepting them silently would be a no-op.
-        if args.defs:
-            raise FermError("ferm --lint cannot be combined with --def")
-        if args.domain is not None:
-            raise FermError("ferm --lint cannot be combined with --domain")
+        _reject_lint_conflicts(args, plan_format)
         return Options()
 
     noexec = args.noexec or args.test
@@ -666,6 +678,16 @@ def _run_hook(command: str, options: Options, emit_line: LineEmitter) -> None:
         subprocess.run(command, shell=True, check=False)
 
 
+def _enabled_domains(
+    domains: dict[Family, DomainInfo],
+) -> Iterator[tuple[Family, DomainInfo]]:
+    """Yield ``(domain, info)`` for enabled domains in sorted order."""
+    for domain in sorted(domains):
+        info = domains[domain]
+        if info.enabled:
+            yield domain, info
+
+
 def _rollback_all(
     domains: dict[Family, DomainInfo],
     options: Options,
@@ -681,10 +703,7 @@ def _rollback_all(
     the backend (a sanctioned deviation): each family's restore lives in
     :meth:`Backend.rollback`; the orchestration is here.  Never returns.
     """
-    for domain in sorted(domains):
-        domain_info = domains[domain]
-        if not domain_info.enabled:
-            continue
+    for domain, domain_info in _enabled_domains(domains):
         backend.rollback(
             domain,
             domain_info,
@@ -1003,10 +1022,7 @@ def build_plan(
     applied, so a second check is pointless and could raise post-apply.
     """
     plan = Plan()
-    for domain in sorted(domains):
-        domain_info = domains[domain]
-        if not domain_info.enabled:
-            continue
+    for domain, domain_info in _enabled_domains(domains):
         if options.nft:
             # Reaching here with noflush is a logic error: _resolve_options
             # already rejects --plan --noflush --nft before this is called.
@@ -1067,9 +1083,7 @@ def _commit_subject(
 ) -> str:
     """Build the default commit subject from the applied options."""
     verb = "flushed" if options.flush else "applied"
-    families = " ".join(
-        domain for domain in sorted(domains) if domains[domain].enabled
-    )
+    families = " ".join(domain for domain, _ in _enabled_domains(domains))
     descriptors = [families] if families else []
     descriptors.append("nft" if options.nft else "iptables")
     if not options.fast:
@@ -1156,6 +1170,31 @@ def _commit_history(
         )
     except Exception as exc:  # noqa: BLE001 -- never fail an applied firewall
         sys.stderr.write(f"ferm: etckeeper commit skipped: {exc}\n")
+
+
+def _emit_shell_confirmation(
+    backend: Backend,
+    domains: dict[Family, DomainInfo],
+    options: Options,
+    emit_line: LineEmitter,
+) -> None:
+    """
+    Emit the ``--shell`` interactive confirm/rollback script (``:803-817``).
+
+    Writes the confirm prompt, the ``sleep`` window, each family's rollback
+    snapshot, and the backend's closing notice, in that order.
+    """
+    emit_line("echo 'ferm has applied the new firewall rules.'\n")
+    emit_line("echo 'Please press Ctrl-C to confirm.'\n")
+    emit_line(f"sleep {options.timeout}\n")
+    for domain in sorted(domains):
+        snapshot = backend.shell_snapshot(domain, domains[domain])
+        if snapshot is None:
+            continue
+        emit_line(snapshot.restore)
+    notice = backend.shell_rollback_notice()
+    if notice is not None:
+        emit_line(notice)
 
 
 def _apply_config(
@@ -1267,10 +1306,7 @@ def _apply_config(
         for command in parser.pre_hooks:
             _run_hook(command, options, io.emit_line)
 
-        for domain in sorted(domains):
-            domain_info = domains[domain]
-            if not domain_info.enabled:
-                continue
+        for domain, domain_info in _enabled_domains(domains):
             # The arp/eb fallback to slow commands (no *-restore tool) is
             # the backend's decision: render picks the shape, commit
             # follows it.
@@ -1308,19 +1344,9 @@ def _apply_config(
         # Ask the user, and roll back without confirmation (``:803-817``).
         if options.interactive:
             if options.shell:
-                io.emit_line(
-                    "echo 'ferm has applied the new firewall rules.'\n"
+                _emit_shell_confirmation(
+                    backend, domains, options, io.emit_line
                 )
-                io.emit_line("echo 'Please press Ctrl-C to confirm.'\n")
-                io.emit_line(f"sleep {options.timeout}\n")
-                for domain in sorted(domains):
-                    snapshot = backend.shell_snapshot(domain, domains[domain])
-                    if snapshot is None:
-                        continue
-                    io.emit_line(snapshot.restore)
-                notice = backend.shell_rollback_notice()
-                if notice is not None:
-                    io.emit_line(notice)
 
             if not options.noexec and not _confirm_rules(options):
                 _rollback()
