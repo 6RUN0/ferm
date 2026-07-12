@@ -51,6 +51,11 @@ def _options(rule: RenderedRule) -> list[tuple[str, object, OptionKind]]:
     return [(opt.name, opt.value, opt.kind) for opt in rule.options]
 
 
+def _values(rule: RenderedRule) -> dict[str, object]:
+    """Map a rule's option names to their selected values."""
+    return {opt.name: opt.value for opt in rule.options}
+
+
 # -- basic rules -----------------------------------------------------------
 
 
@@ -163,7 +168,7 @@ def test_table_array_replays_per_table() -> None:
 
 def _comment(rule: RenderedRule) -> object:
     """Return the value of a rule's ``comment`` option, if any."""
-    return {opt.name: opt.value for opt in rule.options}.get("comment")
+    return _values(rule).get("comment")
 
 
 def test_chain_auto_var_expands_to_chain_name() -> None:
@@ -1107,8 +1112,8 @@ def test_function_multi_token_arg_realigns_later_param() -> None:
     )
     pairs = {
         (
-            {o.name: o.value for o in rule.options}.get("dport"),
-            {o.name: o.value for o in rule.options}.get("sport"),
+            _values(rule).get("dport"),
+            _values(rule).get("sport"),
         )
         for rule in _rules(parser, Family.IP, "filter", "INPUT")
     }
@@ -1121,9 +1126,6 @@ def test_def_two_param_function_accepts_comma_separator() -> None:
         "@def &two($a, $b) = proto tcp dport $a sport $b ACCEPT;"
         "chain INPUT &two(22, 53);"
     )
-    options = {
-        o.name: o.value
-        for o in _rules(parser, Family.IP, "filter", "INPUT")[0].options
-    }
+    options = _values(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert options["dport"] == "22"
     assert options["sport"] == "53"
