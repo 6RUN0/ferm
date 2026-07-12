@@ -994,17 +994,26 @@ def _hmark_field(domain: Family, token: str) -> str:
 #: value the kernel would reject or (for a modulus) silently wrap.
 _HMARK_U32_MAX: Final[int] = 0xFFFFFFFF
 
-#: Decimal or 0x-hex only: matches what iptables ``--hmark-rnd`` accepts and,
-#: by pinning ASCII ``[0-9]``, rejects both the non-ASCII digits and the
-#: ``1_000``/``0o17`` lexical sugar ``int(scalar, 0)`` would otherwise take.
-_HMARK_U32_RE: Final[re.Pattern[str]] = re.compile(r"[0-9]+|0[xX][0-9a-fA-F]+")
+#: An HMARK operand: 0x-hex or a leading-zero-free decimal.  A leading-zero
+#: form (``010``, ``08``) is refused rather than parsed: iptables reads it as
+#: C octal (``010`` -> 8) while a plain decimal read would give 10, so the nft
+#: backend declines the ambiguous spelling instead of silently disagreeing
+#: with the kernel (and the ``[0-9]``/``[1-9]`` pinning also rejects non-ASCII
+#: digits and the ``1_000``/``0o17`` sugar an ``int(scalar, 0)`` would take).
+_HMARK_U32_RE: Final[re.Pattern[str]] = re.compile(
+    r"0[xX][0-9a-fA-F]+|0|[1-9][0-9]*"
+)
 
 
 def _hmark_u32(name: str, scalar: str) -> int:
     """Parse an HMARK 32-bit operand (decimal or 0x-hex), else refuse."""
     if not _HMARK_U32_RE.fullmatch(scalar):
         raise FermError(f"invalid HMARK {name} '{scalar}' for nft backend")
-    value = int(scalar, 0)
+    # Branch on the 0x prefix rather than passing base 0: the regex has already
+    # excluded the leading-zero forms base 0 would reject with a ValueError, so
+    # a clean int() is all that is left.
+    base = 16 if scalar[1:2] in ("x", "X") else 10
+    value = int(scalar, base)
     if value > _HMARK_U32_MAX:
         raise FermError(f"invalid HMARK {name} '{scalar}' for nft backend")
     return value
@@ -1054,27 +1063,24 @@ def _hmark_verdict(
     ]
     if not fields:
         raise FermError("HMARK 'hmark-tuple' is empty for the nft backend")
-    mod_scalar, _ = unwrap_value(mod_opt.value)
-    if not _is_ascii_uint(mod_scalar) or not (
-        1 <= int(mod_scalar) <= _HMARK_U32_MAX
-    ):
+    # mod/rnd/offset share `_hmark_u32`, so all three accept the decimal or
+    # 0x-hex iptables takes (nft prints mod/offset back in decimal, the seed
+    # in hex).  mod additionally must be >= 1 (a modulus of zero is invalid).
+    mod = _hmark_u32("hmark-mod", unwrap_value(mod_opt.value)[0])
+    if mod < 1:
         raise FermError(
-            f"invalid HMARK hmark-mod '{mod_scalar}' for nft backend"
+            f"invalid HMARK hmark-mod '{unwrap_value(mod_opt.value)[0]}' "
+            "for nft backend"
         )
     seed = _hmark_u32("hmark-rnd", unwrap_value(rnd_opt.value)[0])
     expr = (
-        f"meta mark set jhash {' . '.join(fields)} "
-        f"mod {int(mod_scalar)} seed 0x{seed:x}"
+        f"meta mark set jhash {' . '.join(fields)} mod {mod} seed 0x{seed:x}"
     )
     offset_opt = companions.get("hmark-offset")
     if offset_opt is not None:
-        off_scalar, _ = unwrap_value(offset_opt.value)
-        if not _is_ascii_uint(off_scalar) or int(off_scalar) > _HMARK_U32_MAX:
-            raise FermError(
-                f"invalid HMARK hmark-offset '{off_scalar}' for nft backend"
-            )
-        if int(off_scalar) != 0:
-            expr += f" offset {int(off_scalar)}"
+        offset = _hmark_u32("hmark-offset", unwrap_value(offset_opt.value)[0])
+        if offset != 0:
+            expr += f" offset {offset}"
     return NftVerdict(expr)
 
 

@@ -55,11 +55,13 @@ For the history of the original Perl implementation, see
     `meta secmark set ct secmark` (the CONNMARK save/restore shape);
   - `HMARK` → `meta mark set jhash <fields> mod M seed S [offset O]`,
     mapping the tuple (`src`/`dst`/`sport`/`dport`/`proto`) to jhash
-    selectors, the seed to `0x`-hex, and dropping a zero offset. This
-    maps the hash *distribution*, not xt's exact mark value (the same nft
-    bar as recent/hashlimit). A per-field mask/prefix (jhash hashes
-    fields whole) and the `spi`/`ct` tuple fields have no nft form and
-    refuse.
+    selectors, the seed to `0x`-hex, and dropping a zero offset. `mod`,
+    `rnd`, and `offset` each accept a decimal or `0x`-hex operand; a
+    leading-zero form (`010`) is refused rather than guessed, since
+    iptables reads it as C octal. This maps the hash *distribution*, not
+    xt's exact mark value (the same nft bar as recent/hashlimit). A
+    per-field mask/prefix (jhash hashes fields whole) and the `spi`/`ct`
+    tuple fields have no nft form and refuse.
 - **nft backend: the `helper`/`nth` matches and four CT-target options
   (vocabulary batch 10).** All emissions are the exact kernel-readback
   spelling (verified live on nft v1.1.6) so `--plan` converges:

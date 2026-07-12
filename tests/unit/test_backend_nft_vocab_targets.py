@@ -269,6 +269,31 @@ def test_hmark_u32_max_accepted() -> None:
     )
 
 
+@pytest.mark.parametrize("operand", ["hmark_rnd", "hmark_mod", "hmark_offset"])
+@pytest.mark.parametrize("value", ["010", "08", "0123"])
+def test_hmark_leading_zero_refused(operand: str, value: str) -> None:
+    # iptables reads a leading-zero operand as C octal (010 -> 8); a decimal
+    # read would give 10.  Rather than silently disagree -- or crash on the
+    # base-0 int() the old parser used -- the backend refuses cleanly.
+    opts = {"hmark_tuple": "src", "hmark_mod": "8", "hmark_rnd": "1"}
+    opts[operand] = value
+    with pytest.raises(FermError, match=r"^invalid HMARK "):
+        _hmark(opts)
+
+
+def test_hmark_mod_and_offset_accept_hex() -> None:
+    # iptables takes 0x-hex for mod/offset as well as rnd; nft prints mod and
+    # offset back in decimal, so the hex input canonicalizes to decimal.
+    assert _hmark(
+        {
+            "hmark_tuple": "src",
+            "hmark_mod": "0x100",
+            "hmark_rnd": "5",
+            "hmark_offset": "0x10",
+        }
+    ) == ("meta mark set jhash ip saddr mod 256 seed 0x5 offset 16")
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
