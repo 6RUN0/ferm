@@ -11,6 +11,8 @@ For the history of the original Perl implementation, see
 
 ## [Unreleased]
 
+## [0.1.0a8] - 2026-07-13
+
 ### Added
 
 - **nft backend: the `osf` passive OS-fingerprint match.** `mod osf genre
@@ -857,7 +859,8 @@ are unchanged unless `--nft` is passed.
   `preflight` and into GitHub Actions CI (static checks split out, patch
   gate on PRs, weekly audit + Dependabot).
 
-[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a7...develop
+[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a8...develop
+[0.1.0a8]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a7...py-v0.1.0a8
 [0.1.0a7]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a6...py-v0.1.0a7
 [0.1.0a6]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...py-v0.1.0a6
 [0.1.0a3]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a3

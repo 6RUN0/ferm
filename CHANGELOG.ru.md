@@ -11,6 +11,8 @@
 
 ## [Не выпущено]
 
+## [0.1.0a8] - 2026-07-13
+
 ### Добавлено
 
 - **nft-бэкенд: match `osf` (пассивный fingerprint ОС).** `mod osf genre
@@ -896,7 +898,8 @@ Perl-реализации и генерирует наборы правил `ipt
   обязательный `preflight` и в CI GitHub Actions (статические проверки
   выделены отдельно, patch-гейт на PR, еженедельный audit + Dependabot).
 
-[Не выпущено]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a7...develop
+[Не выпущено]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a8...develop
+[0.1.0a8]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a7...py-v0.1.0a8
 [0.1.0a7]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a6...py-v0.1.0a7
 [0.1.0a6]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...py-v0.1.0a6
 [0.1.0a3]: https://github.com/6RUN0/ferm/releases/tag/py-v0.1.0a3
