@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 from pyferm.backend.nft import _validate_set_name
@@ -82,13 +79,7 @@ def test_bareword_set_in_mod_set_still_compiles() -> None:
 
     Confirms the bareword-only dispatch invariant.
     """
-    proc = subprocess.run(
-        [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
-        input=_IPSET_SRC,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
+    proc = run_pyferm(_IPSET_SRC)
     assert proc.returncode == 0, (
         f"ipset mod set regression failed (rc={proc.returncode}):\n"
         f"{proc.stderr}"

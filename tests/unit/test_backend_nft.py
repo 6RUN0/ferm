@@ -2547,6 +2547,13 @@ from pyferm.config import Options  # noqa: E402
 from pyferm.domains import DomainInfo  # noqa: E402
 
 
+def _nft_info() -> DomainInfo:
+    """Build a fresh nft-tooled domain (the common per-test backend setup)."""
+    info = DomainInfo()
+    info.tools = {"nft": "nft"}
+    return info
+
+
 def test_render_emits_save_text_for_one_family() -> None:
     info = DomainInfo()
     table = info.tables.setdefault("filter", TableInfo())
@@ -2595,8 +2602,7 @@ from pyferm.backend.base import Rendered  # noqa: E402
 
 
 def test_commit_emits_lines_and_pipes_save() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     emitted: list[str] = []
     applied: list[str] = []
     rendered = Rendered(save="add table ip ferm\n")
@@ -2614,8 +2620,7 @@ def test_commit_emits_lines_and_pipes_save() -> None:
 
 
 def test_commit_noexec_does_not_apply() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     applied: list[str] = []
     NftBackend().commit(
         Family.IP,
@@ -2630,8 +2635,7 @@ def test_commit_noexec_does_not_apply() -> None:
 
 
 def test_commit_shell_wraps_heredoc() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     emitted: list[str] = []
     NftBackend().commit(
         Family.IP,
@@ -2657,8 +2661,7 @@ def test_shell_rollback_notice_announces_on_stderr() -> None:
 
 
 def test_capture_previous_stores_own_table_snapshot() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     calls: list[str] = []
 
     def cap(cmd: str) -> str:
@@ -2678,8 +2681,7 @@ def test_capture_previous_stores_own_table_snapshot() -> None:
 
 
 def test_capture_previous_first_run_is_no_table() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     NftBackend().capture_previous(
         Family.IP,
         info,
@@ -2692,8 +2694,7 @@ def test_capture_previous_first_run_is_no_table() -> None:
 
 
 def test_rollback_restores_captured_snapshot() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     info.enabled = True
     info.previous = "table ip ferm {\n}\n"
     applied: list[str] = []
@@ -2708,8 +2709,7 @@ def test_rollback_restores_captured_snapshot() -> None:
 
 
 def test_rollback_first_run_deletes_table() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     info.enabled = True
     info.previous = None
     calls: list[str] = []
@@ -2729,8 +2729,7 @@ def test_rollback_first_run_deletes_table() -> None:
 def test_commit_restore_failure_returns_one(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
 
     def boom(_di: object, _save: str) -> None:
         raise FermError("nft rejected")
@@ -2749,8 +2748,7 @@ def test_commit_restore_failure_returns_one(
 
 
 def test_commit_none_save_is_internal_error() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     with pytest.raises(FermError):
         NftBackend().commit(
             Family.IP,
@@ -2764,8 +2762,7 @@ def test_commit_none_save_is_internal_error() -> None:
 
 
 def test_rollback_disabled_is_noop() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     info.enabled = False
     info.previous = "table ip ferm {\n}\n"
     calls: list[str] = []
@@ -2798,8 +2795,7 @@ def test_shell_snapshot_emits_nft_save_and_delete_restore() -> None:
     # freshly-applied table then re-load the dump (mirrors the live
     # rollback).  `2>/dev/null || true` keep a first-run/already-gone table
     # from aborting the generated script.
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     snapshot = NftBackend().shell_snapshot(Family.IP, info)
     assert snapshot is not None
     assert snapshot.setup == (
@@ -2814,8 +2810,7 @@ def test_shell_snapshot_emits_nft_save_and_delete_restore() -> None:
 def test_shell_snapshot_maps_eb_family_to_bridge() -> None:
     # The snapshot list/delete must use the nft family, not the ferm domain
     # name (eb -> bridge), so it targets the table the backend actually built.
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     snapshot = NftBackend().shell_snapshot(Family.EB, info)
     assert snapshot is not None
     assert "list table bridge ferm" in snapshot.setup[1]
@@ -2842,8 +2837,7 @@ def test_render_user_chain_collision_is_error() -> None:
 def test_capture_previous_test_mode_reads_mock_file(tmp_path: Path) -> None:
     snap = tmp_path / "prev.nft"
     snap.write_text("table ip ferm {\n}\n", encoding="latin-1")
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     NftBackend().capture_previous(
         Family.IP,
         info,
@@ -2869,8 +2863,7 @@ def test_capture_previous_mock_reads_high_bytes_verbatim(
     # real ruleset.
     snap = tmp_path / "prev.nft"
     snap.write_bytes(b"table ip ferm {\n  comment \xff\n}\n")
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     NftBackend().capture_previous(
         Family.IP,
         info,
@@ -2889,8 +2882,7 @@ def test_capture_previous_mock_open_failure_reports_os_reason(
     # None or the noisy "[Errno N] ...: '<path>'" repr -- the admin needs to
     # know why the rollback snapshot could not be read.
     missing = tmp_path / "does-not-exist.nft"
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     with pytest.raises(FermError) as excinfo:
         NftBackend().capture_previous(
             Family.IP,
@@ -7944,8 +7936,7 @@ def _run_commit(
     options: Options,
     save: str = _KILL2_SAVE,
 ) -> _CommitResult:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     info.previous = previous
     result = _CommitResult()
     result.info = info
@@ -8159,8 +8150,7 @@ def test_render_preserve_message_anchored() -> None:
 
 
 def test_rollback_restore_receives_domain_info() -> None:
-    info = DomainInfo()
-    info.tools = {"nft": "nft"}
+    info = _nft_info()
     info.enabled = True
     info.previous = "table ip ferm {\n}\n"
     seen: list[object] = []

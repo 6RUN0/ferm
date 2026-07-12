@@ -51,6 +51,7 @@ from pyferm.errors import FermError
 from pyferm.rules import RenderedOption, RenderedRule
 from pyferm.scope import OptionKind
 from pyferm.values import Multi, Negated, Params, PreNegated
+from tests.unit._cli import run_pyferm
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -1036,16 +1037,6 @@ def test_validate_chain_name_rejects_shell_metachars(bad: str) -> None:
         _validate_chain_name(bad)
 
 
-def _run_ipt(src: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # fixed argv, no shell
-        [sys.executable, "-m", "pyferm", "--test", "--noexec", "--lines", "-"],
-        input=src,
-        capture_output=True,
-        encoding="utf-8",
-        check=False,
-    )
-
-
 # ---------------------------------------------------------------------------
 # _validate_table_name
 
@@ -1084,7 +1075,7 @@ def test_validate_policy_rejects_others(bad: str) -> None:
 def test_table_name_injection_is_rejected_end_to_end() -> None:
     # Currently emits "*filter foo" with rc=0 (injection).
     # Table names had no check before this fix.
-    proc = _run_ipt(
+    proc = run_pyferm(
         'domain ip table "filter foo" chain INPUT { policy DROP; }\n'
     )
     assert proc.returncode != 0
@@ -1093,7 +1084,7 @@ def test_table_name_injection_is_rejected_end_to_end() -> None:
 
 def test_chain_name_injection_is_rejected_end_to_end() -> None:
     # Currently emits ":evil chain DROP [0:0]" with rc=0 (injection).
-    proc = _run_ipt(
+    proc = run_pyferm(
         'domain ip table filter chain "evil chain" { policy DROP; }\n'
     )
     assert proc.returncode != 0
@@ -1104,7 +1095,7 @@ def test_chain_name_shell_injection_rejected_end_to_end() -> None:
     # eb/arp own no -restore tool -> slow path by default -> the raw name
     # reaches /bin/sh.  A whitespace-free metacharacter name must be refused
     # before any command string is built.
-    proc = _run_ipt(
+    proc = run_pyferm(
         "domain eb table filter chain 'x;reboot' { policy ACCEPT; }\n"
     )
     assert proc.returncode != 0
