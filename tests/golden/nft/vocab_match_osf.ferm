@@ -1,0 +1,9 @@
+table filter {
+    chain INPUT {
+        proto tcp mod osf genre "Linux" ACCEPT;
+        proto tcp mod osf genre "Windows" ttl "0" ACCEPT;
+        proto tcp mod osf genre "Windows" ttl "1" DROP;
+        proto tcp mod osf genre "FreeBSD" ttl "2" DROP;
+        proto tcp mod osf genre ! "Linux" DROP;
+    }
+}

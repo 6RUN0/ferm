@@ -859,6 +859,100 @@ def test_other_bare_modules_still_refuse() -> None:
         )
 
 
+# -- rule-wide module: osf (passive OS fingerprint) ----------------------
+
+
+def _osf(*options: RenderedOption) -> list[str]:
+    return _texts(
+        [_marker("osf"), *options, _target("DROP")],
+        Family.IP,
+    )
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        # genre alone -> name, no ttl clause (xt --ttl 0 default)
+        ([_opt("genre", "Linux", module="osf")], 'osf name "Linux"'),
+        # explicit ttl 0 folds to the same default (no ttl keyword)
+        (
+            [
+                _opt("genre", "Windows", module="osf"),
+                _opt("ttl", "0", module="osf"),
+            ],
+            'osf name "Windows"',
+        ),
+        # ttl 1 -> loose (accept a smaller live TTL), ttl 2 -> skip
+        (
+            [
+                _opt("genre", "Windows", module="osf"),
+                _opt("ttl", "1", module="osf"),
+            ],
+            'osf ttl loose name "Windows"',
+        ),
+        (
+            [
+                _opt("genre", "FreeBSD", module="osf"),
+                _opt("ttl", "2", module="osf"),
+            ],
+            'osf ttl skip name "FreeBSD"',
+        ),
+        # negated genre -> name !=
+        (
+            [_opt("genre", Negated("Linux"), module="osf")],
+            'osf name != "Linux"',
+        ),
+    ],
+)
+def test_osf_forms(options: list[RenderedOption], expected: str) -> None:
+    assert _osf(*options) == [expected, "drop"]
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        # --log has no nft equivalent -- dropping it would silently lose the
+        # fingerprint logging the rule asked for (fail-open guard)
+        (
+            [
+                _opt("genre", "Linux", module="osf"),
+                _opt("log", "1", module="osf"),
+            ],
+            "option 'log' has no nft equivalent",
+        ),
+        # genre is the match key; without it there is nothing to spell
+        (
+            [_opt("ttl", "1", module="osf")],
+            "needs 'genre'",
+        ),
+        # only the three documented ttl levels map
+        (
+            [
+                _opt("genre", "Linux", module="osf"),
+                _opt("ttl", "9", module="osf"),
+            ],
+            "'ttl 9' has no nft equivalent",
+        ),
+    ],
+)
+def test_osf_refusals(options: list[RenderedOption], message: str) -> None:
+    with pytest.raises(FermError, match=message):
+        translate_rule(
+            Family.IP,
+            "filter",
+            _rule(_marker("osf"), *options, _target("DROP")),
+        )
+
+
+def test_osf_is_ip_only() -> None:
+    # osf is registered ip-only; the family guard is fail-loud belt-and-braces
+    from pyferm.backend.nft.matches import _osf_match
+
+    opts = {"genre": _opt("genre", "Linux", module="osf")}
+    with pytest.raises(FermError, match="ip-only"):
+        _osf_match(Family.IP6, opts)
+
+
 # -- implied l4proto ------------------------------------------------------
 
 

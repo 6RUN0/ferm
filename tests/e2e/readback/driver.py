@@ -502,6 +502,33 @@ def check_match_helper_nth_readback() -> None:
             )
 
 
+OSF_IP_LINES = [
+    'osf name "Linux" accept',
+    'osf ttl loose name "Windows" drop',
+    'osf ttl skip name "FreeBSD" drop',
+    'osf name != "Linux" drop',
+]
+
+
+def check_osf_readback() -> None:
+    # Apply every osf emission (default/loose/skip TTL level, negated genre)
+    # and require the identical line back -- the --plan convergence contract
+    # for the passive-fingerprint match.
+    body = "\n".join(f" {line}" for line in OSF_IP_LINES)
+    script = (
+        "table ip t {\n chain c {\n"
+        " type filter hook input priority 0;\n"
+        f"{body}\n }}\n}}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    for want in OSF_IP_LINES:
+        if want not in lines:
+            _fail(
+                f"osf readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 TARGET_CONNSECMARK_HMARK_IP_LINES = [
     "ct secmark set meta secmark",
     "meta secmark set ct secmark",
@@ -617,6 +644,7 @@ def main() -> None:
     check_stateful_dynset_readback()
     check_match_modules_readback()
     check_match_helper_nth_readback()
+    check_osf_readback()
     check_target_connsecmark_hmark_readback()
     check_object_secmark_readback()
     check_object_cthelper_readback()

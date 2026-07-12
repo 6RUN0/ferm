@@ -33,6 +33,7 @@ from .matches import (
     _fib_type_match,
     _ipv4options_matches,
     _ipv6header_matches,
+    _osf_match,
     _policy_match,
     _rpfilter_match,
     _setref_selector,
@@ -389,6 +390,15 @@ def translate_rule(
         if o.module == "ipv4options" and o.kind is not OptionKind.MATCH_MODULE
     }
 
+    # mod osf's genre/ttl fold into one `osf [ttl X] name Y` match, so they
+    # are collected rule-wide and emitted at the first osf option (the
+    # policy precedent), module-qualified to exclude the bare -m marker.
+    osf_opts: dict[str, RenderedOption] = {
+        o.name: o
+        for o in rule.options
+        if o.module == "osf" and o.kind is not OptionKind.MATCH_MODULE
+    }
+
     # mod rpfilter / mod socket: the BARE load already is the match (a fib
     # route check, a socket lookup) and the no-arg flags only modulate its
     # shape, so presence sets suffice and the match emits at the module
@@ -420,6 +430,7 @@ def translate_rule(
     policy_emitted = False
     ipv6header_emitted = False
     ipv4options_emitted = False
+    osf_emitted = False
     rpfilter_emitted = False
     socket_emitted = False
 
@@ -543,6 +554,13 @@ def translate_rule(
             if not ipv4options_emitted:
                 matches.extend(_ipv4options_matches(domain, ipv4options_opts))
                 ipv4options_emitted = True
+            continue
+        if option.module == "osf":
+            # One `osf` match per rule, at the first osf option so it keeps
+            # source order among the other matches (the policy precedent).
+            if not osf_emitted:
+                matches.append(NftMatch(_osf_match(domain, osf_opts)))
+                osf_emitted = True
             continue
         if option.module == "rpfilter":
             # normally consumed at the module marker above; a marker-less

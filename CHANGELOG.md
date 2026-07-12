@@ -13,6 +13,16 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **nft backend: the `osf` passive OS-fingerprint match.** `mod osf genre
+  "<name>"` now translates to nft's native `osf name "<name>"` match
+  (live-verified on nft v1.1.6, kernel 6.18.38). A negated genre becomes
+  `osf name != "<name>"`; `ttl 1`/`ttl 2` map to nft's `ttl loose`/`ttl
+  skip` levels while `ttl 0` (the strict default) needs no clause. The
+  `log` option has no nft equivalent, so a rule carrying it refuses rather
+  than silently drop the fingerprint logging. This closes the last iptables
+  match module with a native nft counterpart; the remaining untranslated
+  matches (`account`, `bpf`, `geoip`, `ipvs`, `psd`, `u32`, …) have no nft
+  expression and continue to refuse cleanly.
 - **nft backend: the CT target's `helper` option (vocabulary batch 11b,
   the second table object).** `CT --helper <name>` now translates to a
   native nft `ct helper` table object declaring the helper and its L4

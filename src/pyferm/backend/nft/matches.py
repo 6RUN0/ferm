@@ -979,6 +979,54 @@ def _policy_match(opts: dict[str, RenderedOption]) -> str:
     raise FermError(f"invalid policy pol '{pol_scalar}' for nft backend")
 
 
+#: xt_osf ``--ttl`` level -> nft ``osf ttl`` keyword.  0 is the strict
+#: default (compare the fingerprint's expected TTL, spelled with no ``ttl``
+#: clause), 1 accepts a smaller live TTL for routed hops (``loose``), 2
+#: skips the TTL comparison entirely (``skip``).
+_OSF_TTL: Final[dict[str, str]] = {"0": "", "1": "loose", "2": "skip"}
+
+
+def _osf_match(domain: Family, opts: dict[str, RenderedOption]) -> str:
+    """
+    Translate ``mod osf`` to nft's passive OS-fingerprint ``osf`` match.
+
+    ``genre`` is the fingerprint name (negatable -> ``osf name != "X"``);
+    ``ttl`` selects the TTL-comparison level (:data:`_OSF_TTL`).  ``log``
+    controls xt_osf's kernel logging of matched fingerprints, which nft's
+    ``osf`` has no equivalent for, so a rule carrying it refuses rather
+    than silently dropping the logging.  osf is registered ip-only; the
+    family guard is fail-loud belt-and-braces.
+    """
+    if domain is not Family.IP:
+        raise FermError("mod osf is ip-only for the nft backend")
+    if "log" in opts:
+        raise FermError(
+            "mod osf option 'log' has no nft equivalent "
+            "(nft osf does not log fingerprint matches)"
+        )
+    genre_opt = opts.get("genre")
+    if genre_opt is None:
+        raise FermError("mod osf needs 'genre' for the nft backend")
+    genre, negated = unwrap_value(genre_opt.value)
+    parts = ["osf"]
+    ttl_opt = opts.get("ttl")
+    if ttl_opt is not None:
+        ttl_scalar, ttl_negated = unwrap_value(ttl_opt.value)
+        if ttl_negated:
+            raise FermError(
+                "mod osf 'ttl' cannot be negated for the nft backend"
+            )
+        level = _OSF_TTL.get(ttl_scalar)
+        if level is None:
+            raise FermError(
+                f"mod osf 'ttl {ttl_scalar}' has no nft equivalent"
+            )
+        if level:
+            parts.append(f"ttl {level}")
+    parts.append(f"name {_op(negated)}{_nft_quote_string(genre)}")
+    return " ".join(parts)
+
+
 def _ipv6header_matches(
     domain: Family, opts: dict[str, RenderedOption]
 ) -> list[NftMatch]:
