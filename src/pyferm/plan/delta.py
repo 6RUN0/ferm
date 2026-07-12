@@ -18,6 +18,7 @@ from .readback import (
     _NFT_OBJ_CHAIN,
     _NFT_OBJ_ELEMENT,
     _NFT_OBJ_RULE,
+    _NFT_OBJ_SECMARK,
     _NFT_OBJ_SET,
     parse_nft_list,
     parse_nft_script,
@@ -57,6 +58,12 @@ def _build_desired_index(desired_save: str) -> _DesiredIndex:
             index.set_decl[name] = stripped
         elif sub == _NFT_OBJ_ELEMENT:
             index.set_elements[name] = stripped
+        elif sub == _NFT_OBJ_SECMARK:
+            # A table object rides its own index slot; a real object change
+            # diverts the whole family to a full reload (build_nft_delta), so
+            # the delta emitter never consults this -- but the index must still
+            # recognize the line (it is present on every unchanged reconcile).
+            index.object_decl[name] = stripped
         else:
             raise internal_error(f"unexpected render line: {stripped!r}")
     return index
@@ -227,10 +234,11 @@ def build_nft_delta(
     applicable delta script, ``""`` when nothing changed, or ``None`` when the
     delta is refcount-unsafe and the caller must fall back to a full reload.
 
-    The unsafe case is any set ``remove`` (a pure removal or a retype modelled
-    as remove+add): ``delete set`` aborts the whole transaction if a live rule
-    still references the set, and a flags-only retype keeps the referencing
-    rule unchanged (so its chain is never flushed to clear the reference).
+    The unsafe cases are any set ``remove`` (a pure removal or a retype
+    modelled as remove+add) and any table-object add/remove: ``delete set`` /
+    ``delete secmark`` aborts the whole transaction if a live rule still
+    references the object, and a flags-only retype keeps the referencing rule
+    unchanged (so its chain is never flushed to clear the reference).
     Diverting that family to ``render().save`` keeps it correct; counter
     preservation is lost only for that rare reload.  The caller must have
     ruled out the snapshot-based full-reload cases via
@@ -240,6 +248,13 @@ def build_nft_delta(
     desired = parse_nft_script(desired_save)
     diff = diff_tables(current, desired, noflush=False)
     if any(sc.kind == SetChangeKind.REMOVE for sc in diff.set_changes):
+        return None
+    if diff.object_changes:
+        # Any table-object add/remove diverts to a full reload: an object is
+        # declared-once and rarely changes, and `delete secmark`/`delete ct
+        # helper` is refcount-unsafe while a live rule still references it (the
+        # set-REMOVE precedent).  Counter preservation is lost only for that
+        # rare reload; an unchanged object never reaches here.
         return None
     index = _build_desired_index(desired_save)
     return emit_delta_script(diff, current, index, family=family)

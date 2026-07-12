@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 from .model import (
     NftBaseChain,
     NftMatch,
+    NftObjectRef,
     NftRegularChain,
     NftRule,
     NftSetUpdate,
@@ -122,6 +123,32 @@ class _DynSetDecl:
         return self.timeout is not None
 
 
+@dataclass
+class _ObjectDecl:
+    """
+    A table object (``secmark`` / ``ct helper``) declaration.
+
+    Content-addressed: the name fixes the body -- a secmark name hashes its
+    context, a ct-helper name is the helper whose L4 proto is deterministic --
+    so the plan differ compares objects by name alone and never normalizes the
+    body (which the readback augments, e.g. a ct helper's ``l3proto``).
+    ``kind`` is the nft object keyword (``secmark`` / ``ct helper``); ``body``
+    is the brace content emitted verbatim.  Harvested straight off an
+    :class:`NftObjectRef` statement, it shares the ``decls`` dict with the set
+    declarations (nft keeps objects and sets in separate namespaces, so the
+    only shared-dict hazard is a name collision, which the ``secmark_``/helper
+    naming precludes).
+    """
+
+    kind: str
+    body: str
+
+
+#: One entry in a family's declaration dict: a static or dynamic named set, or
+#: a table object.  Shared by the collector, the serializer, and the mergers.
+_Decl = _SetDecl | _DynSetDecl | _ObjectDecl
+
+
 def _set_type_and_elements(
     domain: Family, selector: str, setref: SetRef
 ) -> tuple[NftSetType, bool, list[str]]:
@@ -173,9 +200,7 @@ def _set_type_and_elements(
     return type_, flags_interval, sort_set_elements(elements)
 
 
-def _merge_dynamic_decl(
-    decls: dict[str, _SetDecl | _DynSetDecl], stmt: NftSetUpdate
-) -> None:
+def _merge_dynamic_decl(decls: dict[str, _Decl], stmt: NftSetUpdate) -> None:
     """
     Merge one :class:`NftSetUpdate` sighting into ``decls``.
 
@@ -213,6 +238,11 @@ def _merge_dynamic_decl(
     if existing is None:
         decls[stmt.name] = dyn
         return
+    if isinstance(existing, _ObjectDecl):
+        # A user set colliding with a content-hash object name: fail loud
+        # rather than read ``.owned`` off an object decl (symmetric with the
+        # _merge_static_decl / _merge_object_decl guards).
+        raise _conflicting_set(stmt.name)
     if isinstance(existing, _SetDecl):
         # A port-selector use (`dport $x`) would need an
         # inet_service set the addr-keyed SET target cannot
@@ -228,7 +258,7 @@ def _merge_dynamic_decl(
 
 
 def _merge_static_decl(
-    decls: dict[str, _SetDecl | _DynSetDecl],
+    decls: dict[str, _Decl],
     selectors: dict[str, str],
     domain: Family,
     stmt: NftMatch,
@@ -250,6 +280,12 @@ def _merge_static_decl(
         domain, selector, setref
     )
     prior = decls.get(name)
+    if isinstance(prior, _ObjectDecl):
+        # A user set colliding with a content-hash object name (the
+        # ``secmark_`` prefix makes this all but impossible): fail loud rather
+        # than read ``.elements`` off an object decl.  Symmetric with the guard
+        # in :func:`_merge_object_decl`.
+        raise _conflicting_set(name)
     if isinstance(prior, _DynSetDecl):
         if prior.owned or prior.type_ != type_:
             raise FermError(
@@ -273,30 +309,55 @@ def _merge_static_decl(
     decls[name] = _SetDecl(type_, flags_interval, elements)
 
 
+def _merge_object_decl(decls: dict[str, _Decl], stmt: NftObjectRef) -> None:
+    """
+    Merge one :class:`NftObjectRef` sighting into ``decls`` (dedup by name).
+
+    Object-arm of :func:`_collect_set_declarations`.  The name is
+    content-addressed (a secmark hashes its context; a ct-helper name fixes
+    its proto), so two sightings of one name MUST carry the same
+    ``(kind, body)`` -- a mismatch is a genuine collision (a user set colliding
+    with an object name, defended even though the ``secmark_`` prefix precludes
+    it) and errors rather than silently dropping one declaration.
+    """
+    prior = decls.get(stmt.name)
+    if prior is None:
+        decls[stmt.name] = _ObjectDecl(stmt.kind, stmt.body)
+        return
+    if not isinstance(prior, _ObjectDecl) or (prior.kind, prior.body) != (
+        stmt.kind,
+        stmt.body,
+    ):
+        raise _conflicting_set(stmt.name)
+
+
 def _collect_set_declarations(
     domain: Family, rules: dict[str, list[NftRule]]
-) -> dict[str, _SetDecl | _DynSetDecl]:
+) -> dict[str, _Decl]:
     """
     Aggregate named-set declarations over one family's rules.
 
     Keyed by name within this ``render()``: every ferm table merges into one
     ``table <family> ferm``, so a name is family-scoped.  Two arms feed the
     single dict -- static sets read structurally from :attr:`NftMatch.setref`
-    (never reverse-parsed out of the rendered text) and dynamic sets from
-    :class:`NftSetUpdate` (recent/hashlimit).  A name reused with a differing
-    selector or element set, or across the static/dynamic kinds, is a conflict
-    (error); the same name across several chains or tables of one family is one
-    object (dedup).  The unified namespace is the collision guard the spec
-    requires: an implicit ``recent_<x>``/``hashlimit_<x>`` set cannot silently
-    shadow a user ``@set`` of the same name.
+    (never reverse-parsed out of the rendered text), dynamic sets from
+    :class:`NftSetUpdate` (recent/hashlimit), and table objects from
+    :class:`NftObjectRef` (secmark/ct helper).  A name reused with a differing
+    selector or element set, or across the kinds, is a conflict (error); the
+    same name across several chains or tables of one family is one object
+    (dedup).  The unified namespace is the collision guard the spec requires:
+    an implicit ``recent_<x>``/``secmark_<x>`` name cannot silently shadow a
+    user ``@set`` of the same name.
     """
-    decls: dict[str, _SetDecl | _DynSetDecl] = {}
+    decls: dict[str, _Decl] = {}
     selectors: dict[str, str] = {}
     for chain_rules in rules.values():
         for rule in chain_rules:
             for stmt in rule.statements:
                 if isinstance(stmt, NftSetUpdate):
                     _merge_dynamic_decl(decls, stmt)
+                elif isinstance(stmt, NftObjectRef):
+                    _merge_object_decl(decls, stmt)
                 elif isinstance(stmt, NftMatch) and stmt.setref is not None:
                     _merge_static_decl(decls, selectors, domain, stmt)
     return decls
@@ -306,7 +367,7 @@ def serialize_table(
     table: NftTable,
     chains: list[NftBaseChain | NftRegularChain],
     rules: dict[str, list[NftRule]],
-    decls: dict[str, _SetDecl | _DynSetDecl],
+    decls: dict[str, _Decl],
     *,
     noflush: bool,
 ) -> str:
@@ -315,9 +376,10 @@ def serialize_table(
 
     Emits ``add table`` (idempotent), then ``flush table`` unless
     ``noflush`` (the ``--noflush`` decision lives HERE, not in the
-    applier), then every named-set declaration, then every
+    applier), then every named-set and table-object declaration, then every
     chain, then every rule.  ``chains`` is pre-sorted by the caller for
-    deterministic golden output; ``decls`` is emitted by sorted name.
+    deterministic golden output; ``decls`` (sets and objects alike) is emitted
+    by sorted name.
     """
     prefix = f"{table.family} {table.name}"
     lines = [f"add table {prefix}\n"]
@@ -325,6 +387,11 @@ def serialize_table(
         lines.append(f"flush table {prefix}\n")
     for name in sorted(decls):
         decl = decls[name]
+        if isinstance(decl, _ObjectDecl):
+            lines.append(
+                f"add {decl.kind} {prefix} {name} {{ {decl.body} }}\n"
+            )
+            continue
         if isinstance(decl, _DynSetDecl):
             dyn_flags = "dynamic,timeout" if decl.with_timeout else "dynamic"
             lines.append(

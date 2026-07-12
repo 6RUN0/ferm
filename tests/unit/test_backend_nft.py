@@ -4044,7 +4044,7 @@ def test_translate_match_negated_interface_keeps_inequality() -> None:
 def test_serialize_table_emits_named_set_declarations() -> None:
     from pyferm.backend.nft import NftSetType, _SetDecl
 
-    decls: dict[str, _SetDecl | _DynSetDecl] = {
+    decls: dict[str, _SetDecl | _DynSetDecl | _ObjectDecl] = {
         "ports": _SetDecl(NftSetType.INET_SERVICE, False, ["22", "80"]),
         "nets": _SetDecl(NftSetType.IPV4_ADDR, True, ["10.0.0.0/8"]),
     }
@@ -5193,6 +5193,7 @@ from pyferm.backend.nft import (  # noqa: E402
     _build_recent_specs,
     _DynSetDecl,
     _nft_time_canon,
+    _ObjectDecl,
     _reduce_rate,
 )
 

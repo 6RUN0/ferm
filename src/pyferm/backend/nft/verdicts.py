@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 from typing import Final
@@ -18,6 +19,7 @@ from ...rules import (
     is_netfilter_builtin_chain,
     is_netfilter_module_target,
 )
+from ...streams import BYTE_ENCODING
 from ...values import (
     Params,
     SetRef,
@@ -39,6 +41,7 @@ from .matches import (
     _tos_refusal,
 )
 from .model import (
+    NftObjectRef,
     NftReset,
     NftSetUpdate,
     NftVerdict,
@@ -965,6 +968,43 @@ def _hmark_verdict(
         if int(off_scalar) != 0:
             expr += f" offset {int(off_scalar)}"
     return NftVerdict(expr)
+
+
+def _secmark_statement(companions: dict[str, RenderedOption]) -> NftObjectRef:
+    """
+    Build the SECMARK object-ref statement from its ``selctx`` companion.
+
+    ``SECMARK selctx "<context>"`` stamps a security context on the packet.
+    nft models this as a table ``secmark`` object holding the context string,
+    referenced by ``meta secmark set "<name>"``.  The object name is a content
+    hash of the context (identical contexts dedup to one object -- the
+    connlimit-naming precedent), prefixed ``secmark_`` so it cannot collide
+    with a user ``@set``.  The context is quoted via :func:`_nft_quote_string`
+    (which rejects an embedded quote/backslash/control char); nft stores it
+    verbatim, deferring SELinux validation to the kernel at load.  Unlike a
+    plain verdict this both declares an object and references it, so it returns
+    an :class:`NftObjectRef` the collector harvests -- hence a dedicated
+    ``translate_rule`` branch rather than a :func:`build_verdict` case.
+    """
+    selctx = companions.get("selctx")
+    if selctx is None:
+        raise FermError("SECMARK target needs 'selctx' for the nft backend")
+    context, _ = unwrap_value(selctx.value)
+    if not context:
+        # Reject an empty context early (symmetric with the missing-selctx
+        # guard) rather than emitting `{ "" }` for the kernel to reject at
+        # load.
+        raise FermError(
+            "SECMARK 'selctx' must be a non-empty security context"
+        )
+    digest = hashlib.sha256(context.encode(BYTE_ENCODING)).hexdigest()[:12]
+    name = f"secmark_{digest}"
+    return NftObjectRef(
+        kind="secmark",
+        name=name,
+        body=_nft_quote_string(context),
+        rule_expr=f"meta secmark set {_nft_quote_string(name)}",
+    )
 
 
 def build_verdict(

@@ -1,0 +1,15 @@
+add table ip ferm
+delete table ip ferm
+add table ip ferm
+add secmark ip ferm secmark_00d5f9c79391 { "system_u:object_r:http_port_t:s0" }
+add secmark ip ferm secmark_46e9b254fd6f { "system_u:object_r:ssh_port_t:s0" }
+add chain ip ferm mangle_OUTPUT { type route hook output priority -150; }
+add rule ip ferm mangle_OUTPUT tcp dport 22 meta secmark set "secmark_46e9b254fd6f"
+add rule ip ferm mangle_OUTPUT tcp dport 80 meta secmark set "secmark_00d5f9c79391"
+add rule ip ferm mangle_OUTPUT tcp dport 443 meta secmark set "secmark_46e9b254fd6f"
+add table ip6 ferm
+delete table ip6 ferm
+add table ip6 ferm
+add secmark ip6 ferm secmark_46e9b254fd6f { "system_u:object_r:ssh_port_t:s0" }
+add chain ip6 ferm mangle_OUTPUT { type route hook output priority -150; }
+add rule ip6 ferm mangle_OUTPUT tcp dport 22 meta secmark set "secmark_46e9b254fd6f"

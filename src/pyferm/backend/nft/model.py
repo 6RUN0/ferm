@@ -318,6 +318,34 @@ class NftSetUpdate(NftStatement):
 
 
 @dataclass
+class NftObjectRef(NftStatement):
+    """
+    A rule statement that references a table object it also declares.
+
+    Backs the SECMARK / CT-helper targets: the rule both sets the object
+    (``meta secmark set "<name>"`` / ``ct helper set "<name>"``) and implies
+    the object's declaration.  :func:`_collect_set_declarations` harvests the
+    declaration facts (``kind``, ``name``, ``body``) straight off this
+    statement -- the :class:`NftSetUpdate` precedent for the implicit dynamic
+    sets -- so ``serialize_table`` can emit the object without re-parsing the
+    rendered rule text.  ``body`` is the brace content the readback stores
+    (e.g. ``"<context>"`` for a secmark); ``rule_expr`` is the rule statement
+    (e.g. ``meta secmark set "<name>"``).  Kept a distinct subclass (like
+    :class:`NftReset`) so the collapse/vmap passes -- which key off
+    :class:`NftMatch`/:class:`NftVerdict` -- leave it untouched.
+    """
+
+    kind: str
+    name: str
+    body: str
+    rule_expr: str
+
+    def to_text(self) -> str:
+        """Return the rule statement verbatim (the object rides ``decls``)."""
+        return self.rule_expr
+
+
+@dataclass
 class NftQuota(NftStatement):
     """
     A ``quota <n> <unit>`` statement (``mod quota``).

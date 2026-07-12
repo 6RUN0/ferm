@@ -53,6 +53,7 @@ from .model import NFT_COMMENT_MAX as NFT_COMMENT_MAX
 from .model import TOOL_NFT as TOOL_NFT
 from .model import NftBaseChain as NftBaseChain
 from .model import NftMatch as NftMatch
+from .model import NftObjectRef as NftObjectRef
 from .model import NftQuota as NftQuota
 from .model import NftRegularChain as NftRegularChain
 from .model import NftReset as NftReset
@@ -79,6 +80,7 @@ from .sets import (
 )
 from .sets import _DynSetDecl as _DynSetDecl
 from .sets import _full_reload_text as _full_reload_text
+from .sets import _ObjectDecl as _ObjectDecl
 from .sets import (
     _references_empty_named_set as _references_empty_named_set,
 )

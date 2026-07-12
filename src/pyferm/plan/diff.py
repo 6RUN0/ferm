@@ -8,6 +8,7 @@ from .model import (
     ChainRebuild,
     DesuetChain,
     ForeignChain,
+    ObjectChange,
     ParsedChain,
     ParsedTable,
     PlanDiff,
@@ -191,6 +192,25 @@ def diff_tables(
             if set_name not in desired_table.sets:
                 diff.set_changes.append(
                     SetChange(table_name, set_name, SetChangeKind.REMOVE, [])
+                )
+
+        # table object diff: objects are content-addressed (the name fixes the
+        # body), so this is a pure name-set diff -- an add for a desired-only
+        # name, a remove for a current-only one, never an in-place modify.
+        current_objects = current_table.objects if current_table else {}
+        for obj_name, desired_obj in desired_table.objects.items():
+            if obj_name not in current_objects:
+                diff.object_changes.append(
+                    ObjectChange(
+                        table_name, obj_name, desired_obj.kind, added=True
+                    )
+                )
+        for obj_name, current_obj in current_objects.items():
+            if obj_name not in desired_table.objects:
+                diff.object_changes.append(
+                    ObjectChange(
+                        table_name, obj_name, current_obj.kind, added=False
+                    )
                 )
 
         # foreign chains: user chains in the managed table absent from config

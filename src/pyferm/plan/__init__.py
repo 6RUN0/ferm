@@ -26,7 +26,9 @@ from .diff import diff_tables as diff_tables
 from .model import ChainRebuild as ChainRebuild
 from .model import DesuetChain as DesuetChain
 from .model import ForeignChain as ForeignChain
+from .model import ObjectChange as ObjectChange
 from .model import ParsedChain as ParsedChain
+from .model import ParsedObject as ParsedObject
 from .model import ParsedSet as ParsedSet
 from .model import ParsedTable as ParsedTable
 from .model import Plan as Plan

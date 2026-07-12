@@ -37,6 +37,8 @@ def summary_line(diff: PlanDiff) -> str:
         summary += _clause(rebuilt, "chain", "rebuilt")
     if sets_changed := len(diff.set_changes):
         summary += _clause(sets_changed, "set", "changed")
+    if objects_changed := len(diff.object_changes):
+        summary += _clause(objects_changed, "object", "changed")
     return summary
 
 
@@ -116,6 +118,9 @@ def render_structured(plan: Plan) -> str:
                 lines.append(
                     f"  {sign} set {sc.table}/{sc.name} {{ {elems} }}"
                 )
+        for oc in sorted(diff.object_changes, key=lambda o: (o.table, o.name)):
+            sign = "+" if oc.added else "-"
+            lines.append(f"  {sign} {oc.kind} {oc.table}/{oc.name}")
         lines.append(f"  {summary_line(diff)}")
 
     return "\n".join(lines) + "\n"
@@ -141,6 +146,7 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
         | {d.table for d in diff.desuet_chains}
         | {cr.table for cr in diff.chain_rebuilds}
         | {s.table for s in diff.set_changes}
+        | {o.table for o in diff.object_changes}
     )
     current: list[str] = []
     desired: list[str] = []
@@ -200,6 +206,12 @@ def _diff_blob(diff: PlanDiff) -> tuple[list[str], list[str]]:
                     current.append(f"add set {table} {sc.name} {{ {elems} }}")
                 else:
                     current.append(f"add set {table} {sc.name}")
+        for oc in sorted(
+            (o for o in diff.object_changes if o.table == table),
+            key=lambda o: o.name,
+        ):
+            side = desired if oc.added else current
+            side.append(f"add {oc.kind} {table} {oc.name}")
     return current, desired
 
 

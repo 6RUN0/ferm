@@ -540,6 +540,37 @@ def check_batch11a_vocab_readback() -> None:
             )
 
 
+#: SECMARK's content-hash object name for the ssh context (batch 11b); the
+#: hash is family-independent, so ip and ip6 reuse the same name.
+BATCH11B_CONTEXT = "system_u:object_r:ssh_port_t:s0"
+BATCH11B_OBJECT = "secmark_46e9b254fd6f"
+
+
+def check_batch11b_vocab_readback() -> None:
+    # A SECMARK table object plus the rule that references it; require the
+    # object block AND the `meta secmark set` rule back verbatim (the --plan
+    # convergence contract for a content-addressed table object).
+    script = (
+        "table ip t {\n"
+        f' secmark {BATCH11B_OBJECT} {{ "{BATCH11B_CONTEXT}" }}\n'
+        " chain c {\n"
+        " type route hook output priority -150;\n"
+        f' meta secmark set "{BATCH11B_OBJECT}"\n'
+        " }\n}\n"
+    )
+    lines = _rule_lines(_load_and_list(script))
+    for want in (
+        f"secmark {BATCH11B_OBJECT} {{",
+        f'"{BATCH11B_CONTEXT}"',
+        f'meta secmark set "{BATCH11B_OBJECT}"',
+    ):
+        if want not in lines:
+            _fail(
+                f"batch-11b secmark readback line missing: {want}",
+                "\n".join(lines),
+            )
+
+
 def main() -> None:
     version = _sh("nft", "--version").stdout.strip()
     print(f"driver nft: {version}")
@@ -553,6 +584,7 @@ def main() -> None:
     check_batch9_vocab_readback()
     check_batch10_vocab_readback()
     check_batch11a_vocab_readback()
+    check_batch11b_vocab_readback()
     print("NFT-READBACK-PASS")
 
 

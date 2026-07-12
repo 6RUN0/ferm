@@ -19,7 +19,7 @@ from ..nftset import (
     set_body,
     sort_vmap_pairs,
 )
-from .model import ParsedChain, ParsedSet, ParsedTable
+from .model import ParsedChain, ParsedObject, ParsedSet, ParsedTable
 
 # ``:chain policy [pkts:bytes]`` has exactly 2 required fields + 1 optional.
 _CHAIN_PARTS_MIN: Final[int] = 2
@@ -567,6 +567,9 @@ _NFT_OBJ_ELEMENT: Final[str] = "element"
 
 _NFT_OBJ_RULE: Final[str] = "rule"
 
+#: Object sub-verbs (single-token; ``ct helper`` is added in a later batch).
+_NFT_OBJ_SECMARK: Final[str] = "secmark"
+
 
 def _ensure_ferm_table(tables: dict[str, ParsedTable]) -> None:
     """Insert an empty ``ferm`` table entry if not already present."""
@@ -734,6 +737,20 @@ def parse_nft_script(text: str) -> dict[str, ParsedTable]:
                 set_obj.type_, set_obj.flags = _parse_set_header(inner)
             continue
 
+        # -- add secmark (a table object) ------------------------------------
+        if sub == _NFT_OBJ_SECMARK and len(parts) >= _NFT_CHAIN_MIN_PARTS:
+            family, obj_name = _parse_object_head(parts, family, lineno, raw)
+            _ensure_ferm_table(tables)
+            brace_open = line.find("{")
+            brace_close = line.rfind("}")
+            body = ""
+            if brace_open != -1 and brace_close > brace_open:
+                body = line[brace_open + 1 : brace_close].strip()
+            tables[NFT_TABLE_NAME].objects[obj_name] = ParsedObject(
+                obj_name, _NFT_OBJ_SECMARK, body
+            )
+            continue
+
         # -- add element -----------------------------------------------------
         if sub == _NFT_OBJ_ELEMENT and len(parts) >= _NFT_CHAIN_MIN_PARTS:
             family, set_name = _parse_object_head(parts, family, lineno, raw)
@@ -783,6 +800,8 @@ _NL_DEPTH_CHAIN: Final[int] = 2  # inside a chain block
 
 _NL_DEPTH_SET: Final[int] = 3  # inside a set block
 
+_NL_DEPTH_OBJECT: Final[int] = 4  # inside a table-object block (secmark/...)
+
 # Regex anchors for the brace-delimited nft-list grammar.
 # These match only the structural openers; rule bodies at chain depth are
 # never tested against them (so a '{' inside a rule body is invisible).
@@ -795,6 +814,13 @@ _NFT_LIST_CHAIN_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 _NFT_LIST_SET_RE: Final[re.Pattern[str]] = re.compile(r"^set\s+(\S+)\s*\{$")
+
+# A table-object opener: 'secmark <name> {' (ct helper is added later, with a
+# two-word keyword).  Kept distinct from the set opener so the block body is
+# routed to ParsedTable.objects, never mistaken for set elements.
+_NFT_LIST_SECMARK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^secmark\s+(\S+)\s*\{$"
+)
 
 # A base-chain header starts with 'type' followed by the hook/priority tokens.
 _NFT_LIST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
@@ -868,6 +894,7 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
     depth = _NL_DEPTH_OUTSIDE
     current_chain: ParsedChain | None = None
     current_set: ParsedSet | None = None
+    current_object: ParsedObject | None = None
     # whether this chain's first non-blank body line has been seen
     chain_header_seen = False
 
@@ -895,6 +922,15 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
             # Inside the table: expect 'set <name> {', 'chain <name> {', or '}'
             if line == "}":
                 depth = _NL_DEPTH_OUTSIDE
+                continue
+            m_sec = _NFT_LIST_SECMARK_RE.match(line)
+            if m_sec:
+                obj_name = m_sec.group(1)
+                if not _NFT_LIST_SET_IDENT_RE.match(obj_name):
+                    raise _parse_error(lineno, raw)
+                current_object = ParsedObject(obj_name, _NFT_OBJ_SECMARK)
+                tables[NFT_TABLE_NAME].objects[obj_name] = current_object
+                depth = _NL_DEPTH_OBJECT
                 continue
             m_set = _NFT_LIST_SET_RE.match(line)
             if m_set:
@@ -942,6 +978,24 @@ def parse_nft_list(text: str, *, family: str) -> dict[str, ParsedTable]:
 
             current_chain.rules.append(
                 canonicalize_nft_rule(line, family=family)
+            )
+            continue
+
+        if depth == _NL_DEPTH_OBJECT:
+            # Inside a table-object body (secmark's quoted context, etc.).
+            assert current_object is not None
+            if line == "}":
+                current_object = None
+                depth = _NL_DEPTH_TABLE
+                continue
+            # Accumulate the body verbatim for rendering; it is NOT diff-
+            # relevant (objects diff by content-addressed name), so a simple
+            # space-join is enough and dodges normalizing the readback's
+            # augmentations (a ct helper's l3proto).
+            current_object.body = (
+                f"{current_object.body} {line}".strip()
+                if current_object.body
+                else line
             )
             continue
 

@@ -666,3 +666,17 @@ def test_batch10_vocabulary_is_canon_fixed_point(body: str) -> None:
 def test_batch11a_vocabulary_is_canon_fixed_point(body: str) -> None:
     family = "ip6" if "ip6" in body else "ip"
     assert canonicalize_nft_rule(body, family=family) == body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # batch-11b vocabulary: the SECMARK object reference. The `meta secmark
+        # set "<name>"` statement is the live readback; the canonicalizer must
+        # pass the quoted content-hash object name through untouched (the
+        # secmark object block round-trips in test_backend_nft_vocab11b).
+        'meta secmark set "secmark_46e9b254fd6f"',
+    ],
+)
+def test_batch11b_vocabulary_is_canon_fixed_point(body: str) -> None:
+    assert canonicalize_nft_rule(body, family="ip") == body

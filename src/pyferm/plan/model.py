@@ -48,13 +48,34 @@ class ParsedSet:
 
 
 @dataclass
+class ParsedObject:
+    """
+    One parsed table object (``secmark`` / ``ct helper``): kind plus body.
+
+    Content-addressed: the name (its key in :attr:`ParsedTable.objects`) fixes
+    the body -- a secmark name hashes its context, a ct-helper name fixes its
+    proto -- so :func:`diff_tables` compares objects by NAME alone.  ``body``
+    is kept for rendering only and is never normalized against the readback's
+    augmentations (a ct helper's ``l3proto`` line), which name-diffing
+    sidesteps entirely.
+    """
+
+    name: str
+    kind: str
+    body: str = ""
+
+
+@dataclass
 class ParsedTable:
-    """One parsed table: its chains and named sets, insertion-ordered."""
+    """One parsed table: chains, named sets, and objects, insertion-ordered."""
 
     chains: dict[str, ParsedChain] = field(
         default_factory=dict[str, ParsedChain]
     )
     sets: dict[str, ParsedSet] = field(default_factory=dict[str, ParsedSet])
+    objects: dict[str, ParsedObject] = field(
+        default_factory=dict[str, ParsedObject]
+    )
 
 
 @dataclass
@@ -147,6 +168,24 @@ class SetChange:
 
 
 @dataclass
+class ObjectChange:
+    """
+    A table object added or removed.
+
+    Objects are content-addressed (the name fixes the body), so a changed
+    context or proto is a NEW name -- an add of one plus a remove of the
+    other, never an in-place modify.  ``added`` is True for the desired-only
+    object, False for the current-only one.  ``kind`` carries the nft object
+    keyword for the renderer.
+    """
+
+    table: str
+    name: str
+    kind: str
+    added: bool
+
+
+@dataclass
 class _DesiredIndex:
     """
     Verbatim render lines keyed by object name, for the delta emitter.
@@ -163,6 +202,7 @@ class _DesiredIndex:
     )
     set_decl: dict[str, str] = field(default_factory=dict[str, str])
     set_elements: dict[str, str] = field(default_factory=dict[str, str])
+    object_decl: dict[str, str] = field(default_factory=dict[str, str])
 
 
 # Index of a render line: 'add <sub> <fam> ferm <name> ...'
@@ -187,6 +227,9 @@ class PlanDiff:
         default_factory=list[ChainRebuild]
     )
     set_changes: list[SetChange] = field(default_factory=list[SetChange])
+    object_changes: list[ObjectChange] = field(
+        default_factory=list[ObjectChange]
+    )
     noflush: bool = False
     current_empty: bool = False
 
@@ -200,6 +243,7 @@ class PlanDiff:
             or self.desuet_chains
             or self.chain_rebuilds
             or self.set_changes
+            or self.object_changes
         )
 
 

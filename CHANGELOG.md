@@ -13,6 +13,17 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- **nft backend: the SECMARK target and table-object infrastructure
+  (vocabulary batch 11b).** `SECMARK --selctx "<context>"` now translates
+  to a native nft `secmark` table object holding the context, referenced
+  by `meta secmark set "<name>"` (live-verified on nft v1.1.6). The object
+  name is a content hash of the context, so identical contexts share one
+  object. This adds the first *table object* to the nft backend: objects
+  are declared before the chains, the `--plan` differ models them (a
+  content-addressed name-diff, a fixed point against the kernel readback),
+  and any object add/remove diverts the delta-apply to a full reload
+  (`delete secmark` is refcount-unsafe mid-transaction — the set-removal
+  precedent).
 - **nft backend: the CONNSECMARK and HMARK targets (vocabulary batch
   11a).** Neither needs a table object; live-verified on nft v1.1.6:
   - `CONNSECMARK --save`/`--restore` → `ct secmark set meta secmark` /

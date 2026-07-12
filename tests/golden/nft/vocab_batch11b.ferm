@@ -1,0 +1,10 @@
+table mangle {
+    chain OUTPUT proto tcp {
+        dport 22 SECMARK selctx "system_u:object_r:ssh_port_t:s0";
+        dport 80 SECMARK selctx "system_u:object_r:http_port_t:s0";
+        dport 443 SECMARK selctx "system_u:object_r:ssh_port_t:s0";
+    }
+}
+domain ip6 table mangle chain OUTPUT proto tcp {
+    dport 22 SECMARK selctx "system_u:object_r:ssh_port_t:s0";
+}

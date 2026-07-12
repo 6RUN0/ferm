@@ -67,6 +67,7 @@ from .stateful import (
 )
 from .verdicts import (
     _netmap_verdict,
+    _secmark_statement,
     _set_target_statement,
     _tcpoptstrip_resets,
     build_verdict,
@@ -145,6 +146,8 @@ _TARGET_COMPANIONS: Final[frozenset[str]] = frozenset(
         # CONNSECMARK save/restore (collision-free bare flags).
         "save",
         "restore",
+        # SECMARK's only option (the security context); collision-free.
+        "selctx",
         # HMARK companions (all `hmark-` prefixed, collision-free); the
         # masks/prefixes are collected so the target refuses with the HMARK
         # message rather than a generic match-path "not supported".
@@ -617,6 +620,12 @@ def translate_rule(
         # statement is too: the rule ends without a verdict (TCPOPTSTRIP
         # precedent).  arp/eb fall through to the registry refusal.
         statements.append(_set_target_statement(domain, companions))
+    elif target_value == "SECMARK" and domain in (Family.IP, Family.IP6):
+        # SECMARK declares a table `secmark` object and references it; the
+        # object rides `decls` off the NftObjectRef (the SET precedent for a
+        # statement that carries a declaration).  arp/eb fall through to the
+        # registry refusal.
+        statements.append(_secmark_statement(companions))
     elif target_value is not None:
         statements.append(
             build_verdict(
