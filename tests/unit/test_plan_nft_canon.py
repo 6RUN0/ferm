@@ -671,10 +671,10 @@ def test_batch11a_vocabulary_is_canon_fixed_point(body: str) -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        # batch-11b vocabulary: the SECMARK object reference. The `meta secmark
-        # set "<name>"` statement is the live readback; the canonicalizer must
-        # pass the quoted content-hash object name through untouched (the
-        # secmark object block round-trips in test_backend_nft_vocab11b).
+        # the SECMARK object reference. The `meta secmark set "<name>"`
+        # statement is the live readback; the canonicalizer must pass the
+        # quoted content-hash object name through untouched (the secmark object
+        # block round-trips in test_backend_nft_vocab_objects).
         'meta secmark set "secmark_46e9b254fd6f"',
     ],
 )

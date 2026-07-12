@@ -1,11 +1,14 @@
 """
-Unit matrix for the batch-9 nft vocabulary (simple mappings).
+Unit matrix for the nft *match* vocabulary.
 
-Every emitted spelling below was captured from a live ``nft list
-ruleset`` readback (nft v1.1.6) -- the emission MUST equal the readback
-or ``--plan`` diffs an applied ruleset forever.  The refusal tests pin
-the fail-open guards the dichotomy gate cannot see (it accepts any
-non-empty translation, so a semantically widened match would pass it).
+Covers the simple meta/ct selectors, the rule-wide modules (policy /
+ipv6header / ipv4options / rpfilter / socket), the implied-l4proto matches,
+and the ``helper`` / ``nth`` matches.  Every emitted spelling below was
+captured from a live ``nft list ruleset`` readback (nft v1.1.6) -- the
+emission MUST equal the readback or ``--plan`` diffs an applied ruleset
+forever.  The refusal tests pin the fail-open guards the dichotomy gate
+cannot see (it accepts any non-empty translation, so a semantically widened
+match would pass it).
 """
 
 from __future__ import annotations
@@ -14,7 +17,6 @@ import pytest
 
 from pyferm.backend.nft import (
     _translate_match_parts,
-    build_verdict,
     translate_match,
     translate_rule,
 )
@@ -371,7 +373,7 @@ def _texts(rule_options: list[RenderedOption], domain: Family) -> list[str]:
         ),
     ],
 )
-def test_batch9_match_spellings(
+def test_match_module_spellings(
     domain: Family,
     option: RenderedOption,
     protocol: str | None,
@@ -534,7 +536,7 @@ def test_batch9_match_spellings(
         ),
     ],
 )
-def test_batch9_match_refusals(
+def test_match_module_refusals(
     domain: Family,
     option: RenderedOption,
     protocol: str | None,
@@ -946,28 +948,159 @@ def test_bare_proto_number_folds_to_readback_name(
     ]
 
 
-# -- AUDIT ----------------------------------------------------------------
+# -- helper match -------------------------------------------------------
 
 
-def test_audit_translates_to_audit_log() -> None:
-    for kind in ("accept", "drop", "reject"):
-        assert _texts(
+def test_helper_match_positive() -> None:
+    # xt_helper matches the ct helper name; nft spells it a quoted string.
+    assert (
+        translate_match(
+            Family.IP, _opt("helper", "ftp", module="helper"), None
+        )
+        == 'ct helper "ftp"'
+    )
+
+
+def test_helper_match_empty_refused() -> None:
+    with pytest.raises(FermError, match=r"^mod helper needs a non-empty"):
+        translate_match(Family.IP, _opt("helper", "", module="helper"), None)
+
+
+# -- nth match (-> numgen inc mod N P) ----------------------------------
+
+
+def test_nth_every_defaults_packet_zero() -> None:
+    assert _texts(
+        [_opt("every", "4", module="nth"), _target("ACCEPT")], Family.IP
+    ) == ["numgen inc mod 4 0", "accept"]
+
+
+def test_nth_every_with_packet() -> None:
+    assert _texts(
+        [
+            _opt("every", "8", module="nth"),
+            _opt("packet", "3", module="nth"),
+            _target("ACCEPT"),
+        ],
+        Family.IP,
+    ) == ["numgen inc mod 8 3", "accept"]
+
+
+def test_nth_default_counter_start_zero_allowed() -> None:
+    # counter 0 / start 0 are the defaults; they must be accepted, not
+    # refused (only a non-zero value has no numgen analogue).
+    assert _texts(
+        [
+            _opt("every", "4", module="nth"),
+            _opt("counter", "0", module="nth"),
+            _opt("start", "0", module="nth"),
+            _target("ACCEPT"),
+        ],
+        Family.IP,
+    ) == ["numgen inc mod 4 0", "accept"]
+
+
+@pytest.mark.parametrize("stateful_name", ["counter", "start"])
+def test_nth_nonzero_counter_or_start_refused(stateful_name: str) -> None:
+    with pytest.raises(
+        FermError, match=rf"^mod nth '{stateful_name}' has no numgen"
+    ):
+        _texts(
             [
-                _target("AUDIT"),
-                _opt("type", kind, module="AUDIT"),
+                _opt("every", "4", module="nth"),
+                _opt(stateful_name, "3", module="nth"),
+                _target("ACCEPT"),
             ],
             Family.IP,
-        ) == ["log level audit"]
-
-
-def test_audit_type_validates() -> None:
-    with pytest.raises(FermError, match="invalid AUDIT type"):
-        build_verdict(
-            Family.IP,
-            "filter",
-            "jump",
-            "AUDIT",
-            {"type": _opt("type", "foo", module="AUDIT")},
         )
-    with pytest.raises(FermError, match="AUDIT needs 'type'"):
-        build_verdict(Family.IP, "filter", "jump", "AUDIT", {})
+
+
+@pytest.mark.parametrize("stateful_name", ["counter", "start"])
+def test_nth_nondigit_counter_or_start_refused(stateful_name: str) -> None:
+    with pytest.raises(FermError, match=rf"^invalid nth {stateful_name} 'x'"):
+        _texts(
+            [
+                _opt("every", "4", module="nth"),
+                _opt(stateful_name, "x", module="nth"),
+                _target("ACCEPT"),
+            ],
+            Family.IP,
+        )
+
+
+def test_nth_without_every_refused() -> None:
+    with pytest.raises(FermError, match=r"^mod nth needs 'every'"):
+        _texts(
+            [_opt("packet", "0", module="nth"), _target("ACCEPT")], Family.IP
+        )
+
+
+def test_nth_packet_not_less_than_every_refused() -> None:
+    with pytest.raises(FermError, match=r"^nth packet '4' must be less"):
+        _texts(
+            [
+                _opt("every", "4", module="nth"),
+                _opt("packet", "4", module="nth"),
+                _target("ACCEPT"),
+            ],
+            Family.IP,
+        )
+
+
+def test_nth_every_zero_refused() -> None:
+    with pytest.raises(FermError, match=r"^invalid nth every '0'"):
+        _texts(
+            [_opt("every", "0", module="nth"), _target("ACCEPT")], Family.IP
+        )
+
+
+def test_nth_every_nondigit_refused() -> None:
+    # `_nth_numgen` is shared with the statistic-nth path via a `label`
+    # argument; this pins the `"nth"`-labeled every/packet refusals (an
+    # argument swap that mislabels one path would slip past the statistic
+    # tests otherwise).
+    with pytest.raises(FermError, match=r"^invalid nth every 'abc'"):
+        _texts(
+            [_opt("every", "abc", module="nth"), _target("ACCEPT")], Family.IP
+        )
+
+
+def test_nth_packet_nondigit_refused() -> None:
+    with pytest.raises(FermError, match=r"^invalid nth packet 'xy'"):
+        _texts(
+            [
+                _opt("every", "4", module="nth"),
+                _opt("packet", "xy", module="nth"),
+                _target("ACCEPT"),
+            ],
+            Family.IP,
+        )
+
+
+@pytest.mark.parametrize("field", ["every", "counter", "start"])
+def test_nth_latin1_superscript_digit_refused(field: str) -> None:
+    # `str.isdigit()` is true for the latin-1 superscript a config's bytes
+    # decode to (b2/b3/b9 -> ) but int() rejects it; the validator must
+    # give a clean ferm refusal, never a ValueError traceback.
+    options = [_opt("every", "4", module="nth")] if field != "every" else []
+    options.append(_opt(field, "²", module="nth"))
+    options.append(_target("ACCEPT"))
+    with pytest.raises(FermError, match=rf"^invalid nth {field} "):
+        _texts(options, Family.IP)
+
+
+def test_statistic_nth_and_mod_nth_coexist_module_qualified() -> None:
+    # `every`/`packet` name BOTH mod statistic and mod nth keywords; the
+    # rule-wide collections are module-qualified, so a rule carrying
+    # `mod statistic mode nth` AND a standalone `mod nth` emits two
+    # independent numgen matches without cross-contaminating each other's
+    # every (5 stays with statistic, 3 with nth).
+    assert _texts(
+        [
+            _opt("mode", "nth", module="statistic"),
+            _opt("every", "5", module="statistic"),
+            _opt("every", "3", module="nth"),
+            _target("ACCEPT"),
+        ],
+        Family.IP,
+    ) == ["numgen inc mod 5 0", "numgen inc mod 3 0", "accept"]

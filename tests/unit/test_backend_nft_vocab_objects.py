@@ -1,14 +1,16 @@
 """
-Unit matrix for the batch-11b nft vocabulary (SECMARK) and the object infra.
+Unit matrix for the nft table *objects*: the SECMARK and CT-helper targets.
 
-SECMARK is the first target that declares a table *object*: the rule both
-sets a security context (``meta secmark set "<name>"``) and implies a
-``secmark`` object holding the context.  The object name is a content hash of
-the context, so identical contexts dedup to one object and the plan differ
-compares objects by NAME alone -- a fixed point without normalizing the body.
-Every emitted spelling was captured from a live ``nft list ruleset`` readback
-(nft v1.1.6); the refusal tests pin the fail-closed guards (a missing/injected
-context, a non-ip/ip6 family) the dichotomy gate cannot see.
+These two targets are the ones that declare a table *object*: the rule both
+sets state (``meta secmark set "<name>"`` / ``ct helper set "<name>"``) and
+implies the object it references (a ``secmark`` holding a context, a
+``ct helper`` holding a helper name + protocol).  The object name is content-
+addressed -- a secmark hashes its context, a ct-helper name fixes its proto --
+so identical uses dedup to one object and the plan differ compares objects by
+NAME alone, a fixed point without normalizing the body (which the kernel
+readback augments, e.g. a ct helper's ``l3proto``).  Every emitted spelling was
+captured from a live ``nft list ruleset`` readback (nft v1.1.6); the refusal
+tests pin the fail-closed guards the dichotomy gate cannot see.
 """
 
 from __future__ import annotations
@@ -142,8 +144,8 @@ def test_secmark_non_ip_family_is_bare_chain_jump(domain: Family) -> None:
     # SECMARK is registered only for the ip/ip6 mangle table, so a `jump
     # SECMARK` in arp/eb is parser-unreachable; the domain guard leaves such a
     # value to build_verdict, which reads it as a jump to a same-table chain
-    # (the batch-10 CT/helper precedent).  Pin that it does NOT declare a
-    # secmark object -- the object path is ip/ip6 only.
+    # (the CT/helper same-name-chain precedent).  Pin that it does NOT declare
+    # a secmark object -- the object path is ip/ip6 only.
     nft = translate_rule(domain, "mangle", _secmark_rule(_SSH_CTX))
     assert not any(isinstance(s, NftObjectRef) for s in nft.statements)
     assert nft.statements[-1].to_text() == "jump mangle_SECMARK"
@@ -436,7 +438,7 @@ def test_parse_captures_object_body() -> None:
     assert listed.body == f'"{_SSH_CTX}"'
 
 
-# -- CT helper object (batch 11b, Commit 2) -----------------------------
+# -- CT helper object ---------------------------------------------------
 #
 # The CT target's `helper` knob is the second table object: `CT helper ftp`
 # emits a `ct helper cthelper_ftp { type "ftp" protocol tcp; }` object plus a

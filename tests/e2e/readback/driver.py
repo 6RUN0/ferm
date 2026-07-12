@@ -402,7 +402,7 @@ def check_stateful_dynset_readback() -> None:
 #: Batch-9 vocabulary lines: the emitter's exact output, which must read
 #: back verbatim (a respelled token = --plan/delta phantom diff forever).
 #: Captured from nft v1.1.6; re-capture on an nft bump, do not hand-edit.
-BATCH9_IP_LINES = [
+MATCH_MODULES_IP_LINES = [
     "meta cpu 0 accept",
     "iifgroup 5 accept",
     "oifgroup != 16 accept",
@@ -434,7 +434,7 @@ BATCH9_IP_LINES = [
     "log level audit",
 ]
 
-BATCH9_IP6_LINES = [
+MATCH_MODULES_IP6_LINES = [
     "meta l4proto mobility-header mh type binding-update accept",
     "meta l4proto mobility-header mh type != careof-test-init drop",
     "mh type 2-4 accept",
@@ -447,11 +447,11 @@ BATCH9_IP6_LINES = [
 ]
 
 
-def check_batch9_vocab_readback() -> None:
-    # Apply every batch-9 emission and require the identical line back:
+def check_match_modules_readback() -> None:
+    # Apply every match-module emission and require the identical line back:
     # this is the whole batch's --plan convergence contract in one pass.
-    body_ip = "\n".join(f" {line}" for line in BATCH9_IP_LINES)
-    body_ip6 = "\n".join(f" {line}" for line in BATCH9_IP6_LINES)
+    body_ip = "\n".join(f" {line}" for line in MATCH_MODULES_IP_LINES)
+    body_ip6 = "\n".join(f" {line}" for line in MATCH_MODULES_IP6_LINES)
     script = (
         "table ip t {\n chain c {\n"
         " type filter hook input priority 0;\n"
@@ -461,15 +461,15 @@ def check_batch9_vocab_readback() -> None:
         f"{body_ip6}\n }}\n}}\n"
     )
     lines = _rule_lines(_load_and_list(script))
-    for want in BATCH9_IP_LINES + BATCH9_IP6_LINES:
+    for want in MATCH_MODULES_IP_LINES + MATCH_MODULES_IP6_LINES:
         if want not in lines:
             _fail(
-                f"batch-9 vocab readback line missing: {want}",
+                f"match-module readback line missing: {want}",
                 "\n".join(lines),
             )
 
 
-BATCH10_IP_LINES = [
+MATCH_HELPER_NTH_IP_LINES = [
     'ct helper "ftp" accept',
     "numgen inc mod 4 0 accept",
     "numgen inc mod 8 3 accept",
@@ -482,27 +482,27 @@ BATCH10_IP_LINES = [
 ]
 
 
-def check_batch10_vocab_readback() -> None:
-    # Apply every batch-10 emission (helper match, nth numgen, CT event/zone
-    # mangle) and require the identical line back -- the --plan convergence
-    # contract, including the ctevents canonical reorder and the fixed
-    # multi-statement CT order.
-    body = "\n".join(f" {line}" for line in BATCH10_IP_LINES)
+def check_match_helper_nth_readback() -> None:
+    # Apply every helper/nth match + CT-target emission (nth numgen, CT
+    # event/zone mangle) and require the identical line back -- the --plan
+    # convergence contract, including the ctevents canonical reorder and the
+    # fixed multi-statement CT order.
+    body = "\n".join(f" {line}" for line in MATCH_HELPER_NTH_IP_LINES)
     script = (
         "table ip t {\n chain c {\n"
         " type filter hook input priority 0;\n"
         f"{body}\n }}\n}}\n"
     )
     lines = _rule_lines(_load_and_list(script))
-    for want in BATCH10_IP_LINES:
+    for want in MATCH_HELPER_NTH_IP_LINES:
         if want not in lines:
             _fail(
-                f"batch-10 vocab readback line missing: {want}",
+                f"helper/nth + CT-target readback line missing: {want}",
                 "\n".join(lines),
             )
 
 
-BATCH11A_IP_LINES = [
+TARGET_CONNSECMARK_HMARK_IP_LINES = [
     "ct secmark set meta secmark",
     "meta secmark set ct secmark",
     (
@@ -512,17 +512,21 @@ BATCH11A_IP_LINES = [
     "meta mark set jhash ip saddr . ip daddr mod 8 seed 0xabc",
 ]
 
-BATCH11A_IP6_LINES = [
+TARGET_CONNSECMARK_HMARK_IP6_LINES = [
     "meta mark set jhash ip6 saddr . ip6 daddr mod 8 seed 0xabc",
 ]
 
 
-def check_batch11a_vocab_readback() -> None:
+def check_target_connsecmark_hmark_readback() -> None:
     # CONNSECMARK secmark moves and HMARK jhash mangles in a prerouting hook;
     # require each emission back verbatim (the --plan convergence contract,
     # including the seed 0x-hex canon and the dropped `offset 0`).
-    body_ip = "\n".join(f" {line}" for line in BATCH11A_IP_LINES)
-    body_ip6 = "\n".join(f" {line}" for line in BATCH11A_IP6_LINES)
+    body_ip = "\n".join(
+        f" {line}" for line in TARGET_CONNSECMARK_HMARK_IP_LINES
+    )
+    body_ip6 = "\n".join(
+        f" {line}" for line in TARGET_CONNSECMARK_HMARK_IP6_LINES
+    )
     script = (
         "table ip t {\n chain c {\n"
         " type filter hook prerouting priority -150;\n"
@@ -532,46 +536,48 @@ def check_batch11a_vocab_readback() -> None:
         f"{body_ip6}\n }}\n}}\n"
     )
     lines = _rule_lines(_load_and_list(script))
-    for want in BATCH11A_IP_LINES + BATCH11A_IP6_LINES:
+    for want in (
+        TARGET_CONNSECMARK_HMARK_IP_LINES + TARGET_CONNSECMARK_HMARK_IP6_LINES
+    ):
         if want not in lines:
             _fail(
-                f"batch-11a vocab readback line missing: {want}",
+                f"connsecmark/hmark readback line missing: {want}",
                 "\n".join(lines),
             )
 
 
-#: SECMARK's content-hash object name for the ssh context (batch 11b); the
+#: SECMARK content-hash object name for the ssh context; the
 #: hash is family-independent, so ip and ip6 reuse the same name.
-BATCH11B_CONTEXT = "system_u:object_r:ssh_port_t:s0"
-BATCH11B_OBJECT = "secmark_46e9b254fd6f"
+OBJECT_SECMARK_CONTEXT = "system_u:object_r:ssh_port_t:s0"
+OBJECT_SECMARK_NAME = "secmark_46e9b254fd6f"
 
 
-def check_batch11b_vocab_readback() -> None:
+def check_object_secmark_readback() -> None:
     # A SECMARK table object plus the rule that references it; require the
     # object block AND the `meta secmark set` rule back verbatim (the --plan
     # convergence contract for a content-addressed table object).
     script = (
         "table ip t {\n"
-        f' secmark {BATCH11B_OBJECT} {{ "{BATCH11B_CONTEXT}" }}\n'
+        f' secmark {OBJECT_SECMARK_NAME} {{ "{OBJECT_SECMARK_CONTEXT}" }}\n'
         " chain c {\n"
         " type route hook output priority -150;\n"
-        f' meta secmark set "{BATCH11B_OBJECT}"\n'
+        f' meta secmark set "{OBJECT_SECMARK_NAME}"\n'
         " }\n}\n"
     )
     lines = _rule_lines(_load_and_list(script))
     for want in (
-        f"secmark {BATCH11B_OBJECT} {{",
-        f'"{BATCH11B_CONTEXT}"',
-        f'meta secmark set "{BATCH11B_OBJECT}"',
+        f"secmark {OBJECT_SECMARK_NAME} {{",
+        f'"{OBJECT_SECMARK_CONTEXT}"',
+        f'meta secmark set "{OBJECT_SECMARK_NAME}"',
     ):
         if want not in lines:
             _fail(
-                f"batch-11b secmark readback line missing: {want}",
+                f"secmark object readback line missing: {want}",
                 "\n".join(lines),
             )
 
 
-def check_batch11b_cthelper_readback() -> None:
+def check_object_cthelper_readback() -> None:
     # A ct-helper table object plus the rule that references it.  The kernel
     # augments the readback body with `l3proto ip` (absent from the save form);
     # require the object block, that augmentation, AND the `ct helper set` rule
@@ -594,7 +600,7 @@ def check_batch11b_cthelper_readback() -> None:
     ):
         if want not in lines:
             _fail(
-                f"batch-11b ct-helper readback line missing: {want}",
+                f"ct-helper object readback line missing: {want}",
                 "\n".join(lines),
             )
 
@@ -609,11 +615,11 @@ def main() -> None:
     check_classify_readback()
     check_ct_queue_netmap_readback()
     check_stateful_dynset_readback()
-    check_batch9_vocab_readback()
-    check_batch10_vocab_readback()
-    check_batch11a_vocab_readback()
-    check_batch11b_vocab_readback()
-    check_batch11b_cthelper_readback()
+    check_match_modules_readback()
+    check_match_helper_nth_readback()
+    check_target_connsecmark_hmark_readback()
+    check_object_secmark_readback()
+    check_object_cthelper_readback()
     print("NFT-READBACK-PASS")
 
 
