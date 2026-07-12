@@ -13,7 +13,6 @@ rejects it outright (chains have no priority there).
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 
 import pytest
@@ -36,6 +35,7 @@ from pyferm.plan import (
     parse_nft_list,
     parse_nft_script,
 )
+from tests._netns import nft_rootless_netns_works
 from tests.unit._parse import parse_source
 
 #: A live ``nft list table`` snapshot of FORWARD at a given priority.
@@ -549,22 +549,6 @@ def test_duplicate_priority_warns(
 # (e.g. constrained CI), so it is opportunistic, not a hard dependency.
 
 
-def _rootless_nft_available() -> bool:
-    if shutil.which("nft") is None or shutil.which("unshare") is None:
-        return False
-    try:
-        probe = subprocess.run(
-            ["unshare", "-rn", "nft", "list", "ruleset"],
-            capture_output=True,
-            encoding="utf-8",
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return probe.returncode == 0
-
-
 def _nft_priority_display(value: int) -> str | None:
     """Ask live rootless nft how it displays a forward chain at ``value``."""
     script = (
@@ -588,7 +572,7 @@ def _nft_priority_display(value: int) -> str | None:
 
 
 @pytest.mark.skipif(
-    not _rootless_nft_available(),
+    not nft_rootless_netns_works(),
     reason="needs a working rootless `unshare -rn nft`",
 )
 @pytest.mark.parametrize(

@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._netns import nft_rootless_netns_works
 from tests._oracle import (
     PORT_FERM,
     compile_config,
@@ -40,7 +41,6 @@ from tests._oracle import (
 from tests.corpus.canon import canonicalize
 from tests.corpus.test_corpus_nft import (
     _NFT_LINE,
-    _live_nft_usable,
     assert_live_nft_accepts,
 )
 
@@ -139,7 +139,7 @@ def test_packaged_config_translates_to_nft(deployed_conf: Path) -> None:
 
 
 @pytest.mark.skipif(
-    not _live_nft_usable(), reason="needs unshare -rn plus nft"
+    not nft_rootless_netns_works(), reason="needs unshare -rn plus nft"
 )
 def test_packaged_config_live_nft_accepts(deployed_conf: Path) -> None:
     output = _translate_nft(deployed_conf)

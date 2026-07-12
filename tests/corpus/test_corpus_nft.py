@@ -21,15 +21,14 @@ this gate documents the port's own nft surface over the corpus it owns.
 
 from __future__ import annotations
 
-import functools
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests._netns import nft_rootless_netns_works
 from tests._oracle import ORACLE_ENV
 from tests.corpus.test_corpus import flat_and_nested_configs
 
@@ -73,23 +72,6 @@ def _corpus_owned_configs() -> list[Path]:
     return flat_and_nested_configs(CONFIGS) + sorted(TRANSLATED.glob("*.ferm"))
 
 
-@functools.cache
-def _live_nft_usable() -> bool:
-    """Probe for ``nft`` plus a rootless network namespace."""
-    if shutil.which("nft") is None or shutil.which("unshare") is None:
-        return False
-    try:
-        probe = subprocess.run(
-            ["unshare", "-rn", "nft", "list", "ruleset"],
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return probe.returncode == 0
-
-
 def assert_live_nft_accepts(script: str, label: str = "") -> None:
     """
     Feed an nft script to a live ``nft -c`` in a rootless netns.
@@ -99,7 +81,7 @@ def assert_live_nft_accepts(script: str, label: str = "") -> None:
     ``label`` is appended to the failure message to name the offending
     config.
     """
-    if not _live_nft_usable():
+    if not nft_rootless_netns_works():
         return
     payload = script if script.endswith("\n") else script + "\n"
     check = subprocess.run(  # fixed argv, no shell

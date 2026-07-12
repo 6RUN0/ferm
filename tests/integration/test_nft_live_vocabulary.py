@@ -23,7 +23,7 @@ The unit layer pins the emitted *text*; this suite pins that the text is
   that no text-only test can see.
 
 Both skip where ``unshare -rn``/``nft`` are unavailable, mirroring
-:func:`tests.corpus.test_corpus_nft._live_nft_usable`.
+:func:`tests._netns.nft_rootless_netns_works`.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.corpus.test_corpus_nft import _live_nft_usable
+from tests._netns import nft_rootless_netns_works
 
 _HERE = Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parents[1]
@@ -277,7 +277,7 @@ domain ip6 {
 """
 
 pytestmark = pytest.mark.skipif(
-    not _live_nft_usable(), reason="needs unshare -rn plus nft"
+    not nft_rootless_netns_works(), reason="needs unshare -rn plus nft"
 )
 
 
