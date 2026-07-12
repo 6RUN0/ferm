@@ -576,107 +576,177 @@ def test_header_priority_malformed_offset_left_verbatim() -> None:
     assert out == "type filter hook input priority filter + xx policy accept"
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        # batch-9 vocabulary: emission equals the kernel readback verbatim
-        # (captured live, nft v1.1.6), so the canonicalizer must pass every
-        # spelling through untouched -- a mangled token would surface as a
-        # phantom --plan diff on an applied ruleset.
-        "meta cpu 0 accept",
-        "iifgroup 5 accept",
-        "oifgroup != 16 accept",
-        "meta rtclassid 42 accept",
-        "meta cgroup 1048577 accept",
+_CANON_FIXED_POINTS = [
+    # batch-9 vocabulary: meta/ct selectors, ext-header and fib matches.
+    # Each spelling is the live kernel readback (nft v1.1.6); the
+    # canonicalizer must pass it through untouched or --plan phantoms a
+    # diff on an applied ruleset.
+    pytest.param("meta cpu 0 accept", "ip", id="meta-cpu-0-accept"),
+    pytest.param("iifgroup 5 accept", "ip", id="iifgroup-5-accept"),
+    pytest.param("oifgroup != 16 accept", "ip", id="oifgroup-16-accept"),
+    pytest.param(
+        "meta rtclassid 42 accept", "ip", id="meta-rtclassid-42-accept"
+    ),
+    pytest.param(
+        "meta cgroup 1048577 accept", "ip", id="meta-cgroup-1048577-accept"
+    ),
+    pytest.param(
         "socket wildcard 0 socket transparent 1 accept",
-        "socket wildcard <= 1 accept",
+        "ip",
+        id="socket-wildcard-0-socket-tra",
+    ),
+    pytest.param(
+        "socket wildcard <= 1 accept", "ip", id="socket-wildcard-1-accept"
+    ),
+    pytest.param(
         "ct original ip saddr 192.0.2.1 accept",
+        "ip",
+        id="ct-original-ip-saddr-192-0-2",
+    ),
+    pytest.param(
         "ct reply ip6 saddr 2001:db8::1 accept",
+        "ip6",
+        id="ct-reply-ip6-saddr-2001-db8",
+    ),
+    pytest.param(
         "ct original proto-src 80-90 accept",
-        "ct protocol tcp accept",
-        "ct expiration 1m40s accept",
+        "ip",
+        id="ct-original-proto-src-80-90",
+    ),
+    pytest.param("ct protocol tcp accept", "ip", id="ct-protocol-tcp-accept"),
+    pytest.param(
+        "ct expiration 1m40s accept", "ip", id="ct-expiration-1m40s-accept"
+    ),
+    pytest.param(
         "ct expiration 3600s-7200s accept",
-        "ct direction original accept",
-        "ct label 40 accept",
-        "ct label & 7 != 7 drop",
-        "ah spi 1-1000 accept",
-        "esp spi 500 accept",
+        "ip",
+        id="ct-expiration-3600s-7200s-ac",
+    ),
+    pytest.param(
+        "ct direction original accept", "ip", id="ct-direction-original-accept"
+    ),
+    pytest.param("ct label 40 accept", "ip", id="ct-label-40-accept"),
+    pytest.param("ct label & 7 != 7 drop", "ip", id="ct-label-7-7-drop"),
+    pytest.param("ah spi 1-1000 accept", "ip", id="ah-spi-1-1000-accept"),
+    pytest.param("esp spi 500 accept", "ip", id="esp-spi-500-accept"),
+    pytest.param(
         "mh type binding-update accept",
+        "ip",
+        id="mh-type-binding-update-accep",
+    ),
+    pytest.param(
         "meta l4proto mobility-header mh type != careof-test-init drop",
-        "hbh hdrlength 8 accept",
-        "dst hdrlength 8 accept",
+        "ip",
+        id="meta-l4proto-mobility-header",
+    ),
+    pytest.param("hbh hdrlength 8 accept", "ip6", id="hbh-hdrlength-8-accept"),
+    pytest.param("dst hdrlength 8 accept", "ip6", id="dst-hdrlength-8-accept"),
+    pytest.param(
         "rt type 0 rt seg-left 1 accept",
+        "ip",
+        id="rt-type-0-rt-seg-left-1-acce",
+    ),
+    pytest.param(
         "exthdr frag exists exthdr mh exists accept",
+        "ip",
+        id="exthdr-frag-exists-exthdr-mh",
+    ),
+    pytest.param(
         "dccp type { request, response } drop",
+        "ip",
+        id="dccp-type-request-response-d",
+    ),
+    pytest.param(
         "dccp type != { reset, sync } accept",
-        "meta ipsec exists accept",
-        "meta ipsec missing drop",
+        "ip",
+        id="dccp-type-reset-sync-accept",
+    ),
+    pytest.param(
+        "meta ipsec exists accept", "ip", id="meta-ipsec-exists-accept"
+    ),
+    pytest.param(
+        "meta ipsec missing drop", "ip", id="meta-ipsec-missing-drop"
+    ),
+    pytest.param(
         "fib saddr . iif oif != 0 accept",
-        "fib saddr . mark oif 0 drop",
-        "ip option lsrr exists drop",
-        "ip ecn not-ect accept",
-        "log level audit",
-    ],
-)
-def test_batch9_vocabulary_is_canon_fixed_point(body: str) -> None:
-    family = "ip6" if ("ip6" in body or "hdrlength" in body) else "ip"
-    assert canonicalize_nft_rule(body, family=family) == body
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        # batch-10 vocabulary: helper match, nth numgen, CT event/zone mangle.
-        # Each spelling is the live kernel readback (nft v1.1.6), so the
-        # canonicalizer must pass it through untouched -- a mangled token or
-        # reordered event list would surface as a phantom --plan diff.
-        'ct helper "ftp" accept',
-        "numgen inc mod 4 0 accept",
-        "numgen inc mod 8 3 accept",
-        "notrack",
+        "ip",
+        id="fib-saddr-iif-oif-0-accept",
+    ),
+    pytest.param(
+        "fib saddr . mark oif 0 drop", "ip", id="fib-saddr-mark-oif-0-drop"
+    ),
+    pytest.param(
+        "ip option lsrr exists drop", "ip", id="ip-option-lsrr-exists-drop"
+    ),
+    pytest.param("ip ecn not-ect accept", "ip", id="ip-ecn-not-ect-accept"),
+    pytest.param("log level audit", "ip", id="log-level-audit"),
+    # batch-10 vocabulary: helper match, nth numgen, CT event/zone mangle.
+    # Each spelling is the live kernel readback (nft v1.1.6), so the
+    # canonicalizer must pass it through untouched -- a mangled token or
+    # reordered event list would surface as a phantom --plan diff.
+    pytest.param('ct helper "ftp" accept', "ip", id="ct-helper-ftp-accept"),
+    pytest.param(
+        "numgen inc mod 4 0 accept", "ip", id="numgen-inc-mod-4-0-accept"
+    ),
+    pytest.param(
+        "numgen inc mod 8 3 accept", "ip", id="numgen-inc-mod-8-3-accept"
+    ),
+    pytest.param("notrack", "ip", id="notrack"),
+    pytest.param(
         "ct event set new,related,destroy",
-        "ct zone set 5",
-        "ct original zone set 5",
-        "ct reply zone set 7",
+        "ip",
+        id="ct-event-set-new-related-des",
+    ),
+    pytest.param("ct zone set 5", "ip", id="ct-zone-set-5"),
+    pytest.param("ct original zone set 5", "ip", id="ct-original-zone-set-5"),
+    pytest.param("ct reply zone set 7", "ip", id="ct-reply-zone-set-7"),
+    pytest.param(
         "notrack ct zone set 1 ct event set new,destroy",
-    ],
-)
-def test_batch10_vocabulary_is_canon_fixed_point(body: str) -> None:
-    assert canonicalize_nft_rule(body, family="ip") == body
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        # batch-11a vocabulary: CONNSECMARK secmark moves and HMARK jhash.
-        # Each spelling is the live kernel readback (nft v1.1.6); the seed
-        # 0x-hex canon and dropped `offset 0` must pass through untouched.
-        "ct secmark set meta secmark",
-        "meta secmark set ct secmark",
-        (
-            "meta mark set jhash ip saddr . ip daddr . th sport . th dport . "
-            "meta l4proto mod 10 seed 0xabc offset 100"
-        ),
+        "ip",
+        id="notrack-ct-zone-set-1-ct-eve",
+    ),
+    # batch-11a vocabulary: CONNSECMARK secmark moves and HMARK jhash.
+    # Each spelling is the live kernel readback (nft v1.1.6); the seed
+    # 0x-hex canon and dropped `offset 0` must pass through untouched.
+    pytest.param(
+        "ct secmark set meta secmark", "ip", id="ct-secmark-set-meta-secmark"
+    ),
+    pytest.param(
+        "meta secmark set ct secmark", "ip", id="meta-secmark-set-ct-secmark"
+    ),
+    pytest.param(
+        "meta mark set jhash ip saddr . ip daddr . th sport . th dport . "
+        "meta l4proto mod 10 seed 0xabc offset 100",
+        "ip",
+        id="meta-mark-set-jhash-ip-saddr",
+    ),
+    pytest.param(
         "meta mark set jhash ip saddr . ip daddr mod 8 seed 0xabc",
-        # a zero seed reads back as `seed 0x0` (not dropped, unlike offset 0).
+        "ip",
+        id="meta-mark-set-jhash-ip-saddr-1",
+    ),
+    pytest.param(
         "meta mark set jhash th dport mod 4 seed 0x0",
+        "ip",
+        id="meta-mark-set-jhash-th-dport",
+    ),
+    pytest.param(
         "meta mark set jhash ip6 saddr . ip6 daddr mod 8 seed 0xabc",
-    ],
-)
-def test_batch11a_vocabulary_is_canon_fixed_point(body: str) -> None:
-    family = "ip6" if "ip6" in body else "ip"
-    assert canonicalize_nft_rule(body, family=family) == body
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        # the SECMARK object reference. The `meta secmark set "<name>"`
-        # statement is the live readback; the canonicalizer must pass the
-        # quoted content-hash object name through untouched (the secmark object
-        # block round-trips in test_backend_nft_vocab_objects).
+        "ip6",
+        id="meta-mark-set-jhash-ip6-sadd",
+    ),
+    # batch-11b: the SECMARK object reference. The `meta secmark set
+    # "<name>"` statement is the live readback; the canonicalizer must
+    # pass the quoted content-hash object name through untouched (the
+    # secmark object block round-trips in test_backend_nft_vocab_objects).
+    pytest.param(
         'meta secmark set "secmark_46e9b254fd6f"',
-    ],
-)
-def test_batch11b_vocabulary_is_canon_fixed_point(body: str) -> None:
-    assert canonicalize_nft_rule(body, family="ip") == body
+        "ip",
+        id="meta-secmark-set-secmark-46e",
+    ),
+]
+
+
+@pytest.mark.parametrize(("body", "family"), _CANON_FIXED_POINTS)
+def test_vocabulary_is_canon_fixed_point(body: str, family: str) -> None:
+    assert canonicalize_nft_rule(body, family=family) == body
