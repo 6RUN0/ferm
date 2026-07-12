@@ -54,8 +54,10 @@ class ParsedObject:
 
     Content-addressed: the name (its key in :attr:`ParsedTable.objects`) fixes
     the body -- a secmark name hashes its context, a ct-helper name fixes its
-    proto -- so :func:`diff_tables` compares objects by NAME alone.  ``body``
-    is kept for rendering only and is never normalized against the readback's
+    proto -- so :func:`diff_tables` compares objects by NAME alone and the
+    diff/delta/render path never reads ``body``.  It is populated by the
+    parser and asserted by the readback round-trip tests to prove parse
+    fidelity; it is deliberately never normalized against the readback's
     augmentations (a ct helper's ``l3proto`` line), which name-diffing
     sidesteps entirely.
     """

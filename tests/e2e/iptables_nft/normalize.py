@@ -72,8 +72,11 @@ _HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
 #: An anonymous set ``{ a, b, c }`` whose element order is not semantic.
 _ANON_SET = re.compile(r"\{ ([^{}]*?) \}")
 
-#: ``ct state``/``ct status`` comma-lists, order-insensitive.
-_CT_LIST = re.compile(r"\bct (state|status) ([a-z,]+)")
+#: ``ct state``/``ct status`` comma-lists, order-insensitive.  An optional
+#: ``!=`` is preserved (and its list still reordered), and the value class
+#: admits ``-`` so a hyphenated status flag (``seen-reply``) sorts whole
+#: rather than being truncated at the dash.
+_CT_LIST = re.compile(r"\bct (state|status) (!= )?([a-z,-]+)")
 
 #: The iptables-nft ``ipv6-icmp`` proto name; nft's own spelling is
 #: ``icmpv6`` and the port emits that.
@@ -122,9 +125,9 @@ def _sort_anon_sets(text: str) -> str:
 
 def _sort_ct_lists(text: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        kind = match.group(1)
-        flags = sorted(match.group(2).split(","))
-        return f"ct {kind} {','.join(flags)}"
+        kind, neg = match.group(1), match.group(2) or ""
+        flags = sorted(match.group(3).split(","))
+        return f"ct {kind} {neg}{','.join(flags)}"
 
     return _CT_LIST.sub(replace, text)
 
@@ -173,6 +176,13 @@ def _table_and_chain(nft_table: str, chain: str) -> tuple[str, str]:
     names are already bare.  The port packs every concept into one
     ``ferm`` table and encodes the concept in a ``<concept>_`` chain
     prefix, so that prefix is peeled back off to recover the same pair.
+
+    This peel is unambiguous only while no *filter* chain is literally
+    named with a concept prefix: a user chain ``nat_x`` in the default
+    table would be misread as concept ``nat`` on the port side yet stay
+    ``filter``/``nat_x`` on the reference side, so the two keys diverge
+    into a phantom diff.  Curated cases must therefore avoid such names;
+    :func:`test_iptables_nft_diff._assert_no_concept_chain` enforces it.
     """
     if nft_table != _FERM_TABLE:
         return nft_table, chain

@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tests._oracle import ORACLE_ENV, PORT_FERM
-from tests.e2e.iptables_nft.normalize import parse_dump
+from tests.e2e.iptables_nft.normalize import _TABLE_CONCEPTS, parse_dump
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -173,6 +173,31 @@ def _assert_no_blob(dump: str, cid: str) -> None:
     )
 
 
+def _assert_no_concept_chain(dump: str, cid: str) -> None:
+    # A filter-table chain literally named with a concept prefix (`nat_x`)
+    # collides with the port's concept-prefix encoding: `_table_and_chain`
+    # would read it as concept `nat` on the port side while the reference
+    # side keeps it under `filter`, so the keys diverge into a phantom diff.
+    # Curated cases must avoid such names -- fail loudly at authoring time
+    # rather than debug a confusing red diff later.
+    table = ""
+    for raw in dump.splitlines():
+        line = raw.strip()
+        if line.startswith("table "):
+            table = line.split()[2]
+        elif line.startswith("chain ") and table == "filter":
+            chain = line.split()[1]
+            clash = next(
+                (c for c in _TABLE_CONCEPTS if chain.startswith(f"{c}_")),
+                None,
+            )
+            assert clash is None, (
+                f"curated case {cid!r} names a filter chain {chain!r} with "
+                f"the {clash!r} concept prefix, which `_table_and_chain` "
+                f"would misattribute; rename the chain to avoid a phantom diff"
+            )
+
+
 def _filter(rule: str) -> str:
     return f"table filter {{\n\tchain INPUT {{\n\t\t{rule}\n\t}}\n}}\n"
 
@@ -237,6 +262,7 @@ def test_nft_matches_iptables_nft(cid: str, tmp_path: Path) -> None:
     ours = parse_dump(_our_nft_dump(config, tmp_path))
     reference_dump = _iptables_nft_dump(config, tmp_path)
     _assert_no_blob(reference_dump, cid)
+    _assert_no_concept_chain(reference_dump, cid)
     reference = parse_dump(reference_dump)
 
     # A curated case must actually exercise a rule on both sides; an empty

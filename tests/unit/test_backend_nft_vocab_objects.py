@@ -635,7 +635,7 @@ def test_cthelper_plan_is_fixed_point() -> None:
         "\t}\n}\n",
         family="ip",
     )
-    diff = diff_tables(desired, current, noflush=False)
+    diff = diff_tables(current, desired, noflush=False)
     assert diff.object_changes == []
     assert not diff.has_changes()
 
