@@ -46,7 +46,7 @@ repos:
             conftest\.py$|
             .*__init__\.py$|
             _(oracle|netns)\.py$|
-            unit/_(cli|parse|packaging)\.py$|
+            unit/_(cli|parse|packaging|plan)\.py$|
             golden/(conftest|runner|normalize|sortpl)\.py$|
             corpus/canon\.py$|
             e2e/lockout/driver\.py$|

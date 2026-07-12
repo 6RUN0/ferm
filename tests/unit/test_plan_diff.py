@@ -4,7 +4,6 @@ from pyferm.plan import (
     ForeignChain,
     ParsedChain,
     ParsedTable,
-    Plan,
     PlanDiff,
     PolicyChange,
     RuleChange,
@@ -15,22 +14,19 @@ from pyferm.plan import (
     render_structured,
     summary_line,
 )
-
-
-def _tbl(chains: dict[str, ParsedChain]) -> dict[str, ParsedTable]:
-    return {"filter": ParsedTable(chains=chains)}
+from tests.unit._plan import filter_table, plan_ip
 
 
 def test_no_change_is_empty() -> None:
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", ["-p tcp -j ACCEPT"])})
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", ["-p tcp -j ACCEPT"])})
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", ["-p tcp -j ACCEPT"])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", ["-p tcp -j ACCEPT"])})
     diff = diff_tables(cur, des, noflush=False)
     assert not diff.has_changes()
 
 
 def test_added_and_removed_rules() -> None:
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", ["-p tcp -j ACCEPT"])})
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", ["-p udp -j DROP"])})
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", ["-p tcp -j ACCEPT"])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", ["-p udp -j DROP"])})
     diff = diff_tables(cur, des, noflush=False)
     assert [r.rule for r in diff.rules_added] == ["-p udp -j DROP"]
     assert [r.rule for r in diff.rules_removed] == ["-p tcp -j ACCEPT"]
@@ -39,28 +35,28 @@ def test_added_and_removed_rules() -> None:
 
 def test_duplicate_rule_not_collapsed() -> None:
     # current has two identical rules; desired has one -> one removal
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", ["-j A", "-j A"])})
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", ["-j A"])})
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", ["-j A", "-j A"])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", ["-j A"])})
     diff = diff_tables(cur, des, noflush=False)
     assert [r.rule for r in diff.rules_removed] == ["-j A"]
 
 
 def test_policy_change() -> None:
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
-    des = _tbl({"INPUT": ParsedChain("DROP", [])})
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
+    des = filter_table({"INPUT": ParsedChain("DROP", [])})
     diff = diff_tables(cur, des, noflush=False)
     assert diff.policy_changes[0].old == "ACCEPT"
     assert diff.policy_changes[0].new == "DROP"
 
 
 def test_foreign_chain_in_managed_table() -> None:
-    cur = _tbl(
+    cur = filter_table(
         {
             "INPUT": ParsedChain("ACCEPT", []),
             "DOCKER": ParsedChain("-", ["-j RETURN"]),
         }
     )
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
     diff = diff_tables(cur, des, noflush=False)
     assert [f.chain for f in diff.foreign_chains] == ["DOCKER"]
     assert diff.has_changes()
@@ -88,8 +84,8 @@ def test_kernel_table_without_config_rules_is_full_removal() -> None:
 
 def test_noflush_suppresses_builtin_rule_removal() -> None:
     # a current-only rule in a built-in chain is NOT removed under --noflush
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", ["-j EXISTING"])})
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", ["-j EXISTING"])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
     diff = diff_tables(cur, des, noflush=True)
     assert diff.rules_removed == []
     assert not diff.has_changes()
@@ -97,15 +93,15 @@ def test_noflush_suppresses_builtin_rule_removal() -> None:
 
 def test_noflush_shows_declared_user_chain_removal() -> None:
     # a declared user chain IS flushed under --noflush -> show removal
-    cur = _tbl({"mychain": ParsedChain("-", ["-j OLD"])})
-    des = _tbl({"mychain": ParsedChain("-", [])})
+    cur = filter_table({"mychain": ParsedChain("-", ["-j OLD"])})
+    des = filter_table({"mychain": ParsedChain("-", [])})
     diff = diff_tables(cur, des, noflush=True)
     assert [r.rule for r in diff.rules_removed] == ["-j OLD"]
 
 
 def test_noflush_keeps_policy_change_visible() -> None:
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
-    des = _tbl({"INPUT": ParsedChain("DROP", [])})
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
+    des = filter_table({"INPUT": ParsedChain("DROP", [])})
     diff = diff_tables(cur, des, noflush=True)
     assert diff.policy_changes[0].old == "ACCEPT"
     assert diff.policy_changes[0].new == "DROP"
@@ -113,8 +109,8 @@ def test_noflush_keeps_policy_change_visible() -> None:
 
 
 def test_noflush_new_chain_rules_show_as_added() -> None:
-    cur = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
-    des = _tbl(
+    cur = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
+    des = filter_table(
         {
             "INPUT": ParsedChain("ACCEPT", []),
             "mychain": ParsedChain("-", ["-j NEW"]),
@@ -126,7 +122,7 @@ def test_noflush_new_chain_rules_show_as_added() -> None:
 
 
 def test_current_empty_flag() -> None:
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", ["-j A"])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", ["-j A"])})
     diff = diff_tables({}, des, noflush=False)
     assert diff.current_empty
     assert [r.rule for r in diff.rules_added] == ["-j A"]
@@ -135,13 +131,13 @@ def test_current_empty_flag() -> None:
 def test_noflush_suppresses_undeclared_user_chain() -> None:
     # Under --noflush, a user chain present in the kernel but absent from
     # config is NOT reported as foreign and does not trigger has_changes().
-    cur = _tbl(
+    cur = filter_table(
         {
             "INPUT": ParsedChain("ACCEPT", []),
             "orphan": ParsedChain("-", ["-j RETURN"]),
         }
     )
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
     diff = diff_tables(cur, des, noflush=True)
     assert [f.chain for f in diff.foreign_chains] == []
     assert not diff.has_changes()
@@ -150,13 +146,13 @@ def test_noflush_suppresses_undeclared_user_chain() -> None:
 def test_noflush_false_reports_undeclared_user_chain_as_foreign() -> None:
     # Without --noflush, the same undeclared user chain IS reported as foreign
     # and causes has_changes() to return True.
-    cur = _tbl(
+    cur = filter_table(
         {
             "INPUT": ParsedChain("ACCEPT", []),
             "orphan": ParsedChain("-", ["-j RETURN"]),
         }
     )
-    des = _tbl({"INPUT": ParsedChain("ACCEPT", [])})
+    des = filter_table({"INPUT": ParsedChain("ACCEPT", [])})
     diff = diff_tables(cur, des, noflush=False)
     assert [f.chain for f in diff.foreign_chains] == ["orphan"]
     assert diff.has_changes()
@@ -235,13 +231,13 @@ def test_diff_tables_change_records_carry_table_and_chain() -> None:
     # Every emitted change (added/removed rule, policy, foreign chain) must
     # carry the real table -- and rules their chain -- so the rendered
     # *table / chain path is never None.
-    cur = _tbl(
+    cur = filter_table(
         {
             "INPUT": ParsedChain("ACCEPT", ["-j OLD"]),
             "DOCKER": ParsedChain("-", ["-j R"]),
         }
     )
-    des = _tbl({"INPUT": ParsedChain("DROP", ["-j NEW"])})
+    des = filter_table({"INPUT": ParsedChain("DROP", ["-j NEW"])})
     diff = diff_tables(cur, des, noflush=False)
     assert [(r.table, r.chain, r.rule) for r in diff.rules_added] == [
         ("filter", "INPUT", "-j NEW")
@@ -254,8 +250,8 @@ def test_diff_tables_change_records_carry_table_and_chain() -> None:
 
 
 def test_diff_tables_records_noflush_flag() -> None:
-    cur = _tbl({"my": ParsedChain("-", ["-j OLD"])})
-    des = _tbl({"my": ParsedChain("-", [])})
+    cur = filter_table({"my": ParsedChain("-", ["-j OLD"])})
+    des = filter_table({"my": ParsedChain("-", [])})
     assert diff_tables(cur, des, noflush=True).noflush is True
     assert diff_tables(cur, des, noflush=False).noflush is False
 
@@ -264,13 +260,13 @@ def _render(
     cur: dict[str, ParsedTable], des: dict[str, ParsedTable], *, noflush: bool
 ) -> str:
     diff = diff_tables(cur, des, noflush=noflush)
-    return render_structured(Plan(families={"ip": diff}))
+    return render_structured(plan_ip(diff))
 
 
 def test_render_structured_no_changes_message() -> None:
     out = _render(
-        _tbl({"INPUT": ParsedChain("ACCEPT", [])}),
-        _tbl({"INPUT": ParsedChain("ACCEPT", [])}),
+        filter_table({"INPUT": ParsedChain("ACCEPT", [])}),
+        filter_table({"INPUT": ParsedChain("ACCEPT", [])}),
         noflush=False,
     )
     assert out == "No changes. Live ruleset matches the configuration.\n"
@@ -278,13 +274,13 @@ def test_render_structured_no_changes_message() -> None:
 
 def test_render_structured_foreign_chain_warning() -> None:
     out = _render(
-        _tbl(
+        filter_table(
             {
                 "INPUT": ParsedChain("ACCEPT", []),
                 "DOCKER": ParsedChain("-", ["-j R"]),
             }
         ),
-        _tbl({"INPUT": ParsedChain("ACCEPT", [])}),
+        filter_table({"INPUT": ParsedChain("ACCEPT", [])}),
         noflush=False,
     )
     assert out == (
@@ -297,8 +293,8 @@ def test_render_structured_foreign_chain_warning() -> None:
 
 def test_render_structured_noflush_notes_and_summary() -> None:
     out = _render(
-        _tbl({"my": ParsedChain("-", ["-j OLD"])}),
-        _tbl({"my": ParsedChain("-", [])}),
+        filter_table({"my": ParsedChain("-", ["-j OLD"])}),
+        filter_table({"my": ParsedChain("-", [])}),
         noflush=True,
     )
     assert out == (

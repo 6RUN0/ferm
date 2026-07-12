@@ -3,7 +3,6 @@
 from pyferm.plan import (
     ParsedSet,
     ParsedTable,
-    Plan,
     PlanDiff,
     SetChange,
     SetChangeKind,
@@ -14,6 +13,7 @@ from pyferm.plan import (
     render_structured,
     render_unified,
 )
+from tests.unit._plan import plan_ip
 
 
 def _table_with_set(name: str, elements: list[str]) -> dict[str, ParsedTable]:
@@ -90,7 +90,7 @@ def test_modified_set_diff_shows_current_elements() -> None:
         desired=_table_with_set("ssh", ["22", "2222"]),
         noflush=False,
     )
-    out = render_unified(Plan(families={"ip": diff}))
+    out = render_unified(plan_ip(diff))
     assert "-add set ferm ssh { 22 }" in out
     assert "+add set ferm ssh { 22, 2222 }" in out
 
@@ -120,7 +120,7 @@ def test_render_structured_set_only_change_is_visible() -> None:
             )
         ],
     )
-    plan = Plan(families={"ip": diff})
+    plan = plan_ip(diff)
     out = render_structured(plan)
     assert "ssh" in out
     # At minimum a '+' or '-' set marker must appear
