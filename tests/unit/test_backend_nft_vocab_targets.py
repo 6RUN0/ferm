@@ -18,10 +18,14 @@ from typing import TYPE_CHECKING
 import pytest
 
 from pyferm.backend.nft import build_verdict, translate_rule
-from pyferm.backend.nft.verdicts import _ct_target_statements
+from pyferm.backend.nft.verdicts import (
+    _ct_target_statements,
+    _set_target_operand,
+    _set_target_statement,
+)
 from pyferm.domains import Family
 from pyferm.errors import FermError
-from pyferm.values import Negated, Value
+from pyferm.values import Negated, Params, SetRef, Value
 from tests.unit._nftrule import _opt, _rule, _target
 
 if TYPE_CHECKING:
@@ -150,6 +154,25 @@ def test_hmark_ip6() -> None:
             domain=Family.IP6,
         )
         == "meta mark set jhash ip6 saddr . ip6 daddr mod 8 seed 0xabc"
+    )
+
+
+def test_hmark_seed_uppercase_hex_prefix() -> None:
+    # iptables accepts an uppercase `0X` hex prefix; the u32 parser must
+    # branch on both `x` and `X` or `int("0XABC", 10)` raises a ValueError
+    # traceback instead of canonicalizing to the 0x-hex seed.
+    assert (
+        _hmark({"hmark_tuple": "src", "hmark_mod": "8", "hmark_rnd": "0XABC"})
+        == "meta mark set jhash ip saddr mod 8 seed 0xabc"
+    )
+
+
+def test_hmark_mod_one_accepted() -> None:
+    # mod must be >= 1 (0 is refused, tested above); the boundary value 1
+    # loads, so the `mod < 1` guard must not reject it.
+    assert (
+        _hmark({"hmark_tuple": "src", "hmark_mod": "1", "hmark_rnd": "0x1"})
+        == "meta mark set jhash ip saddr mod 1 seed 0x1"
     )
 
 
@@ -470,4 +493,62 @@ def test_ct_refusal_short_circuits_translatable_sibling() -> None:
                 "expevents": _ct_opt("expevents", "new"),
                 "zone": _ct_opt("zone", "1"),
             }
+        )
+
+
+# -- SET target ---------------------------------------------------------
+
+
+def _set_stmt(
+    *,
+    timeout: str | None = None,
+    exist: bool = False,
+    delete: bool = False,
+    domain: Family = Family.IP,
+) -> tuple[str, str | None]:
+    verb = "del-set" if delete else "add-set"
+    companions = {
+        verb: _opt(
+            verb,
+            Params([SetRef(name="ban", elements=[]), "src"]),
+            module="SET",
+        ),
+    }
+    if timeout is not None:
+        companions["timeout"] = _opt("timeout", timeout, module="SET")
+    if exist:
+        companions["exist"] = _opt("exist", None, module="SET")
+    stmt = _set_target_statement(domain, companions)
+    return stmt.verb, stmt.timeout
+
+
+def test_set_target_timeout_positive_becomes_element_timeout() -> None:
+    # xt `timeout N>0` becomes the nft element timeout in readback canon
+    # (1 -> 1s, 90 -> 1m30s); the `seconds > 0` guard gates the assignment.
+    assert _set_stmt(timeout="1") == ("add", "1s")
+    assert _set_stmt(timeout="90") == ("add", "1m30s")
+
+
+def test_set_target_timeout_zero_is_permanent_entry() -> None:
+    # xt `timeout 0` means a permanent entry -- an nft element with NO
+    # timeout; a `>= 0` guard would wrongly stamp `0s`.
+    assert _set_stmt(timeout="0") == ("add", None)
+
+
+def test_set_target_verbs_track_exist_and_delete() -> None:
+    assert _set_stmt() == ("add", None)
+    assert _set_stmt(exist=True) == ("update", None)
+    assert _set_stmt(delete=True) == ("delete", None)
+
+
+def test_set_target_operand_wrong_arity_is_internal_error() -> None:
+    # the value shape is match-set's two-element Params; a mis-arity tuple is
+    # a wiring bug, not a config error, so it raises the internal-error guard.
+    with pytest.raises(FermError, match=r"internal error"):
+        _set_target_operand(
+            _opt(
+                "add-set",
+                Params([SetRef(name="x", elements=[]), "src", "extra"]),
+                module="SET",
+            )
         )

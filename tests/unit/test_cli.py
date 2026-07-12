@@ -22,9 +22,11 @@ from pyferm.cli import (
 )
 from pyferm.config import Options
 from pyferm.errors import FermError
+from pyferm.streams import BYTE_ENCODING
 from tests.unit._cli import run_pyferm_bytes
 
 if TYPE_CHECKING:
+    import argparse
     from collections.abc import Iterable, Sequence
     from pathlib import Path
 
@@ -2641,3 +2643,274 @@ def test_def_name_rejects_non_ascii_word_chars(
     # accept as a name, so the pattern must stay pinned to re.ASCII.
     assert main(["--test", "--def", "ª=1", str(trivial_conf)]) == 1
     assert "Invalid --def specification" in capsys.readouterr().err
+
+
+# ===========================================================================
+# L1: subprocess.run keyword pinning (a mocked run ignores kwargs, so the
+# contract survives unless the exact values are asserted).
+# ===========================================================================
+
+
+def test_capture_subprocess_kwargs_are_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # capture() must snapshot with captured, latin-1-decoded, unchecked output
+    # under a UTC-pinned env; nulling/dropping capture_output or encoding, or
+    # flipping check to True, breaks the snapshot seam.
+    recorder = _install_run(monkeypatch, returncode=0, stdout="X")
+    bound_io = _make_io(Options(), sys.stdout)
+    assert bound_io.capture("nft list ruleset") == "X"
+    (_argv,), kwargs = recorder.calls[0]
+    assert kwargs["capture_output"] is True
+    assert kwargs["encoding"] == BYTE_ENCODING
+    assert kwargs["check"] is False
+    assert isinstance(kwargs["env"], dict)
+
+
+def test_nft_check_save_subprocess_kwargs_are_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The `nft -c -f -` pre-check must capture its diagnostic, feed the payload
+    # on stdin, stay unchecked (the non-zero exit is handled by hand), and run
+    # under TZ=UTC.
+    from pyferm.cli import _make_nft_restore
+
+    recorder = _install_run(monkeypatch, returncode=0)
+    restore = _make_nft_restore(Options(nft=True))
+    restore(_nft_domain_info(), "add table ip ferm\n")
+    (check_argv,), check_kwargs = recorder.calls[0]
+    assert check_argv == ["nft", "-c", "-f", "-"]
+    assert check_kwargs["capture_output"] is True
+    assert check_kwargs["check"] is False
+    assert check_kwargs["input"] == b"add table ip ferm\n"
+    check_env = check_kwargs["env"]
+    assert isinstance(check_env, dict)
+    assert check_env["TZ"] == "UTC"
+
+
+def test_nft_apply_subprocess_kwargs_are_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The real `nft -f -` apply must stay unchecked (a non-zero exit is turned
+    # into the rollback-triggering FermError by hand) and carry the payload and
+    # UTC env.
+    from pyferm.cli import _make_nft_restore
+
+    recorder = _install_run(monkeypatch, returncode=0)
+    restore = _make_nft_restore(Options(nft=True))
+    restore(_nft_domain_info(), "add table ip ferm\n")
+    (apply_argv,), apply_kwargs = recorder.calls[1]
+    assert apply_argv == ["nft", "-f", "-"]
+    assert apply_kwargs["check"] is False
+    assert apply_kwargs["input"] == b"add table ip ferm\n"
+    apply_env = apply_kwargs["env"]
+    assert isinstance(apply_env, dict)
+    assert apply_env["TZ"] == "UTC"
+
+
+class _FailOnApply:
+    """Fake run: the `-c` check passes, but the `-f` apply raises OSError."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self, command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        self.calls.append(command)
+        if command[:2] == ["nft", "-f"]:
+            raise FileNotFoundError("boom")
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+
+def test_nft_apply_oserror_names_the_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An OSError from the apply step is wrapped by _run_failed(path, exc); a
+    # dropped path or exc argument would raise TypeError instead of the
+    # rollback-triggering FermError.
+    from pyferm.cli import _make_nft_restore
+
+    monkeypatch.setattr(subprocess, "run", _FailOnApply())
+    restore = _make_nft_restore(Options(nft=True))
+    with pytest.raises(FermError, match="nft"):
+        restore(_nft_domain_info(), "add table ip ferm\n")
+
+
+def test_iptables_read_save_plan_kwargs_and_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # read_save captures the *-save output as latin-1, unchecked; under --plan
+    # a clean (rc 0) run returns that output verbatim rather than raising.
+    recorder = _install_run(monkeypatch, returncode=0, stdout="*filter\n")
+    bound_io = _make_io(Options(plan=True), io.StringIO())
+    assert bound_io.read_save("iptables-save") == "*filter\n"
+    (argv,), kwargs = recorder.calls[0]
+    assert argv == ["iptables-save"]
+    assert kwargs["capture_output"] is True
+    assert kwargs["encoding"] == BYTE_ENCODING
+    assert kwargs["check"] is False
+
+
+def test_iptables_read_save_plan_nonzero_rc_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Under --plan a non-zero *-save exit must abort: a partial dump would
+    # under-count removals and advertise a falsely-clean plan.
+    _install_run(monkeypatch, returncode=1, stdout="partial\n")
+    bound_io = _make_io(Options(plan=True), io.StringIO())
+    with pytest.raises(FermError, match="cannot build a plan"):
+        bound_io.read_save("iptables-save")
+
+
+# ===========================================================================
+# L7: execute() shell detection.
+# ===========================================================================
+
+
+def test_execute_dot_source_command_uses_shell_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A ". file" source command (no shell metacharacters, no var-assign) must
+    # still be routed through the shell verbatim -- the leading "dot space" is
+    # the sole trigger, so weakening it (an 'and' fold, or a mangled ". "
+    # literal) would wrongly argv-split it.
+    recorder = _install_run(monkeypatch, returncode=0)
+    bound_io = _make_io(Options(), sys.stdout)
+    assert bound_io.execute(". /etc/ferm.d/pre") is None
+    (argv,), kwargs = recorder.calls[0]
+    assert kwargs["shell"] is True
+    assert argv == ". /etc/ferm.d/pre"
+
+
+# ===========================================================================
+# L2: argparse contract for the main and rollback parsers.
+# ===========================================================================
+
+
+def test_build_parser_rejects_abbreviations() -> None:
+    # allow_abbrev=False (Getopt::Long no_auto_abbrev): an unambiguous
+    # abbreviation is still rejected.
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--noex", "f"])
+
+
+def test_build_parser_fast_is_boolean_flag() -> None:
+    # --fast is a store_true switch: it must not swallow the following
+    # positional as its value.
+    args = _build_parser().parse_args(["--fast", "f"])
+    assert args.fast is True
+    assert args.files == ["f"]
+
+
+def _rb_parser() -> argparse.ArgumentParser:
+    from pyferm.cli import _build_rollback_parser
+
+    return _build_rollback_parser()
+
+
+def test_rollback_parser_prog_and_metavar() -> None:
+    parser = _rb_parser()
+    assert parser.prog == "ferm rollback"
+    assert "--to SHA" in parser.format_usage()
+
+
+def test_rollback_parser_rejects_abbreviations() -> None:
+    with pytest.raises(SystemExit):
+        _rb_parser().parse_args(["--interac", "/etc/x"])
+
+
+@pytest.mark.parametrize(
+    ("flag", "attr"),
+    [
+        ("--slow", "slow"),
+        ("-i", "interactive"),
+        ("--interactive", "interactive"),
+        ("--no-etckeeper", "no_etckeeper"),
+        ("--full-reload", "full_reload"),
+        ("--nolegacy", "nolegacy"),
+        ("--nft", "nft"),
+    ],
+)
+def test_rollback_parser_store_true_flags(flag: str, attr: str) -> None:
+    # Each of these is a boolean switch and each short/long spelling must bind
+    # its own dest -- a dropped alias or a nulled action would reject the
+    # invocation or capture the positional.
+    args = _rb_parser().parse_args([flag, "/etc/x"])
+    assert getattr(args, attr) is True
+
+
+def test_rollback_parser_timeout_default_and_type() -> None:
+    assert _rb_parser().parse_args(["/etc/x"]).timeout == 30
+    # type=int: the parsed value is an int, not the raw string.
+    assert _rb_parser().parse_args(["-t", "5", "/etc/x"]).timeout == 5
+
+
+def test_rollback_parser_def_default_is_empty_list() -> None:
+    assert _rb_parser().parse_args(["/etc/x"]).defs == []
+
+
+# ===========================================================================
+# _confirm_rules prompt text and alarm arming.
+# ===========================================================================
+
+
+def test_confirm_rules_prints_full_two_line_prompt(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # Both prompt lines are pinned: the applied-rules notice and the
+    # type-'yes'-to-confirm instruction.
+    assert _confirm_with_input(b"no\n", monkeypatch) is False
+    err = capfd.readouterr().err
+    assert "ferm has applied the new firewall rules." in err
+    assert "Please type 'yes' to confirm:" in err
+
+
+def test_confirm_rules_arms_alarm_with_option_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The confirmation read is bounded by options.timeout, not a hardcoded
+    # constant: the SIGALRM is armed with exactly the configured seconds.
+    import os as os_mod
+    import signal
+
+    from pyferm.cli import _confirm_rules
+
+    armed: list[int] = []
+
+    def _record_alarm(seconds: int) -> int:
+        armed.append(seconds)
+        return 0
+
+    monkeypatch.setattr(signal, "alarm", _record_alarm)
+    monkeypatch.setattr(signal, "signal", lambda *_a: None)
+    monkeypatch.setattr(os_mod, "read", lambda *_a: b"no")
+    monkeypatch.setattr(sys, "stdin", _PipeStdin(0))
+    assert _confirm_rules(Options(interactive=True, timeout=30)) is False
+    # armed with the timeout, then disarmed with 0 in the finally block.
+    assert armed == [30, 0]
+
+
+def test_confirm_rules_reports_flush_failure_without_crashing(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # A best-effort input-buffer flush that fails is reported to stderr (Perl's
+    # bare eval + print $@); writing None instead of the message would crash
+    # the very confirmation it is reporting.
+    import os as os_mod
+    import signal
+    import termios
+
+    from pyferm.cli import _confirm_rules
+
+    monkeypatch.setattr(signal, "alarm", lambda _n: 0)
+    monkeypatch.setattr(signal, "signal", lambda *_a: None)
+    monkeypatch.setattr(os_mod, "read", lambda *_a: b"no")
+    monkeypatch.setattr(sys, "stdin", _PipeStdin(0))
+
+    def _boom(*_args: object) -> None:
+        raise termios.error("flush failed")
+
+    monkeypatch.setattr(termios, "tcflush", _boom)
+    assert _confirm_rules(Options(interactive=True, timeout=1)) is False
+    assert "flush failed" in capfd.readouterr().err

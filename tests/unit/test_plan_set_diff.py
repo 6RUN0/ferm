@@ -295,3 +295,46 @@ def test_dynamic_set_kernel_list_form_converges() -> None:
     assert desired["ferm"].sets["recent_SSH"].is_dynamic
     diff = diff_tables(current=current, desired=desired, noflush=False)
     assert not diff.has_changes()
+
+
+def _typed_set(
+    name: str, elements: list[str], *, type_: str
+) -> dict[str, ParsedTable]:
+    t = ParsedTable()
+    t.sets[name] = ParsedSet(name, elements, type_=type_)
+    return {"ferm": t}
+
+
+def test_set_type_change_remove_add_records_carry_table_and_elements() -> None:
+    """
+    A retype models remove+add; both records carry the real table.
+
+    The REMOVE side carries the table and an empty desired-element list (the
+    elements are lawfully lost on a type change); the ADD side carries the
+    table and the new desired elements.  A ``None`` table or ``None`` element
+    list on either would surface as a broken render/delta line.
+    """
+    current = _typed_set("s", ["22"], type_="inet_service")
+    desired = _typed_set("s", ["10.0.0.1"], type_="ipv4_addr")
+    diff = diff_tables(current=current, desired=desired, noflush=False)
+    remove = next(
+        c for c in diff.set_changes if c.kind == SetChangeKind.REMOVE
+    )
+    add = next(c for c in diff.set_changes if c.kind == SetChangeKind.ADD)
+    assert (remove.table, remove.name, remove.elements) == ("ferm", "s", [])
+    assert (add.table, add.name, add.elements) == ("ferm", "s", ["10.0.0.1"])
+
+
+def test_set_removed_change_carries_table() -> None:
+    """A set present only in current carries its real table on the remove."""
+    diff = diff_tables(
+        current=_table_with_set("ssh", ["22"]),
+        desired={"ferm": ParsedTable()},
+        noflush=False,
+    )
+    sc = next(c for c in diff.set_changes if c.name == "ssh")
+    assert (sc.table, sc.kind, sc.elements) == (
+        "ferm",
+        SetChangeKind.REMOVE,
+        [],
+    )

@@ -359,6 +359,114 @@ def _texts(rule_options: list[RenderedOption], domain: Family) -> list[str]:
             "tcp",
             "tcp flags ece",
         ),
+        # -- validator boundary sweep: the field maximum loads, the +1
+        # refuses (its refusal is in the matrix below).  A device group /
+        # realm is 32-bit, spi is 32-bit, an exthdr octet field is 8-bit,
+        # a connlabel bit is 0-127, an mh-type / tcp-option kind is 8-bit.
+        (
+            Family.IP,
+            _opt("src-group", "0", module="devgroup"),
+            None,
+            "iifgroup 0",
+        ),
+        (
+            Family.IP,
+            _opt("src-group", "4294967295", module="devgroup"),
+            None,
+            "iifgroup 4294967295",
+        ),
+        (
+            Family.IP,
+            _opt("realm", "0", module="realm"),
+            None,
+            "meta rtclassid 0",
+        ),
+        (
+            Family.IP,
+            _opt("ahspi", "4294967295", module="ah"),
+            "ah",
+            "ah spi 4294967295",
+        ),
+        (
+            Family.IP,
+            _opt("ahspi", "1:4294967295", module="ah"),
+            "ah",
+            "ah spi 1-4294967295",
+        ),
+        (
+            Family.IP6,
+            _opt("hbh-len", "255", module="hbh"),
+            None,
+            "hbh hdrlength 255",
+        ),
+        (
+            Family.IP6,
+            _opt("rt-segsleft", "255", module="rt"),
+            None,
+            "rt seg-left 255",
+        ),
+        (
+            Family.IP,
+            _opt("label", "127", module="connlabel"),
+            None,
+            "ct label 127",
+        ),
+        (
+            Family.IP6,
+            _opt("mh-type", "255", module="mh"),
+            "mh",
+            "mh type 255",
+        ),
+        (
+            Family.IP,
+            _opt("tcp-option", "255", module="tcp"),
+            "tcp",
+            "tcp option 255 exists",
+        ),
+        # -- negated operands that reach the shared `_op(neg)` seam: a
+        # dropped negation here would flip esp/mh/ecn to the positive
+        # match (fail-open), which the dichotomy gate cannot see.
+        (
+            Family.IP6,
+            _opt("espspi", Negated("500"), module="esp"),
+            "esp",
+            "esp spi != 500",
+        ),
+        (
+            Family.IP6,
+            _opt("mh-type", Negated("2:4"), module="mh"),
+            "mh",
+            "mh type != 2-4",
+        ),
+        (
+            Family.IP,
+            _opt("ecn-ip-ect", Negated("3"), module="ecn"),
+            None,
+            "ip ecn != ce",
+        ),
+        # -- icmp-type numeric boundary: a whole-octet type / code loads,
+        # the +1 refuses (matrix below); an unmapped number stays numeric.
+        (
+            Family.IP,
+            _opt("icmp-type", "255", module="icmp"),
+            "icmp",
+            "icmp type 255",
+        ),
+        (
+            Family.IP,
+            _opt("icmp-type", "255/255", module="icmp"),
+            "icmp",
+            "icmp type 255 icmp code 255",
+        ),
+        # -- dccp set order follows the packet-type rank, not the member
+        # spelling: `data` (rank 2) precedes `ack` (rank 3) though it
+        # sorts after alphabetically -- a dropped sort key would reorder.
+        (
+            Family.IP,
+            _opt("dccp-types", "data,ack", module="dccp"),
+            "dccp",
+            "dccp type { data, ack }",
+        ),
     ],
 )
 def test_match_module_spellings(
@@ -521,6 +629,68 @@ def test_match_module_spellings(
             _opt("label", "40", module="IDLETIMER"),
             None,
             "option 'label' not yet supported",
+        ),
+        # -- validator boundary +1: one past the field maximum refuses at
+        # translate time (nft -c would only catch it at apply).
+        (
+            Family.IP6,
+            _opt("hbh-len", "256", module="hbh"),
+            None,
+            "invalid hbh-len",
+        ),
+        (
+            Family.IP6,
+            _opt("mh-type", "256", module="mh"),
+            "mh",
+            "invalid mh-type",
+        ),
+        (
+            Family.IP,
+            _opt("tcp-option", "256", module="tcp"),
+            "tcp",
+            "invalid tcp-option",
+        ),
+        (
+            Family.IP,
+            _opt("icmp-type", "256", module="icmp"),
+            "icmp",
+            "invalid icmp type",
+        ),
+        (
+            Family.IP,
+            _opt("icmp-type", "3/256", module="icmp"),
+            "icmp",
+            "invalid icmp type",
+        ),
+        # -- a half-open colon range has no nft dash form: both ends must be
+        # present numbers, so `1:` and `:2` refuse rather than emit `1-` etc.
+        (
+            Family.IP,
+            _opt("ahspi", "1:", module="ah"),
+            "ah",
+            "invalid ahspi",
+        ),
+        (
+            Family.IP,
+            _opt("ahspi", ":2", module="ah"),
+            "ah",
+            "invalid ahspi",
+        ),
+        # -- the cgroup/helper matches are module-qualified: an option
+        # spelled `cgroup`/`helper` carried by a different module must NOT
+        # be swallowed by their branches (the connlabel/IDLETIMER precedent),
+        # it falls through to the generic refusal.
+        (
+            Family.IP,
+            _opt("cgroup", "5", module="realm"),
+            None,
+            "option 'cgroup' not yet supported",
+        ),
+        (
+            Family.IP,
+            _opt("helper", "ftp", module="conntrack"),
+            None,
+            "option 'helper' not yet supported",
         ),
     ],
 )
@@ -748,6 +918,13 @@ def test_ipv4options_flags_translate_with_absence() -> None:
             [_opt("flags", Negated("!lsrr"), module="ipv4options")],
             "negated ipv4options flag list",
         ),
+        # a negated SINGLE plain member takes the `missing` path, but only
+        # for a flag with an nft keyword; `cipso` has none, so even the
+        # single-member negation refuses rather than emit a phantom test
+        (
+            [_opt("flags", Negated("cipso"), module="ipv4options")],
+            "ipv4options flag 'cipso' has no nft equivalent",
+        ),
     ],
 )
 def test_ipv4options_refusals(
@@ -759,6 +936,35 @@ def test_ipv4options_refusals(
             "filter",
             _rule(_marker("ipv4options"), *options, _target("DROP")),
         )
+
+
+def test_ipv4options_single_negated_member_is_missing() -> None:
+    # a negated flag list of exactly one plain member (no `!` prefix)
+    # translates to `ip option X missing`; the whole-list negation refusal
+    # applies only to 2+ members (see test_ipv4options_refusals).
+    assert _texts(
+        [
+            _marker("ipv4options"),
+            _opt("flags", Negated("lsrr"), module="ipv4options"),
+            _target("DROP"),
+        ],
+        Family.IP,
+    ) == ["ip option lsrr missing", "drop"]
+
+
+def test_ipv4options_emits_once_per_rule() -> None:
+    # two ipv4options options collect into one rule-wide flags dict and emit
+    # a single match set; a lost `ipv4options_emitted = True` latch would
+    # double-emit the flags (the last option wins the dict, so both spell rr).
+    assert _texts(
+        [
+            _marker("ipv4options"),
+            _opt("flags", "lsrr", module="ipv4options"),
+            _opt("flags", "rr", module="ipv4options"),
+            _target("DROP"),
+        ],
+        Family.IP,
+    ) == ["ip option rr exists", "drop"]
 
 
 # -- bare-load modules: rpfilter / socket ---------------------------------
@@ -920,6 +1126,15 @@ def test_osf_forms(options: list[RenderedOption], expected: str) -> None:
                 _opt("ttl", "9", module="osf"),
             ],
             "'ttl 9' has no nft equivalent",
+        ),
+        # osf carries no negatable knob; a negated ttl is a wiring/config
+        # error that must fail loud rather than silently emit the positive
+        (
+            [
+                _opt("genre", "Linux", module="osf"),
+                _opt("ttl", Negated("1"), module="osf"),
+            ],
+            r"mod osf 'ttl' cannot be negated",
         ),
     ],
 )

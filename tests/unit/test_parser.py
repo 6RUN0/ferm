@@ -20,10 +20,15 @@ import pytest
 from pyferm.config import Options
 from pyferm.domains import Family
 from pyferm.errors import FermError
-from pyferm.modules import TARGET_DEFS
-from pyferm.parser import MAX_BLOCK_DEPTH, Parser, collect_filenames
+from pyferm.modules import TARGET_DEFS, Keyword
+from pyferm.parser import (
+    MAX_BLOCK_DEPTH,
+    NegatedFlag,
+    Parser,
+    collect_filenames,
+)
 from pyferm.rules import CORE_TARGETS
-from pyferm.scope import OptionKind
+from pyferm.scope import OptionKind, Rule
 from pyferm.values import Multi, Negated, Params, PreNegated
 from tests.unit._parse import build_parser, parse_source
 
@@ -833,6 +838,37 @@ _GRAMMAR_DIAGNOSTICS = [
         "To use sport or dport",
         id="dport-without-port-proto",
     ),
+    # -- sinks previously unpinned by any unit test (mutmut survivors) --
+    pytest.param(
+        "@def &e() = ;\n&e();",
+        "No chain defined",
+        id="no-chain-defined",
+    ),
+    pytest.param(
+        "chain INPUT { proto tcp ACCEPT;",
+        r'Missing "\}" at end of file',
+        id="missing-close-brace-at-eof",
+    ),
+    pytest.param(
+        "chain INPUT { proto tcp ACCEPT }",
+        r'Missing semicolon before "\}"',
+        id="missing-semicolon-before-brace",
+    ),
+    pytest.param(
+        "@def &f($a $b) = ACCEPT;\nchain INPUT &f(1, 2);",
+        r'"," expected',
+        id="def-param-missing-comma",
+    ),
+    pytest.param(
+        "@def &f($a, b) = ACCEPT;\nchain INPUT &f(1, 2);",
+        r'"\$" and parameter name expected',
+        id="def-param-missing-dollar",
+    ),
+    pytest.param(
+        "@def &f($.) = ACCEPT;\nchain INPUT &f(1);",
+        "invalid function parameter name",
+        id="def-invalid-parameter-name",
+    ),
 ]
 
 
@@ -1129,3 +1165,141 @@ def test_def_two_param_function_accepts_comma_separator() -> None:
     options = _values(_rules(parser, Family.IP, "filter", "INPUT")[0])
     assert options["dport"] == "22"
     assert options["sport"] == "53"
+
+
+def test_proto_records_its_match_module_and_dedupes_explicit_mod() -> None:
+    # ``proto tcp`` records "tcp" in rule.match (guarded by ``module is not
+    # None``), so a later explicit ``mod tcp`` is deduped and emits NO extra
+    # ``match tcp`` option -- the same way an implicit shortcut module dedupes.
+    parser = _parse("chain INPUT proto tcp mod tcp dport 22 ACCEPT;")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert ("match", "tcp", OptionKind.MATCH_MODULE) not in options
+    assert not any(
+        name == "match" and value == "tcp" for name, value, _ in options
+    )
+
+
+def test_eb_mark_target_is_rewritten_to_lowercase_mark() -> None:
+    # Under ebtables the ``MARK`` target is spelled ``-j mark`` (eb has both
+    # ``--mark`` and ``-j mark``); the rewrite fires only for MARK on the eb
+    # family.
+    parser = _parse("domain eb table filter chain FORWARD MARK set-mark 0x1;")
+    options = _options(_rules(parser, Family.EB, "filter", "FORWARD")[0])
+    assert ("jump", "mark", OptionKind.TARGET) in options
+
+
+def test_ip_mark_target_keeps_uppercase_name() -> None:
+    # The MARK->mark rewrite is gated on the eb family; on ip the target keeps
+    # its upper-case ``MARK`` spelling (both family and name guards matter).
+    parser = _parse("table mangle chain PREROUTING MARK set-mark 0x1;")
+    options = _options(_rules(parser, Family.IP, "mangle", "PREROUTING")[0])
+    assert ("jump", "MARK", OptionKind.TARGET) in options
+
+
+def test_eb_non_mark_target_keeps_its_own_name() -> None:
+    # The lowercase rewrite is gated on ``name == "MARK"``: another eb target
+    # (``snat``) keeps its own name and is NOT rewritten to ``mark``.
+    parser = _parse(
+        "domain eb table nat chain PREROUTING snat to-source 1.2.3.4;"
+    )
+    options = _options(_rules(parser, Family.EB, "nat", "PREROUTING")[0])
+    assert ("jump", "snat", OptionKind.TARGET) in options
+    assert ("jump", "mark", OptionKind.TARGET) not in options
+
+
+def test_relative_include_is_resolved_against_parent_dir(
+    tmp_path: Path,
+) -> None:
+    # A non-@glob include name goes through collect_filenames, which resolves a
+    # relative name against the including file's directory; the @glob branch
+    # would take the name verbatim and fail to open it.
+    (tmp_path / "sub.ferm").write_text(
+        "chain INPUT ACCEPT;\n", encoding="utf-8"
+    )
+    main = tmp_path / "main.ferm"
+    main.write_text('@include "sub.ferm";\n', encoding="utf-8")
+    parser = _parse_file(main)
+    rules = parser.domains[Family.IP].tables["filter"].chains["INPUT"].rules
+    assert _options(rules[0]) == [("jump", "ACCEPT", OptionKind.TARGET)]
+
+
+def test_include_without_trailing_semicolon_errors(tmp_path: Path) -> None:
+    # ``@include FILENAME`` must be the last command in a rule: a token other
+    # than ``;`` after the resolved names is rejected.
+    (tmp_path / "sub.ferm").write_text("", encoding="utf-8")
+    main = tmp_path / "main.ferm"
+    main.write_text('@include "sub.ferm" junk;\n', encoding="utf-8")
+    with pytest.raises(FermError, match='"include FILENAME" must be the last'):
+        _parse_file(main)
+
+
+def test_collect_filenames_unreadable_directory_errors(
+    tmp_path: Path,
+) -> None:
+    # A directory include whose contents cannot be listed reports "Failed to
+    # open directory" rather than crashing on the OSError from iterdir.
+    unreadable = tmp_path / "locked"
+    unreadable.mkdir()
+    unreadable.chmod(0o000)
+    parent = str(tmp_path / "main.ferm")
+    try:
+        with pytest.raises(FermError, match="Failed to open directory"):
+            collect_filenames(parent, [f"{unreadable}/"])
+    finally:
+        unreadable.chmod(0o755)
+
+
+# -- parse_keyword: the log-prefix truncation branch (params == 1) ----------
+#
+# ``LOG``'s ``log-prefix`` parses through the letter-code path in practice, so
+# the ``params == 1`` truncation is never reached from a config (pinned by
+# ``test_log_prefix_is_not_truncated``).  These drive parse_keyword directly
+# with a synthetic ``params == 1`` descriptor to exercise the boundary and the
+# short-circuit that would otherwise stay unpinned.
+
+
+def _call_parse_keyword(value_source: str, *, name: str) -> tuple[object, str]:
+    """
+    Call ``parse_keyword`` with a ``params == 1`` descriptor over one value.
+
+    Returns the parsed value and the captured stderr (for the truncation
+    warning).
+    """
+    parser = build_parser(value_source)
+    descriptor = Keyword(
+        name=name, params=1, negation=False, pre_negation=False
+    )
+    import contextlib
+    import io as _io
+
+    err = _io.StringIO()
+    with contextlib.redirect_stderr(err):
+        value = parser.parse_keyword(
+            Rule(), descriptor, NegatedFlag(active=False)
+        )
+    return value, err.getvalue()
+
+
+def test_parse_keyword_truncates_overlong_log_prefix() -> None:
+    # A ``log-prefix`` value longer than the 29-char cap is truncated (to
+    # exactly 29 chars) with a warning -- the ``params == 1`` branch.
+    value, err = _call_parse_keyword('"' + "x" * 40 + '"', name="log-prefix")
+    assert value == "x" * 29
+    assert "truncating to 29 characters" in err
+
+
+def test_parse_keyword_keeps_boundary_length_log_prefix() -> None:
+    # Exactly 29 chars is the boundary: the cap is ``len > 29`` (NOT
+    # ``>=``), so a 29-char prefix is kept whole and emits NO truncation
+    # warning.  A ``>=`` off-by-one would warn here.
+    value, err = _call_parse_keyword('"' + "y" * 29 + '"', name="log-prefix")
+    assert value == "y" * 29
+    assert "truncating" not in err
+
+
+def test_parse_keyword_does_not_truncate_non_log_prefix_keyword() -> None:
+    # The truncation is gated on ``keyword.name == "log-prefix"`` (AND, not
+    # OR): a same-length value on another keyword is kept whole, no warning.
+    value, err = _call_parse_keyword('"' + "z" * 40 + '"', name="comment")
+    assert value == "z" * 40
+    assert "truncating" not in err

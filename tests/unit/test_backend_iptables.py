@@ -566,6 +566,16 @@ def test_restore_domain_failure_message_lacks_trailing_newline() -> None:
     assert str(excinfo.value) == "Failed to run false"
 
 
+def test_restore_domain_spawn_failure_names_tool() -> None:
+    # The spawn-error path (OSError from a missing tool binary) is distinct
+    # from the nonzero-exit path: it must still name the tool it failed to
+    # run, not collapse to a bare message.
+    tool = "/no/such/restore-tool"
+    domain_info = DomainInfo(tools={"tables-restore": tool})
+    with pytest.raises(FermError, match=rf"Failed to run {tool}:"):
+        restore_domain(domain_info, "", Options())
+
+
 def test_commit_fast_failure_prints_single_line(
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -869,6 +879,10 @@ def test_capture_previous_eb_snapshots_each_table_in_order() -> None:
             EB_TABLES
         )
         assert all("--atomic-save" in c for c in calls)
+        # each snapshot's real temp path must be the --atomic-file argument of
+        # its own table's command, not a placeholder
+        for eb_table, command in zip(EB_TABLES, calls, strict=True):
+            assert info.ebt_previous[eb_table].name in command
     finally:
         info.close()
 
@@ -1012,7 +1026,9 @@ def test_validate_chain_name_accepts_iptables_legal(good: str) -> None:
     ["evil chain", "Y DROP [0:0]", "a:b", "a*b", "a\tb", "a\nb", "", "x\x01y"],
 )
 def test_validate_chain_name_rejects_separators(bad: str) -> None:
-    with pytest.raises(FermError):
+    with pytest.raises(
+        FermError, match=r"invalid chain name .* for iptables backend"
+    ):
         _validate_chain_name(bad)
 
 
@@ -1033,7 +1049,9 @@ def test_validate_chain_name_rejects_separators(bad: str) -> None:
     ],
 )
 def test_validate_chain_name_rejects_shell_metachars(bad: str) -> None:
-    with pytest.raises(FermError):
+    with pytest.raises(
+        FermError, match=r"invalid chain name .* for iptables backend"
+    ):
         _validate_chain_name(bad)
 
 
@@ -1050,7 +1068,9 @@ def test_validate_table_name_accepts(good: str) -> None:
     "bad", ["filter foo", "a*b", "a\nb", "", "filter;reboot", "f$(reboot)"]
 )
 def test_validate_table_name_rejects(bad: str) -> None:
-    with pytest.raises(FermError):
+    with pytest.raises(
+        FermError, match=r"invalid table name .* for iptables backend"
+    ):
         _validate_table_name(bad)
 
 
@@ -1587,6 +1607,25 @@ def test_validate_names_rejects_bad_chain_policy() -> None:
         },
     )
     with pytest.raises(FermError, match="BOGUSPOL"):
+        validate_names(domain_info)
+
+
+def test_validate_names_rejects_chain_priority_as_nft_only() -> None:
+    # chain priority is an nft-only feature; the iptables backend must reject
+    # it, naming the chain and spelling the backend-limitation message.
+    domain_info = DomainInfo(
+        tools={},
+        tables={
+            "filter": TableInfo(
+                chains={"INPUT": ChainInfo(builtin=True, priority=10)}
+            )
+        },
+    )
+    with pytest.raises(
+        FermError,
+        match=r"'INPUT' priority 10.*"
+        r"feature; the iptables backend has no chain priority",
+    ):
         validate_names(domain_info)
 
 

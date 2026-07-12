@@ -225,6 +225,22 @@ def test_open_script_labels_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert script.handle is not None
 
 
+def test_open_script_reconfigures_stdin_to_latin1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A reconfigurable stdin (real streams support ``reconfigure``, unlike the
+    # StringIO double) must be switched to latin-1 before the first read, so a
+    # raw 0xff byte survives. Left on its original utf-8 encoding the byte
+    # would raise UnicodeDecodeError -- pins that open_script reconfigures the
+    # actual handle, not a dropped argument.
+    stdin = io.TextIOWrapper(io.BytesIO(b'"\xff"\n'), encoding="utf-8")
+    monkeypatch.setattr("pyferm.tokenizer.sys.stdin", stdin)
+    script = open_script("-", None)
+    assert script.filename == "<stdin>"
+    token = Tokenizer(script).next_token()
+    assert "\xff" in str(token)
+
+
 def test_open_script_reads_a_real_file(tmp_path: Path) -> None:
     path = tmp_path / "rules.ferm"
     path.write_text("proto tcp;\n", encoding="utf-8")

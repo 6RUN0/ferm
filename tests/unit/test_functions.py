@@ -143,6 +143,8 @@ def test_realize_protocol_keyword_promotes_on_match() -> None:
     realize_protocol_keyword(rule, "syn")  # syn belongs to tcp
     assert rule.protocol == "tcp"
     assert rule.auto_protocol is None
+    # the promotion also emits the protocol option (mirrors realize_protocol)
+    assert [(o.name, o.value) for o in rule.options] == [("protocol", "tcp")]
 
 
 def test_realize_protocol_keyword_noop_without_match() -> None:
@@ -350,6 +352,11 @@ def test_builtin_basename_dirname() -> None:
     assert _evaluator("@basename(/a/b/c.conf)").getvalues() == "c.conf"
     assert _evaluator("@dirname(/a/b/c.conf)").getvalues() == "/a/b/"
     assert _evaluator("@dirname(bare)").getvalues() == ""
+    # a root-anchored path: the only slash sits at index 0, so basename drops
+    # the leading slash and dirname is exactly "/" (guards the `< 0` split
+    # boundary against an off-by-one to `<= 0`).
+    assert _evaluator("@basename(/foo)").getvalues() == "foo"
+    assert _evaluator("@dirname(/foo)").getvalues() == "/"
 
 
 def test_builtin_defined_variable_and_function() -> None:
@@ -394,6 +401,27 @@ def test_builtin_glob(tmp_path: object) -> None:
     assert ev.getvalues() == [str(base / "a.conf"), str(base / "b.conf")]
 
 
+def test_builtin_glob_single_match_collapses_to_scalar(
+    tmp_path: object,
+) -> None:
+    # exactly one match: the len==1 branch returns result[0] (the sole path)
+    # as a scalar, not a one-element list.
+    import pathlib
+
+    base = pathlib.Path(str(tmp_path))
+    (base / "only.conf").write_text("", encoding="utf-8")
+    (base / "other.txt").write_text("", encoding="utf-8")
+    tokenizer = Tokenizer(
+        Script(
+            filename=str(base / "rules.ferm"),
+            handle=io.StringIO("@glob('*.conf')"),
+        )
+    )
+    ev = Evaluator(tokenizer, Scope())
+    ev.scope.push(Frame())
+    assert ev.getvalues() == str(base / "only.conf")
+
+
 # -- getvar / get_function_params / collect_tokens --------------------------
 
 
@@ -428,6 +456,14 @@ def test_collect_tokens_include_semicolon_and_braces() -> None:
 def test_collect_tokens_unmatched_brace_errors() -> None:
     with pytest.raises(FermError, match="unmatched"):
         _evaluator("a ) ;").collect_tokens()
+
+
+def test_collect_tokens_mismatched_pair_errors() -> None:
+    # a "}" closer whose open bracket was a "(" is a mismatch: the opener is
+    # present but the wrong kind, so the `opener != expected` arm must fire
+    # (an `and` fusion of the two conditions would let it slip through).
+    with pytest.raises(FermError, match="unmatched"):
+        _evaluator("a ( } ;").collect_tokens()
 
 
 # -- backtick shell ----------------------------------------------------------

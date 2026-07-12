@@ -551,3 +551,70 @@ def test_rollback_spawn_error_names_vcs_action(
     _patch(monkeypatch, _Recorder([OSError("no etckeeper")]))
     with pytest.raises(FermError, match="vcs unstage failed"):
         etckeeper.rollback("deadbeef", "ferm")
+
+
+# --- runner threads through every public entry point ----------------------
+# Each read-only helper forwards its ``runner`` down to ``_vcs``; dropping the
+# forward (``runner=None`` / omitting the kwarg) would silently fall back to
+# the real ``subprocess.run`` and ignore the injected recorder. The
+# ``test_rollback_injected_runner_replaces_subprocess`` case already pins this
+# for ``rollback``; these pin it for the remaining six via the runner alone
+# (no ``subprocess.run`` monkeypatch), so a lost forward leaves the recorder
+# unused and the assertion fails.
+
+_RUNNER_POINTS = [
+    pytest.param(
+        lambda recorder: etckeeper.rollback_available(runner=recorder),
+        [_ok(stdout="/etc\n")],
+        "rev-parse",
+        id="rollback_available",
+    ),
+    pytest.param(
+        lambda recorder: etckeeper.repo_relative_subpath(
+            "/etc/ferm/ferm.conf", runner=recorder
+        ),
+        [_ok(stdout="/etc\n")],
+        "rev-parse",
+        id="repo_relative_subpath",
+    ),
+    pytest.param(
+        lambda recorder: etckeeper.list_history("ferm", runner=recorder),
+        [_ok(stdout="abc fix\n")],
+        "log",
+        id="list_history",
+    ),
+    pytest.param(
+        lambda recorder: etckeeper.previous_revision("ferm", runner=recorder),
+        [_ok(stdout="cur1111\nprev222\n")],
+        "log",
+        id="previous_revision",
+    ),
+    pytest.param(
+        lambda recorder: etckeeper.diff_revision(
+            "deadbeef", "ferm", runner=recorder
+        ),
+        [_ok(stdout="diff text")],
+        "diff",
+        id="diff_revision",
+    ),
+    pytest.param(
+        lambda recorder: etckeeper.working_tree_dirty("ferm", runner=recorder),
+        [_ok(stdout=" M ferm/ferm.conf\n")],
+        "status",
+        id="working_tree_dirty",
+    ),
+]
+
+
+@pytest.mark.parametrize(("invoke", "responses", "verb"), _RUNNER_POINTS)
+def test_public_entry_forwards_runner_to_vcs(
+    invoke: Callable[[_Recorder], object],
+    responses: Sequence[object],
+    verb: str,
+) -> None:
+    recorder = _Recorder(responses)
+    invoke(recorder)
+    # the injected runner must have been used (a lost forward would leave it
+    # untouched and fall back to the real subprocess.run)
+    assert recorder.calls, "runner was not threaded through to _vcs"
+    assert recorder.calls[0][:3] == ["etckeeper", "vcs", verb]

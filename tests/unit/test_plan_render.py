@@ -5,6 +5,7 @@ from pyferm.plan import (
     ChainRebuild,
     DesuetChain,
     ForeignChain,
+    ObjectChange,
     Plan,
     PlanDiff,
     PolicyChange,
@@ -15,6 +16,7 @@ from pyferm.plan import (
     render_structured,
     render_unified,
 )
+from pyferm.plan.render import summary_line
 from tests.unit._plan import plan_ip
 
 
@@ -274,3 +276,97 @@ def test_unified_includes_set_change_in_its_table() -> None:
     )
     out = render_unified(plan_ip(diff))
     assert "add set filter ssh" in out
+
+
+def test_structured_clean_family_before_changed_still_renders_changed() -> (
+    None
+):
+    """
+    A clean family that sorts before a changed one must not stop the loop.
+
+    ``ip`` is clean and sorts before the changed ``ip6``; the loop must
+    ``continue`` past the clean family (not ``break``) so ``ip6`` still
+    renders.  A ``break`` mutant drops every family after the first clean one.
+    """
+    plan = Plan(
+        families={
+            "ip": PlanDiff(),
+            "ip6": PlanDiff(
+                rules_added=[RuleChange("filter", "INPUT", "-j A")]
+            ),
+        }
+    )
+    out = render_structured(plan)
+    assert "family ip6" in out
+    assert "+ -j A" in out
+
+
+def test_structured_current_empty_emits_note_line() -> None:
+    """
+    A ``current_empty`` diff emits the exact empty-ruleset note line.
+
+    Pins the literal text against a ``None``-append (which would raise in
+    ``"\\n".join``), an ``XX``-marker mangle, and an upper-casing mutant.
+    """
+    diff = PlanDiff(
+        current_empty=True,
+        rules_added=[RuleChange("filter", "INPUT", "-j A")],
+    )
+    out = render_structured(plan_ip(diff))
+    assert "\n  note: current ruleset is empty\n" in out
+
+
+def test_structured_desuet_chain_suffix_exact() -> None:
+    """A desuet chain renders with the exact base-chain-removed suffix."""
+    diff = PlanDiff(desuet_chains=[DesuetChain("filter", "INPUT")])
+    out = render_structured(plan_ip(diff))
+    assert (
+        "  ~ chain filter/INPUT removed (base chain no longer declared)" in out
+    )
+
+
+def test_summary_line_appends_every_clause() -> None:
+    """
+    ``summary_line`` appends set and object clauses -- never overwrites.
+
+    A diff carrying rules, a policy change, a rebuild, a set change AND an
+    object change must produce every clause in one string; an ``=`` (rather
+    than ``+=``) on the object clause would drop everything before it.
+    """
+    diff = PlanDiff(
+        rules_added=[RuleChange("filter", "INPUT", "-j A")],
+        rules_removed=[RuleChange("filter", "INPUT", "-j B")],
+        policy_changes=[PolicyChange("filter", "INPUT", "ACCEPT", "DROP")],
+        chain_rebuilds=[ChainRebuild("filter", "INPUT", "0", "10")],
+        set_changes=[SetChange("filter", "ssh", SetChangeKind.ADD, ["22"])],
+        object_changes=[ObjectChange("filter", "obj", "secmark", True)],
+    )
+    assert summary_line(diff) == (
+        "Plan: 1 to add, 1 to remove, 1 policy change,"
+        " 1 chain rebuilt, 1 set changed, 1 object changed"
+    )
+
+
+def test_unified_no_change_message_exact() -> None:
+    """An all-clean plan yields the exact unified no-change sentinel."""
+    out = render_unified(plan_ip(PlanDiff()))
+    assert out == "No changes. Live ruleset matches the configuration.\n"
+
+
+def test_unified_add_exact_diff_body() -> None:
+    """
+    A single rule-add renders the exact unified header, hunk, and body.
+
+    Pins the ``--- ip (current)`` / ``+++ ip (desired)`` file headers, the
+    ``@@`` hunk marker, the empty ``lineterm`` (no doubled newlines), the
+    ``\\n`` join, and the trailing newline all at once.
+    """
+    diff = PlanDiff(rules_added=[RuleChange("filter", "INPUT", "-j A")])
+    out = render_unified(plan_ip(diff))
+    assert out == (
+        "--- ip (current)\n"
+        "+++ ip (desired)\n"
+        "@@ -1 +1,2 @@\n"
+        " *filter\n"
+        "+-A INPUT -j A\n"
+    )

@@ -5157,6 +5157,7 @@ def test_translate_rule_tcpoptstrip_refusals() -> None:
 # --- opt-in tests/e2e/test_recent_calibration).
 
 from pyferm.backend.nft import (  # noqa: E402
+    NftObjectRef,
     NftSetUpdate,
     _build_recent_specs,
     _DynSetDecl,
@@ -5915,6 +5916,68 @@ def test_dynamic_set_conflicting_declarations_refused() -> None:
     rules = {"c": [_dyn_rule(a), _dyn_rule(b)]}
     with pytest.raises(FermError, match=r"conflicting declarations"):
         _collect_set_declarations(Family.IP, rules)
+
+
+def test_dynamic_set_conflict_message_names_the_set() -> None:
+    # the shared conflict error must interpolate the OFFENDING set name so an
+    # operator can find it; a name-dropping refactor would leave it anonymous.
+    a = NftSetUpdate("recent_NAMED", "ip saddr", "ipv4_addr", "1m", None)
+    b = NftSetUpdate("recent_NAMED", "ip saddr", "ipv4_addr", None, None)
+    rules = {"c": [_dyn_rule(a), _dyn_rule(b)]}
+    with pytest.raises(
+        FermError, match=r"set 'recent_NAMED' has conflicting declarations"
+    ):
+        _collect_set_declarations(Family.IP, rules)
+
+
+def _one(*statements: NftStatement) -> NftRule:
+    return NftRule(statements=list(statements))
+
+
+def test_user_set_colliding_with_object_name_names_the_set() -> None:
+    # a SET-target (owned=False) user @set whose name collides with a
+    # content-hash object decl must fail loud AND name the offending set.
+    obj = NftObjectRef(kind="secmark", name="COLL_A", body="x", rule_expr="r")
+    upd = NftSetUpdate(
+        "COLL_A", "ip saddr", "ipv4_addr", None, None, verb="add", owned=False
+    )
+    with pytest.raises(
+        FermError, match=r"set 'COLL_A' has conflicting declarations"
+    ):
+        _collect_set_declarations(Family.IP, {"c": [_one(obj), _one(upd)]})
+
+
+def test_user_set_colliding_with_static_type_names_the_set() -> None:
+    # an owned=False addr update over a prior static PORT-typed set of the
+    # same name is a real type conflict (ipv4_addr vs inet_service).
+    match = NftMatch(
+        "ip saddr @COLL_B",
+        set_key="ip saddr",
+        setref=SetRef(name="COLL_B", elements=["22", "80"]),
+        set_selector="dport",
+    )
+    upd = NftSetUpdate(
+        "COLL_B", "ip saddr", "ipv4_addr", None, None, verb="add", owned=False
+    )
+    with pytest.raises(
+        FermError, match=r"set 'COLL_B' has conflicting declarations"
+    ):
+        _collect_set_declarations(Family.IP, {"c": [_one(match), _one(upd)]})
+
+
+def test_user_set_colliding_with_owned_dynamic_names_the_set() -> None:
+    # an owned=False update cannot merge into a ferm-OWNED dynamic set of the
+    # same name (recent/hashlimit); the conflict must name the set.
+    owned = NftSetUpdate(
+        "COLL_C", "ip saddr", "ipv4_addr", "1m", None, owned=True
+    )
+    upd = NftSetUpdate(
+        "COLL_C", "ip saddr", "ipv4_addr", None, None, verb="add", owned=False
+    )
+    with pytest.raises(
+        FermError, match=r"set 'COLL_C' has conflicting declarations"
+    ):
+        _collect_set_declarations(Family.IP, {"c": [_one(owned), _one(upd)]})
 
 
 def test_dynamic_set_same_type_different_key_refused() -> None:

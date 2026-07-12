@@ -63,6 +63,21 @@ def test_parse_set_rejects_hyphenated_name() -> None:
         _set_var("@set $my-set = (1 2);\n", "my-set")
 
 
+def test_parse_set_must_be_first_token() -> None:
+    # ``@set`` is a command directive: it may not follow rule matches, so a
+    # non-empty pending rule before it is rejected.
+    with pytest.raises(
+        FermError, match=r'"set" must be the first token in a command'
+    ):
+        parse_source("chain INPUT proto tcp @set $x = (1 2);\n")
+
+
+def test_parse_set_requires_dollar_before_name() -> None:
+    # The set name must be introduced by ``$``; a bare word is rejected.
+    with pytest.raises(FermError, match=r'"\$" and set name expected'):
+        parse_source("@set foo = (1 2);\n")
+
+
 # -- bareword set regression (ipset match) ------------------------------------
 
 _IPSET_SRC = """\

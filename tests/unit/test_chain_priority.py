@@ -94,6 +94,34 @@ def test_parser_rejects_non_integer_priority() -> None:
         parse_source("domain ip table filter chain FORWARD priority foo { }\n")
 
 
+def test_parser_rejects_matches_before_priority() -> None:
+    # ``priority`` is a chain-header knob, not a rule match: a rule match
+    # (``proto tcp``) before it means the statement already carries matches,
+    # which is rejected.
+    with pytest.raises(FermError, match="Cannot specify matches for priority"):
+        parse_source(
+            "domain ip table filter chain FORWARD proto tcp priority -1 {\n"
+            "    policy ACCEPT;\n"
+            "}\n"
+        )
+
+
+def test_single_priority_does_not_warn(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A chain given its priority ONCE must not warn "already specified": the
+    # already-set check keys off ``chain_info.priority is not None``, which is
+    # None on the first (and only) assignment.
+    parser = parse_source(
+        "domain ip table filter chain FORWARD priority -1 {\n"
+        "    policy ACCEPT;\n"
+        "}\n"
+    )
+    chain = parser.domains[Family.IP].tables["filter"].chains["FORWARD"]
+    assert chain.priority == -1
+    assert "already specified" not in capsys.readouterr().err.lower()
+
+
 # --- nft backend: emit the override, reject on a non-base chain ------------
 
 

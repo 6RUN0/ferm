@@ -372,3 +372,79 @@ def test_named_set_keeps_element_contained_in_interval() -> None:
     )
     tables = parse_nft_script(text)
     assert tables["ferm"].sets["s"].elements == ["1.2.3.0/24", "1.2.3.4"]
+
+
+@pytest.mark.parametrize(
+    "object_line",
+    [
+        pytest.param("add set ip6 ferm s { type ipv4_addr; }", id="set"),
+        pytest.param("add element ip6 ferm s { 22 }", id="element"),
+        pytest.param("add secmark ip6 ferm sm 0x10", id="secmark"),
+        pytest.param(
+            'add ct helper ip6 ferm h { type "ftp" protocol tcp; }',
+            id="ct-helper",
+        ),
+    ],
+)
+def test_family_mismatch_on_object_line_raises(object_line: str) -> None:
+    """
+    A family mismatch on ANY object line -- not just chains/rules -- raises.
+
+    The set, element, secmark and ct-helper productions all funnel through
+    ``_parse_object_head``, which must be handed the running family so the
+    cross-line consistency check fires; passing ``None`` there would let an
+    ip6 object slip into an ip table unnoticed.
+    """
+    text = f"add table ip ferm\n{object_line}\n"
+    with pytest.raises(FermError):
+        parse_nft_script(text)
+
+
+def test_delete_table_before_any_add_is_not_an_error() -> None:
+    """
+    A leading ``delete table`` with no prior ``add`` must not raise.
+
+    The reset pops the ferm table defensively (default ``None``); dropping
+    that default would raise ``KeyError`` when the table was never
+    materialized.
+    """
+    assert parse_nft_script("delete table ip ferm\n") == {}
+
+
+def test_add_set_records_its_name() -> None:
+    """A parsed set carries its own name (not a null placeholder)."""
+    tables = parse_nft_script(
+        "add table ip ferm\nadd set ip ferm s { type ipv4_addr; }\n"
+    )
+    assert tables["ferm"].sets["s"].name == "s"
+
+
+def test_add_element_for_undeclared_set_creates_named_set() -> None:
+    """
+    An ``add element`` for a set not yet declared materializes it by name.
+
+    The ``setdefault`` must insert a real ``ParsedSet(<name>)`` -- a null
+    value would break the element append, and a null name would mis-record
+    the set.
+    """
+    tables = parse_nft_script(
+        "add table ip ferm\nadd element ip ferm newset { 22 }\n"
+    )
+    ps = tables["ferm"].sets["newset"]
+    assert ps.name == "newset"
+    assert ps.elements == ["22"]
+
+
+def test_unrecognized_add_subject_reports_line_and_excerpt() -> None:
+    """
+    An ``add`` line whose subject matches no production raises with context.
+
+    The fall-through parse error must carry both the 1-based line number and
+    the offending text; dropping either argument would break the diagnostic
+    (and raise a bare ``TypeError`` instead of the clean parse error).
+    """
+    with pytest.raises(FermError) as exc:
+        parse_nft_script("add table ip ferm\nadd bogus ip ferm x\n")
+    message = str(exc.value)
+    assert "line 2" in message
+    assert "add bogus ip ferm x" in message

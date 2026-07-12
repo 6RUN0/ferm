@@ -6,9 +6,13 @@ import pytest
 
 from pyferm.errors import FermError
 from pyferm.plan import (
+    DesuetChain,
+    ForeignChain,
     ParsedChain,
     ParsedSet,
     ParsedTable,
+    PlanDiff,
+    SetChange,
     SetChangeKind,
     _build_desired_index,
     _DesiredIndex,
@@ -483,3 +487,180 @@ def test_emit_set_modify_pure_add() -> None:
         "add element ip ferm h" in ln and "10.0.0.2" in ln for ln in lines
     )
     assert not any("delete element" in ln for ln in lines)
+
+
+def _decl(name: str) -> str:
+    return f"add set ip ferm {name} {{ type inet_service; }}"
+
+
+def test_emit_set_changes_sorted_by_name_multiple() -> None:
+    """
+    Two set adds given out of name order emit sorted by name.
+
+    Pins the ``key=lambda s: s.name`` sort: dropping the key (compare the
+    dataclass, unorderable -> raises) or nulling it (insertion order kept)
+    both diverge from the required alphabetical order.
+    """
+    diff = PlanDiff(
+        set_changes=[
+            SetChange("ferm", "zeta", SetChangeKind.ADD, ["1"]),
+            SetChange("ferm", "alfa", SetChangeKind.ADD, ["2"]),
+        ]
+    )
+    index = _DesiredIndex()
+    index.set_decl["zeta"] = _decl("zeta")
+    index.set_decl["alfa"] = _decl("alfa")
+    lines = _emit_set_changes(
+        diff, {"ferm": ParsedTable()}, index, family="ip"
+    )
+    assert lines == [_decl("alfa"), _decl("zeta")]
+
+
+def test_emit_set_modify_joins_multiple_elements_with_comma() -> None:
+    """
+    A modify with 2+ removed and 2+ added joins each side with ``, ``.
+
+    Pins the exact ``delete element``/``add element`` bodies so a mangled
+    separator in either join is caught.
+    """
+    current = _table_with_set(
+        "h", ParsedSet("h", ["10.0.0.1", "10.0.0.2"], "ipv4_addr")
+    )
+    diff = PlanDiff(
+        set_changes=[
+            SetChange(
+                "ferm", "h", SetChangeKind.MODIFY, ["10.0.0.3", "10.0.0.4"]
+            )
+        ]
+    )
+    lines = _emit_set_changes(diff, current, _DesiredIndex(), family="ip")
+    assert lines == [
+        "delete element ip ferm h { 10.0.0.1, 10.0.0.2 }",
+        "add element ip ferm h { 10.0.0.3, 10.0.0.4 }",
+    ]
+
+
+def test_emit_set_remove_message_is_exact() -> None:
+    """The set-remove contract-breach error carries its exact diagnostic."""
+    diff = PlanDiff(
+        set_changes=[SetChange("ferm", "h", SetChangeKind.REMOVE, [])]
+    )
+    with pytest.raises(FermError) as exc:
+        _emit_set_changes(
+            diff, {"ferm": ParsedTable()}, _DesiredIndex(), family="ip"
+        )
+    assert str(exc.value) == (
+        "internal error: set remove reached the emitter"
+        " (should full-reload): 'h'"
+    )
+
+
+def test_emit_set_add_missing_decl_message_is_exact() -> None:
+    """An add with no desired declaration raises the exact diagnostic."""
+    diff = PlanDiff(
+        set_changes=[SetChange("ferm", "h", SetChangeKind.ADD, ["1"])]
+    )
+    with pytest.raises(FermError) as exc:
+        _emit_set_changes(
+            diff, {"ferm": ParsedTable()}, _DesiredIndex(), family="ip"
+        )
+    assert str(exc.value) == "internal error: no desired decl for set 'h'"
+
+
+def test_emit_chain_deletes_desuet_and_foreign_each_name_sorted() -> None:
+    """
+    Desuet and foreign chain deletions are each emitted name-sorted.
+
+    Two of each are supplied in reverse order; the two independent sort keys
+    (``lambda d: d.chain`` and ``lambda f: f.chain``) must both order their
+    group.  A dropped key raises (unorderable dataclass); a nulled key keeps
+    insertion order -- either diverges from the asserted sequence.
+    """
+    diff = PlanDiff(
+        desuet_chains=[
+            DesuetChain("ferm", "ZBASE"),
+            DesuetChain("ferm", "ABASE"),
+        ],
+        foreign_chains=[
+            ForeignChain("ferm", "zchain"),
+            ForeignChain("ferm", "achain"),
+        ],
+    )
+    lines = _emit_chain_changes(
+        diff, {"ferm": ParsedTable()}, _DesiredIndex(), family="ip"
+    )
+    assert lines == [
+        "delete chain ip ferm ABASE",
+        "delete chain ip ferm ZBASE",
+        "delete chain ip ferm achain",
+        "delete chain ip ferm zchain",
+    ]
+
+
+def test_build_desired_index_skips_interior_comment_keeps_rest() -> None:
+    """
+    A comment line mid-script is skipped, not a stop (or a parse error).
+
+    ``continue`` (not ``break``) must carry past it so a later chain is still
+    indexed; and the empty-or-comment guard must be an ``or`` (an ``and`` would
+    never skip the comment and raise on it).
+    """
+    save = "add chain ip ferm sub\n# mid comment\nadd chain ip ferm sub2\n"
+    index = _build_desired_index(save)
+    assert "sub" in index.chain_decl
+    assert "sub2" in index.chain_decl
+
+
+def test_build_desired_index_rejects_non_add_line() -> None:
+    """
+    A non-``add`` object line violates the render contract and raises.
+
+    The guard is ``len <= NAME_INDEX or parts[0] != 'add'``; weakening the
+    ``or`` to ``and`` would let a ``delete chain`` line be indexed silently.
+    """
+    save = "add chain ip ferm sub\ndelete chain ip ferm foo\n"
+    with pytest.raises(FermError):
+        _build_desired_index(save)
+
+
+def test_build_desired_index_rejects_too_short_add_line() -> None:
+    """
+    A four-token ``add`` line has no name slot and must raise.
+
+    The guard bound is ``<=`` (a four-token line cannot index ``parts[4]``);
+    a ``<`` would let it through into an index error, never the clean
+    contract violation.
+    """
+    with pytest.raises(FermError):
+        _build_desired_index("add chain ip ferm\n")
+
+
+def test_build_desired_index_rejects_ct_helper_without_name() -> None:
+    """
+    A ``ct helper`` line missing its name slot must raise cleanly.
+
+    The ct-helper branch guard is ``len > CTHELPER_NAME_INDEX``; a ``>=``
+    would enter the branch and index a non-existent name slot.
+    """
+    with pytest.raises(FermError):
+        _build_desired_index("add ct helper ip ferm\n")
+
+
+def test_parse_nft_list_rejects_bad_secmark_name() -> None:
+    """
+    A secmark object name that violates the identifier grammar raises.
+
+    The name is re-synthesized into ``delete`` lines, so a live snapshot that
+    smuggles a metacharacter is rejected fail-closed with a proper parse error
+    (line number + excerpt), never a bare argument-arity crash.
+    """
+    text = "table ip ferm {\n\tsecmark bad-name {\n\t}\n}\n"
+    with pytest.raises(FermError):
+        parse_nft_list(text, family="ip")
+
+
+def test_parse_nft_list_rejects_bad_ct_helper_name() -> None:
+    """A ct-helper object name breaking the identifier grammar raises."""
+    text = "table ip ferm {\n\tct helper bad-name {\n\t}\n}\n"
+    with pytest.raises(FermError):
+        parse_nft_list(text, family="ip")

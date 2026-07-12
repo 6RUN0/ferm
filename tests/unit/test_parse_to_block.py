@@ -9,7 +9,7 @@ the analyzers consume.
 
 from __future__ import annotations
 
-from pyferm.parser import Parser
+from pyferm.parser import MAX_BLOCK_DEPTH, Parser
 from pyferm.tree import Block, BlockNode, DefNode, HeaderNode, IfNode, RuleNode
 
 
@@ -96,3 +96,199 @@ def test_long_else_if_chain_does_not_recursion_error() -> None:
         assert else_body.statements == ()
         break
     assert seen == link_count
+
+
+# -- structural shape asserts (mutation-hardening) -------------------------
+#
+# The tests above pin node *types*; these pin the retained tree's SHAPE --
+# source positions, header terminators, nesting depth bookkeeping and the
+# over-deep skip -- the seams the arity-blind capture used to blur.
+
+
+def test_every_node_carries_a_source_position() -> None:
+    """
+    Each structured node keeps a non-null ``source_pos`` (its file:line).
+
+    The eval-free build threads ``self._pos()`` into every node; a dropped
+    position would surface as ``None`` and break the analyzers' locating.
+    """
+    root = _block(
+        "chain INPUT ACCEPT;\ntable nat chain POSTROUTING MASQUERADE;\n"
+    )
+    # the returned Block itself carries a position (parse_block's own pos,
+    # captured before the first line sentinel, so line 0)
+    assert root.source_pos is not None
+    assert root.source_pos.line == 0
+    header, rule_or_header = root.statements
+    assert isinstance(header, HeaderNode)
+    assert header.source_pos is not None
+    assert header.source_pos.line == 1
+    assert rule_or_header.source_pos is not None
+
+
+def test_nested_block_carries_a_source_position() -> None:
+    """A nested block (recursive parse_block) keeps its own ``source_pos``."""
+    root = _block("chain INPUT { jump X; }\n")
+    header = root.statements[0]
+    assert isinstance(header, HeaderNode)
+    assert header.body is not None
+    assert header.body.source_pos is not None
+
+
+def test_directive_node_keeps_its_position() -> None:
+    """A @def directive keeps a real ``source_pos`` (a dropped pos is None)."""
+    root = _block("@def $x = 1;\n")
+    directive = root.statements[0]
+    assert isinstance(directive, DefNode)
+    assert directive.source_pos is not None
+    assert directive.source_pos.line == 1
+
+
+def test_semicolon_header_terminator_is_consumed() -> None:
+    """
+    A ``;``-terminated header consumes the ``;`` and yields exactly one
+    body-less HeaderNode, so a following statement stands on its own.
+
+    The terminator test (``terminator == ";"``) and the ``self._i += 1`` that
+    swallows it are both load-bearing: mis-flipping either leaves the ``;`` in
+    the stream as a stray statement.
+    """
+    root = _block("domain ip;\nchain INPUT ACCEPT;\n")
+    assert [type(n).__name__ for n in root.statements] == [
+        "HeaderNode",
+        "HeaderNode",
+    ]
+    first, second = root.statements
+    assert isinstance(first, HeaderNode)
+    assert isinstance(second, HeaderNode)
+    assert (first.keyword, first.body) == ("domain", None)
+    assert (second.keyword, second.body) == ("chain", None)
+
+
+def test_header_value_scan_stops_at_close_brace() -> None:
+    """
+    A body-less header inside a block ends its value scan at the block's ``}``.
+
+    ``_scan_header_value`` must treat a top-level ``}`` as a value terminator;
+    losing it would swallow the block's close and mis-nest the tree.
+    """
+    root = _block("{ table filter }\n")
+    outer = root.statements[0]
+    assert isinstance(outer, BlockNode)
+    assert outer.body is not None
+    inner = outer.body.statements[0]
+    assert isinstance(inner, HeaderNode)
+    assert inner.keyword == "table"
+    assert inner.value_span == ("filter",)
+    assert inner.body is None
+
+
+def test_header_value_scan_keeps_parenthesised_array() -> None:
+    """A parenthesised header value is captured whole, parens included."""
+    root = _block("chain (A B) { jump X; }\n")
+    header = root.statements[0]
+    assert isinstance(header, HeaderNode)
+    assert header.value_span == ("(", "A", "B", ")")
+    assert header.body is not None
+    assert len(header.body.statements) == 1
+
+
+def test_directive_span_retains_nested_braces() -> None:
+    """
+    A directive body with nested ``{ }`` keeps every brace in its span.
+
+    ``_capture_statement_span`` tracks brace depth so a directive's own body
+    (``stop_at_brace`` off) is not cut at the first inner ``}``; a broken
+    depth counter would truncate the span there.
+    """
+    root = _block("@def &f() = { proto tcp { dport 22 ACCEPT; } }\n")
+    directive = root.statements[0]
+    assert isinstance(directive, DefNode)
+    assert directive.span == (
+        "@def",
+        "&",
+        "f",
+        "(",
+        ")",
+        "=",
+        "{",
+        "proto",
+        "tcp",
+        "{",
+        "dport",
+        "22",
+        "ACCEPT",
+        ";",
+        "}",
+        "}",
+    )
+
+
+def test_directive_span_ends_at_top_level_semicolon_after_block() -> None:
+    """
+    A directive's span tracks brace depth so a ``;`` inside its ``{ }`` body
+    does not end it, but the first ``;`` back at top level does.
+
+    ``_capture_statement_span`` bumps depth on ``{`` and drops it on ``}``; a
+    broken brace counter would either cut the span inside the body or run past
+    the terminating ``;`` and swallow the following statement.
+    """
+    root = _block("@def &f() = { proto tcp; } ; chain INPUT ACCEPT;\n")
+    assert [type(n).__name__ for n in root.statements] == [
+        "DefNode",
+        "HeaderNode",
+    ]
+    directive, header = root.statements
+    assert isinstance(directive, DefNode)
+    # the body's inner ';' stayed inside the span; the top-level ';' closed it
+    assert directive.span[-1] == ";"
+    assert directive.span.count(";") == 2
+    assert isinstance(header, HeaderNode)
+    assert header.keyword == "chain"
+
+
+def test_sequential_blocks_do_not_exhaust_the_depth_counter() -> None:
+    """
+    Many *sequential* blocks all structure -- depth is decremented on exit.
+
+    ``parse_block`` bumps ``self._depth`` on entry and drops it on exit; if the
+    finally-decrement were wrong, a long run of sibling blocks would climb past
+    MAX_BLOCK_DEPTH and start getting skipped instead of structured.
+    """
+    count = MAX_BLOCK_DEPTH + 50
+    root = _block("{ jump A; } " * count)
+    assert len(root.statements) == count
+    assert all(
+        isinstance(n, BlockNode) and n.body is not None and n.body.statements
+        for n in root.statements
+    )
+
+
+def test_over_deep_nesting_skips_subtree_and_recovers_sibling() -> None:
+    """
+    Nesting past MAX_BLOCK_DEPTH skips the subtree but recovers the next
+    sibling.
+
+    The depth cap routes the pathological subtree through
+    ``_skip_to_block_end``, which must consume EXACTLY the matching ``}`` run
+    so a trailing top-level statement is still structured. A mis-counted skip
+    would eat (or leak) a brace and lose the sibling.
+    """
+    depth = MAX_BLOCK_DEPTH + 2
+    config = (
+        "chain INPUT "
+        + "{ " * depth
+        + "jump X; "
+        + "} " * depth
+        + "table nat chain P MASQUERADE;\n"
+    )
+    root = _block(config)
+    assert [type(n).__name__ for n in root.statements] == [
+        "HeaderNode",
+        "HeaderNode",
+    ]
+    deep_header, sibling = root.statements
+    assert isinstance(deep_header, HeaderNode)
+    assert deep_header.keyword == "chain"
+    assert isinstance(sibling, HeaderNode)
+    assert sibling.keyword == "table"

@@ -750,3 +750,101 @@ _CANON_FIXED_POINTS = [
 @pytest.mark.parametrize(("body", "family"), _CANON_FIXED_POINTS)
 def test_vocabulary_is_canon_fixed_point(body: str, family: str) -> None:
     assert canonicalize_nft_rule(body, family=family) == body
+
+
+def test_depth_tracking_protects_numeric_comment_after_set() -> None:
+    """
+    A set's braces must return depth to zero so a trailing comment is safe.
+
+    A quoted set element sits at brace depth one and is sorted; the comment
+    that follows sits at depth zero and its braces stay free text.  A
+    depth-counter mutant (assign instead of increment, or a wrong step) leaves
+    residual depth after the ``}`` so the comment quote is misread as
+    unprotected and its numeric braces get reordered -- a false convergence.
+    """
+    body = 'iifname { "wlan0", "eth0" } accept comment "p { 80, 22 }"'
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == 'iifname { "eth0", "wlan0" } accept comment "p { 80, 22 }"'
+
+
+def test_only_quote_chars_open_a_protected_span() -> None:
+    """
+    A bare uppercase letter never opens (nor closes) a protected span.
+
+    Widening the quote set to include a stray ``X`` would treat the ``X`` in a
+    token as a quote opener, so a following comment's braces would be misread
+    as an unprotected set and reordered.  Only ``"`` and ``'`` protect.
+    """
+    body = 'meta mark 0Xff accept comment "p { 80, 22 }"'
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == 'meta mark 0Xff accept comment "p { 80, 22 }"'
+
+
+def test_stray_uppercase_before_set_does_not_suppress_normalization() -> None:
+    """A stray ``X`` outside quotes must not gate the following set's sort."""
+    body = "meta mark 0Xff tcp dport { 80, 22 } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "meta mark 0Xff tcp dport { 22, 80 } accept"
+
+
+def test_empty_set_run_renders_bare_braces() -> None:
+    """An empty ``{ }`` run canonicalizes to the exact bare-brace token."""
+    out = canonicalize_nft_rule("tcp dport { } accept", family="ip")
+    assert out == "tcp dport { } accept"
+
+
+def test_duplicate_operator_members_kept_verbatim_not_deduped() -> None:
+    """
+    A concatenation member is left verbatim -- duplicates are NOT collapsed.
+
+    An operator-bearing member (an interior space, e.g. ``1.1.1.1 . 20``) is
+    not a plain scalar: the scalar dedup/sort path does not model it, so the
+    run keeps both copies rather than deduping to one (safe-bias: a noisy diff
+    beats a false 'no changes').
+    """
+    body = "tcp dport { 1.1.1.1 . 20, 1.1.1.1 . 20 } accept"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "tcp dport { 1.1.1.1 . 20, 1.1.1.1 . 20 } accept"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(
+            "tcp dport 22 ct state related,established accept",
+            "tcp dport 22 ct state established,related accept",
+            id="ct-state",
+        ),
+        pytest.param(
+            "tcp dport 22 reject with icmp type port-unreachable",
+            "tcp dport 22 reject",
+            id="reject",
+        ),
+        pytest.param(
+            "tcp dport 22 reject with icmp type port-unreachable accept",
+            "tcp dport 22 reject accept",
+            id="reject-trailing-token",
+        ),
+        pytest.param(
+            "tcp dport 22 reject with tcp reset",
+            "tcp dport 22 reject with tcp reset",
+            id="reject-verbatim",
+        ),
+        pytest.param(
+            "tcp dport 22 limit rate 5/minute accept",
+            "tcp dport 22 limit rate 5/minute burst 5 packets accept",
+            id="limit-burst",
+        ),
+    ],
+)
+def test_transform_keyword_off_token_zero(body: str, expected: str) -> None:
+    """
+    A transform whose keyword is NOT the first token still advances correctly.
+
+    The token cursor advances relatively (``index += N``); an absolute
+    ``index = N`` coincides with the relative form only when the keyword sits
+    at token 0.  Prefixing each rule with ``tcp dport 22`` moves the keyword
+    off token 0, so an absolute-index regression reprocesses or skips tokens
+    (a wrong body, or a non-terminating scan).
+    """
+    assert canonicalize_nft_rule(body, family="ip") == expected

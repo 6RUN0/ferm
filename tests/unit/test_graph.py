@@ -13,6 +13,7 @@ from pyferm.graph import (
     _escape_ident,
     _family_targets,
     _fold_family,
+    _GraphBuilder,
     _header_context,
     _jump_edges,
     _scan_verdicts,
@@ -611,6 +612,34 @@ def test_scan_verdicts_jump_target_and_scalar_value_skips() -> None:
     assert _scan_verdicts(("ACCEPT", "ctstate"), "ip") == ["ACCEPT"]
     # scalar option value after a params keyword is skipped by exactly one
     assert _scan_verdicts(("saddr", "1.2.3.4", "ACCEPT"), "ip") == ["ACCEPT"]
+
+
+def test_scan_verdicts_family_without_params_keywords() -> None:
+    # A family with no _KW_HAS_PARAMS entry (ip6 folds to ip inside
+    # collect_graph, but a direct call keeps the literal key) must default to
+    # an EMPTY params set, not None: `prev in params_keys` would raise
+    # TypeError on a None default. Two tokens force the `prev in ...` check.
+    assert "ip6" not in _KW_HAS_PARAMS
+    assert _scan_verdicts(("ACCEPT", "DROP"), "ip6") == ["ACCEPT", "DROP"]
+
+
+def test_emit_span_subchain_name_is_declared_not_placeholder() -> None:
+    # emit_span records a subchain target as a DECLARED chain (so it
+    # classifies as USER, not UNDEFINED). The declared set must hold the
+    # name itself -- adding a None placeholder instead would leave the real
+    # name absent and mis-classify the node.
+    builder = _GraphBuilder()
+    builder.emit_span(("ip",), ("filter",), ("SRC",), ("@subchain", "'sc'"))
+    assert builder.acc_for("ip", "filter").declared == {"sc"}
+
+
+def test_emit_span_inline_chain_decl_name_is_declared() -> None:
+    # A chain declaration found inside a scanned span registers the chain in
+    # the declared set under its own name (not a None placeholder), so it is
+    # a USER node rather than UNDEFINED.
+    builder = _GraphBuilder()
+    builder.emit_span(("ip",), ("filter",), ("SRC",), ("chain", "FOO"))
+    assert builder.acc_for("ip", "filter").declared == {"FOO"}
 
 
 def test_family_targets_family_absent_from_target_defs() -> None:

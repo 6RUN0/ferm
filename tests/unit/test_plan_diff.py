@@ -3,6 +3,7 @@ from pyferm.plan import (
     DesuetChain,
     ForeignChain,
     ParsedChain,
+    ParsedObject,
     ParsedTable,
     PlanDiff,
     PolicyChange,
@@ -375,3 +376,115 @@ def test_diff_blob_sorts_every_category_and_renders_set_removals() -> None:
         "-A aaa -j A",
         "-A zzz -j A",
     ]
+
+
+def test_diff_tables_object_changes_carry_table_and_kind() -> None:
+    """
+    Every object add/remove carries its real table and nft kind.
+
+    A desired-only object is an add and a current-only object a remove (objects
+    are content-addressed -- a changed body is a new name).  Both records must
+    carry the table and the object kind so the renderer never emits a ``None``
+    table or ``None`` keyword.
+    """
+    cur = {
+        "filter": ParsedTable(
+            objects={"old_obj": ParsedObject("old_obj", "secmark", "x")}
+        )
+    }
+    des = {
+        "filter": ParsedTable(
+            objects={"new_obj": ParsedObject("new_obj", "secmark", "y")}
+        )
+    }
+    diff = diff_tables(cur, des, noflush=False)
+    added = [o for o in diff.object_changes if o.added]
+    removed = [o for o in diff.object_changes if not o.added]
+    assert [(o.table, o.name, o.kind) for o in added] == [
+        ("filter", "new_obj", "secmark")
+    ]
+    assert [(o.table, o.name, o.kind) for o in removed] == [
+        ("filter", "old_obj", "secmark")
+    ]
+
+
+def test_diff_tables_desuet_chain_carries_table() -> None:
+    """A desuet (removed base) chain record carries its real table."""
+    cur = filter_table(
+        {
+            "OLDBASE": ParsedChain(
+                "type filter hook input priority 0 policy accept", []
+            )
+        }
+    )
+    des = {"filter": ParsedTable()}
+    diff = diff_tables(cur, des, noflush=False)
+    assert [(d.table, d.chain) for d in diff.desuet_chains] == [
+        ("filter", "OLDBASE")
+    ]
+
+
+def test_diff_tables_rebuilt_chain_does_not_stop_later_chain() -> None:
+    """
+    A rebuilt chain must ``continue`` -- never ``break`` -- the chain loop.
+
+    ``INPUT`` is rebuilt (priority changed) and iterates before ``FORWARD``,
+    which has a rule delta.  The rebuild skips its own per-rule diff, but a
+    ``break`` would also drop every later chain, hiding ``FORWARD``'s change.
+    """
+    cur = {
+        "filter": ParsedTable(
+            chains={
+                "INPUT": ParsedChain(
+                    "type filter hook input priority 0 policy accept",
+                    ["-j OLD"],
+                ),
+                "FORWARD": ParsedChain(
+                    "type filter hook forward priority 0 policy accept",
+                    ["-j FOLD"],
+                ),
+            }
+        )
+    }
+    des = {
+        "filter": ParsedTable(
+            chains={
+                "INPUT": ParsedChain(
+                    "type filter hook input priority 10 policy accept",
+                    ["-j NEW"],
+                ),
+                "FORWARD": ParsedChain(
+                    "type filter hook forward priority 0 policy accept",
+                    ["-j FNEW"],
+                ),
+            }
+        )
+    }
+    diff = diff_tables(cur, des, noflush=False)
+    assert [(c.chain, c.old, c.new) for c in diff.chain_rebuilds] == [
+        ("INPUT", "0", "10")
+    ]
+    assert [(r.chain, r.rule) for r in diff.rules_added] == [
+        ("FORWARD", "-j FNEW")
+    ]
+
+
+def test_noflush_undeclared_user_chain_does_not_stop_later_desuet() -> None:
+    """
+    Under --noflush an undeclared user chain is skipped, not a loop-break.
+
+    ``olduser`` (undeclared) iterates before ``OLDBASE`` (a desuet base).
+    ``--noflush`` spares the user chain via ``continue``; a ``break`` would
+    exit the loop and drop the desuet base chain that follows it.
+    """
+    cur_chains: dict[str, ParsedChain] = {}
+    cur_chains["olduser"] = ParsedChain("-", ["-j R"])
+    cur_chains["OLDBASE"] = ParsedChain(
+        "type filter hook input priority 0 policy accept", []
+    )
+    cur = {"filter": ParsedTable(chains=cur_chains)}
+    diff = diff_tables(cur, {"filter": ParsedTable()}, noflush=True)
+    assert [(d.table, d.chain) for d in diff.desuet_chains] == [
+        ("filter", "OLDBASE")
+    ]
+    assert diff.foreign_chains == []

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import io
+import sys
 
 import pytest
 
-from pyferm.streams import argv_to_latin1, reconfigure_latin1
+from pyferm.streams import (
+    BYTE_ENCODING,
+    HUMAN_STREAM_ERRORS,
+    argv_to_latin1,
+    reconfigure_latin1,
+    reconfigure_std_streams,
+)
 
 
 def test_argv_to_latin1_reinterprets_argv_bytes_one_per_char() -> None:
@@ -58,3 +65,32 @@ def test_reconfigure_latin1_leaves_plain_stringio_untouched() -> None:
     reconfigure_latin1(stream)  # no reconfigure attr -> silently skipped
     stream.write("x")
     assert stream.getvalue() == "x"
+
+
+class _RecordingStream:
+    """A stream double that records every ``reconfigure`` invocation."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def reconfigure(self, *, encoding: str, errors: str) -> None:
+        """Record the (encoding, errors) pair the caller requested."""
+        self.calls.append((encoding, errors))
+
+
+def test_reconfigure_std_streams_configures_both_human_tolerant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # reconfigure_std_streams must switch BOTH sys.stdout and sys.stderr to the
+    # latin-1 byte model with the human-tolerant error handler -- dropping
+    # either stream (a None argument), or the errors= keyword (falling back to
+    # "strict"), would either miss a stream or crash it on a localized
+    # strerror.  A recording double proves each stream is touched exactly once
+    # with the full (encoding, errors) pair.
+    out = _RecordingStream()
+    err = _RecordingStream()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    reconfigure_std_streams()
+    assert out.calls == [(BYTE_ENCODING, HUMAN_STREAM_ERRORS)]
+    assert err.calls == [(BYTE_ENCODING, HUMAN_STREAM_ERRORS)]
