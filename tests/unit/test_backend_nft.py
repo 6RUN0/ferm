@@ -2586,52 +2586,24 @@ from pyferm.backend.base import Rendered  # noqa: E402
 
 
 def test_commit_emits_lines_and_pipes_save() -> None:
-    info = _nft_info()
-    emitted: list[str] = []
-    applied: list[str] = []
-    rendered = Rendered(save="add table ip ferm\n")
-    NftBackend().commit(
-        Family.IP,
-        info,
-        rendered,
-        Options(lines=True, noexec=False),
-        execute=lambda _c: None,
-        emit_line=emitted.append,
-        restore=lambda _di, save: applied.append(save),
+    res = _run_commit(
+        None, Options(lines=True, noexec=False), save="add table ip ferm\n"
     )
-    assert "add table ip ferm\n" in emitted
-    assert applied == ["add table ip ferm\n"]
+    assert "add table ip ferm\n" in res.emitted
+    assert res.applied == ["add table ip ferm\n"]
 
 
 def test_commit_noexec_does_not_apply() -> None:
-    info = _nft_info()
-    applied: list[str] = []
-    NftBackend().commit(
-        Family.IP,
-        info,
-        Rendered(save="x\n"),
-        Options(noexec=True),
-        execute=lambda _c: None,
-        emit_line=lambda _t: None,
-        restore=lambda _di, save: applied.append(save),
-    )
-    assert applied == []
+    res = _run_commit(None, Options(noexec=True), save="x\n")
+    assert res.applied == []
 
 
 def test_commit_shell_wraps_heredoc() -> None:
-    info = _nft_info()
-    emitted: list[str] = []
-    NftBackend().commit(
-        Family.IP,
-        info,
-        Rendered(save="x\n"),
-        Options(shell=True, lines=True, noexec=True),
-        execute=lambda _c: None,
-        emit_line=emitted.append,
-        restore=lambda _di, _save: None,
+    res = _run_commit(
+        None, Options(shell=True, lines=True, noexec=True), save="x\n"
     )
-    assert emitted[0] == "nft -f - <<EOT\n"
-    assert emitted[-1] == "EOT\n"
+    assert res.emitted[0] == "nft -f - <<EOT\n"
+    assert res.emitted[-1] == "EOT\n"
 
 
 def test_shell_rollback_notice_announces_on_stderr() -> None:
