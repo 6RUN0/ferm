@@ -13,32 +13,19 @@ cannot express, an unhashable tuple field).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from pyferm.backend.nft import build_verdict, translate_rule
 from pyferm.backend.nft.verdicts import _ct_target_statements
 from pyferm.domains import Family
 from pyferm.errors import FermError
-from pyferm.rules import RenderedOption, RenderedRule
-from pyferm.scope import OptionKind
 from pyferm.values import Negated, Value
+from tests.unit._nftrule import _opt, _rule, _target
 
-
-def _opt(
-    name: str,
-    value: Value,
-    kind: OptionKind = OptionKind.OPTION,
-    module: str | None = None,
-) -> RenderedOption:
-    return RenderedOption(name=name, value=value, kind=kind, module=module)
-
-
-def _rule(*options: RenderedOption) -> RenderedRule:
-    return RenderedRule(options=list(options), script=None)
-
-
-def _target(value: str) -> RenderedOption:
-    return _opt("jump", value, kind=OptionKind.TARGET)
+if TYPE_CHECKING:
+    from pyferm.rules import RenderedOption
 
 
 def _texts(rule_options: list[RenderedOption], domain: Family) -> list[str]:

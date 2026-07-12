@@ -1,0 +1,36 @@
+"""
+Shared rendered-option/rule builders for the nft backend test modules.
+
+``_opt`` / ``_rule`` / ``_target`` were defined byte-identically in the nft
+vocabulary suites (match/target/object) and in the nft backend monolith.
+They are pure ``RenderedOption``/``RenderedRule`` constructors -- no emission
+text -- so sharing them cannot affect the readback-spelling assertions the
+callers pin.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from pyferm.rules import RenderedOption, RenderedRule
+from pyferm.scope import OptionKind
+
+if TYPE_CHECKING:
+    from pyferm.values import Value
+
+
+def _opt(
+    name: str,
+    value: Value,
+    kind: OptionKind = OptionKind.OPTION,
+    module: str | None = None,
+) -> RenderedOption:
+    return RenderedOption(name=name, value=value, kind=kind, module=module)
+
+
+def _rule(*options: RenderedOption) -> RenderedRule:
+    return RenderedRule(options=list(options), script=None)
+
+
+def _target(value: str) -> RenderedOption:
+    return _opt("jump", value, kind=OptionKind.TARGET)

@@ -16,7 +16,6 @@ tests pin the fail-closed guards the dichotomy gate cannot see.
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -55,13 +54,11 @@ from pyferm.plan import (
     render_unified,
     summary_line,
 )
-from pyferm.rules import RenderedOption, RenderedRule
+from pyferm.rules import RenderedRule
 from pyferm.scope import OptionKind
 from pyferm.streams import BYTE_ENCODING
 from pyferm.values import SetRef
-
-if TYPE_CHECKING:
-    from pyferm.values import Value
+from tests.unit._nftrule import _opt
 
 _SSH_CTX = "system_u:object_r:ssh_port_t:s0"
 _HTTP_CTX = "system_u:object_r:http_port_t:s0"
@@ -70,15 +67,6 @@ _HTTP_CTX = "system_u:object_r:http_port_t:s0"
 def _name(context: str) -> str:
     digest = hashlib.sha256(context.encode(BYTE_ENCODING)).hexdigest()[:12]
     return f"secmark_{digest}"
-
-
-def _opt(
-    name: str,
-    value: Value,
-    kind: OptionKind = OptionKind.OPTION,
-    module: str | None = None,
-) -> RenderedOption:
-    return RenderedOption(name=name, value=value, kind=kind, module=module)
 
 
 def _secmark_rule(context: str) -> RenderedRule:

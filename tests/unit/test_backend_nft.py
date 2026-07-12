@@ -291,15 +291,7 @@ def test_first_scalar_unsupported_shape_is_error() -> None:
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_match  # noqa: E402
 from pyferm.rules import RenderedOption  # noqa: E402
-
-
-def _opt(
-    name: str,
-    value: Value,
-    kind: OptionKind = OptionKind.OPTION,
-    module: str | None = None,
-) -> RenderedOption:
-    return RenderedOption(name=name, value=value, kind=kind, module=module)
+from tests.unit._nftrule import _opt, _rule, _target  # noqa: E402
 
 
 def test_translate_match_addresses_and_ifaces() -> None:
@@ -1741,14 +1733,6 @@ def test_build_verdict_log_prefix_bare_keyword_is_quoted() -> None:
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_rule  # noqa: E402
 from pyferm.rules import RenderedRule  # noqa: E402
-
-
-def _rule(*options: RenderedOption) -> RenderedRule:
-    return RenderedRule(options=list(options), script=None)
-
-
-def _target(value: str) -> RenderedOption:
-    return _opt("jump", value, kind=OptionKind.TARGET)
 
 
 def _texts(rule: NftRule) -> list[str]:
