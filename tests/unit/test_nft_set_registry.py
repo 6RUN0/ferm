@@ -13,10 +13,17 @@ import pytest
 
 from pyferm.backend.nft import (
     NftMatch,
+    NftObjectRef,
     NftRule,
     _collect_set_declarations,
     _set_type_and_elements,
     _SetDecl,
+)
+from pyferm.backend.nft.sets import (
+    _Decl,
+    _merge_object_decl,
+    _merge_static_decl,
+    _ObjectDecl,
 )
 from pyferm.domains import Family
 from pyferm.errors import FermError
@@ -209,3 +216,48 @@ def test_collect_declarations_conflicting_selectors_raise() -> None:
     }
     with pytest.raises(FermError, match="conflicting selectors"):
         _collect_set_declarations(Family.IP, rules)
+
+
+def _object(name: str, body: str) -> NftObjectRef:
+    """Build a table-object statement the aggregator dedups by name."""
+    return NftObjectRef(
+        kind="secmark",
+        name=name,
+        body=body,
+        rule_expr=f'meta secmark set "{body}"',
+    )
+
+
+def test_merge_object_decl_conflict_names_the_set() -> None:
+    """
+    Two objects sharing a name but differing bodies name the set.
+
+    The conflict message must carry the offending set name, not a
+    placeholder -- the aggregator is content-addressed, so a name with
+    two bodies is a genuine collision the operator has to locate.
+    """
+    decls: dict[str, _Decl] = {}
+    _merge_object_decl(decls, _object("foo", "ctx-a"))
+    with pytest.raises(
+        FermError, match="set 'foo' has conflicting declarations"
+    ):
+        _merge_object_decl(decls, _object("foo", "ctx-b"))
+
+
+def test_merge_static_decl_object_collision_names_the_set() -> None:
+    """
+    A static set colliding with an object name names the set.
+
+    The ``secmark_`` prefix makes this all but impossible in practice,
+    but the guard must still fail loud and identify the set rather than
+    read ``.elements`` off an object declaration.
+    """
+    decls: dict[str, _Decl] = {"foo": _ObjectDecl("secmark", "ctx")}
+    selectors: dict[str, str] = {}
+    stmt = NftMatch(
+        expr="", setref=SetRef("foo", ["22"]), set_selector="tcp dport"
+    )
+    with pytest.raises(
+        FermError, match="set 'foo' has conflicting declarations"
+    ):
+        _merge_static_decl(decls, selectors, Family.IP, stmt)

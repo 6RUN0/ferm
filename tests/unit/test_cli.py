@@ -2914,3 +2914,236 @@ def test_confirm_rules_reports_flush_failure_without_crashing(
     monkeypatch.setattr(termios, "tcflush", _boom)
     assert _confirm_rules(Options(interactive=True, timeout=1)) is False
     assert "flush failed" in capfd.readouterr().err
+
+
+# -- mode flag-rejection names the offending flag exactly -------------------
+#
+# _reject_other_flags derives the user-facing flag name from the argparse
+# dest (special-casing --def/--test) and _reject_lint_conflicts hardcodes the
+# clash messages.  Existing coverage asserted only the "cannot be combined"
+# prefix, which survives a corrupted dash-conversion, a bypassed special-case
+# map, or a re-cased literal.  These pin the exact one-line stderr message.
+
+
+def test_list_modules_rejects_dashed_flag_names_it_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An underscore dest (no_etckeeper) must surface as its dashed flag.
+    assert main(["--list-modules", "--no-etckeeper"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --list-modules cannot be combined with --no-etckeeper\n"
+    )
+
+
+def test_list_modules_rejects_mapped_flag_names_it_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The defs dest maps to "--def" (not the mechanical "--defs"), so the
+    # special-case lookup must key on the real attr, not a constant.
+    assert main(["--list-modules", "--def", "a=b"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --list-modules cannot be combined with --def\n"
+    )
+
+
+def test_lint_rejects_plan_format_names_it_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "f.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--lint", "--plan-format", "diff", str(conf)]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --lint cannot be combined with --plan-format\n"
+    )
+
+
+def test_lint_rejects_def_names_it_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "f.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--lint", "--def", "a=b", str(conf)]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --lint cannot be combined with --def\n"
+    )
+
+
+def test_lint_rejects_domain_names_it_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "f.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--lint", "--domain", "ip", str(conf)]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --lint cannot be combined with --domain\n"
+    )
+
+
+def test_graph_format_without_graph_names_it_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --plan-format's sibling guard: --graph-format is meaningless without
+    # --graph and must say so verbatim (the message was asserted nowhere).
+    conf = tmp_path / "f.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--graph-format", "dot", str(conf)]) == 1
+    assert capsys.readouterr().err == "ferm --graph-format requires --graph\n"
+
+
+# -- argument-parser prog and abbreviation behaviour -----------------------
+
+
+def test_main_parser_usage_names_prog_ferm(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # argparse renders "usage: <prog> ..." on an error; the prog must be the
+    # literal "ferm" (not sys.argv[0], not a re-cased spelling).
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--zzz-not-a-flag"])
+    assert capsys.readouterr().err.startswith("usage: ferm ")
+
+
+def test_main_parser_rejects_abbreviated_flags() -> None:
+    # allow_abbrev=False: an unambiguous prefix like "--noex" must NOT be
+    # accepted as "--noexec"; argparse rejects it and exits 2.
+    with pytest.raises(SystemExit) as excinfo:
+        _build_parser().parse_args(["--noex", "f"])
+    assert excinfo.value.code == 2
+
+
+def test_rollback_parser_rejects_abbreviated_flags() -> None:
+    # The rollback subparser is also allow_abbrev=False: "--full" must not
+    # abbreviate "--full-reload".
+    from pyferm.cli import _build_rollback_parser
+
+    with pytest.raises(SystemExit) as excinfo:
+        _build_rollback_parser().parse_args(["--full", "/etc/x"])
+    assert excinfo.value.code == 2
+
+
+# -- "Rollback cancelled." goes to stderr, verbatim ------------------------
+
+
+def test_rollback_bare_declined_writes_cancelled_to_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Declining the confirmation prompt announces the cancellation on stderr
+    # (never stdout); pin the exact tail so a re-cased or wrapped message is
+    # caught -- a substring check would pass a "XX...XX"-wrapped literal.
+    from pyferm.cli import _rollback_main
+
+    _mock_rollback_seam(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "n\n", raising=False)
+    assert _rollback_main([]) == 0
+    captured = capsys.readouterr()
+    assert captured.err.endswith("Rollback cancelled.\n")
+    assert "cancelled" not in captured.out.lower()
+
+
+# -- the --shell confirm block opens with two verbatim echo lines ----------
+
+
+def test_interactive_shell_first_confirmation_lines_verbatim(
+    trivial_conf: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The two echo lines open the block back-to-back; assert the contiguous
+    # pair so a re-cased or "XX"-wrapped line cannot pass as a substring of a
+    # longer emission (which is how mutants of the first line survived).
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    assert main(["--test", "--interactive", "--shell", str(trivial_conf)]) == 0
+    out = capfd.readouterr().out
+    assert (
+        "echo 'ferm has applied the new firewall rules.'\n"
+        "echo 'Please press Ctrl-C to confirm.'\n"
+    ) in out
+
+
+def test_emit_shell_confirmation_skips_only_the_none_snapshot_domain() -> None:
+    # A None snapshot for one family must skip only that family (continue),
+    # not abandon the loop (break): a real snapshot for a family sorted after
+    # it must still be emitted.
+    from pyferm.backend.base import Backend
+    from pyferm.cli.apply import _emit_shell_confirmation
+    from pyferm.domains import DomainInfo as RealDomainInfo
+    from pyferm.domains import Family, ShellSnapshot
+
+    class _PartialBackend(Backend):
+        def tool_names(self, domain: str) -> dict[str, str]:
+            raise NotImplementedError
+
+        def render(
+            self, domain: str, domain_info: DomainInfo, options: Options
+        ) -> Rendered:
+            raise NotImplementedError
+
+        def commit(
+            self,
+            domain: str,
+            domain_info: DomainInfo,
+            rendered: Rendered,
+            options: Options,
+            *,
+            execute: ExecuteCommand,
+            emit_line: LineEmitter,
+            restore: RestoreDomain,
+        ) -> int | None:
+            raise NotImplementedError
+
+        def rollback(
+            self,
+            domain: str,
+            domain_info: DomainInfo,
+            options: Options,
+            *,
+            execute: ExecuteCommand,
+            restore: RestoreDomain,
+        ) -> None:
+            raise NotImplementedError
+
+        def capture_previous(
+            self,
+            domain: str,
+            domain_info: DomainInfo,
+            options: Options,
+            *,
+            execute: ExecuteCommand,
+            read_save: object,
+            capture: object,
+        ) -> None:
+            raise NotImplementedError
+
+        def read_previous(
+            self, lines: Iterable[str], domain_info: DomainInfo
+        ) -> str:
+            raise NotImplementedError
+
+        def shell_snapshot(
+            self, domain: str, domain_info: DomainInfo
+        ) -> ShellSnapshot | None:
+            del domain_info
+            if domain == Family.IP:
+                return None
+            return ShellSnapshot(setup=("", ""), restore="RESTORE_IP6\n")
+
+        def shell_rollback_notice(self) -> str | None:
+            return None
+
+    domains: dict[Family, DomainInfo] = {
+        Family.IP: RealDomainInfo(enabled=True),
+        Family.IP6: RealDomainInfo(enabled=True),
+    }
+    emitted: list[str] = []
+    _emit_shell_confirmation(
+        _PartialBackend(), domains, Options(), emitted.append
+    )
+    assert "RESTORE_IP6\n" in emitted

@@ -11,6 +11,7 @@ keyword-parameter parsers (``ipfilter``/``address_magic``/``cgroup_classid``/
 from __future__ import annotations
 
 import io
+import re
 
 import pytest
 
@@ -19,6 +20,7 @@ from pyferm.functions import (
     MAX_CLASSID,
     MAX_VALUE_DEPTH,
     Evaluator,
+    _perl_substr,
     _perl_substr_index,
     ipfilter,
     realize_protocol,
@@ -759,3 +761,204 @@ def test_address_magic_setref_single_family_keeps_all() -> None:
     assert ev.address_magic(Rule(domain="ip")) == SetRef(
         "myset", ["1.2.3.4", "::1"]
     )
+
+
+# -- @-builtin arity guards: the exact "Usage: ..." message ------------------
+
+
+def _exact(message: str) -> str:
+    """
+    Return a ``pytest.raises`` pattern anchored to the whole error message.
+
+    ``error`` raises ``FermError`` whose ``str`` is exactly the joined
+    message (the located context goes to stderr, not the exception), so an
+    anchored pattern rejects any wrapped/re-cased variant a mutant produces.
+    """
+    return r"\A" + re.escape(message) + r"\Z"
+
+
+# Each @-builtin validates its argument count and reports a fixed "Usage:"
+# string (``_params``/``_string_param``); a wrong-arity call must raise it
+# verbatim.  Anchoring on the whole message pins the usage text so a mutant
+# that blanks, re-cases, or drops it is caught.
+_USAGE_ARITY_CASES = [
+    pytest.param("@eq(a)", "Usage: @eq(a, b)", id="eq-too-few"),
+    pytest.param("@eq(a, b, c)", "Usage: @eq(a, b)", id="eq-too-many"),
+    pytest.param("@ne(a)", "Usage: @ne(a, b)", id="ne-too-few"),
+    pytest.param("@not(a, b)", "Usage: @not(a)", id="not-too-many"),
+    pytest.param(
+        "@substr(a, b)",
+        "Usage: @substr(string, num, num)",
+        id="substr-too-few",
+    ),
+    pytest.param("@glob(a, b)", "Usage: @glob(string)", id="glob-too-many"),
+    pytest.param(
+        "@basename(a, b)", "Usage: @basename(path)", id="basename-too-many"
+    ),
+    pytest.param(
+        "@dirname(a, b)", "Usage: @dirname(path)", id="dirname-too-many"
+    ),
+    pytest.param(
+        "@length(a, b)", "Usage: @length(string)", id="length-too-many"
+    ),
+    pytest.param(
+        "@resolve(a, b, c)",
+        "Usage: @resolve((hostname ...), [type])",
+        id="resolve-too-many",
+    ),
+    pytest.param(
+        "@ipfilter(a, b)",
+        "Usage: @ipfilter((ip1 ip2 ...))",
+        id="ipfilter-too-many",
+    ),
+]
+
+
+@pytest.mark.parametrize(("source", "message"), _USAGE_ARITY_CASES)
+def test_builtin_wrong_arity_reports_usage(source: str, message: str) -> None:
+    with pytest.raises(FermError, match=_exact(message)):
+        _evaluator(source).getvalues()
+
+
+def test_builtin_unknown_message_is_exact() -> None:
+    # The dispatch miss reports a fixed string; anchor it so a mutant that
+    # merely wraps the text (a substring match would still pass) is caught.
+    with pytest.raises(
+        FermError, match=_exact("unknown ferm built-in function")
+    ):
+        _evaluator("@nope()").getvalues()
+
+
+def test_builtin_params_forbid_negation_by_default() -> None:
+    # Built-ins read their arguments through ``get_function_params()`` with
+    # ``allow_negation`` defaulting to False, so a leading "!" is rejected;
+    # flipping that default would silently accept ``@not(! 0)``.
+    with pytest.raises(FermError, match="negation is not allowed"):
+        _evaluator("@not(! 0)").getvalues()
+
+
+# -- @-builtin string-argument guard (@basename/@dirname/@length) ------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("@basename((a b))", id="basename"),
+        pytest.param("@dirname((a b))", id="dirname"),
+        pytest.param("@length((a b))", id="length"),
+    ],
+)
+def test_string_param_rejects_array_argument(source: str) -> None:
+    # A single-string built-in rejects an array (reference) argument instead
+    # of stringifying it; the guard reports the shared "String expected".
+    with pytest.raises(FermError, match=_exact("String expected")):
+        _evaluator(source).getvalues()
+
+
+# -- @defined argument guards ------------------------------------------------
+
+
+# @defined has its own hand-rolled reader: the opening "(", the "$"/"&"
+# sigil, and the name each have a fixed diagnostic.  Feed a malformed call
+# for every arm and pin the message verbatim.
+_DEFINED_GUARD_CASES = [
+    pytest.param(
+        "@defined $ v",
+        'function name must be followed by "()"',
+        id="missing-paren",
+    ),
+    pytest.param("@defined($ )", "variable name expected", id="var-name"),
+    pytest.param("@defined(& )", "function name expected", id="func-name"),
+    pytest.param("@defined(foo)", "'$' or '&' expected", id="sigil-expected"),
+]
+
+
+@pytest.mark.parametrize(("source", "message"), _DEFINED_GUARD_CASES)
+def test_builtin_defined_argument_guards(source: str, message: str) -> None:
+    with pytest.raises(FermError, match=_exact(message)):
+        _evaluator(source).getvalues()
+
+
+# -- get_function_params argument guards -------------------------------------
+
+
+_FUNC_PARAMS_GUARD_CASES = [
+    pytest.param(
+        "@eq a", 'function name must be followed by "()"', id="missing-paren"
+    ),
+    pytest.param("@eq(a b)", '"," expected', id="comma-expected"),
+]
+
+
+@pytest.mark.parametrize(("source", "message"), _FUNC_PARAMS_GUARD_CASES)
+def test_get_function_params_guards(source: str, message: str) -> None:
+    with pytest.raises(FermError, match=_exact(message)):
+        _evaluator(source).getvalues()
+
+
+# -- _perl_substr boundary behaviour -----------------------------------------
+
+
+# Signed offset/length edges around the clamp/undef boundaries of Perl's
+# three-argument substr; each row pins one arithmetic/comparison boundary
+# that a mutated ``< 0`` / ``> size`` / clamp would move.
+_PERL_SUBSTR_BOUNDS_CASES = [
+    # offset strictly past the end is undef -> "" (not "past-end" garbage).
+    ("offset_past_end", "hello", 6, 2, ""),
+    # a negative length measures back from the string end (size + length).
+    ("negative_length", "hello", 1, -1, "ell"),
+    # a zero length is an empty slice, never the whole tail.
+    ("zero_length", "hello", 1, 0, ""),
+    # both endpoints before the string collapse to undef -> "".
+    ("both_endpoints_before", "hello", -7, -6, ""),
+    # a start before the string clamps to 0 (not None, not 1).
+    ("start_clamped_to_zero", "hello", -7, 4, "he"),
+]
+
+
+@pytest.mark.parametrize(
+    ("string", "offset", "length", "expected"),
+    [
+        (s, o, length, exp)
+        for _, s, o, length, exp in _PERL_SUBSTR_BOUNDS_CASES
+    ],
+    ids=[name for name, *_ in _PERL_SUBSTR_BOUNDS_CASES],
+)
+def test_perl_substr_boundaries(
+    string: str, offset: int, length: int, expected: str
+) -> None:
+    assert _perl_substr(string, offset, length) == expected
+
+
+# -- multiport / classid: guard messages verbatim ---------------------------
+
+
+def test_multiport_rejects_non_tcp_udp_protocol() -> None:
+    # An explicit but wrong protocol (not tcp/udp/udplite) must still be
+    # rejected: the guard is not only "no protocol set".
+    message = (
+        'To use multiport, you have to specify "proto tcp" or '
+        '"proto udp" first'
+    )
+    with pytest.raises(FermError, match=_exact(message)):
+        _evaluator("80").multiport_params(Rule(protocol="icmp"))
+
+
+def test_cgroup_classid_rejects_negative() -> None:
+    # A decimal classid below zero is rejected (the value fits the regex but
+    # fails the non-negative bound).
+    with pytest.raises(
+        FermError, match=_exact("classid must be non-negative")
+    ):
+        _evaluator("-5").cgroup_classid(Rule())
+
+
+def test_cgroup_classid_guard_messages_are_exact() -> None:
+    # Anchor the two remaining classid diagnostics so a wrapped/re-cased
+    # variant (which a substring match would accept) is caught.
+    with pytest.raises(
+        FermError, match=_exact("classid must be hex:hex or decimal")
+    ):
+        _evaluator("zzzz:gg").cgroup_classid(Rule())
+    with pytest.raises(FermError, match=_exact("classid is too large")):
+        _evaluator("4294967296").cgroup_classid(Rule())

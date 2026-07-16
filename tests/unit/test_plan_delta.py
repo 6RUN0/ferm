@@ -664,3 +664,43 @@ def test_parse_nft_list_rejects_bad_ct_helper_name() -> None:
     text = "table ip ferm {\n\tct helper bad-name {\n\t}\n}\n"
     with pytest.raises(FermError):
         parse_nft_list(text, family="ip")
+
+
+def test_emit_chain_new_empty_chain_emits_only_decl() -> None:
+    """
+    A new chain with no rules emits just its declaration, never a crash.
+
+    The rule lookahead is ``index.chain_rules.get(name, [])``: an empty chain
+    has a ``chain_decl`` entry but no ``chain_rules`` entry, so the default
+    supplies the empty list that ``out.extend`` then no-ops over.  Defaulting
+    to ``None`` instead (dropping the default, or making it ``None``) feeds
+    ``out.extend(None)`` a non-iterable and raises ``TypeError``.
+    """
+    current: dict[str, ParsedTable] = {"ferm": ParsedTable()}
+    desired = ferm_table({"sub": ParsedChain("-", [])})
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index("add chain ip ferm sub\n")
+    assert "sub" not in index.chain_rules
+    lines = _emit_chain_changes(diff, current, index, family="ip")
+    assert lines == ["add chain ip ferm sub"]
+
+
+def test_emit_delta_set_modify_uses_family_prefix() -> None:
+    """
+    ``emit_delta_script`` threads its ``family`` into the set phase.
+
+    The element delta lines are prefixed ``<family> ferm``; the set phase must
+    receive the real family, not a dropped ``None`` that would render a bogus
+    ``None ferm`` object path into an applied transaction.
+    """
+    current = _table_with_set("h", ParsedSet("h", ["10.0.0.1"], "ipv4_addr"))
+    desired = _table_with_set("h", ParsedSet("h", ["10.0.0.2"], "ipv4_addr"))
+    diff = diff_tables(current, desired, noflush=False)
+    index = _build_desired_index(
+        "add set ip ferm h { type ipv4_addr; }\n"
+        "add element ip ferm h { 10.0.0.2 }\n"
+    )
+    out = emit_delta_script(diff, current, index, family="ip")
+    assert "delete element ip ferm h { 10.0.0.1 }" in out
+    assert "add element ip ferm h { 10.0.0.2 }" in out
+    assert "None ferm" not in out

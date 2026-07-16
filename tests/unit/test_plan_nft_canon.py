@@ -848,3 +848,62 @@ def test_transform_keyword_off_token_zero(body: str, expected: str) -> None:
     (a wrong body, or a non-terminating scan).
     """
     assert canonicalize_nft_rule(body, family="ip") == expected
+
+
+# --- truncated readback: a transform keyword with its operands cut off ---
+#
+# Each transform peeks ahead past its keyword (``ct state <members>``,
+# ``reject with <fam> [type] <msg>``, ``limit rate <value> [burst ...]``).
+# The lookahead is bounded by ``index + N < len(tokens)`` guards.  A live
+# kernel readback that ends mid-phrase (a bare ``ct``, a ``limit rate`` with
+# no value) must be left verbatim -- the bound protects the following
+# ``tokens[index + N]`` from an IndexError.  A loosened bound (``<=``, a
+# subtracted offset) either reaches past the list end and crashes on real
+# input or drops a firing transform; pinning the verbatim result guards both.
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param("ct", "ct", id="bare-ct"),
+        pytest.param("ct state", "ct state", id="ct-state-no-members"),
+        pytest.param("reject with", "reject with", id="reject-with-no-fam"),
+        pytest.param(
+            "reject with icmp type",
+            "reject with icmp type",
+            id="reject-type-no-message",
+        ),
+        pytest.param("limit rate", "limit rate", id="limit-rate-no-value"),
+    ],
+)
+def test_truncated_transform_left_verbatim(body: str, expected: str) -> None:
+    """A rule ending mid-transform is echoed unchanged, never a crash."""
+    assert canonicalize_nft_rule(body, family="ip") == expected
+
+
+def test_limit_rate_value_last_token_still_appends_burst() -> None:
+    # The value is the final token (no trailing verdict): the burst default is
+    # still injected, and the absent-burst probe stops at the list end instead
+    # of reading past it.
+    body = "limit rate 3/second"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "limit rate 3/second burst 5 packets"
+
+
+def test_state_after_non_ct_token_not_reordered() -> None:
+    # The ct-state reorder fires only when the ``state`` keyword follows the
+    # literal ``ct``.  A ``state`` preceded by any other token is not a
+    # ct-state operand, so its members keep their verbatim order (fusing the
+    # ``token == "ct"`` guard to an OR would reorder them to bitmask order).
+    body = "foo state new,established"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "foo state new,established"
+
+
+def test_rate_after_non_limit_token_gets_no_burst() -> None:
+    # The burst default is injected only after ``limit rate``.  A ``rate``
+    # token not preceded by ``limit`` is left alone (fusing the
+    # ``token == "limit"`` guard to an OR would append a spurious burst).
+    body = "foo rate 10/second"
+    out = canonicalize_nft_rule(body, family="ip")
+    assert out == "foo rate 10/second"

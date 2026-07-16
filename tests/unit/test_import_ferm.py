@@ -1221,3 +1221,75 @@ def test_import_main_parse_error_reports_to_stderr(
     )
     assert rc == 1
     assert "parse error in line 1" in capsys.readouterr().err
+
+
+# -- "not enough arguments for option" names the option verbatim -----------
+#
+# ``_fetch_token`` interpolates the option name into its shortage message,
+# but every path that supplies that name (``_parse_def_option``'s four fetch
+# branches and ``parse_option``'s protocol/keyword calls) was asserted only
+# for the exception type, never for the name.  A corrupted name ('None', a
+# neighbouring option) would read as a different diagnostic and slip through,
+# so each branch is pinned with the exact option it must report.
+
+
+def test_run_protocol_without_argument_names_option() -> None:
+    # "-p" with no value: the protocol branch fetches through params=1.
+    save = "*filter\n:INPUT ACCEPT [0:0]\n-A INPUT -p\nCOMMIT\n"
+    with pytest.raises(
+        FermError,
+        match="not enough arguments for option 'protocol' in line 3",
+    ):
+        _imported(save)
+
+
+def test_run_keyword_without_argument_names_option() -> None:
+    # A ported protocol's "--dport" with no value: the keyword-branch call.
+    save = "*filter\n:INPUT ACCEPT [0:0]\n-A INPUT -p tcp --dport\nCOMMIT\n"
+    with pytest.raises(
+        FermError,
+        match="not enough arguments for option 'dport' in line 3",
+    ):
+        _imported(save)
+
+
+def test_run_multiport_ports_without_argument_names_option() -> None:
+    # multiport "--dports" (a ParamFunction/coderef param) with no value.
+    save = (
+        "*filter\n:INPUT ACCEPT [0:0]\n"
+        "-A INPUT -p tcp -m multiport --dports\nCOMMIT\n"
+    )
+    with pytest.raises(
+        FermError,
+        match="not enough arguments for option 'destination-ports' in line 3",
+    ):
+        _imported(save)
+
+
+def test_run_multi_string_param_without_argument_names_option() -> None:
+    # u32's "--u32" is a params="m" keyword: the Multi fetch branch.
+    save = "*filter\n:INPUT ACCEPT [0:0]\n-A INPUT -m u32 --u32\nCOMMIT\n"
+    with pytest.raises(
+        FermError,
+        match="not enough arguments for option 'u32' in line 3",
+    ):
+        _imported(save)
+
+
+def test_parse_def_option_multi_arg_shortage_names_option() -> None:
+    # The integer-params>1 fetch branch is unreachable through the module
+    # tables (no keyword carries params>=2), so it is exercised directly:
+    # an empty token list must still name the option in the message.
+    importer = Importer(io.StringIO())
+    importer.lineno = 7
+    with pytest.raises(
+        FermError,
+        match="not enough arguments for option 'multi-arg' in line 7",
+    ):
+        importer._parse_def_option(
+            "multi-arg",
+            2,
+            pre_negation=False,
+            negated=False,
+            tokens=[],
+        )

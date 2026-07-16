@@ -20,7 +20,7 @@ import pytest
 from pyferm.config import Options
 from pyferm.domains import Family
 from pyferm.errors import FermError
-from pyferm.modules import TARGET_DEFS, Keyword
+from pyferm.modules import MATCH_DEFS, TARGET_DEFS, Keyword
 from pyferm.parser import (
     MAX_BLOCK_DEPTH,
     NegatedFlag,
@@ -154,6 +154,18 @@ def test_domain_filter_skips_other_families() -> None:
     assert "ip6" not in parser.domains
 
 
+def test_set_domain_installs_base_keywords_copy_on_write() -> None:
+    # set_domain aliases the rule's keywords to the shared family "" base
+    # table and marks "keywords" copy-on-write; a later ``mod`` on the same
+    # rule must detach before merging, so the shared MATCH_DEFS base is never
+    # mutated in place.  Snapshot inside the test so it kills the copy-on-write
+    # break regardless of run order.
+    base = MATCH_DEFS[Family.IP][""].keywords
+    before = set(base)
+    _parse('domain ip chain INPUT mod comment comment "hi" ACCEPT;')
+    assert set(base) == before
+
+
 # -- table / chain arrays --------------------------------------------------
 
 
@@ -214,6 +226,36 @@ def test_duplicate_table_specification_warns(
 ) -> None:
     _parse("table filter table nat chain INPUT ACCEPT;")
     assert "Table is already specified" in capsys.readouterr().err
+
+
+def test_duplicate_chain_specification_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A second ``chain`` on the same rule warns verbatim (the exact wording is
+    # oracle parity) and still redirects the rule to the last-named chain.
+    parser = _parse("chain INPUT chain OUTPUT ACCEPT;")
+    # Match the full located line so a wording, case, or marker drift in the
+    # message is caught, not just any occurrence of the bare phrase.
+    assert (
+        "Warning in <test> line 1: Chain is already specified"
+        in capsys.readouterr().err
+    )
+    assert _rules(parser, Family.IP, "filter", "INPUT") == []
+    assert _options(_rules(parser, Family.IP, "filter", "OUTPUT")[0]) == [
+        ("jump", "ACCEPT", OptionKind.TARGET)
+    ]
+
+
+def test_duplicate_priority_specification_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A second ``priority`` on a chain that already has one warns verbatim; the
+    # later value wins.  priority precedes the block and keeps rule.chain.
+    _parse("chain INPUT priority 10 priority 20 { ACCEPT; }")
+    assert (
+        "Warning in <test> line 1: Priority is already specified"
+        in capsys.readouterr().err
+    )
 
 
 def test_lowercase_builtin_chain_name_is_rejected() -> None:
@@ -361,6 +403,21 @@ def test_if_false_keeps_following_non_else_statement() -> None:
     assert "INPUT" not in chains
     assert _options(chains["OUTPUT"].rules[0]) == [
         ("jump", "DROP", OptionKind.TARGET)
+    ]
+
+
+def test_if_false_reseeds_following_rule_from_the_block_chain() -> None:
+    # After a false @if inside a chain block, the pending rule is reset from
+    # the block's prev frame, so a following bare rule still inherits the
+    # chain; reseeding from None would leave it with no chain.
+    parser = _parse(
+        "chain INPUT { @if 0 { proto tcp DROP; } proto udp ACCEPT; }"
+    )
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
+    assert len(rules) == 1
+    assert _options(rules[0]) == [
+        ("protocol", "udp", OptionKind.PROTO),
+        ("jump", "ACCEPT", OptionKind.TARGET),
     ]
 
 
@@ -665,6 +722,21 @@ def test_preserve_regex_records_a_pattern() -> None:
     assert "/^ferm_/" not in table.chains
 
 
+def test_preserve_reseeds_following_rule_from_the_block_chain() -> None:
+    # @preserve is a non-rule statement: it resets the pending rule, which must
+    # be reseeded from the block's prev frame so a following bare rule still
+    # inherits the chain (reseeding from None would drop it) and the reset must
+    # not close the level early (that would swallow the following rule).
+    parser = _parse("chain INPUT { @preserve; proto tcp ACCEPT; }")
+    chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
+    assert chain.preserve is True
+    assert len(chain.rules) == 1
+    assert _options(chain.rules[0]) == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
+
+
 def test_preserve_requires_fast_mode() -> None:
     options = Options(test=True, fast=False)
     with pytest.raises(FermError, match="not implemented for --slow"):
@@ -701,6 +773,31 @@ def test_negated_bare_hook_reports_the_remapped_keyword() -> None:
     # negation names the canonical form, as the oracle does.
     with pytest.raises(FermError, match="Doesn't support negation: @hook"):
         _parse('! hook pre "echo x";')
+
+
+def test_hook_post_records_command() -> None:
+    parser = _parse('@hook post "echo after";')
+    assert parser.post_hooks == ["echo after"]
+    assert parser.pre_hooks == []
+    assert parser.flush_hooks == []
+
+
+def test_hook_flush_records_command() -> None:
+    # ``flush`` is the third hook position (Perl ``:2258``); it must route to
+    # flush_hooks, not fall through to the "Invalid hook position" error.
+    parser = _parse('@hook flush "echo flushing";')
+    assert parser.flush_hooks == ["echo flushing"]
+    assert parser.pre_hooks == []
+    assert parser.post_hooks == []
+
+
+def test_hook_after_a_domain_token_is_rejected() -> None:
+    # ``@hook`` must be the first token in a command; a preceding domain token
+    # makes rule.domain non-None and aborts with the verbatim message (asserted
+    # exactly, not as a substring, so wording drift is caught).
+    with pytest.raises(FermError) as excinfo:
+        _parse('domain ip @hook pre "echo x";')
+    assert str(excinfo.value) == '"hook" must be the first token in a command'
 
 
 # -- error diagnostics -----------------------------------------------------
@@ -940,6 +1037,36 @@ def _parse_file(main: Path, *, options: Options | None = None) -> Parser:
             node.close()
             node = node.parent
     return parser
+
+
+def test_include_inside_a_chain_block_inherits_and_keeps_context(
+    tmp_path: Path,
+) -> None:
+    # @include is a non-rule statement: its rules must inherit the enclosing
+    # chain via the pending rule handed to _parse_include, and the include must
+    # not close the level early -- a rule after it still streams into the same
+    # chain.
+    included = tmp_path / "inc.ferm"
+    included.write_text("proto tcp dport 22 ACCEPT;\n", encoding="utf-8")
+    main = tmp_path / "main.ferm"
+    main.write_text(
+        f'chain INPUT {{ @include "{included}"; proto udp ACCEPT; }}\n',
+        encoding="utf-8",
+    )
+
+    parser = _parse_file(main)
+
+    rules = _rules(parser, Family.IP, "filter", "INPUT")
+    assert len(rules) == 2
+    assert _options(rules[0]) == [
+        ("protocol", "tcp", OptionKind.PROTO),
+        ("dport", "22", OptionKind.OPTION),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
+    assert _options(rules[1]) == [
+        ("protocol", "udp", OptionKind.PROTO),
+        ("jump", "ACCEPT", OptionKind.TARGET),
+    ]
 
 
 def test_include_pipe_parses_command_output(tmp_path: Path) -> None:

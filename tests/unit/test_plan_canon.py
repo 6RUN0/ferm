@@ -1,4 +1,5 @@
 from pyferm.plan import _canonicalize_rule as canon
+from pyferm.plan.readback import _proto_of
 
 
 def test_long_options_become_short() -> None:
@@ -103,3 +104,48 @@ def test_bare_counter_line_collapses_to_empty() -> None:
     # A leading '-c pkts bytes' counter of exactly three tokens is stripped
     # whole, leaving nothing.
     assert canon("-c 5 100", "/32") == ""
+
+
+# --- trailing option flags: a flag whose value has been cut off ---
+#
+# The '-m'/'-s'/'-d' rewrites peek one token past the flag, bounded by
+# 'index + 1 < len(tokens)'.  A rule ending in a bare flag (no operand) must
+# fall through and keep the flag verbatim; the bound stops the following
+# 'tokens[index + 1]' read from running off the list end.  A loosened bound
+# ('<=', a subtracted offset) reaches past it and crashes on such input.
+
+
+def test_trailing_dash_m_left_verbatim() -> None:
+    # A '-m' with no module name behind it is kept as-is, not a crash.
+    assert canon("-p tcp -m", "/32") == "-p tcp -m"
+
+
+def test_trailing_dash_s_left_verbatim() -> None:
+    # A '-s' with no address behind it is kept as-is, not a crash.
+    assert canon("-j ACCEPT -s", "/32") == "-j ACCEPT -s"
+
+
+def test_trailing_dash_d_left_verbatim() -> None:
+    # A '-d' with no address behind it is kept as-is, not a crash.
+    assert canon("-j ACCEPT -d", "/32") == "-j ACCEPT -d"
+
+
+def test_new_module_off_token_zero_advances_relatively() -> None:
+    # A freshly seen '-m <module>' advances the cursor by two RELATIVE to its
+    # position.  When the '-m' sits past token 0, an absolute 'index = 2'
+    # rewinds the cursor and reprocesses the intervening tokens, duplicating
+    # them in the output.  Placing '-m conntrack' at token 4 exposes that.
+    out = canon("-p tcp -j ACCEPT -m conntrack", "/32")
+    assert out == "-p tcp -j ACCEPT -m conntrack"
+
+
+def test_proto_of_reads_operand_after_dash_p() -> None:
+    # '-p' with an operand behind it returns that operand.  The one-token
+    # lookahead must reach it even when '-p' is the second-to-last token.
+    assert _proto_of(["-p", "tcp"]) == "tcp"
+
+
+def test_proto_of_trailing_dash_p_returns_none() -> None:
+    # A trailing '-p' has no operand: the lookahead bound stops the read at
+    # the list end and the function reports 'no proto' rather than crashing.
+    assert _proto_of(["-j", "ACCEPT", "-p"]) is None

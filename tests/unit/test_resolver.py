@@ -19,10 +19,12 @@ import pytest
 from pyferm.errors import FermError
 from pyferm.resolver import (
     ResourceRecord,
+    SearchResult,
     StubResolver,
     SystemResolver,
     ZonefileResolver,
     _canonical_name,
+    _current_resolver,
     _dnspython_available,
     _expand_ipv6,
     _make_record,
@@ -37,7 +39,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from pyferm.resolver import SearchResult
     from pyferm.values import Value
 
 _ZONE = """\
@@ -550,3 +551,89 @@ def test_stub_ns_type_is_clear_error() -> None:
 def test_stub_mx_type_is_clear_error() -> None:
     with pytest.raises(FermError, match="install pyferm\\[dns\\]"):
         StubResolver().search("mx.example.com", "MX")
+
+
+# -- mutation-hardening: defensive branches and anchored guard messages ------
+
+
+def test_current_resolver_error_message_is_exact() -> None:
+    # The "no provider" guard reports a fixed internal-error string; anchor it
+    # so a wrapped variant (which a substring match would still accept) is
+    # caught.
+    set_resolver_provider(None)
+    with pytest.raises(
+        FermError,
+        match=r"\Ainternal error: no resolver provider configured\Z",
+    ):
+        _current_resolver()
+
+
+def test_resolve_stringifies_non_string_hostname(
+    zone: ZonefileResolver,
+) -> None:
+    # A non-string host in the array is coerced with str() before the numeric
+    # fast-path (a defensive branch: parser values are normally strings).  An
+    # object rendering as a matching literal must survive as that literal.
+    class _Hostish:
+        def __str__(self) -> str:
+            return "192.0.2.1"
+
+    assert resolve("ip", [_Hostish()], "A", resolver=zone) == [  # type: ignore[list-item]
+        "192.0.2.1"
+    ]
+
+
+def test_resolve_skips_off_type_answer_record_keeps_rest() -> None:
+    # resolve() defensively filters answer records by type: a record whose
+    # type differs from the query (a resolver may surface extra types in one
+    # answer) is skipped, and the matching record that follows must still be
+    # processed -- the loop continues, it does not stop at the first mismatch.
+    class _MixedResolver:
+        def search(self, hostname: str, rrtype: str) -> SearchResult:
+            del hostname, rrtype  # a fixed answer, independent of the query
+            return SearchResult(
+                found=True,
+                answer=[
+                    ResourceRecord("AAAA", "2001:db8::9"),
+                    ResourceRecord("A", "192.0.2.5"),
+                ],
+                errorstring="NOERROR",
+            )
+
+    assert resolve("ip", "h", "A", resolver=_MixedResolver()) == ["192.0.2.5"]
+
+
+def test_stub_resolver_skips_non_string_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # getaddrinfo's sockaddr[0] is typed str | int; the isinstance guard skips
+    # a non-str address defensively and must continue to the valid str address
+    # that follows, not abort the loop at the first non-str entry.
+    def fake_getaddrinfo(
+        _host: str, _port: object, family: int, socktype: int, **_kwargs: int
+    ) -> list[tuple[int, int, int, str, tuple[object, int]]]:
+        return [
+            (family, socktype, 6, "", (12345, 0)),
+            (family, socktype, 6, "", ("192.0.2.1", 0)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    result = StubResolver().search("h.example.com", "A")
+    assert [rr.data for rr in result.answer] == ["192.0.2.1"]
+
+
+def test_stub_resolver_strips_scope_at_first_separator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The %scope suffix is cut at the FIRST "%" (split with maxsplit=1),
+    # keeping the address head -- not the last "%" (rsplit).  A synthetic
+    # two-"%" address is unreachable from getaddrinfo but pins the cut point
+    # deterministically against an rsplit slip.
+    def fake_getaddrinfo(
+        _host: str, _port: object, family: int, socktype: int, **_kwargs: int
+    ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
+        return [(family, socktype, 6, "", ("head%mid%tail", 0, 0, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    result = StubResolver().search("h.example.com", "AAAA")
+    assert [rr.data for rr in result.answer] == ["head"]
