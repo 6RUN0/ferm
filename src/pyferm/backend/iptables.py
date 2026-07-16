@@ -106,7 +106,8 @@ _SLOW_SPECIAL_RE: Final[re.Pattern[str]] = re.compile(
 #: because the same name reaches two sinks with different danger sets: the
 #: fast path pipes it to ``iptables-restore`` (save grammar: whitespace and
 #: control bytes split lines), but the slow path interpolates it raw into a
-#: command string that :func:`pyferm.cli.execute` routes through ``/bin/sh``
+#: command string that the ``execute`` closure inside
+#: :func:`pyferm.cli.io._make_io` routes through ``/bin/sh``
 #: whenever it carries a shell metacharacter -- and eb/arp own no
 #: ``-restore`` tool, so they take the slow path by default.  A blacklist
 #: tuned for the save grammar leaks every shell metacharacter (``;``, ``$``,

@@ -195,6 +195,7 @@ known-first-party = ["pyferm"]
 # TID252 bans by default.
 "src/pyferm/backend/**/*.py" = ["TID252"]
 "src/pyferm/plan/*.py" = ["TID252"]
+"src/pyferm/cli/*.py" = ["TID252"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -268,6 +269,12 @@ reportUnusedFunction = "none"
 
 [[tool.pyright.executionEnvironments]]
 root = "src/pyferm/plan"
+reportPrivateUsage = "none"
+reportUnusedFunction = "none"
+reportUnusedClass = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/pyferm/cli"
 reportPrivateUsage = "none"
 reportUnusedFunction = "none"
 reportUnusedClass = "none"
@@ -420,6 +427,21 @@ layers = [
   "pyferm.plan.diff",
   "pyferm.plan.readback",
   "pyferm.plan.model",
+]
+
+# Same discipline for the cli package: the dispatcher sits on top, the
+# rollback subcommand above the apply path it re-enters, apply above the
+# plan/history and read-only modes, the I/O seam and option parsing at
+# the bottom; a new upward edge is a design change, not a shortcut.
+[[tool.importlinter.contracts]]
+name = "cli internal layering"
+type = "layers"
+layers = [
+  "pyferm.cli.app",
+  "pyferm.cli.rollback",
+  "pyferm.cli.apply",
+  "pyferm.cli.history | pyferm.cli.modes",
+  "pyferm.cli.io | pyferm.cli.options",
 ]
 
 [tool.bandit]

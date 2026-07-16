@@ -1021,7 +1021,7 @@ def test_restore_dispatch_default_skips_nft_applier(
 ) -> None:
     # The default (iptables) restore routes to restore_domain, never the
     # nft applier; we observe that restore_domain is the call target.
-    from pyferm import cli
+    from pyferm.cli import io as cli_io
 
     calls: list[tuple[DomainInfo, str, Options]] = []
 
@@ -1030,7 +1030,7 @@ def test_restore_dispatch_default_skips_nft_applier(
     ) -> None:
         calls.append((domain_info, save, options))
 
-    monkeypatch.setattr(cli, "restore_domain", fake_restore_domain)
+    monkeypatch.setattr(cli_io, "restore_domain", fake_restore_domain)
     nft_called = False
 
     def fail_run(*_args: object, **_kwargs: object) -> object:
@@ -1295,14 +1295,14 @@ def test_build_plan_validate_false_skips_nft_check(
     # pointless and could raise post-apply).  --plan keeps validate=True.
     from unittest.mock import MagicMock
 
-    import pyferm.cli as cli_mod
     from pyferm.backend.nft import TOOL_NFT
     from pyferm.cli import build_plan
+    from pyferm.cli import history as cli_history
     from pyferm.domains import DomainInfo, Family
 
     calls: list[object] = []
     monkeypatch.setattr(
-        cli_mod,
+        cli_history,
         "_validate_desired_nft",
         lambda *args, **_kwargs: calls.append(args),
     )
@@ -1477,13 +1477,13 @@ def test_build_commit_message_degrades_on_plan_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # If build_plan raises, the commit still happens with a subject-only body.
-    import pyferm.cli as cli_mod
     from pyferm.cli import _build_commit_message
+    from pyferm.cli import history as cli_history
 
     def _boom(*_a: object, **_k: object) -> object:
         raise FermError("render exploded")
 
-    monkeypatch.setattr(cli_mod, "build_plan", _boom)
+    monkeypatch.setattr(cli_history, "build_plan", _boom)
     message = _build_commit_message(
         "f.conf", {}, Options(), IptablesBackend(), None
     )
@@ -1537,17 +1537,17 @@ def _patch_apply_seam(
     monkeypatch: pytest.MonkeyPatch, *, commit_result: int | None
 ) -> list[object]:
     """Drive _apply_config over a fake parser/backend; spy the commit hook."""
-    import pyferm.cli as cli_mod
+    from pyferm.cli import apply as cli_apply
 
     commit_calls: list[object] = []
     monkeypatch.setattr(
-        cli_mod,
+        cli_apply,
         "_select_backend",
         lambda _o: _ApplyBackend(commit_result=commit_result),
     )
-    monkeypatch.setattr(cli_mod, "Parser", _FakeParser)
+    monkeypatch.setattr(cli_apply, "Parser", _FakeParser)
     monkeypatch.setattr(
-        cli_mod, "_commit_history", lambda *a, **_k: commit_calls.append(a)
+        cli_apply, "_commit_history", lambda *a, **_k: commit_calls.append(a)
     )
     return commit_calls
 
@@ -1588,11 +1588,11 @@ def test_interactive_decline_triggers_rollback(
 ) -> None:
     # When the admin declines confirmation _rollback_all fires and raises
     # SystemExit.  The commit hook must not be reached (the safety invariant).
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
 
     commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
-    monkeypatch.setattr(cli_mod, "_confirm_rules", lambda _opts: False)
+    monkeypatch.setattr(cli_apply, "_confirm_rules", lambda _opts: False)
     with pytest.raises(SystemExit):
         _apply_config(
             str(trivial_conf), Options(interactive=True), sys.stdout, defs=[]
@@ -1605,11 +1605,11 @@ def test_interactive_confirm_skips_rollback(
 ) -> None:
     # Counterpart: confirming keeps the rules; no SystemExit, commit hook
     # reached exactly once (proving the decline test's assertion is real).
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
 
     commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
-    monkeypatch.setattr(cli_mod, "_confirm_rules", lambda _opts: True)
+    monkeypatch.setattr(cli_apply, "_confirm_rules", lambda _opts: True)
     assert (
         _apply_config(
             str(trivial_conf), Options(interactive=True), sys.stdout, defs=[]
@@ -1637,14 +1637,14 @@ def test_flush_clears_pre_and_post_hooks(
 ) -> None:
     # --flush clears pre_hooks and post_hooks so they are not executed;
     # flush_hooks are retained and run instead.
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
 
     _patch_apply_seam(monkeypatch, commit_result=None)
-    monkeypatch.setattr(cli_mod, "Parser", _SeededParser)
+    monkeypatch.setattr(cli_apply, "Parser", _SeededParser)
     executed: list[str] = []
     monkeypatch.setattr(
-        cli_mod, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
+        cli_apply, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
     )
     assert (
         _apply_config(
@@ -1662,14 +1662,14 @@ def test_no_flush_retains_pre_and_post_hooks(
 ) -> None:
     # Without --flush, pre_hooks and post_hooks are executed; flush_hooks are
     # cleared and never run.
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
 
     _patch_apply_seam(monkeypatch, commit_result=None)
-    monkeypatch.setattr(cli_mod, "Parser", _SeededParser)
+    monkeypatch.setattr(cli_apply, "Parser", _SeededParser)
     executed: list[str] = []
     monkeypatch.setattr(
-        cli_mod, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
+        cli_apply, "_run_hook", lambda cmd, *_a, **_k: executed.append(cmd)
     )
     assert (
         _apply_config(
@@ -1701,8 +1701,8 @@ def test_post_hooks_run_after_all_domain_commits(
     # Perl runs @post_hooks only after the domain loop (:776-793): a post
     # hook (say, reloading fail2ban) must observe every family's new
     # ruleset, not just the first one committed.
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
 
     events: list[str] = []
 
@@ -1716,12 +1716,12 @@ def test_post_hooks_run_after_all_domain_commits(
 
     _patch_apply_seam(monkeypatch, commit_result=None)
     monkeypatch.setattr(
-        cli_mod,
+        cli_apply,
         "_select_backend",
         lambda _o: _RecordingBackend(commit_result=None),
     )
-    monkeypatch.setattr(cli_mod, "Parser", _TwoDomainParser)
-    monkeypatch.setattr(cli_mod, "_run_hook", record_hook)
+    monkeypatch.setattr(cli_apply, "Parser", _TwoDomainParser)
+    monkeypatch.setattr(cli_apply, "_run_hook", record_hook)
     assert (
         _apply_config(
             str(trivial_conf), Options(flush=False), sys.stdout, defs=[]
@@ -1779,7 +1779,7 @@ def _mock_rollback_seam(
     history: str = "abc one\n",
     diff: str = "DIFFTEXT\n",
 ) -> tuple[_RollbackSpy, _ApplySpy]:
-    import pyferm.cli as cli_mod
+    from pyferm.cli import rollback as cli_rollback
 
     rollback_spy = _RollbackSpy()
     apply_spy = _ApplySpy()
@@ -1790,7 +1790,7 @@ def _mock_rollback_seam(
     monkeypatch.setattr(etckeeper, "list_history", lambda _s: history)
     monkeypatch.setattr(etckeeper, "diff_revision", lambda _sha, _s: diff)
     monkeypatch.setattr(etckeeper, "rollback", rollback_spy)
-    monkeypatch.setattr(cli_mod, "_apply_config", apply_spy)
+    monkeypatch.setattr(cli_rollback, "_apply_config", apply_spy)
     return rollback_spy, apply_spy
 
 
@@ -2393,8 +2393,8 @@ def test_apply_disabled_family_is_skipped_not_break(
     # A disabled family sorted before an enabled one must be skipped
     # (continue), not break the loop -- breaking would leave the enabled
     # family unapplied.
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
     from pyferm.domains import DomainInfo as RealDomainInfo
     from pyferm.domains import Family
 
@@ -2414,12 +2414,12 @@ def test_apply_disabled_family_is_skipped_not_break(
             return None
 
     monkeypatch.setattr(
-        cli_mod,
+        cli_apply,
         "_select_backend",
         lambda _o: _RecordingCommit(commit_result=None),
     )
-    monkeypatch.setattr(cli_mod, "Parser", _MultiParser)
-    monkeypatch.setattr(cli_mod, "_commit_history", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli_apply, "Parser", _MultiParser)
+    monkeypatch.setattr(cli_apply, "_commit_history", lambda *_a, **_k: None)
     assert (
         _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[]) == 0
     )
@@ -2444,11 +2444,11 @@ class _SeamRecordingBackend(_ApplyBackend):
 def _patch_seam_backend(
     monkeypatch: pytest.MonkeyPatch, backend: _SeamRecordingBackend
 ) -> None:
-    import pyferm.cli as cli_mod
+    from pyferm.cli import apply as cli_apply
 
-    monkeypatch.setattr(cli_mod, "_select_backend", lambda _o: backend)
-    monkeypatch.setattr(cli_mod, "Parser", _FakeParser)
-    monkeypatch.setattr(cli_mod, "_commit_history", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli_apply, "_select_backend", lambda _o: backend)
+    monkeypatch.setattr(cli_apply, "Parser", _FakeParser)
+    monkeypatch.setattr(cli_apply, "_commit_history", lambda *_a, **_k: None)
 
 
 def test_apply_status_rollback_receives_real_seams(
@@ -2472,8 +2472,8 @@ def test_apply_interactive_decline_receives_real_seams(
 ) -> None:
     # Declining confirmation rolls back; _confirm_rules is passed the real
     # options and _rollback_all the real seams.
-    import pyferm.cli as cli_mod
     from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
 
     backend = _SeamRecordingBackend(commit_result=None)
     _patch_seam_backend(monkeypatch, backend)
@@ -2483,7 +2483,7 @@ def test_apply_interactive_decline_receives_real_seams(
         confirm_args.append(opts)
         return False
 
-    monkeypatch.setattr(cli_mod, "_confirm_rules", _decline)
+    monkeypatch.setattr(cli_apply, "_confirm_rules", _decline)
     with pytest.raises(SystemExit):
         _apply_config(
             str(trivial_conf), Options(interactive=True), sys.stdout, defs=[]

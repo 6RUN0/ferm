@@ -175,8 +175,8 @@ def _write_manifest(
     lines.extend(
         [
             "",
-            "License note: ferm is distributed under GPLv2 (see the",
-            "banner in src/pyferm/cli.py printversion). Linking against",
+            "License note: ferm is distributed under GPLv2 (see the banner",
+            "in src/pyferm/cli/options.py printversion). Linking against",
             "OpenSSL is permitted under the GPL system-library exception",
             "because OpenSSL is a system/standard library; the OpenSSL build",
             "here is pulled in transitively by the CPython stdlib ssl module,",

@@ -7,7 +7,7 @@ values, not the raw switches: ``noexec`` is ``--noexec || --test``, ``lines``
 is ``--lines || --test || --shell``, ``fast`` is ``not --slow``,
 ``interactive`` is ``--interactive and not the raw --noexec switch``
 (``:675-683``).  That
-derivation is the CLI's job (``cli.py``, the ``GetOptions`` port); this
+derivation is the CLI's job (``cli/``, the ``GetOptions`` port); this
 dataclass only carries the settled result, so the rest of the program reads
 one typed value object instead
 of a global hash.
@@ -38,7 +38,8 @@ class Options:
     The resolved option set, mirroring ``%option`` (``:675-721``).
 
     Fields use the *derived* meanings from ``main``: e.g. ``test`` already
-    forces ``noexec`` and ``lines`` true at construction time (in ``cli.py``),
+    forces ``noexec`` and ``lines`` true at construction time (in
+    ``cli/options.py``),
     so consumers test these flags directly as the oracle does.
     """
 
