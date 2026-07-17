@@ -46,3 +46,7 @@ fuzz/crashes/
 CLAUDE.md
 docs/superpowers/
 .mcp.json
+
+# intermediate POD renders (nox -s man); only docs/man/*.1 is committed
+docs/ferm.pod
+docs/import-ferm.pod

@@ -35,11 +35,11 @@ def test_commit_records_a_revision(
     sandbox = etckeeper_sandbox
     sandbox.write("ferm/ferm.conf", "table filter {}\n")
 
-    etckeeper.commit("ferm: applied ferm.conf")
+    etckeeper.commit("ferm: apply ferm.conf")
 
     subpath = etckeeper.repo_relative_subpath(sandbox.config_path)
     history = etckeeper.list_history(subpath)
-    assert "applied ferm.conf" in history
+    assert "apply ferm.conf" in history
     assert etckeeper.working_tree_dirty() is False
 
 
@@ -49,10 +49,10 @@ def test_commit_nothing_to_commit_is_a_noop(
     """A second commit with no change does not raise and adds no revision."""
     sandbox = etckeeper_sandbox
     sandbox.write("ferm/ferm.conf", "table filter {}\n")
-    etckeeper.commit("ferm: applied ferm.conf")
+    etckeeper.commit("ferm: apply ferm.conf")
     before = sandbox.head()
 
-    etckeeper.commit("ferm: applied ferm.conf again")  # must not raise
+    etckeeper.commit("ferm: apply ferm.conf again")  # must not raise
 
     assert sandbox.head() == before
 

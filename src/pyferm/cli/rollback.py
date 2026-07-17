@@ -9,12 +9,15 @@ worktree and the revert is recorded as a new history commit.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from typing import Final
 
 from .. import etckeeper
+from ..cli_doc import rollback_help
 from ..config import Options
 from ..errors import ExitCode, FermError
+from ..functions import splitpath_file
 from .apply import _apply_config
 from .io import _shell_streams
 from .options import _require_interactive_tty
@@ -22,6 +25,66 @@ from .options import _require_interactive_tty
 #: The config ``ferm rollback`` defaults to when none is named on the command
 #: line -- the standard system path.
 _DEFAULT_CONFIG: Final[str] = "/etc/ferm/ferm.conf"
+
+
+#: Strictly the hex sha ``--list`` prints (4-40 hex digits).  The
+#: generic etckeeper validator deliberately admits '/' and '.' (branch
+#: names) -- through it, ``--diff /path/to/conf`` would swallow a config
+#: path and die with a raw git error instead of a hint.
+_DIFF_SHA_RE: Final[re.Pattern[str]] = re.compile(r"\A[0-9a-fA-F]{4,40}\Z")
+
+#: ``--diff`` without a value: distinct from the ``default`` (None) so
+#: "flag absent" and "flag present, no SHA" stay distinguishable.
+_DIFF_PREVIOUS: Final[str] = ""
+
+
+def _hex_sha(text: str) -> str:
+    """Argparse type for ``--diff``: only a hex SHA, with a hint."""
+    if text == _DIFF_PREVIOUS:
+        # argparse pipes a str const through type= too (nargs="?"):
+        # the bare-form sentinel must pass unharmed.
+        return text
+    if not _DIFF_SHA_RE.match(text):
+        raise argparse.ArgumentTypeError(
+            f"invalid SHA {text!r}: take the SHA from"
+            " 'ferm rollback --list'; the config file is a separate"
+            " argument"
+        )
+    return text
+
+
+def _positive_int(text: str) -> int:
+    """
+    Argparse type for ``--limit``: an integer >= 1.
+
+    git itself is silent on bad values (``-n 0`` prints nothing,
+    negatives are ignored), so the CLI must reject them loudly.
+    """
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid limit {text!r}: must be an integer >= 1"
+        ) from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"invalid limit {value}: must be >= 1"
+        )
+    return value
+
+
+def _mark_current(history: str) -> str:
+    """
+    Append `` (current)`` to the first history line.
+
+    The first path-scoped entry is the config's current state -- the
+    same semantics ``previous_revision`` builds on.  An empty history
+    is returned unchanged.
+    """
+    head, sep, tail = history.partition("\n")
+    if not head:
+        return history
+    return f"{head} (current){sep}{tail}"
 
 
 def _build_rollback_parser() -> argparse.ArgumentParser:
@@ -45,18 +108,68 @@ def _build_rollback_parser() -> argparse.ArgumentParser:
         prog="ferm rollback", add_help=True, allow_abbrev=False
     )
     target = parser.add_mutually_exclusive_group()
-    target.add_argument("--list", action="store_true")
-    target.add_argument("--to", metavar="SHA")
-    parser.add_argument("--nft", action="store_true")
-    parser.add_argument("--slow", action="store_true")
-    parser.add_argument("--full-reload", action="store_true")
-    parser.add_argument("--nolegacy", action="store_true")
-    parser.add_argument("-i", "--interactive", action="store_true")
-    parser.add_argument("-t", "--timeout", type=int, default=30)
-    parser.add_argument("--domain")
-    parser.add_argument("--def", dest="defs", action="append", default=[])
-    parser.add_argument("--no-etckeeper", action="store_true")
-    parser.add_argument("config", nargs="?")
+    target.add_argument(
+        "--list", action="store_true", help=rollback_help("list")
+    )
+    target.add_argument(
+        "--diff",
+        nargs="?",
+        const=_DIFF_PREVIOUS,
+        default=None,
+        type=_hex_sha,
+        metavar="SHA",
+        help=rollback_help("diff"),
+    )
+    target.add_argument("--to", metavar="SHA", help=rollback_help("to"))
+    parser.add_argument(
+        "-n",
+        "--limit",
+        type=_positive_int,
+        metavar="N",
+        default=None,
+        help=rollback_help("limit"),
+    )
+    parser.add_argument(
+        "--nft", action="store_true", help=rollback_help("nft")
+    )
+    parser.add_argument(
+        "--slow", action="store_true", help=rollback_help("slow")
+    )
+    parser.add_argument(
+        "--full-reload",
+        action="store_true",
+        help=rollback_help("full_reload"),
+    )
+    parser.add_argument(
+        "--nolegacy", action="store_true", help=rollback_help("nolegacy")
+    )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=rollback_help("interactive"),
+    )
+    parser.add_argument(
+        "-t",
+        "--timeout",
+        type=int,
+        default=30,
+        help=rollback_help("timeout"),
+    )
+    parser.add_argument("--domain", help=rollback_help("domain"))
+    parser.add_argument(
+        "--def",
+        dest="defs",
+        action="append",
+        default=[],
+        help=rollback_help("defs"),
+    )
+    parser.add_argument(
+        "--no-etckeeper",
+        action="store_true",
+        help=rollback_help("no_etckeeper"),
+    )
+    parser.add_argument("config", nargs="?", help=rollback_help("config"))
     return parser
 
 
@@ -94,6 +207,8 @@ def _rollback_main(argv: list[str]) -> int:
     config so the kernel matches and the revert is recorded as a new commit.
     """
     args = _build_rollback_parser().parse_args(argv)
+    if args.limit is not None and not args.list:
+        raise FermError("ferm rollback --limit has no sense without --list")
     options = _rollback_options(args)
     config = args.config if args.config is not None else _DEFAULT_CONFIG
 
@@ -104,7 +219,13 @@ def _rollback_main(argv: list[str]) -> int:
     subpath = etckeeper.repo_relative_subpath(config)
 
     if args.list:
-        sys.stdout.write(etckeeper.list_history(subpath))
+        history = etckeeper.list_history(subpath, limit=args.limit)
+        sys.stdout.write(_mark_current(history))
+        return ExitCode.OK
+
+    if args.diff is not None:
+        sha = args.diff or etckeeper.previous_revision(subpath)
+        sys.stdout.write(etckeeper.diff_revision(sha, subpath))
         return ExitCode.OK
 
     if args.to is not None:
@@ -135,8 +256,8 @@ def _rollback_to(
     operator is not asked to confirm a rollback that will then be rejected.
     The bare form (``confirm=True``) then shows the delta and requires a ``y``
     answer on a tty.  Both forms re-apply with the inherited options, the
-    inherited ``--def`` overrides and a ``rolled back to <sha>`` commit
-    subject.
+    inherited ``--def`` overrides and a ``roll back <config> to <sha>``
+    commit-subject head.
     """
     if etckeeper.working_tree_dirty(subpath):
         raise FermError(
@@ -165,5 +286,5 @@ def _rollback_to(
             options,
             lines_stream,
             defs=defs,
-            subject=f"rolled back to {sha}",
+            subject=f"roll back {splitpath_file(config)} to {sha}",
         )

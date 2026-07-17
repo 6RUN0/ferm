@@ -13,6 +13,7 @@ import pytest
 from pyferm import etckeeper
 from pyferm.backend.iptables import IptablesBackend
 from pyferm.cli import (
+    HELP_TEXT,
     _build_parser,
     _main,
     _make_io,
@@ -1389,7 +1390,7 @@ def test_commit_hook_runs_on_normal_apply(
     spy = _install_etckeeper(monkeypatch)
     _commit_history("a/f.conf", {}, Options(), IptablesBackend(), None)
     assert len(spy.messages) == 1
-    assert spy.messages[0].startswith("ferm: applied f.conf")
+    assert spy.messages[0].startswith("ferm: apply f.conf")
 
 
 def test_commit_hook_runs_under_shell_without_noexec(
@@ -1449,46 +1450,34 @@ def test_commit_subject_variants() -> None:
     from pyferm.cli import _commit_subject
 
     assert _commit_subject("a/f.conf", {}, Options()) == (
-        "applied f.conf (iptables)"
+        "apply f.conf (iptables)"
     )
     assert _commit_subject("a/f.conf", {}, Options(flush=True)) == (
-        "flushed f.conf (iptables)"
+        "flush f.conf rules (iptables)"
     )
     assert (
         _commit_subject("a/f.conf", {}, Options(nft=True, fast=False))
-        == "applied f.conf (nft, slow)"
+        == "apply f.conf (nft, slow)"
     )
 
 
 def test_commit_subject_override_used(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The rollback path passes an explicit subject; the hook must use it.
+    # The rollback path passes an explicit subject; the hook must use it
+    # as the verb-phrase head (the composer appends the delta tail and
+    # the trailer block).
     spy = _install_etckeeper(monkeypatch)
     from pyferm.cli import _commit_history
 
     _commit_history(
-        "f.conf", {}, Options(), IptablesBackend(), "rolled back to deadbeef"
+        "f.conf",
+        {},
+        Options(),
+        IptablesBackend(),
+        "roll back f.conf to deadbeef",
     )
-    assert spy.messages[0] == "ferm: rolled back to deadbeef"
-
-
-def test_build_commit_message_degrades_on_plan_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # If build_plan raises, the commit still happens with a subject-only body.
-    from pyferm.cli import _build_commit_message
-    from pyferm.cli import history as cli_history
-
-    def _boom(*_a: object, **_k: object) -> object:
-        raise FermError("render exploded")
-
-    monkeypatch.setattr(cli_history, "build_plan", _boom)
-    message = _build_commit_message(
-        "f.conf", {}, Options(), IptablesBackend(), None
-    )
-    assert message == "ferm: applied f.conf (iptables)"
-    assert "\n" not in message
+    assert spy.messages[0].startswith("ferm: roll back f.conf to deadbeef")
 
 
 class _FakeParser:
@@ -1787,7 +1776,7 @@ def _mock_rollback_seam(
     monkeypatch.setattr(etckeeper, "repo_relative_subpath", lambda _c: "ferm")
     monkeypatch.setattr(etckeeper, "working_tree_dirty", lambda *_a: dirty)
     monkeypatch.setattr(etckeeper, "previous_revision", lambda _s: previous)
-    monkeypatch.setattr(etckeeper, "list_history", lambda _s: history)
+    monkeypatch.setattr(etckeeper, "list_history", lambda _s, **_kw: history)
     monkeypatch.setattr(etckeeper, "diff_revision", lambda _sha, _s: diff)
     monkeypatch.setattr(etckeeper, "rollback", rollback_spy)
     monkeypatch.setattr(cli_rollback, "_apply_config", apply_spy)
@@ -1816,6 +1805,150 @@ def test_rollback_list_requires_git(
         _rollback_main(["--list"])
 
 
+def test_rollback_list_marks_current_and_passes_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    # runner seam: fake the etckeeper vcs spawns, not the functions --
+    # subprocess.run is late-bound inside etckeeper (see CommandRunner).
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        if argv[:3] == ["etckeeper", "vcs", "rev-parse"]:
+            return subprocess.CompletedProcess(argv, 0, "/etc\n", "")
+        assert argv[2] == "log"
+        assert argv[argv.index("-n") : argv.index("-n") + 2] == ["-n", "3"]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            "abc1234  2026-07-17 10:00  ferm: apply ferm.conf\n"
+            "def5678  2026-07-16 09:00  ferm: apply ferm.conf\n",
+            "",
+        )
+
+    monkeypatch.setattr("pyferm.etckeeper.subprocess.run", fake_run)
+    assert _rollback_main(["--list", "--limit", "3", "/etc/ferm/f.conf"]) == 0
+    out = capsys.readouterr().out
+    first, second = out.splitlines()[:2]
+    assert first.endswith(" (current)")
+    assert not second.endswith(" (current)")
+
+
+def test_rollback_list_empty_history_no_current_suffix(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        stdout = "/etc\n" if argv[2] == "rev-parse" else ""
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr("pyferm.etckeeper.subprocess.run", fake_run)
+    assert _rollback_main(["--list", "/etc/ferm/f.conf"]) == 0
+    assert "(current)" not in capsys.readouterr().out
+
+
+def test_rollback_limit_without_list_is_an_error() -> None:
+    from pyferm.cli import _rollback_main
+
+    with pytest.raises(FermError, match="--limit has no sense"):
+        _rollback_main(["--limit", "3"])
+
+
+@pytest.mark.parametrize("bad", ["0", "-2", "x"])
+def test_rollback_limit_rejects_non_positive(bad: str) -> None:
+    from pyferm.cli import _rollback_main
+
+    # git silently returns nothing for -n 0 and ignores negatives, so
+    # argparse must reject them loudly (SystemExit 2 with a message).
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--list", "--limit", bad])
+    assert exc.value.code == 2
+
+
+def _fake_vcs_for_diff(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(argv)
+        if argv[2] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, "/etc\n", "")
+        if argv[2] == "log":  # previous_revision
+            return subprocess.CompletedProcess(
+                argv, 0, "a" * 40 + "\n" + "b" * 40 + "\n", ""
+            )
+        assert argv[2] == "diff"
+        return subprocess.CompletedProcess(argv, 0, "diff text\n", "")
+
+    monkeypatch.setattr("pyferm.etckeeper.subprocess.run", fake_run)
+    return calls
+
+
+def test_rollback_diff_with_sha_prints_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    calls = _fake_vcs_for_diff(monkeypatch)
+    assert _rollback_main(["--diff", "deadbeef", "/etc/ferm/f.conf"]) == 0
+    assert capsys.readouterr().out == "diff text\n"
+    assert calls[-1][2:4] == ["diff", "deadbeef"]
+
+
+def test_rollback_bare_diff_targets_previous_revision(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    # Bare form: no SHA and no positional config (a path after a bare
+    # --diff would be bound to --diff by argparse and rejected) -- the
+    # config falls back to the default /etc/ferm/ferm.conf.
+    calls = _fake_vcs_for_diff(monkeypatch)
+    assert _rollback_main(["--diff"]) == 0
+    assert capsys.readouterr().out == "diff text\n"
+    assert calls[-1][3] == "b" * 40  # the SECOND path-scoped entry
+
+
+def test_rollback_bare_diff_single_revision_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    # One recorded revision -> previous_revision raises -> exit 1 via
+    # main(); at this level the FermError must surface untouched.
+    def fake_run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        if argv[2] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, "/etc\n", "")
+        assert argv[2] == "log"
+        return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+
+    monkeypatch.setattr("pyferm.etckeeper.subprocess.run", fake_run)
+    with pytest.raises(FermError, match="no previous version"):
+        _rollback_main(["--diff"])
+
+
+def test_rollback_diff_swallows_no_paths(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    # `--diff /path/conf` must NOT eat the config as a SHA: the generic
+    # _validate_revision whitelist deliberately allows '/' (branches),
+    # so --diff carries its own strict hex validator with a hint.
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--diff", "/etc/ferm/ferm.conf"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "ferm rollback --list" in err
+
+
+def test_rollback_diff_conflicts_with_to() -> None:
+    from pyferm.cli import _rollback_main
+
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--diff", "abcd", "--to", "beef1234"])
+    assert exc.value.code == 2
+
+
 def test_rollback_to_reapplies_inheriting_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1827,7 +1960,7 @@ def test_rollback_to_reapplies_inheriting_backend(
     config, options, subject = apply_spy.calls[0]
     assert config == "/etc/x.conf"
     assert options.nft is True  # nft install stays nft, not iptables
-    assert subject == "rolled back to deadbeef"
+    assert subject == "roll back x.conf to deadbeef"
 
 
 def test_rollback_bare_no_previous_revision(
@@ -1869,7 +2002,7 @@ def test_rollback_bare_confirmed_rolls_back(
     monkeypatch.setattr(sys.stdin, "readline", lambda: "yes\n", raising=False)
     assert _rollback_main([]) == 0
     assert rollback_spy.calls == [("prev1234", "ferm")]
-    assert apply_spy.calls[0][2] == "rolled back to prev1234"
+    assert apply_spy.calls[0][2] == "roll back ferm.conf to prev1234"
 
 
 def test_rollback_bare_non_tty_refused(
@@ -2327,7 +2460,7 @@ def test_commit_subject_lists_enabled_families() -> None:
         Family.ARP: RealDomainInfo(enabled=False),
     }
     assert _commit_subject("a/f.conf", domains, Options()) == (
-        "applied f.conf (ip ip6, iptables)"
+        "apply f.conf (ip ip6, iptables)"
     )
 
 
@@ -2360,8 +2493,104 @@ def test_build_commit_message_appends_family_body() -> None:
     message = _build_commit_message(
         "f.conf", {Family.IP: di}, Options(nft=True), _nft_body_backend(), None
     )
-    assert message.startswith("ferm: applied f.conf (ip, nft)")
+    assert message.startswith("ferm: apply f.conf (ip, nft)")
     assert "\n\n  ip:" in message
+
+
+def test_commit_message_tail_and_trailers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A plan with one added rule; the subject grows the delta tail and
+    # the trailer block is the LAST paragraph (git trailer contract).
+    from pyferm import __version__ as pyferm_version
+    from pyferm.cli import _build_commit_message
+    from pyferm.plan import Plan, PlanDiff, RuleChange
+
+    monkeypatch.setattr(sys, "argv", ["ferm", "-F", "/etc/ferm/f.conf"])
+    plan = Plan(
+        families={
+            "ip": PlanDiff(
+                rules_added=[RuleChange("filter", "INPUT", "-p udp -j DROP")],
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "pyferm.cli.history.build_plan",
+        lambda *_a, **_k: plan,
+    )
+    message = _build_commit_message(
+        "f.conf", {}, Options(), IptablesBackend(), None
+    )
+    head, body, trailers = message.split("\n\n")
+    assert head == "ferm: apply f.conf (iptables): +1 rule"
+    assert body.startswith("  ip: Plan: 1 to add")
+    assert trailers.splitlines() == [
+        f"Ferm-Version: {pyferm_version}",
+        "Ferm-Command: ferm -F /etc/ferm/f.conf",
+    ]
+
+
+def test_commit_message_no_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _build_commit_message
+    from pyferm.plan import Plan
+
+    monkeypatch.setattr(sys, "argv", ["ferm", "f.conf"])
+    monkeypatch.setattr(
+        "pyferm.cli.history.build_plan", lambda *_a, **_k: Plan()
+    )
+    message = _build_commit_message(
+        "f.conf", {}, Options(), IptablesBackend(), None
+    )
+    assert message.split("\n\n")[0] == (
+        "ferm: apply f.conf (iptables): no changes"
+    )
+
+
+def test_commit_message_degrades_without_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A failed plan keeps the bare head (no tail, no body) -- but the
+    # forensic trailers survive: they do not depend on the plan.
+    from pyferm.cli import _build_commit_message
+
+    monkeypatch.setattr(sys, "argv", ["ferm", "f.conf"])
+
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise FermError("save read failed")
+
+    monkeypatch.setattr("pyferm.cli.history.build_plan", boom)
+    message = _build_commit_message(
+        "f.conf", {}, Options(), IptablesBackend(), None
+    )
+    head, trailers = message.split("\n\n")
+    assert head == "ferm: apply f.conf (iptables)"
+    version_line, command_line = trailers.splitlines()
+    assert version_line.startswith("Ferm-Version: ")
+    assert command_line == "Ferm-Command: ferm f.conf"
+
+
+def test_commit_message_rollback_head_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pyferm.cli import _build_commit_message
+    from pyferm.plan import Plan
+
+    monkeypatch.setattr(sys, "argv", ["ferm", "rollback", "--to", "abc123"])
+    monkeypatch.setattr(
+        "pyferm.cli.history.build_plan", lambda *_a, **_k: Plan()
+    )
+    message = _build_commit_message(
+        "f.conf",
+        {},
+        Options(),
+        IptablesBackend(),
+        "roll back f.conf to abc123",
+    )
+    assert message.split("\n\n")[0] == (
+        "ferm: roll back f.conf to abc123: no changes"
+    )
 
 
 def test_commit_history_forwards_backend_with_enabled_domains(
@@ -2560,7 +2789,7 @@ def test_rollback_list_passes_config_derived_subpath(
         seen_config.append(config)
         return "the-subpath"
 
-    def _record_history(subpath: object) -> str:
+    def _record_history(subpath: object, **_kwargs: object) -> str:
         seen_subpath.append(subpath)
         return "history\n"
 
@@ -3147,3 +3376,22 @@ def test_emit_shell_confirmation_skips_only_the_none_snapshot_domain() -> None:
         _PartialBackend(), domains, Options(), emitted.append
     )
     assert "RESTORE_IP6\n" in emitted
+
+
+# --- HELP_TEXT renders from the cli_doc table -------------------------------
+
+
+def test_help_text_covers_every_documented_option() -> None:
+    from pyferm.cli_doc import FERM_OPTIONS
+
+    for opt in FERM_OPTIONS:
+        if opt.positional:
+            continue
+        for spelling in opt.spellings:
+            assert spelling in HELP_TEXT, spelling
+    assert "ferm rollback [--list" in HELP_TEXT
+
+
+def test_help_text_keeps_the_column_layout() -> None:
+    assert HELP_TEXT.startswith("Usage:\n    ferm options inputfiles\n")
+    assert "\n     -n, --noexec      Do not execute" in HELP_TEXT

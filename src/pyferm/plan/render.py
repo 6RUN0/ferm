@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from ..config import PlanFormat
@@ -12,10 +13,97 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 
+def _plural(count: int, noun: str) -> str:
+    """Naive plural: append ``s`` unless the count is exactly one."""
+    return noun if count == 1 else noun + "s"
+
+
 def _clause(count: int, noun: str, verb: str) -> str:
     """Build one ``, N noun(s) verb`` summary_line clause."""
-    plural = noun if count == 1 else noun + "s"
-    return f", {count} {plural} {verb}"
+    return f", {count} {_plural(count, noun)} {verb}"
+
+
+@dataclass(frozen=True)
+class DeltaCounts:
+    """
+    The per-category change counts of one diff (or a summed plan).
+
+    The single counting authority behind both the commit-subject tail
+    (:func:`delta_phrase`) and the body summary (:func:`summary_line`),
+    so the two can never disagree.
+    """
+
+    rules_added: int = 0
+    rules_removed: int = 0
+    policies: int = 0
+    chains_removed: int = 0
+    chains_rebuilt: int = 0
+    sets_changed: int = 0
+    objects_changed: int = 0
+
+    def __add__(self, other: DeltaCounts) -> DeltaCounts:
+        """Per-field sum -- fold a plan's families into one delta."""
+        return DeltaCounts(
+            rules_added=self.rules_added + other.rules_added,
+            rules_removed=self.rules_removed + other.rules_removed,
+            policies=self.policies + other.policies,
+            chains_removed=self.chains_removed + other.chains_removed,
+            chains_rebuilt=self.chains_rebuilt + other.chains_rebuilt,
+            sets_changed=self.sets_changed + other.sets_changed,
+            objects_changed=self.objects_changed + other.objects_changed,
+        )
+
+    def has_changes(self) -> bool:
+        """Return ``True`` when any category is nonzero."""
+        return self != DeltaCounts()
+
+
+def count_changes(diff: PlanDiff) -> DeltaCounts:
+    """Count one diff's changes per category (desuet+foreign fold)."""
+    return DeltaCounts(
+        rules_added=len(diff.rules_added),
+        rules_removed=len(diff.rules_removed),
+        policies=len(diff.policy_changes),
+        chains_removed=len(diff.desuet_chains) + len(diff.foreign_chains),
+        chains_rebuilt=len(diff.chain_rebuilds),
+        sets_changed=len(diff.set_changes),
+        objects_changed=len(diff.object_changes),
+    )
+
+
+def delta_phrase(counts: DeltaCounts) -> str:
+    """
+    Render the commit-subject delta tail: ``+12/-3 rules, 1 policy``.
+
+    Zero categories are suppressed entirely (the rules segment drops a
+    zero side: ``+12 rules``, ``-42 rules``; at 0/0 the whole segment is
+    omitted); an all-zero delta reads ``no changes``.
+    """
+    clauses: list[str] = []
+    adds, removes = counts.rules_added, counts.rules_removed
+    if adds and removes:
+        clauses.append(f"+{adds}/-{removes} rules")
+    elif adds:
+        clauses.append(f"+{adds} {_plural(adds, 'rule')}")
+    elif removes:
+        clauses.append(f"-{removes} {_plural(removes, 'rule')}")
+    if counts.policies:
+        word = "policy" if counts.policies == 1 else "policies"
+        clauses.append(f"{counts.policies} {word}")
+    if counts.chains_removed:
+        chains = _plural(counts.chains_removed, "chain")
+        clauses.append(f"{counts.chains_removed} {chains} removed")
+    if counts.chains_rebuilt:
+        chains = _plural(counts.chains_rebuilt, "chain")
+        clauses.append(f"{counts.chains_rebuilt} {chains} rebuilt")
+    if counts.sets_changed:
+        clauses.append(
+            f"{counts.sets_changed} {_plural(counts.sets_changed, 'set')}"
+        )
+    if counts.objects_changed:
+        objects = _plural(counts.objects_changed, "object")
+        clauses.append(f"{counts.objects_changed} {objects}")
+    return ", ".join(clauses) if clauses else "no changes"
 
 
 def summary_line(diff: PlanDiff) -> str:
@@ -26,23 +114,21 @@ def summary_line(diff: PlanDiff) -> str:
     ``, C chain(s) removed`` clause is appended so the summary reflects
     every change that will be applied -- not just rule-level deltas.
     """
-    adds = len(diff.rules_added)
-    removes = len(diff.rules_removed)
-    policies = len(diff.policy_changes)
-    chains_removed = len(diff.desuet_chains) + len(diff.foreign_chains)
-    pol_word = "change" if policies == 1 else "changes"
+    counts = count_changes(diff)
+    pol_word = "change" if counts.policies == 1 else "changes"
     summary = (
-        f"Plan: {adds} to add, {removes} to remove,"
-        f" {policies} policy {pol_word}"
+        f"Plan: {counts.rules_added} to add,"
+        f" {counts.rules_removed} to remove,"
+        f" {counts.policies} policy {pol_word}"
     )
-    if chains_removed:
-        summary += _clause(chains_removed, "chain", "removed")
-    if rebuilt := len(diff.chain_rebuilds):
-        summary += _clause(rebuilt, "chain", "rebuilt")
-    if sets_changed := len(diff.set_changes):
-        summary += _clause(sets_changed, "set", "changed")
-    if objects_changed := len(diff.object_changes):
-        summary += _clause(objects_changed, "object", "changed")
+    if counts.chains_removed:
+        summary += _clause(counts.chains_removed, "chain", "removed")
+    if counts.chains_rebuilt:
+        summary += _clause(counts.chains_rebuilt, "chain", "rebuilt")
+    if counts.sets_changed:
+        summary += _clause(counts.sets_changed, "set", "changed")
+    if counts.objects_changed:
+        summary += _clause(counts.objects_changed, "object", "changed")
     return summary
 
 

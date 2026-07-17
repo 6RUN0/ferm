@@ -3,6 +3,7 @@ import pytest
 from pyferm.config import PlanFormat
 from pyferm.plan import (
     ChainRebuild,
+    DeltaCounts,
     DesuetChain,
     ForeignChain,
     ObjectChange,
@@ -12,6 +13,8 @@ from pyferm.plan import (
     RuleChange,
     SetChange,
     SetChangeKind,
+    count_changes,
+    delta_phrase,
     render_plan,
     render_structured,
     render_unified,
@@ -369,4 +372,70 @@ def test_unified_add_exact_diff_body() -> None:
         "@@ -1 +1,2 @@\n"
         " *filter\n"
         "+-A INPUT -j A\n"
+    )
+
+
+# --- DeltaCounts / count_changes / delta_phrase ----------------------------
+
+
+def test_count_changes_mirrors_summary_line_categories() -> None:
+    diff = PlanDiff(
+        rules_added=[RuleChange("filter", "INPUT", "-p udp -j DROP")],
+        rules_removed=[
+            RuleChange("filter", "INPUT", "-p tcp -j ACCEPT"),
+            RuleChange("filter", "FWD", "-j DROP"),
+        ],
+        policy_changes=[PolicyChange("filter", "INPUT", "ACCEPT", "DROP")],
+        desuet_chains=[DesuetChain("filter", "OLD")],
+        foreign_chains=[ForeignChain("filter", "DOCKER")],
+    )
+    counts = count_changes(diff)
+    assert counts.rules_added == 1
+    assert counts.rules_removed == 2
+    assert counts.policies == 1
+    assert counts.chains_removed == 2  # desuet + foreign, as in the body
+
+
+def test_delta_counts_sum_across_families() -> None:
+    a = DeltaCounts(rules_added=1, sets_changed=2)
+    b = DeltaCounts(rules_added=3, policies=1)
+    total = a + b
+    assert total == DeltaCounts(rules_added=4, policies=1, sets_changed=2)
+
+
+@pytest.mark.parametrize(
+    ("counts", "phrase"),
+    [
+        (DeltaCounts(), "no changes"),
+        (DeltaCounts(rules_added=12, rules_removed=3), "+12/-3 rules"),
+        (DeltaCounts(rules_added=12), "+12 rules"),
+        (DeltaCounts(rules_added=1), "+1 rule"),
+        (DeltaCounts(rules_removed=42), "-42 rules"),
+        (
+            DeltaCounts(rules_added=12, rules_removed=3, policies=1),
+            "+12/-3 rules, 1 policy",
+        ),
+        (DeltaCounts(policies=2), "2 policies"),
+        (
+            DeltaCounts(chains_removed=2, chains_rebuilt=1),
+            "2 chains removed, 1 chain rebuilt",
+        ),
+        (
+            DeltaCounts(sets_changed=1, objects_changed=3),
+            "1 set, 3 objects",
+        ),
+    ],
+)
+def test_delta_phrase(counts: DeltaCounts, phrase: str) -> None:
+    assert delta_phrase(counts) == phrase
+
+
+def test_summary_line_unchanged_by_refactor() -> None:
+    diff = PlanDiff(
+        rules_added=[RuleChange("filter", "INPUT", "-p udp -j DROP")],
+        policy_changes=[PolicyChange("filter", "INPUT", "ACCEPT", "DROP")],
+        desuet_chains=[DesuetChain("filter", "OLD")],
+    )
+    assert summary_line(diff) == (
+        "Plan: 1 to add, 0 to remove, 1 policy change, 1 chain removed"
     )

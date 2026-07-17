@@ -149,6 +149,45 @@ def typecheck(session: nox.Session) -> None:
     _uv(session, "pyright", "--verifytypes", "pyferm")
 
 
+@nox.session
+def man(session: nox.Session) -> None:
+    """
+    Regenerate the committed man pages from the POD templates; lint.
+
+    Renders ``docs/templates/*.pod.j2`` -> ``docs/*.pod`` (gitignored)
+    -> ``docs/man/*.1`` (committed) with pinned pod2man date/release,
+    then lints the result: podchecker (POD syntax), lexgrog (NAME
+    parsability -- what lintian/rpmlint red-flag) and
+    ``groff -man -ww -z`` (troff warnings).  Absent linters are
+    skipped with a note; absent pod2man skips the session.
+    """
+    if shutil.which("pod2man") is None:
+        session.skip("pod2man not found -- install perl")
+    _uv(session, "python", "tools/gen_man.py")
+    pods = ("docs/ferm.pod", "docs/import-ferm.pod")
+    pages = ("docs/man/ferm.1", "docs/man/import-ferm.1")
+    if shutil.which("podchecker") is not None:
+        session.run("podchecker", *pods, external=True)
+    else:
+        session.log("podchecker not found -- POD lint skipped")
+    if shutil.which("lexgrog") is not None:
+        for page in pages:
+            session.run("lexgrog", page, external=True)
+    else:
+        session.log("lexgrog not found -- NAME lint skipped")
+    if shutil.which("groff") is not None:
+        for page in pages:
+            session.run("groff", "-man", "-ww", "-z", page, external=True)
+    else:
+        session.log("groff not found -- troff lint skipped")
+
+
+@nox.session
+def completion(session: nox.Session) -> None:
+    """Regenerate packaging/completions/ferm.bash from cli_doc."""
+    _uv(session, "python", "tools/gen_completion.py")
+
+
 #: Base ref for the diff-cover patch-coverage gate: the branch a local
 #: preflight is about to push to.  On push CI the checked-out commit
 #: equals this ref, the diff is empty and the gate passes trivially --
@@ -994,10 +1033,16 @@ _PREFLIGHT_QUEUE = (
 #: (``binary`` feeds ``binary_glibc``/``binary_dns``, ``build_deb``
 #: feeds ``deb_smoke``, ...).  Deliberately excluded: ``mutation`` /
 #: ``mutation_report`` (a multi-hour resumable sweep, periodic rather
-#: than a gate) and ``datapath_e2e_matrix`` (the single-distro
-#: ``datapath_e2e`` is queued; the 8-distro matrix is release-time).
+#: than a gate), ``datapath_e2e_matrix`` (the single-distro
+#: ``datapath_e2e`` is queued; the 8-distro matrix is release-time),
+#: and -- from ``preflight`` only -- ``man``/``completion``: both
+#: regenerate committed artifacts (a push gate must not mutate the
+#: worktree), and staleness is already caught by ``tests`` via the
+#: freshness gates (test_man_pages.py / test_completion.py).
 _EVERYTHING_QUEUE = (
     *_PREFLIGHT_QUEUE,
+    "man",
+    "completion",
     "audit",
     "crashfuzz",
     "nft_conformance",

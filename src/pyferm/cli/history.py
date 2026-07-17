@@ -10,15 +10,19 @@ identically.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .. import etckeeper
+from .. import __version__, etckeeper
 from ..backend.iptables import rules_to_save, validate_names
 from ..backend.nft import TOOL_NFT
 from ..errors import ExitCode, FermError, internal_error
 from ..functions import splitpath_file
 from ..plan import (
+    DeltaCounts,
     Plan,
+    count_changes,
+    delta_phrase,
     diff_tables,
     parse_nft_list,
     parse_nft_script,
@@ -118,14 +122,28 @@ def _run_plan(
 def _commit_subject(
     filename: str, domains: dict[Family, DomainInfo], options: Options
 ) -> str:
-    """Build the default commit subject from the applied options."""
-    verb = "flushed" if options.flush else "applied"
+    """Build the default subject head: verb + config + context brace."""
     families = " ".join(domain for domain, _ in _enabled_domains(domains))
     descriptors = [families] if families else []
     descriptors.append("nft" if options.nft else "iptables")
     if not options.fast:
         descriptors.append("slow")
-    return f"{verb} {splitpath_file(filename)} ({', '.join(descriptors)})"
+    name = splitpath_file(filename)
+    head = f"flush {name} rules" if options.flush else f"apply {name}"
+    return f"{head} ({', '.join(descriptors)})"
+
+
+def _trailer_block() -> str:
+    """
+    Forensic git trailers recorded with every history commit.
+
+    ``Ferm-Command`` is the program basename plus the verbatim argv --
+    including ``--def`` values: the history lives in the admin's
+    private /etc repository next to the config itself, so this reveals
+    no new secrets, and incident forensics needs the exact command.
+    """
+    command = " ".join([Path(sys.argv[0]).name, *sys.argv[1:]])
+    return f"Ferm-Version: {__version__}\nFerm-Command: {command}"
 
 
 def _commit_body(plan: Plan) -> str:
@@ -146,12 +164,15 @@ def _build_commit_message(
     subject: str | None,
 ) -> str:
     """
-    Compose the etckeeper commit message (subject + semantic body).
+    Compose the etckeeper commit message: head, delta tail, body, trailers.
 
-    The body comes from :func:`build_plan` with ``validate=False`` -- the
-    rules are already applied, so re-running ``nft -c`` is pointless and could
-    raise post-apply.  If building the plan fails, degrade to a subject-only
-    message rather than skipping the commit.
+    The plan is built FIRST (``validate=False`` -- the rules are already
+    applied) and feeds both the subject tail and the per-family body, so
+    they cannot disagree.  ``subject`` overrides only the verb-phrase
+    head (rollback passes ``roll back <config> to <sha>``); the single
+    composer glues the ``: <delta>`` tail onto BOTH paths.  A failed
+    plan degrades to the bare head -- no tail, no body -- but the
+    trailers do not depend on the plan and are always the last block.
     """
     head = (
         subject
@@ -161,9 +182,16 @@ def _build_commit_message(
     try:
         plan = build_plan(domains, options, backend, validate=False)
     except FermError:
-        return f"ferm: {head}"
+        return f"ferm: {head}\n\n{_trailer_block()}"
+    counts = sum(
+        (count_changes(diff) for diff in plan.families.values()),
+        DeltaCounts(),
+    )
+    message = f"ferm: {head}: {delta_phrase(counts)}"
     body = _commit_body(plan)
-    return f"ferm: {head}\n\n{body}" if body else f"ferm: {head}"
+    if body:
+        message += f"\n\n{body}"
+    return f"{message}\n\n{_trailer_block()}"
 
 
 def _commit_history(

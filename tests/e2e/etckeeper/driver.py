@@ -142,7 +142,7 @@ def main() -> int:
     # State A: a committed apply the kernel holds.
     _apply(_CONFIG_A, expect_port="22", drop_port="8080")
     log_a = _etckeeper_vcs("log", "--oneline", "--", "ferm")
-    if "ferm: applied" not in log_a:
+    if "ferm: apply" not in log_a:
         _fail(
             "no semantic apply commit recorded",
             subprocess.CompletedProcess(["log"], 0, log_a, ""),
@@ -156,7 +156,7 @@ def main() -> int:
 
     # rollback --list shows the config history (read-only).
     listing = _ferm("rollback", "--list")
-    if listing.returncode != 0 or "ferm: applied" not in listing.stdout:
+    if listing.returncode != 0 or "ferm: apply" not in listing.stdout:
         _fail("rollback --list did not show history", listing)
 
     # rollback --to A reverts /etc/ferm and re-applies (kernel back to 22).
@@ -170,7 +170,7 @@ def main() -> int:
         sys.stdout.write(ruleset)
         _fail("kernel not re-applied to state A after rollback", rolled)
     log_after = _etckeeper_vcs("log", "--oneline", "--", "ferm")
-    if "rolled back to" not in log_after:
+    if "roll back" not in log_after:
         _fail(
             "rollback re-apply not recorded as a commit",
             subprocess.CompletedProcess(["log"], 0, log_after, ""),

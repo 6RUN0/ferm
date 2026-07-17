@@ -164,9 +164,10 @@ def _apply_config(
     Parse and apply ``config`` with the streams already set up.
 
     Shared by the normal apply path (:func:`_run`) and the rollback re-apply
-    (:func:`_rollback_main`).  ``subject`` overrides the etckeeper commit
-    subject -- the rollback path passes ``rolled back to <sha>`` so the history
-    records the revert rather than a plain ``applied``.
+    (:func:`_rollback_main`).  ``subject`` overrides the etckeeper
+    commit-subject head -- the rollback path passes ``roll back <config>
+    to <sha>`` so the history records the revert rather than a plain
+    ``apply``.
     """
     filename = config
     io = _make_io(options, lines_stream)

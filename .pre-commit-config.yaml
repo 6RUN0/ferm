@@ -9,9 +9,10 @@ default_install_hook_types: [pre-commit, commit-msg, pre-push]
 # reference/ is the frozen Perl oracle (upstream ferm plus its golden
 # files), tests/golden/expected/ holds byte-exact captures of the
 # oracle's stderr (trailing whitespace is significant) and
-# tests/corpus/configs/ carries third-party wild configs verbatim: no
-# hook may rewrite, lint, or spell-check them.
-exclude: ^(reference/|tests/golden/expected/|tests/corpus/configs/)
+# tests/corpus/configs/ carries third-party wild configs verbatim
+# and docs/man/ holds generated troff that must stay byte-exact for
+# the freshness gate: no hook may rewrite, lint, or spell-check them.
+exclude: ^(reference/|tests/golden/expected/|tests/corpus/configs/|docs/man/)
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -167,6 +168,12 @@ repos:
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
         args: ["lock", "--check"]
+
+      - id: shellcheck-completions
+        name: shellcheck (generated bash completions)
+        entry: shellcheck
+        language: system
+        files: ^packaging/completions/.*\.bash$
 
       # Fast gate at push time: the unit+golden suite against the port
       # (parallel under xdist, ~14s).  Stops a red push before it reaches

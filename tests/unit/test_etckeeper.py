@@ -101,10 +101,8 @@ def test_commit_success_verb_led_argv(
 ) -> None:
     recorder = _Recorder([_ok()])
     _patch(monkeypatch, recorder)
-    etckeeper.commit("ferm: applied ferm.conf")
-    assert recorder.calls == [
-        ["etckeeper", "commit", "ferm: applied ferm.conf"]
-    ]
+    etckeeper.commit("ferm: apply ferm.conf")
+    assert recorder.calls == [["etckeeper", "commit", "ferm: apply ferm.conf"]]
 
 
 def test_commit_nonzero_warns_without_raising(
@@ -185,17 +183,33 @@ def test_repo_relative_subpath_at_repo_root_rejected(
 def test_list_history_argv_read_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorder = _Recorder([_ok(stdout="abc fix\n")])
+    recorder = _Recorder([_ok(stdout="abc  2026-07-17 10:00  fix\n")])
     _patch(monkeypatch, recorder)
-    assert etckeeper.list_history("ferm") == "abc fix\n"
+    assert etckeeper.list_history("ferm") == ("abc  2026-07-17 10:00  fix\n")
     assert recorder.calls[0] == [
         "etckeeper",
         "vcs",
         "log",
-        "--oneline",
+        "--date=format:%Y-%m-%d %H:%M",
+        "--format=%h  %ad  %s",
         "--",
         "ferm",
     ]
+
+
+def test_list_history_limit_becomes_git_n(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder([_ok()])
+    _patch(monkeypatch, recorder)
+    etckeeper.list_history("ferm", limit=5)
+    argv = recorder.calls[0]
+    assert argv[2:5] == [
+        "log",
+        "--date=format:%Y-%m-%d %H:%M",
+        "--format=%h  %ad  %s",
+    ]
+    assert argv[5:7] == ["-n", "5"]
 
 
 def test_list_history_failure_raises(

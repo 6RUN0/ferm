@@ -45,7 +45,10 @@ from .readback import canonicalize_nft_rule as canonicalize_nft_rule
 from .readback import parse_nft_list as parse_nft_list
 from .readback import parse_nft_script as parse_nft_script
 from .readback import parse_save as parse_save
+from .render import DeltaCounts as DeltaCounts
 from .render import _diff_blob as _diff_blob
+from .render import count_changes as count_changes
+from .render import delta_phrase as delta_phrase
 from .render import render_plan as render_plan
 from .render import render_structured as render_structured
 from .render import render_unified as render_unified

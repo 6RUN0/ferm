@@ -41,6 +41,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, TextIO
 
+from .cli_doc import render_import_ferm_usage
 from .errors import ExitCode, FermError, internal_error
 from .modules import (
     MATCH_DEFS,
@@ -116,12 +117,7 @@ _POLICY_RE: Final[re.Pattern[str]] = re.compile(r":(\S+)\s+(\w+)\s+", re.ASCII)
 _RULE_RE: Final[re.Pattern[str]] = re.compile(r"-A (\S+)\s+", re.ASCII)
 _COMMIT_RE: Final[re.Pattern[str]] = re.compile(r"COMMIT", re.ASCII)
 
-_USAGE: Final[str] = (
-    "Usage:\n"
-    "    import-ferm > ferm.conf\n"
-    "    iptables-save | import-ferm > ferm.conf\n"
-    "    import-ferm inputfile > ferm.conf\n"
-)
+_USAGE: Final[str] = render_import_ferm_usage()
 
 
 @dataclass

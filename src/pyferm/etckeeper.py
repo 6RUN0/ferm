@@ -194,14 +194,24 @@ def repo_relative_subpath(
 
 
 def list_history(
-    config_subpath: str, *, runner: CommandRunner | None = None
+    config_subpath: str,
+    *,
+    limit: int | None = None,
+    runner: CommandRunner | None = None,
 ) -> str:
-    """Return ``git log --oneline`` scoped to the ferm config (read-only)."""
-    completed = _vcs(
-        ["log", "--oneline", "--", config_subpath],
-        action="log",
-        runner=runner,
-    )
+    """
+    Return the config's dated one-line history (read-only).
+
+    ``git log`` with an explicit format -- abbreviated sha, commit date
+    in the admin's local time, subject -- because the operator picks
+    rollback targets from this listing.  ``limit`` caps the number of
+    entries (``git log -n``); validation (>= 1) is the CLI's job.
+    """
+    args = ["log", "--date=format:%Y-%m-%d %H:%M", "--format=%h  %ad  %s"]
+    if limit is not None:
+        args += ["-n", str(limit)]
+    args += ["--", config_subpath]
+    completed = _vcs(args, action="log", runner=runner)
     return _stdout_or_raise(completed, "log")
 
 

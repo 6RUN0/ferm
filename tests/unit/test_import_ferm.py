@@ -1293,3 +1293,12 @@ def test_parse_def_option_multi_arg_shortage_names_option() -> None:
             negated=False,
             tokens=[],
         )
+
+
+def test_usage_renders_from_cli_doc_verbatim() -> None:
+    assert _USAGE == (
+        "Usage:\n"
+        "    import-ferm > ferm.conf\n"
+        "    iptables-save | import-ferm > ferm.conf\n"
+        "    import-ferm inputfile > ferm.conf\n"
+    )

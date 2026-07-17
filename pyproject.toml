@@ -279,6 +279,17 @@ reportPrivateUsage = "none"
 reportUnusedFunction = "none"
 reportUnusedClass = "none"
 
+# tools/ are dev-only generators (man/completion) that deliberately
+# import the private parser builders -- the same seam the unit gates
+# walk -- and iterate untyped argparse action internals; the committed
+# outputs are guarded by freshness gates, not by strict typing here.
+[[tool.pyright.executionEnvironments]]
+root = "tools"
+reportPrivateUsage = "none"
+reportUnknownVariableType = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+
 # Tests stay strict except for patterns that are the point of a test:
 # importing the private unit under test, loose lambda stubs (whose
 # completeness mypy --strict still checks), and autouse fixtures that
@@ -375,6 +386,7 @@ source_modules = [
   "pyferm.functions",
   "pyferm.parser",
   "pyferm.import_ferm",
+  "pyferm.cli_doc",
 ]
 forbidden_modules = ["pyferm.backend"]
 
@@ -388,6 +400,7 @@ name = "bottom-up layering"
 type = "layers"
 layers = [
   "pyferm.cli | pyferm.import_ferm",
+  "pyferm.cli_doc",
   "pyferm.backend",
   "pyferm.parser",
   "pyferm.functions",
@@ -486,6 +499,9 @@ extend_exclude = [
   "mutants",
   "fuzz",
   "packaging/dns_gate",
+  # tools/ are dev-only generators (man/completion): they import the
+  # dev-group jinja2 and first-party pyferm by design.
+  "tools",
 ]
 
 [tool.vulture]
@@ -518,7 +534,11 @@ pytest_add_cli_args_test_selection = ["tests/unit"]
 pytest_add_cli_args = ["-p", "no:randomly", "-p", "no:unraisableexception"]
 
 [dependency-groups]
-dev = ["nox>=2026.4.10", "pre-commit>=4.6.0"]
+dev = [
+    "jinja2>=3.1.6",
+    "nox>=2026.4.10",
+    "pre-commit>=4.6.0",
+]
 lint = [
   "actionlint-py>=1.7.12.24",
   "bandit[toml]>=1.9.4",

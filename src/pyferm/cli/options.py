@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING, Final
 
 from .. import __version__
+from ..cli_doc import render_help
 from ..config import Options, PlanFormat
 from ..errors import FermError
 from ..tokenizer import tokenize_string
@@ -23,38 +24,11 @@ if TYPE_CHECKING:
     from ..functions import Evaluator
 
 
-# The pod2usage(-verbose => 1) rendering of the POD SYNOPSIS/OPTIONS
-# (reference/src/ferm __END__ section), captured verbatim from
-# ``perl reference/src/ferm --help``.  Perl prints it to stdout for both
-# ``--help`` (exit 0) and the wrong-argument-count path (exit 1):
-# pod2usage writes to STDOUT whenever the exit status is below 2.
-HELP_TEXT: Final[str] = """\
-Usage:
-    ferm options inputfiles
-
-Options:
-     -n, --noexec      Do not execute the rules, just simulate
-     -F, --flush       Flush all netfilter tables managed by ferm
-     -l, --lines       Show all rules that were created
-     -i, --interactive Interactive mode: revert if user does not confirm
-     -t, --timeout s   Define interactive mode timeout in seconds
-     --remote          Remote mode; ignore host specific configuration.
-                       This implies --noexec and --lines.
-     -V, --version     Show current version number
-     -h, --help        Look at this text
-     --slow            Slow mode, don't use iptables-restore
-     --shell           Generate a shell script which calls iptables-restore
-     --domain {ip|ip6} Handle only the specified domain
-     --def '$name=v'   Override a variable
-     --lint            Static-analysis mode: report warnings, apply nothing
-     --lint-strict     With --lint: exit non-zero if any warning is found
-     --lint-fail-level Set the --lint gating threshold (error|warning|info)
-     --list-modules    List supported netfilter modules and keywords
-     --describe NAME   Show the options of one module, option or keyword
-     --graph           Print the chain control-flow graph (d2 or DOT)
-     --graph-format F  Graph renderer: dot or d2 (default d2)
-
-"""
+#: Assembled from the cli_doc table at import time, so a new option
+#: cannot be forgotten here -- name drift is structurally impossible.
+#: Divergence from the Perl help is cosmetic: byte parity covers the
+#: emitted rules, not the banner.
+HELP_TEXT: Final[str] = render_help()
 
 _TIMEOUT_RE: Final[re.Pattern[str]] = re.compile(r"^[+-]?\d+$")
 # re.ASCII: --def specs arrive as latin-1 byte views, and Perl matches
