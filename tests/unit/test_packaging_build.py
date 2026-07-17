@@ -438,3 +438,39 @@ def test_rpm_spec_post_honors_marker_and_probes_sysv() -> None:
     assert re.search(r'\[ -e "\$MARKER" \]', post)
     assert re.search(_SYSV_PROBE, post)
     assert re.search(r'rm -f "\$MARKER"', post)
+
+
+def test_remove_stale_artifacts_clears_only_its_channel(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # hatch-vcs bumps the dev version on every commit, so a rebuild into the
+    # same dist would trip the exactly-one artifact gate unless the build
+    # clears its own channel first; other channels' artifacts must survive.
+    build = _load_build()
+    stale_deb = tmp_path / "pyferm_0.1.0~a9~dev2_all.deb"
+    other_rpm = tmp_path / "pyferm-0.1.0~a9~dev8-1.fc43.noarch.rpm"
+    sdist = tmp_path / "ferm-0.1.0a9.dev8+g22ce581.tar.gz"
+    for artifact in (stale_deb, other_rpm, sdist):
+        artifact.touch()
+    build._remove_stale_artifacts(tmp_path, "pyferm_*.deb")
+    assert not stale_deb.exists()
+    assert other_rpm.exists()
+    assert sdist.exists()
+    assert stale_deb.name in capsys.readouterr().err
+
+
+def test_remove_stale_artifacts_covers_apk_subpackage(tmp_path: Path) -> None:
+    # The apk channel ships a bash-completion subpackage under the same
+    # pyferm- prefix; the pre-clean glob must take both, or the exactly
+    # one-plus-one apk gate trips on the leftover subpackage.
+    build = _load_build()
+    main_apk = tmp_path / "pyferm-0.1.0_alpha9_pre2-r0.apk"
+    completion_apk = (
+        tmp_path / "pyferm-bash-completion-0.1.0_alpha9_pre2-r0.apk"
+    )
+    for artifact in (main_apk, completion_apk):
+        artifact.touch()
+    build._remove_stale_artifacts(tmp_path, "pyferm-*.apk")
+    assert not main_apk.exists()
+    assert not completion_apk.exists()

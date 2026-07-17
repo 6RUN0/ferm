@@ -1004,6 +1004,19 @@ def _deb_container_script(uid: int, gid: int) -> str:
     )
 
 
+def _remove_stale_artifacts(out: Path, pattern: str) -> None:
+    """
+    Drop prior-generation artifacts of one channel from the out dir.
+
+    hatch-vcs bumps the dev version on every commit, so rebuilding into the
+    same out dir would otherwise always trip the exactly-one artifact gate
+    that anchors the smoke sessions.
+    """
+    for stale in sorted(out.glob(pattern)):
+        print(f"removing stale artifact {stale.name}", file=sys.stderr)
+        stale.unlink()
+
+
 def _action_build_deb(args: argparse.Namespace) -> int:
     """
     Build the native ``.deb`` in the pinned debian image; gate it.
@@ -1020,6 +1033,7 @@ def _action_build_deb(args: argparse.Namespace) -> int:
     tag_ver = _tag_version(_sanitize_deb)
     tree = _deb_source_tree(args.mode, args.tag)
     args.out.mkdir(parents=True, exist_ok=True)
+    _remove_stale_artifacts(args.out, "pyferm_*.deb")
     # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
     # not a bind mount, so the artifact would never reach the host dir.
     out = args.out.resolve()
@@ -1418,6 +1432,7 @@ def _action_build_rpm(args: argparse.Namespace) -> int:
     tree = _rpm_source_tree(args.mode, args.tag)
     sources = _rpm_sources_dir(tree, version_rpm)
     args.out.mkdir(parents=True, exist_ok=True)
+    _remove_stale_artifacts(args.out, "pyferm-*.rpm")
     # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
     # not a bind mount, so the artifact would never reach the host dir.
     out = args.out.resolve()
@@ -1674,6 +1689,7 @@ def _action_build_apk(args: argparse.Namespace) -> int:
     tree = _apk_source_tree(args.mode, args.tag)
     sources = _apk_sources_dir(tree, version_apk)
     args.out.mkdir(parents=True, exist_ok=True)
+    _remove_stale_artifacts(args.out, "pyferm-*.apk")
     # Absolute path: ``docker -v`` treats a relative path as a NAMED VOLUME,
     # not a bind mount, so the artifact would never reach the host dir.
     out = args.out.resolve()
