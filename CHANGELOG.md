@@ -11,6 +11,30 @@ For the history of the original Perl implementation, see
 
 ## [Unreleased]
 
+### Added
+
+- `ferm(1)` and `import-ferm(1)` man pages, generated from POD templates
+  and shipped in the deb/rpm/apk packages.
+- Bash completion for `ferm` and `import-ferm`, generated from the
+  option-documentation table and shipped in all three packages (apk: the
+  `pyferm-bash-completion` subpackage).
+- `ferm rollback --diff [SHA]`: read-only revision diff on stdout, and
+  `-n/--limit N` for `--list`.
+- `--describe` suggests close names on a typo (`did you mean: ...`).
+- Forensic `Ferm-Version:` / `Ferm-Command:` git trailers in every
+  etckeeper history commit.
+
+### Changed
+
+- etckeeper commit subjects are self-contained summaries: an imperative
+  verb plus a counted delta (`ferm: apply ferm.conf (ip ip6, nft):
+  +12/-3 rules, 1 policy`; `no changes` when the delta is empty).
+- `ferm rollback --list` prints dated history entries and marks the
+  first line ` (current)`.
+- `ferm --help` is rendered from a single option-documentation table
+  and now lists every option (`--noflush`, `--nft`, `--plan`, ... were
+  missing) plus the `rollback` subcommand.
+
 ## [0.1.0a8] - 2026-07-13
 
 ### Added

@@ -154,9 +154,10 @@ here so they are not lost.
 - *GPG / Sigstore signing with maintainer keys* — build-provenance
   attestation (SLSA via GitHub Actions) already ships in Phase 3; keyring
   signing is a separate, deferred step.
-- *man page from POD* — the POD source exists only for the Perl version;
-  the `.deb`'s unit points `Documentation=man:ferm(1)` forward to a man page
-  not yet generated for the port.
+- *man page from POD* — **done**: `ferm(1)`/`import-ferm(1)` are
+  generated from POD templates (OPTIONS from the `cli_doc` table) and
+  shipped in the deb/rpm/apk packages; the unit's
+  `Documentation=man:ferm(1)` now resolves.
 - *Own apt repository* (reprepro/aptly) — the `.deb` ships as a GitHub
   Release asset; a signed apt repo is a separate distribution-lifecycle step.
 
@@ -504,8 +505,9 @@ scoped (YAGNI at the time, still on the table):
   deprecation through `DEPRECATED_KEYWORDS` so the `deprecated-keyword`
   analyzer covers it (today it is inlined in the parser).
 - **Introspection:** `--format=json`; one-line prose for modules (POD
-  extraction or hand-written); a dedicated `--list-keywords` flag;
-  shell completion generated from the registries.
+  extraction or hand-written); a dedicated `--list-keywords` flag.
+  Shell completion (bash) is **done**, generated from the option table;
+  zsh/fish remain open.
 
 ### Phase 8 — Ecosystem & alternative front end
 

@@ -282,6 +282,10 @@ Be careful not to lock yourself out of a remote machine — use the
 interactive mode (`--interactive`, `-i`) often. It installs the new
 ruleset, then rolls back to the previous one unless you confirm in time.
 
+The full reference is available as man pages — `man ferm`,
+`man import-ferm` — and both commands ship bash completion (installed
+by the native packages).
+
 ### Reviewing changes before applying (`--plan`)
 
 `ferm --plan` computes the ruleset and reports what would change against
@@ -317,6 +321,12 @@ ferm rollback
 
 # Roll back to an exact revision:
 ferm rollback --to <sha>
+
+# Preview a revision without applying anything:
+sudo ferm rollback --diff            # against the previous revision
+sudo ferm rollback --diff <sha>      # against an exact revision
+# Show the last five entries only:
+sudo ferm rollback --list -n 5
 ```
 
 Notes and boundaries:
