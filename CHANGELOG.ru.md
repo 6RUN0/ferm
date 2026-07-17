@@ -58,6 +58,13 @@
 
 ### Исправлено
 
+- `--nft` отказывает на `opcode 0` вместо эмиссии `arp operation 0`:
+  arptables трактует `--opcode 0` как wildcard (проверено живьём —
+  arptables-nft вообще не ставит operation-матч), так что прежняя
+  эмиссия инвертировала семантику в «не матчить ничего».
+- ebtables-путь отказывает на `domain eb table raw`/`mangle` чистой
+  ошибкой (`ebtables has no table 'raw'`) вместо падения с
+  `KeyError`-трейсбеком; Perl-оракул на этих таблицах тоже умирает.
 - `--nft` больше не эмитит типы чейнов, которые bridge-семейство
   отвергает: чейны `eb nat` объявлялись как `type nat` (а `eb mangle
   OUTPUT` — `type route`), что проходило `--lines`, но всегда падало

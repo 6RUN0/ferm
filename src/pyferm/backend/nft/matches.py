@@ -1334,6 +1334,15 @@ def _translate_match_parts(
         return (f"meta length {_op(neg)}{scalar}", None, None)
     if name == "opcode":
         if _is_ascii_uint(scalar):
+            if int(scalar) == 0:
+                # arptables treats --opcode 0 as a wildcard (verified
+                # live: arptables-nft installs NO operation match), so
+                # `arp operation 0` would invert the semantics into
+                # match-nothing.  Refuse rather than guess.
+                raise FermError(
+                    "arp opcode 0 is an arptables wildcard, "
+                    "not a match, for nft backend"
+                )
             operation = _ARP_OPERATION_BY_NUMBER.get(int(scalar), scalar)
             return (f"arp operation {_op(neg)}{operation}", None, None)
         # The ASCII gate mirrors arptables' strcasecmp: a bare

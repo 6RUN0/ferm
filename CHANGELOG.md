@@ -56,6 +56,13 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- `--nft` refuses `opcode 0` instead of emitting `arp operation 0`:
+  arptables treats `--opcode 0` as a wildcard (verified live —
+  arptables-nft installs no operation match at all), so the old
+  emission inverted the semantics into match-nothing.
+- The ebtables path refuses `domain eb table raw`/`mangle` with a clean
+  error (`ebtables has no table 'raw'`) instead of crashing with a
+  `KeyError` traceback; the Perl oracle dies on these tables too.
 - `--nft` no longer emits chain types the bridge family rejects: `eb
   nat` chains were declared `type nat` (and `eb mangle OUTPUT` `type
   route`), which passed `--lines` but always failed the `nft -c`

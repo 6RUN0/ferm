@@ -600,6 +600,12 @@ class IptablesBackend(Backend):
         ebt_current: dict[str, IO[bytes]] = {}
 
         if domain == "eb":
+            # The oracle only knows filter/nat/broute and dies on anything
+            # else (``:2940``); refuse cleanly before opening the atomic
+            # frames instead of a KeyError at the frame lookup below.
+            for table in domain_info.tables:
+                if table not in EB_TABLES:
+                    raise FermError(f"ebtables has no table '{table}'")
             _ebt_open_frames(domain_cmd, ebt_current, commands)
 
         for table, table_info in domain_info.tables.items():

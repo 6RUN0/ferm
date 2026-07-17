@@ -366,6 +366,21 @@ def test_render_slow_eb_atomic_framing_is_unguarded() -> None:
         assert len(rendered.resources) == 3
 
 
+@pytest.mark.parametrize("table", ["raw", "mangle"])
+def test_render_slow_eb_unknown_table_refuses(table: str) -> None:
+    # eb raw/mangle are dead constructs on the ebtables path: the oracle
+    # dies on them as well (``:2940``), so the port refuses cleanly
+    # instead of crashing with a KeyError at the atomic-frame lookup.
+    domain_info = DomainInfo(
+        tools={"tables": "ebtables"},
+        tables={table: TableInfo(chains={})},
+    )
+    with pytest.raises(
+        FermError, match=rf"\Aebtables has no table '{table}'\Z"
+    ):
+        IptablesBackend().render(Family.EB, domain_info, _SLOW)
+
+
 _PREVIOUS = (
     "*filter\n"
     ":INPUT ACCEPT [0:0]\n"

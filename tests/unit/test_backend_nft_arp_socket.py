@@ -96,6 +96,18 @@ def test_named_opcode_negation() -> None:
     )
 
 
+@pytest.mark.parametrize("zero", ["0", "00"])
+def test_opcode_zero_refuses(zero: str) -> None:
+    # arptables --opcode 0 is a wildcard (live arptables-nft installs NO
+    # operation match), so `arp operation 0` would invert it into
+    # match-nothing; negated it is equally unexpressable.
+    message = r"\Aarp opcode 0 is an arptables wildcard, not a match, "
+    with pytest.raises(FermError, match=message):
+        translate_match(Family.ARP, _opt("opcode", zero), None)
+    with pytest.raises(FermError, match=message):
+        translate_match(Family.ARP, _opt("opcode", Negated(zero)), None)
+
+
 @pytest.mark.parametrize(
     "bad",
     [
