@@ -141,6 +141,21 @@ def test_describe_unknown_raises(name: str) -> None:
         describe(name)
 
 
+def test_describe_unknown_suggests_close_names() -> None:
+    with pytest.raises(FermError) as exc:
+        describe("dprt")
+    message = str(exc.value)
+    assert message.startswith("ferm --describe: unknown name 'dprt'")
+    assert "did you mean:" in message
+    assert "dport" in message
+
+
+def test_describe_unknown_far_name_has_no_hint() -> None:
+    with pytest.raises(FermError) as exc:
+        describe("qqqqzzzz")
+    assert "did you mean" not in str(exc.value)
+
+
 def test_list_modules_sections_and_width() -> None:
     text = list_modules()
     for header in (

@@ -19,6 +19,7 @@ Read-only: never touches the kernel, the eval path or any config file.
 
 from __future__ import annotations
 
+import difflib
 import enum
 from dataclasses import dataclass
 from typing import Final, NamedTuple
@@ -501,12 +502,39 @@ def _option_fallback_blocks(name: str) -> list[str]:
     return blocks
 
 
+def _known_names() -> set[str]:
+    """
+    Every name ``describe`` can hit -- the did-you-mean pool.
+
+    Module registries across all families -- module names AND their
+    option keywords, because ``describe`` also resolves bare option
+    names through the module-scan fallback (e.g. ``saddr``) -- plus
+    builtins, per-family shortcuts and deprecated keywords; narrowing
+    the pool below the search space would deny hints to describable
+    names.  The implicit ``""`` module is excluded (not a suggestible
+    name).
+    """
+    names: set[str] = set()
+    for _kind, registry in _REGISTRIES:
+        for family in _FAMILY_ORDER:
+            for module_name, module in registry.get(family, {}).items():
+                if module_name:
+                    names.add(module_name)
+                names.update(module.keywords)
+    names.update(BUILTINS)
+    for shortcuts in SHORTCUTS.values():
+        names.update(shortcuts)
+    names.update(DEPRECATED_KEYWORDS)
+    return names
+
+
 def describe(name: str) -> str:
     """
     Render every hit for ``name``, blocks separated by blank lines.
 
     Raises :class:`FermError` when nothing matches (exit 1 via main's
-    standard error contract).
+    standard error contract); unknown names carry close-match
+    suggestions drawn from every namespace the lookup searched.
     """
     blocks: list[str] = []
     if name:  # the implicit "" module is reachable via options only
@@ -531,7 +559,11 @@ def describe(name: str) -> str:
     if not blocks:
         blocks = _option_fallback_blocks(name)
     if not blocks:
-        raise FermError(f"ferm --describe: unknown name '{name}'")
+        hint = ""
+        matches = difflib.get_close_matches(name, sorted(_known_names()))
+        if matches:
+            hint = f"; did you mean: {', '.join(matches)}?"
+        raise FermError(f"ferm --describe: unknown name '{name}'{hint}")
     return "\n\n".join(blocks) + "\n"
 
 
