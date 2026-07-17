@@ -539,6 +539,8 @@ def test_choose_input_source_routes_tty_options_and_files() -> None:
     assert _choose_input_source([], stdin_is_tty=False) == "files"
     assert _choose_input_source(["-x"], stdin_is_tty=True) == "usage"
     assert _choose_input_source(["dump"], stdin_is_tty=True) == "files"
+    # a bare "-" is an input (stdin via <>), not an option-like argument
+    assert _choose_input_source(["-"], stdin_is_tty=True) == "files"
 
 
 _TTY_SAVE = ["*filter", ":INPUT DROP [0:0]", "COMMIT"]
@@ -1162,6 +1164,26 @@ def test_gather_input_reconfigures_and_reads_stdin(
     fake = _RecordingStdin(["*filter\n", "COMMIT\n"])
     monkeypatch.setattr(sys, "stdin", fake)
     assert _gather_input([]) == ["*filter\n", "COMMIT\n"]
+    assert fake.reconfigured is True
+
+
+def test_gather_input_dash_reads_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Perl's <> treats a bare "-" as stdin, not as a file named "-",
+    # and it composes with real files in argument order.
+    import sys
+
+    fake = _RecordingStdin(["*filter\n", "COMMIT\n"])
+    monkeypatch.setattr(sys, "stdin", fake)
+    good = tmp_path / "good.save"
+    good.write_text("*nat\nCOMMIT\n", encoding="latin-1")
+    assert _gather_input(["-", str(good)]) == [
+        "*filter\n",
+        "COMMIT\n",
+        "*nat",
+        "COMMIT",
+    ]
     assert fake.reconfigured is True
 
 

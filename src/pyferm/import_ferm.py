@@ -796,13 +796,18 @@ def _gather_input(files: list[str]) -> list[str]:
 
     Perl reads the inputs through the ``<>`` operator: an unopenable
     file yields a ``Can't open ...`` warning on stderr and the run
-    continues with the remaining files.
+    continues with the remaining files, and a bare ``-`` names stdin
+    rather than a file called ``-``.
     """
     if not files:
         reconfigure_latin1(sys.stdin)
         return list(sys.stdin)
     lines: list[str] = []
     for name in files:
+        if name == "-":
+            reconfigure_latin1(sys.stdin)
+            lines.extend(sys.stdin)
+            continue
         try:
             text = Path(name).read_text(encoding=BYTE_ENCODING)
         except OSError as exc:

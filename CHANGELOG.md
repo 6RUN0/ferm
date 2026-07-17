@@ -50,6 +50,9 @@ For the history of the original Perl implementation, see
 - The `ferm rollback --diff` error for a non-SHA value now explains how
   to combine a bare `--diff` with a non-default config path
   (`ferm rollback CONFIG --diff` or `--diff= CONFIG`).
+- `import-ferm`: a bare `-` argument now reads stdin, matching Perl's
+  `<>` operator (it used to be opened as a literal file named `-` and
+  warned `Can't open -`).
 
 ## [0.1.0a8] - 2026-07-13
 

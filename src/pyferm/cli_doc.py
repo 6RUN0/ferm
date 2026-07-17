@@ -492,9 +492,10 @@ IMPORT_FERM_OPTIONS: Final[tuple[OptionDoc, ...]] = (
         dest="files",
         summary="iptables-save dump(s) to import",
         pod=(
-            "One or more iptables-save(8) dumps to import.  Without "
-            "arguments B<import-ferm> reads a dump from stdin, or "
-            "runs F<iptables-save> itself when stdin is a terminal."
+            "One or more iptables-save(8) dumps to import; a bare "
+            "C<-> reads stdin.  Without arguments B<import-ferm> "
+            "reads a dump from stdin, or runs F<iptables-save> "
+            "itself when stdin is a terminal."
         ),
         positional=True,
     ),
