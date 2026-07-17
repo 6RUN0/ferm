@@ -154,8 +154,9 @@ def man(session: nox.Session) -> None:
     """
     Regenerate the committed man pages from the POD templates; lint.
 
-    Renders ``docs/templates/*.pod.j2`` -> ``docs/*.pod`` (gitignored)
-    -> ``docs/man/*.1`` (committed) with pinned pod2man date/release,
+    Renders ``docs/templates/*.pod.j2`` -> ``docs/man/*.pod`` (committed
+    freshness anchors) -> ``docs/man/*.1`` (committed) with pinned
+    pod2man date/release,
     then lints the result: podchecker (POD syntax), lexgrog (NAME
     parsability -- what lintian/rpmlint red-flag) and
     ``groff -man -ww -z`` (troff warnings).  Absent linters are
@@ -164,7 +165,7 @@ def man(session: nox.Session) -> None:
     if shutil.which("pod2man") is None:
         session.skip("pod2man not found -- install perl")
     _uv(session, "python", "tools/gen_man.py")
-    pods = ("docs/ferm.pod", "docs/import-ferm.pod")
+    pods = ("docs/man/ferm.pod", "docs/man/import-ferm.pod")
     pages = ("docs/man/ferm.1", "docs/man/import-ferm.1")
     if shutil.which("podchecker") is not None:
         session.run("podchecker", *pods, external=True)

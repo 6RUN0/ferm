@@ -11,6 +11,8 @@ any drift.  ``import-ferm`` has no parser and stays outside by design.
 from __future__ import annotations
 
 import argparse
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -94,3 +96,46 @@ def test_summaries_are_argparse_safe() -> None:
     for table in (cli_doc.FERM_OPTIONS, cli_doc.ROLLBACK_OPTIONS):
         for opt in table:
             assert "%" not in opt.summary, opt.dest
+
+
+# --- man ROLLBACK prose vs the real rollback grammar -----------------------
+
+_FERM_POD_TEMPLATE = (
+    Path(__file__).resolve().parents[2] / "docs" / "templates" / "ferm.pod.j2"
+)
+
+
+def _rollback_section() -> str:
+    """Slice the (static, jinja-free) ROLLBACK prose out of the template."""
+    text = _FERM_POD_TEMPLATE.read_text(encoding="utf-8")
+    _, _, tail = text.partition("=head1 ROLLBACK")
+    section, _, _ = tail.partition("=head1")
+    assert section.strip(), "ferm.pod.j2 lost its ROLLBACK section"
+    return section
+
+
+def test_man_rollback_synopsis_matches_help() -> None:
+    # The man SYNOPSIS must carry the exact grammar line --help renders
+    # (modulo the B<>/I<> POD markup); a form added or renamed on one
+    # side only is drift.
+    text = _FERM_POD_TEMPLATE.read_text(encoding="utf-8")
+    lines = [
+        re.sub(r"[BI]<([^<>]*)>", r"\1", line)
+        for line in text.splitlines()
+        if "rollback [" in line
+    ]
+    assert cli_doc.ROLLBACK_SYNOPSIS in lines
+
+
+def test_man_rollback_prose_names_only_real_options() -> None:
+    # The ROLLBACK section is hand-written prose (no generated flag
+    # table), so a renamed/removed option could linger there unnoticed:
+    # every B<-...> token it names must be a live rollback spelling.
+    spellings = {
+        spelling
+        for opt in cli_doc.ROLLBACK_OPTIONS
+        for spelling in opt.spellings
+    }
+    named = set(re.findall(r"B<(-[^<>]*)>", _rollback_section()))
+    assert named, "the ROLLBACK prose stopped naming any option"
+    assert named <= spellings, named - spellings

@@ -1939,6 +1939,9 @@ def test_rollback_diff_swallows_no_paths(
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "ferm rollback --list" in err
+    # the hint must name both escapes for a non-default config
+    assert "name it first ('ferm rollback CONFIG --diff')" in err
+    assert "or use '--diff= CONFIG'" in err
 
 
 def test_rollback_diff_conflicts_with_to() -> None:
@@ -2003,6 +2006,99 @@ def test_rollback_bare_confirmed_rolls_back(
     assert _rollback_main([]) == 0
     assert rollback_spy.calls == [("prev1234", "ferm")]
     assert apply_spy.calls[0][2] == "roll back ferm.conf to prev1234"
+
+
+def test_rollback_interactive_declined_restores_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A declined/timed-out post-apply confirm rolls the kernel back to
+    # the pre-rollback rules (_RolledBackExit): the reverted worktree
+    # must be put back too, or config and kernel disagree and the next
+    # rollback is blocked by the dirty-worktree guard.
+    from pyferm.cli import _rollback_main
+    from pyferm.cli import rollback as cli_rollback
+    from pyferm.cli.apply import _RolledBackExit
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch)
+
+    def _declined_apply(*_args: object, **_kwargs: object) -> int:
+        raise _RolledBackExit(1)
+
+    monkeypatch.setattr(cli_rollback, "_apply_config", _declined_apply)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "y\n", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--interactive"])
+    assert exc.value.code == 1
+    # the revert first, then the HEAD restore after the kernel rollback
+    assert rollback_spy.calls == [("prev1234", "ferm"), ("HEAD", "ferm")]
+    err = capsys.readouterr().err
+    assert err.endswith(
+        "Rollback of /etc/ferm/ferm.conf aborted; the config file was"
+        " restored to match the running rules.\n"
+    )
+
+
+def test_rollback_restore_failure_warns_without_masking_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A failing HEAD restore must not swallow the exit in flight: it
+    # warns (both the reason and the resulting state) and re-raises.
+    from pyferm.cli import _rollback_main
+    from pyferm.cli import rollback as cli_rollback
+    from pyferm.cli.apply import _RolledBackExit
+
+    _mock_rollback_seam(monkeypatch)
+    calls: list[tuple[str, str]] = []
+
+    def _flaky_rollback(sha: str, subpath: str) -> None:
+        calls.append((sha, subpath))
+        if sha == "HEAD":
+            raise FermError("checkout failed")
+
+    monkeypatch.setattr(etckeeper, "rollback", _flaky_rollback)
+
+    def _declined_apply(*_args: object, **_kwargs: object) -> int:
+        raise _RolledBackExit(1)
+
+    monkeypatch.setattr(cli_rollback, "_apply_config", _declined_apply)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdin, "readline", lambda: "y\n", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--interactive"])
+    assert exc.value.code == 1
+    assert calls == [("prev1234", "ferm"), ("HEAD", "ferm")]
+    err = capsys.readouterr().err
+    assert err.endswith(
+        "ferm: could not restore /etc/ferm/ferm.conf after the aborted"
+        " rollback: checkout failed\n"
+        "ferm: /etc/ferm/ferm.conf is left at the reverted revision,"
+        " uncommitted\n"
+    )
+
+
+def test_rollback_reapply_ferm_error_keeps_reverted_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A FermError from the re-apply (e.g. a resolver failure) is NOT a
+    # kernel rollback: the kernel state is not known to be pre-rollback,
+    # so no worktree restore happens (see _rollback_to's docstring).
+    from pyferm.cli import _rollback_main
+    from pyferm.cli import rollback as cli_rollback
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch)
+
+    def _failing_apply(*_args: object, **_kwargs: object) -> int:
+        raise FermError("unresolvable hostname")
+
+    monkeypatch.setattr(cli_rollback, "_apply_config", _failing_apply)
+    with pytest.raises(FermError, match="unresolvable hostname"):
+        _rollback_main(["--to", "deadbeef"])
+    assert rollback_spy.calls == [("deadbeef", "ferm")]  # no HEAD restore
 
 
 def test_rollback_bare_non_tty_refused(

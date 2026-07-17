@@ -53,10 +53,6 @@ class DeltaCounts:
             objects_changed=self.objects_changed + other.objects_changed,
         )
 
-    def has_changes(self) -> bool:
-        """Return ``True`` when any category is nonzero."""
-        return self != DeltaCounts()
-
 
 def count_changes(diff: PlanDiff) -> DeltaCounts:
     """Count one diff's changes per category (desuet+foreign fold)."""

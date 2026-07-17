@@ -1,12 +1,15 @@
 """
-Freshness gate: the committed docs/man/*.1 match a regeneration.
+Freshness gates: the committed docs/man artifacts match a regeneration.
 
-Regenerates the whole chain (jinja template -> pod -> pod2man) into a
-temp dir and diffs the troff, normalising the entire ``.TH`` line
-(release/date live there).  Skips: without pod2man (perl-skip), when
-the local Pod::Man version differs from the committed preamble (the
-preamble and troff idioms are version-dependent -- a cross-version
-diff is noise, not staleness) and without jinja2 (dev-only dep).
+Two layers.  The .pod gate is pure Python (jinja render, byte-stable
+across environments) and always runs -- CI catches a forgotten
+regeneration there.  The .1 gate regenerates the whole chain (jinja
+template -> pod -> pod2man) and diffs the troff, normalising the entire
+``.TH`` line (release/date live there); it skips without pod2man
+(perl-skip) and when the local Pod::Man version differs from the
+committed preamble (the preamble and troff idioms are
+version-dependent -- a cross-version diff is noise, not staleness), so
+it effectively runs on the regeneration box only.
 """
 
 from __future__ import annotations
@@ -20,9 +23,6 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("jinja2")
-
-if shutil.which("pod2man") is None:  # pragma: no cover -- env-dependent
-    pytest.skip("pod2man not found", allow_module_level=True)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _MAN_DIR = _ROOT / "docs" / "man"
@@ -65,6 +65,21 @@ def _normalise(text: str) -> str:
     )
 
 
+@pytest.mark.parametrize("pod", ["ferm.pod", "import-ferm.pod"])
+def test_committed_pod_is_fresh(pod: str, tmp_path: Path) -> None:
+    committed = _MAN_DIR / pod
+    assert committed.is_file(), "run `uv run nox -s man` first"
+    gen_man = _load_gen_man()
+    gen_man.render_pods(tmp_path)  # type: ignore[attr-defined]
+    regenerated = tmp_path / pod
+    assert regenerated.read_text(encoding="utf-8") == committed.read_text(
+        encoding="utf-8"
+    ), f"{pod} is stale: run `uv run nox -s man` and commit the result"
+
+
+@pytest.mark.skipif(
+    shutil.which("pod2man") is None, reason="pod2man not found"
+)
 @pytest.mark.parametrize("page", ["ferm.1", "import-ferm.1"])
 def test_committed_man_page_is_fresh(page: str, tmp_path: Path) -> None:
     committed = _MAN_DIR / page

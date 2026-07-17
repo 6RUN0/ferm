@@ -1,12 +1,15 @@
 """
-Render docs/templates/*.pod.j2 -> docs/*.pod -> docs/man/*.1.
+Render docs/templates/*.pod.j2 -> docs/man/*.pod -> docs/man/*.1.
 
-The intermediate .pod files are gitignored; the troff pages are
-committed and guarded by a freshness gate
-(tests/unit/test_man_pages.py).  pod2man's date/release/center are
-pinned so the output is byte-deterministic for a given Pod::Man
-version -- without the pins the date comes from the .pod mtime and the
-release from the local perl, both unstable across checkouts.
+Both stages are committed and guarded by freshness gates
+(tests/unit/test_man_pages.py).  The .pod render is pure Python and
+byte-stable across environments, so its gate always runs -- CI catches
+a forgotten regeneration there; the .1 gate needs the exact committed
+Pod::Man version and effectively runs on the regeneration box only.
+pod2man's date/release/center are pinned so the output is
+byte-deterministic for a given Pod::Man version -- without the pins
+the date comes from the .pod mtime and the release from the local
+perl, both unstable across checkouts.
 
 Lives outside src/ on purpose: a tool may import anything
 (import-linter does not check scripts) and jinja2 is a dev-only
@@ -65,8 +68,8 @@ def _base_release() -> str:
     return re.sub(r"(\.dev|\+).*$", "", __version__)
 
 
-def build(pod_dir: Path, man_dir: Path) -> list[Path]:
-    """Render both pages into the given dirs; return the .1 paths."""
+def render_pods(pod_dir: Path) -> list[Path]:
+    """Render the templates into ``pod_dir``; return the .pod paths."""
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(_TEMPLATES),
         undefined=jinja2.StrictUndefined,
@@ -80,12 +83,22 @@ def build(pod_dir: Path, man_dir: Path) -> list[Path]:
         lstrip_blocks=True,
     )
     pod_dir.mkdir(parents=True, exist_ok=True)
-    man_dir.mkdir(parents=True, exist_ok=True)
-    pages: list[Path] = []
-    for pod_name, (context, man_name) in _PAGES.items():
+    pods: list[Path] = []
+    for pod_name, (context, _man_name) in _PAGES.items():
         text = env.get_template(pod_name + ".j2").render(**context)
         pod = pod_dir / pod_name
         pod.write_text(text, encoding="utf-8")
+        pods.append(pod)
+    return pods
+
+
+def build(pod_dir: Path, man_dir: Path) -> list[Path]:
+    """Render both pages into the given dirs; return the .1 paths."""
+    render_pods(pod_dir)
+    man_dir.mkdir(parents=True, exist_ok=True)
+    pages: list[Path] = []
+    for pod_name, (_context, man_name) in _PAGES.items():
+        pod = pod_dir / pod_name
         page = man_dir / (pod_name.removesuffix(".pod") + ".1")
         subprocess.run(
             [
@@ -106,8 +119,9 @@ def build(pod_dir: Path, man_dir: Path) -> list[Path]:
 
 
 def main() -> int:
-    """Regenerate the committed pages in place."""
-    pages = build(_ROOT / "docs", _ROOT / "docs" / "man")
+    """Regenerate the committed pages (and .pod anchors) in place."""
+    man_dir = _ROOT / "docs" / "man"
+    pages = build(man_dir, man_dir)
     for page in pages:
         sys.stdout.write(f"generated {page.relative_to(_ROOT)}\n")
     return 0

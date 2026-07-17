@@ -18,7 +18,7 @@ from ..cli_doc import rollback_help
 from ..config import Options
 from ..errors import ExitCode, FermError
 from ..functions import splitpath_file
-from .apply import _apply_config
+from .apply import _apply_config, _RolledBackExit
 from .io import _shell_streams
 from .options import _require_interactive_tty
 
@@ -48,7 +48,8 @@ def _hex_sha(text: str) -> str:
         raise argparse.ArgumentTypeError(
             f"invalid SHA {text!r}: take the SHA from"
             " 'ferm rollback --list'; the config file is a separate"
-            " argument"
+            " argument -- name it first ('ferm rollback CONFIG --diff')"
+            " or use '--diff= CONFIG'"
         )
     return text
 
@@ -181,9 +182,10 @@ def _rollback_options(args: argparse.Namespace) -> Options:
     # --to) reach _apply_config -> _confirm_rules, and the bare form's
     # own tty check in _rollback_to only fires for its history
     # confirmation, not for the interactive-apply prompt further down --
-    # without this, a non-tty --interactive rollback checks out the reverted
-    # config and rolls back the kernel before failing, leaving the worktree
-    # on the old config while the kernel still runs the pre-rollback rules.
+    # without this, a non-tty --interactive rollback would revert the
+    # worktree and install the old rules only to fail the confirm read
+    # and immediately undo both (the kernel via _rollback_all, the
+    # worktree via _restore_worktree): pure churn on a live firewall.
     _require_interactive_tty(args.interactive)
     return Options(
         fast=not args.slow,
@@ -258,6 +260,15 @@ def _rollback_to(
     answer on a tty.  Both forms re-apply with the inherited options, the
     inherited ``--def`` overrides and a ``roll back <config> to <sha>``
     commit-subject head.
+
+    When the interactive re-apply is declined or times out, the kernel is
+    already back on the pre-rollback rules (:class:`_RolledBackExit`), so the
+    reverted worktree is restored too -- otherwise the config would sit on the
+    old revision, uncommitted, disagreeing with the kernel and blocking the
+    next rollback behind the dirty-worktree guard.  Other re-apply failures
+    (a :class:`FermError`, an exec-failure exit) leave the worktree reverted:
+    the kernel state is not known to be pre-rollback there, so a restore
+    could just as well introduce the divergence it means to prevent.
     """
     if etckeeper.working_tree_dirty(subpath):
         raise FermError(
@@ -280,11 +291,45 @@ def _rollback_to(
             return ExitCode.OK
 
     etckeeper.rollback(sha, subpath)
-    with _shell_streams(options) as lines_stream:
-        return _apply_config(
-            config,
-            options,
-            lines_stream,
-            defs=defs,
-            subject=f"roll back {splitpath_file(config)} to {sha}",
+    try:
+        with _shell_streams(options) as lines_stream:
+            return _apply_config(
+                config,
+                options,
+                lines_stream,
+                defs=defs,
+                subject=f"roll back {splitpath_file(config)} to {sha}",
+            )
+    except _RolledBackExit:
+        _restore_worktree(config, subpath)
+        raise
+
+
+#: What a failed re-apply restores the worktree to.  The dirty guard in
+#: :func:`_rollback_to` has already proven the worktree clean, so the
+#: committed state IS the pre-revert state.
+_CURRENT_REVISION: Final[str] = "HEAD"
+
+
+def _restore_worktree(config: str, subpath: str) -> None:
+    """
+    Put the reverted config back after the kernel was rolled back.
+
+    The counterpart of the revert in :func:`_rollback_to` for the
+    declined/timed-out interactive re-apply.  A failing restore must not
+    mask the exit in flight: it warns and leaves the divergence to the
+    operator.
+    """
+    try:
+        etckeeper.rollback(_CURRENT_REVISION, subpath)
+    except FermError as exc:
+        sys.stderr.write(
+            f"ferm: could not restore {config} after the aborted rollback:"
+            f" {exc}\n"
+            f"ferm: {config} is left at the reverted revision, uncommitted\n"
         )
+        return
+    sys.stderr.write(
+        f"Rollback of {config} aborted; the config file was restored to"
+        " match the running rules.\n"
+    )

@@ -14,11 +14,14 @@ See ``conftest.py`` for why the git-only paths are faithful and why the real
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
 
 from pyferm import cli, etckeeper
+from pyferm.backend.base import Rendered
+from pyferm.cli import apply as cli_apply
 from pyferm.errors import FermError
 
 if TYPE_CHECKING:
@@ -346,3 +349,73 @@ def test_bare_rollback_refuses_non_tty(
 
     with pytest.raises(FermError, match="non-tty"):
         cli._rollback_main([sandbox.config_path])
+
+
+# --- declined interactive re-apply (real git, faked backend) ---------------
+
+
+def test_interactive_rollback_declined_restores_worktree(
+    etckeeper_sandbox: EtckeeperSandbox,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """
+    Declining the post-apply confirm restores the reverted worktree.
+
+    Runs the revert -> re-apply -> kernel rollback -> worktree restore
+    chain end to end through the real git plumbing; only the backend
+    (kernel) and the confirm prompt are faked, so the host firewall is
+    never touched.  Without the restore the config would sit on the old
+    revision, uncommitted, and the next rollback would refuse behind the
+    dirty-worktree guard.
+    """
+    sandbox = etckeeper_sandbox
+    _two_ferm_revisions(sandbox)
+    monkeypatch.setattr("sys.stdin", _FakeStdin("y\n", tty=True))
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+
+    events: list[str] = []
+
+    class _FakeBackend:
+        """Records the kernel-facing calls; never spawns a tool."""
+
+        def tool_names(self, _domain: object) -> dict[str, str]:
+            """No tools to resolve."""
+            return {}
+
+        def capture_previous(self, *_args: object, **_kwargs: object) -> None:
+            """No previous kernel state to read."""
+
+        def shell_snapshot(self, *_args: object, **_kwargs: object) -> None:
+            """No --shell snapshot."""
+            return
+
+        def render(self, *_args: object, **_kwargs: object) -> Rendered:
+            """An empty ruleset stand-in."""
+            return Rendered(save="")
+
+        def commit(self, *_args: object, **_kwargs: object) -> None:
+            """Record the apply; report success."""
+            events.append("commit")
+
+        def rollback(self, *_args: object, **_kwargs: object) -> None:
+            """Record the kernel restore."""
+            events.append("rollback")
+
+    monkeypatch.setattr(
+        cli_apply, "_select_backend", lambda _options: _FakeBackend()
+    )
+    monkeypatch.setattr(cli_apply, "_confirm_rules", lambda _options: False)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._rollback_main(["--interactive", sandbox.config_path])
+
+    assert exc.value.code == 1
+    assert events == ["commit", "rollback"]
+    # the worktree is back on the current revision, clean
+    assert sandbox.read("ferm/ferm.conf") == "table filter { chain OUTPUT; }\n"
+    subpath = etckeeper.repo_relative_subpath(sandbox.config_path)
+    assert etckeeper.working_tree_dirty(subpath) is False
+    err = capsys.readouterr().err
+    assert "Firewall rules rolled back." in err
+    assert "restored to match the running rules." in err

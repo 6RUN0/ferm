@@ -34,6 +34,22 @@ For the history of the original Perl implementation, see
 - `ferm --help` is rendered from a single option-documentation table
   and now lists every option (`--noflush`, `--nft`, `--plan`, ... were
   missing) plus the `rollback` subcommand.
+- The test aids `--test` (alias of `--remote`) and
+  `--test-mock-previous` are deliberately documented in `--help` and
+  the man page (the Perl manual documents only `--remote`): together
+  with `--plan` they enable offline what-if planning without root.
+
+### Fixed
+
+- `ferm rollback --interactive`: declining (or timing out) the
+  post-apply confirmation now restores the config file to its committed
+  state after the kernel rollback, instead of leaving the reverted
+  config uncommitted on disk while the kernel keeps the pre-rollback
+  rules (which also blocked the next rollback behind the dirty-worktree
+  guard).
+- The `ferm rollback --diff` error for a non-SHA value now explains how
+  to combine a bare `--diff` with a non-default config path
+  (`ferm rollback CONFIG --diff` or `--diff= CONFIG`).
 
 ## [0.1.0a8] - 2026-07-13
 

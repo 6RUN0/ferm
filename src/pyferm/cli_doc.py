@@ -482,9 +482,9 @@ IMPORT_FERM_OPTIONS: Final[tuple[OptionDoc, ...]] = (
         dest="help",
         summary="Print the usage banner and exit",
         pod=(
-            "Print the usage banner and exit.  Any other argument "
-            "starting with C<-> is a usage error: B<import-ferm> "
-            "takes only input files."
+            "Print the usage banner and exit.  Any other option-like "
+            "argument (a dash followed by more characters) is a usage "
+            "error: B<import-ferm> takes only input files."
         ),
     ),
     OptionDoc(
@@ -507,6 +507,14 @@ IMPORT_FERM_ENVIRONMENT: Final[tuple[tuple[str, str], ...]] = (
         "C<ip6>.  Set C<FERM_DOMAIN=ip6> when feeding an "
         "ip6tables-save(8) dump.",
     ),
+)
+
+
+#: The rollback grammar in one spelling: ``--help`` renders it below the
+#: option table, and the man page's SYNOPSIS must carry the same line
+#: (gated by ``test_cli_doc``), so the two cannot drift apart.
+ROLLBACK_SYNOPSIS: Final[str] = (
+    "ferm rollback [--list [-n N] | --diff [SHA] | --to SHA] [config]"
 )
 
 
@@ -550,7 +558,7 @@ def render_help() -> str:
     lines += [
         "",
         "Subcommand:",
-        "    ferm rollback [--list [-n N] | --diff [SHA] | --to SHA] [config]",
+        f"    {ROLLBACK_SYNOPSIS}",
         "                      Revert the config to a recorded revision and",
         "                      re-apply it (see 'ferm rollback --help')",
         "",

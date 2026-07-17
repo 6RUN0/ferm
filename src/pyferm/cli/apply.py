@@ -45,6 +45,18 @@ if TYPE_CHECKING:
 BALANCED_STACK_DEPTH: Final[int] = 2
 
 
+class _RolledBackExit(SystemExit):
+    """
+    The exit raised once :func:`_rollback_all` restored every family.
+
+    A distinct type so the rollback subcommand can tell "the kernel is
+    back on the pre-apply rules" (and restore the reverted worktree
+    too) from the exec-failure ``SystemExit`` in :mod:`.io`, which
+    deliberately skips the kernel rollback (Perl ``:2903-2905``) and
+    leaves the kernel state unknown.
+    """
+
+
 def _rollback_all(
     domains: dict[Family, DomainInfo],
     options: Options,
@@ -58,7 +70,8 @@ def _rollback_all(
 
     The cross-domain loop and the closing message/``exit 1`` were split out of
     the backend (a sanctioned deviation): each family's restore lives in
-    :meth:`Backend.rollback`; the orchestration is here.  Never returns.
+    :meth:`Backend.rollback`; the orchestration is here.  Never returns:
+    raises :class:`_RolledBackExit`.
     """
     for domain, domain_info in _enabled_domains(domains):
         backend.rollback(
@@ -69,7 +82,7 @@ def _rollback_all(
             restore=restore,
         )
     sys.stderr.write("\nFirewall rules rolled back.\n")
-    raise SystemExit(ExitCode.ERROR)
+    raise _RolledBackExit(ExitCode.ERROR)
 
 
 class _ConfirmTimeoutError(Exception):
