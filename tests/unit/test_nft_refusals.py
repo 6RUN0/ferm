@@ -270,15 +270,14 @@ def test_socket_family_message() -> None:
         _socket_matches(Family.ARP, frozenset())
 
 
-def test_socket_restore_skmark_message() -> None:
-    """``restore-skmark`` is not yet supported by the nft backend."""
-    with pytest.raises(
-        FermError,
-        match=_exact(
-            "socket 'restore-skmark' not yet supported by nft backend"
-        ),
-    ):
-        _socket_matches(Family.IP, frozenset({"restore-skmark"}))
+def test_socket_restore_skmark_no_longer_refuses() -> None:
+    """
+    ``restore-skmark`` translates now: no refusal, and the flag does not
+    shape the matches (the mark-restore statement is injected later by
+    ``translate_rule``, pinned in test_backend_nft_arp_socket.py).
+    """
+    matches = _socket_matches(Family.IP, frozenset({"restore-skmark"}))
+    assert [m.to_text() for m in matches] == ["socket wildcard 0"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,10 @@
 # The batch-2 vocabulary: tcp-flags (bitwise readback form, ALL/NONE),
 # syn, owner (names resolve to ids), length, ttl (gt reads back as >),
 # mac-source, full-mask mark, TCPMSS, CONNMARK, TEE, NOTRACK, TRACE,
-# arp opcode + MAC selectors.
+# arp opcode (numeric and named) + MAC selectors.  Named opcodes map
+# through the ARPTABLES numbering, not IANA's: ARP_NAK is 9 there,
+# which the readback spells `inreply` (cross-checked against
+# arptables-translate).
 domain ip {
     table filter {
         chain INPUT {
@@ -40,4 +43,6 @@ domain ip {
 domain arp table filter chain INPUT {
     opcode 1 ACCEPT;
     opcode 2 source-mac aa:bb:cc:dd:ee:ff DROP;
+    opcode Request_Reverse ACCEPT;
+    opcode ARP_NAK DROP;
 }

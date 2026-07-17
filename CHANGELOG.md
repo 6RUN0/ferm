@@ -13,6 +13,16 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- `--nft` accepts the named arp `opcode` operands (`Request` ...
+  `ARP_NAK`), mapping them through the arptables numbering (`ARP_NAK`
+  is 9, which the IANA-following kernel readback spells `inreply`).
+- `--nft` translates the arptables mangle target (`jump mangle` with
+  `mangle-ip-s/d`, `mangle-mac-s/d`, `mangle-target`) to `arp saddr|
+  daddr ip|ether set` rewrites behind the `arp htype 1 arp hlen 6 arp
+  plen 4` guards; `mangle-target CONTINUE` emits a verdict-less rule
+  and `RETURN` refuses (arptables rejects it).
+- `--nft` translates `mod socket restore-skmark` to a `meta mark set
+  socket mark` statement after the socket matches.
 - `--nft` translates the ebtables MAC NAT targets: `snat to-source` /
   `dnat to-destination` (with their `snat-target`/`dnat-target`
   verdicts) become `ether saddr|daddr set`, unlocking the

@@ -67,7 +67,10 @@ from .stateful import (
     _time_matches,
 )
 from .verdicts import (
+    _ARP_MANGLE_COMPANIONS,
+    _ARP_MANGLE_GUARDS,
     _EB_NAT_TARGETS,
+    _arp_mangle_statement,
     _ct_target_statements,
     _eb_nat_statement,
     _netmap_verdict,
@@ -159,6 +162,14 @@ _TARGET_COMPANIONS: Final[frozenset[str]] = frozenset(
         "snat-target",
         "dnat-target",
         "snat-arp",
+        # arptables mangle companions (collision-free names).  Without
+        # them the options would fall into the match path and refuse
+        # there before the arp mangle translation ever runs.
+        "mangle-ip-s",
+        "mangle-ip-d",
+        "mangle-mac-s",
+        "mangle-mac-d",
+        "mangle-target",
         # HMARK companions (all `hmark-` prefixed, collision-free); the
         # masks/prefixes are collected so the target refuses with the HMARK
         # message rather than a generic match-path "not supported".
@@ -630,6 +641,25 @@ def translate_rule(
         matches.append(NftMatch(expr, set_key=set_key, element=element))
 
     statements: list[NftStatement] = list(matches)
+    if domain is Family.ARP and target_value != "mangle":
+        # The _TARGET_COMPANIONS registration takes the mangle options
+        # out of the match path for EVERY arp target, but only the
+        # `mangle` dispatch below consumes them -- silently dropping
+        # them under another target would be fail-open (the rule would
+        # do less than the config asked).
+        stray = sorted(_ARP_MANGLE_COMPANIONS.intersection(companions))
+        if stray:
+            raise FermError(
+                f"option '{stray[0]}' needs the arp 'jump mangle' "
+                f"target for the nft backend"
+            )
+    if "restore-skmark" in socket_names:
+        # xt_socket's --restore-skmark copies the matched socket's mark
+        # into the packet (iptables-translate: `meta mark set socket
+        # mark`, readback-verified live).  A statement, not a match, so
+        # it rides after the matches; the rule stays valid without a
+        # terminating verdict (the TCPOPTSTRIP precedent).
+        statements.append(NftVerdict("meta mark set socket mark"))
     if target_value == "TCPOPTSTRIP":
         # TCPOPTSTRIP appends a series of reset statements (one per stripped
         # option) and no verdict; build_verdict is typed for exactly one
@@ -671,6 +701,19 @@ def translate_rule(
         statements.append(
             _eb_nat_statement(table, chain, target_value, companions)
         )
+    elif target_value == "mangle" and domain is Family.ARP:
+        # arptables reads `-j mangle` as its mangle target
+        # unconditionally (a user chain of that name is unreachable on
+        # the oracle side), so the arp domain never treats it as a
+        # user-chain jump; other domains fall through to build_verdict
+        # where `mangle` stays an ordinary chain name.  The guards go
+        # FIRST (below every other arp selector's header offset -- the
+        # readback would reorder them there anyway), the rewrite tail
+        # last.
+        statements.insert(0, NftMatch(_ARP_MANGLE_GUARDS))
+        tail = _arp_mangle_statement(companions)
+        if tail is not None:
+            statements.append(tail)
     elif target_value is not None:
         statements.append(
             build_verdict(

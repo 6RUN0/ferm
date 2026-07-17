@@ -108,6 +108,8 @@ domain ip table filter {
         mod conntrack ctstatus "CONFIRMED,ASSURED" ACCEPT;
         mod conntrack ! ctstatus SEEN_REPLY DROP;
         mod state ! state "ESTABLISHED,RELATED" DROP;
+        mod socket transparent restore-skmark ACCEPT;
+        mod socket restore-skmark NOP;
         mod mark mark "0x80000000/0x80000000" DROP;
         mod connmark ! mark "0x1/0x3" ACCEPT;
         NFQUEUE;
@@ -250,6 +252,16 @@ domain ip table mangle chain PREROUTING {
 domain arp table filter chain INPUT {
     opcode 1 ACCEPT;
     opcode 2 source-mac aa:bb:cc:dd:ee:ff DROP;
+    opcode Request_Reverse ACCEPT;
+    opcode ARP_NAK DROP;
+    jump mangle;
+    mangle-ip-s 192.0.2.1 jump mangle;
+    mangle-ip-d 192.0.2.9 mangle-target DROP jump mangle;
+    mangle-mac-s 0:1:2:3:4:5 jump mangle;
+    mangle-mac-d aa:bb:cc:00:11:22 mangle-target CONTINUE jump mangle;
+    mangle-mac-d 6:7:8:9:a:b mangle-ip-d 192.0.2.9
+        mangle-mac-s 0:1:2:3:4:5 mangle-ip-s 192.0.2.1 jump mangle;
+    opcode Reply mangle-ip-s 192.0.2.1 jump mangle;
 }
 domain ip6 {
     table filter chain INPUT {

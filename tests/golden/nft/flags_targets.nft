@@ -4,6 +4,8 @@ add table arp ferm
 add chain arp ferm INPUT { type filter hook input priority 0; }
 add rule arp ferm INPUT arp operation request accept
 add rule arp ferm INPUT arp operation reply arp saddr ether aa:bb:cc:dd:ee:ff drop
+add rule arp ferm INPUT arp operation rrequest accept
+add rule arp ferm INPUT arp operation inreply drop
 add table ip ferm
 delete table ip ferm
 add table ip ferm

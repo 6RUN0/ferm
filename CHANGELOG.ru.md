@@ -13,6 +13,16 @@
 
 ### Добавлено
 
+- `--nft` принимает именованные операнды arp `opcode` (`Request` ...
+  `ARP_NAK`), отображая их по нумерации arptables (`ARP_NAK` — это 9,
+  которое следующий IANA ридбэк ядра печатает как `inreply`).
+- `--nft` транслирует mangle-таргет arptables (`jump mangle` с
+  `mangle-ip-s/d`, `mangle-mac-s/d`, `mangle-target`) в перезаписи
+  `arp saddr|daddr ip|ether set` за гвардами `arp htype 1 arp hlen 6
+  arp plen 4`; `mangle-target CONTINUE` эмитит правило без вердикта,
+  а `RETURN` отказывает (arptables его отвергает).
+- `--nft` транслирует `mod socket restore-skmark` в statement
+  `meta mark set socket mark` после socket-матчей.
 - `--nft` транслирует ebtables-таргеты MAC-NAT: `snat to-source` /
   `dnat to-destination` (с вердиктами `snat-target`/`dnat-target`)
   становятся `ether saddr|daddr set`, что разблокирует корпусный

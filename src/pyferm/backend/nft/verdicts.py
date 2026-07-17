@@ -587,11 +587,11 @@ _EB_NAT_VERDICT: Final[dict[str, str]] = {
     "RETURN": "return",
 }
 
-#: A colon-separated MAC as ebtables accepts it: 1-2 hex digits per
-#: octet.  \A...\Z anchoring is a security invariant -- the canon below
-#: is the only barrier between the config string and the nft script
-#: (``$`` would match before a trailing newline).
-_EB_MAC_RE: Final[re.Pattern[str]] = re.compile(
+#: A colon-separated MAC as ebtables and arptables accept it: 1-2 hex
+#: digits per octet.  \A...\Z anchoring is a security invariant -- the
+#: canon below is the only barrier between the config string and the nft
+#: script (``$`` would match before a trailing newline).
+_MAC_CANON_RE: Final[re.Pattern[str]] = re.compile(
     r"\A[0-9A-Fa-f]{1,2}(?::[0-9A-Fa-f]{1,2}){5}\Z"
 )
 
@@ -606,18 +606,20 @@ _EB_REFUSED_TARGETS: Final[frozenset[str]] = frozenset(
 )
 
 
-def _eb_mac_canon(scalar: str) -> str:
+def _mac_canon(scalar: str) -> str:
     """
-    Canonicalize an ebtables MAC operand to the kernel readback spelling.
+    Canonicalize a MAC operand to the kernel readback spelling.
 
     The readback prints lowercase octets zero-padded to two hex digits
-    (ebtables-translate emits them unpadded -- a phantom ``--plan`` diff),
+    (ebtables-translate emits them unpadded and arptables-translate
+    sign-extends them into garbage -- both a phantom ``--plan`` diff),
     so the result is rebuilt from the parsed octets rather than
-    lower-casing the input; ebtables accepts 1-2 digits per octet.
-    Anything else -- mask suffix, dash separators (nft itself would
-    swallow those, ebtables would not), stray whitespace -- refuses.
+    lower-casing the input; ebtables and arptables accept 1-2 digits per
+    octet.  Anything else -- mask suffix, dash separators (nft itself
+    would swallow those, the legacy tools would not), stray whitespace --
+    refuses.
     """
-    if not _EB_MAC_RE.match(scalar):
+    if not _MAC_CANON_RE.match(scalar):
         raise FermError(f"invalid mac '{scalar}' for nft backend")
     return ":".join(f"{int(octet, 16):02x}" for octet in scalar.split(":"))
 
@@ -657,7 +659,7 @@ def _eb_nat_statement(
             f"eb {target_value} needs '{mac_name}' for the nft backend"
         )
     scalar, _ = unwrap_value(comp.value)
-    mac = _eb_mac_canon(scalar)
+    mac = _mac_canon(scalar)
     verdict = "accept"
     target_comp = companions.get(f"{target_value}-target")
     if target_comp is not None:
@@ -670,6 +672,103 @@ def _eb_nat_statement(
             )
         verdict = mapped
     return NftVerdict(f"ether {field} set {mac} {verdict}")
+
+
+#: arptables ``--mangle-target`` operand -> nft verdict suffix.  NOT
+#: :data:`_EB_NAT_VERDICT`: arptables accepts only these three (RETURN
+#: is "bad target for --mangle-target" even though the nft kernel would
+#: take ``return``), and it spells CONTINUE as NO verdict -- the rule
+#: ends at ``set ...``, the rewrites run, then rule processing falls
+#: through.  The kernel readback preserves the written form, so the
+#: empty value means "emit no verdict token".
+_ARP_MANGLE_VERDICT: Final[dict[str, str]] = {
+    "ACCEPT": "accept",
+    "DROP": "drop",
+    "CONTINUE": "",
+}
+
+#: arp mangle rewrite companion -> nft field expression, in the
+#: arptables-translate emission order (saddr ip, saddr ether, daddr ip,
+#: daddr ether).  The kernel readback preserves the written order
+#: verbatim, so this fixed order round-trips into itself under --plan.
+_ARP_MANGLE_REWRITES: Final[tuple[tuple[str, str], ...]] = (
+    ("mangle-ip-s", "arp saddr ip set"),
+    ("mangle-mac-s", "arp saddr ether set"),
+    ("mangle-ip-d", "arp daddr ip set"),
+    ("mangle-mac-d", "arp daddr ether set"),
+)
+
+#: every arp mangle companion option; ``translate_rule`` refuses an arp
+#: rule that carries one of these under any target other than ``mangle``
+#: (their _TARGET_COMPANIONS registration takes them out of the match
+#: path, so silently ignoring them there would be fail-open).
+_ARP_MANGLE_COMPANIONS: Final[frozenset[str]] = frozenset(
+    {name for name, _ in _ARP_MANGLE_REWRITES} | {"mangle-target"}
+)
+
+#: The arptables-translate sanity guards: arpt_mangle.c assumes hln/pln
+#: "were checked in the match", so the target only mangles a valid
+#: Ethernet/IPv4 ARP packet.  ``translate_rule`` prepends them as the
+#: rule's FIRST match: nft merges adjacent arp payload loads and prints
+#: the fields in header-offset order (htype 0-1, hlen 4, plen 5 sit
+#: below operation 6-7), so appending them after an ``arp operation``
+#: match would read back reordered -- a phantom ``--plan`` diff,
+#: verified live.
+_ARP_MANGLE_GUARDS: Final[str] = "arp htype 1 arp hlen 6 arp plen 4"
+
+
+def _arp_mangle_statement(
+    companions: dict[str, RenderedOption],
+) -> NftVerdict | None:
+    """
+    Translate the arptables mangle target to ``arp ... set`` rewrites.
+
+    The shape is the arptables-translate one, verified live against the
+    kernel readback: the rewrites in canonical order, then the
+    ``--mangle-target`` verdict (``accept`` when absent, arptables'
+    default; CONTINUE is the empty form -- with no rewrites either the
+    whole tail vanishes and only the :data:`_ARP_MANGLE_GUARDS` match
+    remains, hence ``None``).  A bare ``jump mangle`` is a legal no-op:
+    guards plus the default verdict.  Always translates or raises;
+    there is no fall-through to a user-chain jump (arptables reads
+    ``-j mangle`` as the target unconditionally, so a user chain of
+    that name is unreachable on the oracle side too).
+    """
+    parts: list[str] = []
+    for name, field in _ARP_MANGLE_REWRITES:
+        comp = companions.get(name)
+        if comp is None:
+            continue
+        scalar, _ = unwrap_value(comp.value)
+        if name.startswith("mangle-ip"):
+            # Strictly an IPv4 literal: IPv4Address rejects leading
+            # zeros, hex/int forms and ip6 colons (_validate_address
+            # would let an ip6 literal through into an arp rewrite).
+            # A hostname resolves before it gets here.
+            try:
+                value = str(ipaddress.IPv4Address(scalar))
+            except ValueError:
+                raise FermError(
+                    f"invalid arp mangle ip '{scalar}' for nft backend"
+                ) from None
+        else:
+            value = _mac_canon(scalar)
+        parts.append(f"{field} {value}")
+    verdict = "accept"
+    target_comp = companions.get("mangle-target")
+    if target_comp is not None:
+        operand, _ = unwrap_value(target_comp.value)
+        mapped = _ARP_MANGLE_VERDICT.get(operand)
+        if mapped is None:
+            raise FermError(
+                f"invalid mangle-target '{operand}' for the nft backend"
+            )
+        verdict = mapped
+    if verdict:
+        parts.append(verdict)
+    if not parts:
+        return None
+    return NftVerdict(" ".join(parts))
 
 
 #: iptables ``reject-with`` canonical name -> nft reject spec, ip family.

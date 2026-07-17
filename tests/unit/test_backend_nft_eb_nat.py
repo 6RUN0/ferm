@@ -27,7 +27,7 @@ from pyferm.backend.nft.chains import BaseChainSpec, map_base_chain
 from pyferm.backend.nft.verdicts import (
     _EB_NAT_TARGETS,
     _EB_REFUSED_TARGETS,
-    _eb_mac_canon,
+    _mac_canon,
 )
 from pyferm.domains import Family
 from pyferm.errors import FermError
@@ -100,8 +100,8 @@ def test_eb_chain_map_refuses_unmappable(table: str, chain: str) -> None:
         ("0:1:2:3:4:5", "00:01:02:03:04:05"),
     ],
 )
-def test_eb_mac_canon_pads_and_lowercases(raw: str, canon: str) -> None:
-    assert _eb_mac_canon(raw) == canon
+def test_mac_canon_pads_and_lowercases(raw: str, canon: str) -> None:
+    assert _mac_canon(raw) == canon
 
 
 @pytest.mark.parametrize(
@@ -118,9 +118,9 @@ def test_eb_mac_canon_pads_and_lowercases(raw: str, canon: str) -> None:
         " aa:bb:cc:00:11:22",  # stray whitespace
     ],
 )
-def test_eb_mac_canon_refuses(raw: str) -> None:
+def test_mac_canon_refuses(raw: str) -> None:
     with pytest.raises(FermError, match=r"\Ainvalid mac "):
-        _eb_mac_canon(raw)
+        _mac_canon(raw)
 
 
 # -- translation ---------------------------------------------------------

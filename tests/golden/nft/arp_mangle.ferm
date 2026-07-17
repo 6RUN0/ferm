@@ -1,0 +1,21 @@
+# The arptables mangle target (-j mangle spelled as `jump mangle` plus
+# mangle-* options): the htype/hlen/plen guards FIRST (nft merges
+# adjacent arp payload loads and prints fields in header-offset order,
+# so guards after an `arp operation` match would read back reordered --
+# a phantom --plan diff, verified live), then the matches, then the
+# rewrites in the canonical arptables-translate order (saddr ip, saddr
+# ether, daddr ip, daddr ether), then the mangle-target verdict where
+# CONTINUE is the empty form (the rule ends at `set ...`).
+# Cross-checked against arptables-translate, whose own MAC spelling is
+# NOT the canon (it sign-extends octets); the combined opcode+mangle
+# rule pins the guards -> matches -> rewrites -> verdict order.
+domain arp table filter chain INPUT {
+    jump mangle;
+    mangle-ip-s 192.0.2.1 jump mangle;
+    mangle-ip-d 192.0.2.9 mangle-target DROP jump mangle;
+    mangle-mac-s 0:1:2:3:4:5 jump mangle;
+    mangle-mac-d AA:BB:CC:0:11:22 mangle-target CONTINUE jump mangle;
+    mangle-mac-d 6:7:8:9:a:b mangle-ip-d 192.0.2.9
+        mangle-mac-s 0:1:2:3:4:5 mangle-ip-s 192.0.2.1 jump mangle;
+    opcode Reply mangle-ip-s 192.0.2.1 jump mangle;
+}

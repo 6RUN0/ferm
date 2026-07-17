@@ -280,6 +280,24 @@ _ARP_OPERATION_BY_NUMBER: Final[dict[int, str]] = {
     10: "nak",
 }
 
+#: arptables opcode name (case-insensitive) -> the number arptables (and
+#: the kernel match) uses.  NOT the IANA table nft's readback follows:
+#: arptables spells 9 ARP_NAK where IANA has 9 = InARP-Reply and
+#: 10 = ARP-NAK, so ``opcode ARP_NAK`` deliberately emits
+#: ``arp operation inreply`` -- the number is the semantic, the readback
+#: name is only the spelling.
+_ARP_OPCODE_BY_NAME: Final[dict[str, int]] = {
+    "request": 1,
+    "reply": 2,
+    "request_reverse": 3,
+    "reply_reverse": 4,
+    "drarp_request": 5,
+    "drarp_reply": 6,
+    "drarp_error": 7,
+    "inarp_request": 8,
+    "arp_nak": 9,
+}
+
 #: A numeric low-high range operand (uid/gid, length after the colon
 #: rewrite): the readback keeps the dash form.
 _NUMERIC_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"\A\d+-\d+\Z")
@@ -1154,13 +1172,12 @@ def _socket_matches(domain: Family, names: frozenset[str]) -> list[NftMatch]:
     ``le 1``), and ``transparent`` adds its own test -- alongside
     ``nowildcard`` the tautological wildcard bound drops entirely (all
     forms from iptables-translate, readback-verified live).
+    ``restore-skmark`` does not shape the matches: it becomes a ``meta
+    mark set socket mark`` statement, injected after the match list by
+    ``translate_rule``.
     """
     if domain not in (Family.IP, Family.IP6):
         raise FermError("mod socket is ip/ip6-only for the nft backend")
-    if "restore-skmark" in names:
-        raise FermError(
-            "socket 'restore-skmark' not yet supported by nft backend"
-        )
     transparent = "transparent" in names
     nowildcard = "nowildcard" in names
     if transparent and nowildcard:
@@ -1316,9 +1333,20 @@ def _translate_match_parts(
             raise FermError(f"invalid length '{scalar}' for nft backend")
         return (f"meta length {_op(neg)}{scalar}", None, None)
     if name == "opcode":
-        if not _is_ascii_uint(scalar):
+        if _is_ascii_uint(scalar):
+            operation = _ARP_OPERATION_BY_NUMBER.get(int(scalar), scalar)
+            return (f"arp operation {_op(neg)}{operation}", None, None)
+        # The ASCII gate mirrors arptables' strcasecmp: a bare
+        # str.lower() would over-accept Unicode spellings the oracle
+        # rejects (KELVIN SIGN lowercases to "k").
+        named = (
+            _ARP_OPCODE_BY_NAME.get(scalar.lower())
+            if scalar.isascii()
+            else None
+        )
+        if named is None:
             raise FermError(f"invalid arp opcode '{scalar}' for nft backend")
-        operation = _ARP_OPERATION_BY_NUMBER.get(int(scalar), scalar)
+        operation = _ARP_OPERATION_BY_NUMBER.get(named, str(named))
         return (f"arp operation {_op(neg)}{operation}", None, None)
     if name in _TTL_COMPARATOR and domain is not Family.IP6:
         # xt_ttl is ip-only (mod hl is its ip6 twin below), so the ip6

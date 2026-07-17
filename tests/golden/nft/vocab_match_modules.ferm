@@ -6,6 +6,8 @@ table filter {
         mod cgroup cgroup 1048577 ACCEPT;
         mod socket transparent ACCEPT;
         mod socket ACCEPT;
+        mod socket transparent restore-skmark ACCEPT;
+        mod socket restore-skmark NOP;
         mod conntrack ctorigsrc 192.0.2.1 ctorigdst ! 198.51.100.1 ACCEPT;
         mod conntrack ctorigsrcport 80:90 ACCEPT;
         mod conntrack ctproto tcp ACCEPT;

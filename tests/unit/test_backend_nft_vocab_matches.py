@@ -1030,17 +1030,17 @@ def test_socket_forms(flags: tuple[str, ...], expected: list[str]) -> None:
     assert _texts(options, Family.IP) == [*expected, "accept"]
 
 
-def test_socket_restore_skmark_refuses() -> None:
-    with pytest.raises(FermError, match="restore-skmark"):
-        translate_rule(
-            Family.IP,
-            "filter",
-            _rule(
-                _marker("socket"),
-                _opt("restore-skmark", None, module="socket"),
-                _target("ACCEPT"),
-            ),
-        )
+def test_socket_restore_skmark_translates() -> None:
+    # iptables-translate: --restore-skmark becomes `meta mark set socket
+    # mark` after the socket matches (readback-verified live).
+    assert _texts(
+        [
+            _marker("socket"),
+            _opt("restore-skmark", None, module="socket"),
+            _target("ACCEPT"),
+        ],
+        Family.IP,
+    ) == ["socket wildcard 0", "meta mark set socket mark", "accept"]
 
 
 def test_other_bare_modules_still_refuse() -> None:

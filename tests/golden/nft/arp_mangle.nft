@@ -1,0 +1,11 @@
+add table arp ferm
+delete table arp ferm
+add table arp ferm
+add chain arp ferm INPUT { type filter hook input priority 0; }
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 accept
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 arp saddr ip set 192.0.2.1 accept
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 arp daddr ip set 192.0.2.9 drop
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 arp saddr ether set 00:01:02:03:04:05 accept
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 arp daddr ether set aa:bb:cc:00:11:22
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 arp saddr ip set 192.0.2.1 arp saddr ether set 00:01:02:03:04:05 arp daddr ip set 192.0.2.9 arp daddr ether set 06:07:08:09:0a:0b accept
+add rule arp ferm INPUT arp htype 1 arp hlen 6 arp plen 4 arp operation reply arp saddr ip set 192.0.2.1 accept
