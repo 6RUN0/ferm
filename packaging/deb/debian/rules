@@ -19,3 +19,12 @@ override_dh_installsystemd:
 # unittest discovery import-fails on every tests/unit module that imports
 # pytest. The package build does not gate on the suite -- skip it here.
 override_dh_auto_test:
+
+# Bash completion: the loader looks the file up strictly by command
+# name, so ferm.bash must be installed AS `ferm` (pyferm.install cannot
+# rename) with an `import-ferm` symlink beside it.
+execute_after_dh_install:
+	install -Dm644 packaging/completions/ferm.bash \
+		debian/pyferm/usr/share/bash-completion/completions/ferm
+	ln -s ferm \
+		debian/pyferm/usr/share/bash-completion/completions/import-ferm

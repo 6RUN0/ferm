@@ -937,6 +937,15 @@ def _native_source_tree(prefix: str, mode: str, tag: str | None) -> Path:
     junk = shutil.ignore_patterns(".omc", "__pycache__", "*.pyc")
     shutil.copytree(_REPO_ROOT / "src", tree / "src", ignore=junk)
     shutil.copytree(_REPO_ROOT / "packaging", tree / "packaging", ignore=junk)
+    # Committed man pages ship in every native package; the dev tree
+    # must carry them exactly like `git archive` does in release mode.
+    # The tree is created fresh, so the target never pre-exists;
+    # dirs_exist_ok keeps a re-entrant call from dying halfway.
+    shutil.copytree(
+        _REPO_ROOT / "docs" / "man",
+        tree / "docs" / "man",
+        dirs_exist_ok=True,
+    )
     return tree
 
 
@@ -1100,6 +1109,12 @@ def _smoke_cell_clean() -> str:
         "ferm --noexec --lines --test /etc/ferm/ferm.conf >/dev/null\n"
         # the throttle example is really installed
         "test -f /usr/share/doc/pyferm/examples/ssh-throttle.conf.example\n"
+        # man pages really land (deb: dh_installman + dh_compress)
+        "test -f /usr/share/man/man1/ferm.1.gz\n"
+        "test -f /usr/share/man/man1/import-ferm.1.gz\n"
+        # completion installed under the command name + symlink
+        "test -f /usr/share/bash-completion/completions/ferm\n"
+        "test -L /usr/share/bash-completion/completions/import-ferm\n"
         # anti-lockout: the unit is NOT enabled (no wants symlink on disk)
         "test ! -L /etc/systemd/system/multi-user.target.wants/ferm.service\n"
         # resolver stdlib fallback works without python3-dnspython: an
@@ -1455,6 +1470,12 @@ def _rpm_smoke_cell_clean() -> str:
         "ferm --noexec --lines --test /etc/ferm/ferm.conf >/dev/null\n"
         # the throttle example is really installed
         "test -f /usr/share/doc/pyferm/examples/ssh-throttle.conf.example\n"
+        # man pages really land (rpm: brp-compress gzips them)
+        "test -f /usr/share/man/man1/ferm.1.gz\n"
+        "test -f /usr/share/man/man1/import-ferm.1.gz\n"
+        # completion installed under the command name + symlink
+        "test -f /usr/share/bash-completion/completions/ferm\n"
+        "test -L /usr/share/bash-completion/completions/import-ferm\n"
         # anti-lockout: the unit is NOT enabled (no wants symlink on disk)
         "test ! -L /etc/systemd/system/multi-user.target.wants/ferm.service\n"
         # resolver stdlib fallback works without python3-dnspython: an A-record
@@ -1613,7 +1634,8 @@ def _apk_container_script(uid: int, gid: int) -> str:
         "abuild -F validate\n"
         "abuild -F -d\n"
         "apk=$(find /tmp/repo -name 'pyferm-*.apk'"
-        " ! -name 'pyferm-doc-*.apk' | head -1)\n"
+        " ! -name 'pyferm-doc-*.apk'"
+        " ! -name 'pyferm-bash-completion-*.apk' | head -1)\n"
         '[ -n "$apk" ] || { echo "no pyferm apk produced" >&2; exit 1; }\n'
         'echo "APK_ARTIFACT=$apk"\n'
         # version-anchor: pkgver parsed from the .apk filename.
@@ -1628,6 +1650,11 @@ def _apk_container_script(uid: int, gid: int) -> str:
         ' $ver != expected $EXPECT_APK_VER" >&2; exit 1; }\n'
         "fi\n"
         'cp "$apk" /work-out/\n'
+        "comp=$(find /tmp/repo -name 'pyferm-bash-completion-*.apk'"
+        " | head -1)\n"
+        '[ -n "$comp" ] || { echo "no bash-completion subpackage'
+        ' produced" >&2; exit 1; }\n'
+        'cp "$comp" /work-out/\n'
         f"chown {uid}:{gid} /work-out/pyferm-*.apk\n"
     )
 
@@ -1673,10 +1700,16 @@ def _action_build_apk(args: argparse.Namespace) -> int:
     ]
     subprocess.run(cmd, check=True)
     apks = sorted(args.out.glob("pyferm-*.apk"))
-    if len(apks) != 1:
+    completion = [
+        p for p in apks if p.name.startswith("pyferm-bash-completion-")
+    ]
+    main_apks = [p for p in apks if p not in completion]
+    if len(main_apks) != 1 or len(completion) != 1:
         raise SystemExit(
-            f"expected exactly one pyferm-*.apk in {args.out}, found "
-            f"{len(apks)} (a stale artifact would confuse the smoke gate)",
+            f"expected exactly one main pyferm .apk plus one"
+            f" bash-completion subpackage in {args.out}, found"
+            f" {len(main_apks)}+{len(completion)} (a stale artifact"
+            f" would confuse the smoke gate)",
         )
     return 0
 
@@ -1697,6 +1730,15 @@ def _apk_smoke_cell_clean() -> str:
         "ferm --noexec --lines --test /etc/ferm/ferm.conf >/dev/null\n"
         # the throttle example is really installed
         "test -f /usr/share/doc/pyferm/examples/ssh-throttle.conf.example\n"
+        # man pages really land (gzip -9 in package())
+        "test -f /usr/share/man/man1/ferm.1.gz\n"
+        "test -f /usr/share/man/man1/import-ferm.1.gz\n"
+        # completion lives in the subpackage: install it too, or the
+        # file check below is doomed by construction
+        "apk add --no-cache --allow-untrusted"
+        " /work-out/pyferm-bash-completion-*.apk >/dev/null\n"
+        "test -f /usr/share/bash-completion/completions/ferm\n"
+        "test -L /usr/share/bash-completion/completions/import-ferm\n"
         # anti-lockout: OpenRC service installed but added to NO runlevel
         "test -f /etc/init.d/ferm\n"
         "! ls /etc/runlevels/*/ferm >/dev/null 2>&1\n"
@@ -1765,13 +1807,19 @@ def _action_smoke_apk(args: argparse.Namespace) -> int:
     # named volume).
     out = args.out.resolve()
     apks = sorted(out.glob("pyferm-*.apk"))
-    if len(apks) != 1:
+    completion = [
+        p for p in apks if p.name.startswith("pyferm-bash-completion-")
+    ]
+    main_apks = [p for p in apks if p not in completion]
+    if len(main_apks) != 1 or len(completion) != 1:
         raise SystemExit(
-            f"expected exactly one pyferm-*.apk in {out}, found {len(apks)} "
-            "-- run --action=build-apk into a clean dist first (an ambiguous "
+            f"expected exactly one main pyferm .apk plus one"
+            f" bash-completion subpackage in {out}, found"
+            f" {len(main_apks)}+{len(completion)}"
+            " -- run --action=build-apk into a clean dist first (an ambiguous "
             "or missing artifact would version-anchor the wrong file)",
         )
-    art = apks[0].name
+    art = main_apks[0].name
     # The smoke anchors the apk pkgver against the binary's PEP 440 self-report
     # via shell sani() (artifact + binary, not a host re-resolve); on a tag the
     # binary must also self-report the tag's full PEP 440 version.

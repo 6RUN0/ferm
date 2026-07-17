@@ -110,6 +110,17 @@ install -Dpm0644 packaging/deb/debian/pyferm.ferm.service %{buildroot}%{_unitdir
 install -Dpm0644 packaging/deb/examples/ssh-throttle.conf.example \
     %{buildroot}%{_pkgdocdir}/examples/ssh-throttle.conf.example
 
+# Man pages: committed troff from docs/man; brp-compress gzips them.
+install -Dpm0644 docs/man/ferm.1 %{buildroot}%{_mandir}/man1/ferm.1
+install -Dpm0644 docs/man/import-ferm.1 %{buildroot}%{_mandir}/man1/import-ferm.1
+
+# Bash completion: the loader resolves strictly by command name, so the
+# file installs AS `ferm` with an import-ferm symlink beside it
+# (Fedora policy: no subpackage for a single small completion).
+install -Dpm0644 packaging/completions/ferm.bash \
+  %{buildroot}%{_datadir}/bash-completion/completions/ferm
+ln -s ferm %{buildroot}%{_datadir}/bash-completion/completions/import-ferm
+
 # No %pre legacy-config migration (unlike the .deb preinst): rpm's
 # %config(noreplace) does not honor a file pre-placed in %pre on a fresh
 # install -- it overwrites it with the packaged default -- so the deb trick of
@@ -215,6 +226,10 @@ fi
 %files -f %{pyproject_files}
 %license COPYING
 %doc README.md
+%{_mandir}/man1/ferm.1*
+%{_mandir}/man1/import-ferm.1*
+%{_datadir}/bash-completion/completions/ferm
+%{_datadir}/bash-completion/completions/import-ferm
 %dir %{_pkgdocdir}/examples
 %{_pkgdocdir}/examples/ssh-throttle.conf.example
 # The console entry-point scripts are listed explicitly -- the recommended
