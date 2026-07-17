@@ -57,6 +57,25 @@ _ARP_BASE_CHAIN_MAP: Final[dict[tuple[str, str], BaseChainSpec]] = {
     ("filter", "OUTPUT"): BaseChainSpec("filter", "output", 0),
 }
 
+#: eb (nft bridge family): the bridge family has no ``nat`` (or ``route``)
+#: chain type -- everything is ``filter`` -- and its priority landmarks
+#: differ from inet, so the shared map's inet-shaped entries are invalid
+#: there.  These hooks and priorities are what ebtables-nft creates
+#: (captured live from its kernel readback, nft v1.1.6): filter chains on
+#: the bridge ``filter`` landmark (-200), nat chains on dstnat/out/srcnat.
+#: raw/mangle are deliberately absent: stock ebtables has no such tables
+#: and both implementations crash on them on the ebtables path, so the
+#: nft backend refuses rather than inventing hooks.  broute/BROUTING and
+#: nat/INPUT have no bridge equivalent and miss too.
+_EB_BASE_CHAIN_MAP: Final[dict[tuple[str, str], BaseChainSpec]] = {
+    ("filter", "INPUT"): BaseChainSpec("filter", "input", -200),
+    ("filter", "FORWARD"): BaseChainSpec("filter", "forward", -200),
+    ("filter", "OUTPUT"): BaseChainSpec("filter", "output", -200),
+    ("nat", "PREROUTING"): BaseChainSpec("filter", "prerouting", -300),
+    ("nat", "OUTPUT"): BaseChainSpec("filter", "output", 100),
+    ("nat", "POSTROUTING"): BaseChainSpec("filter", "postrouting", 300),
+}
+
 
 def map_base_chain(
     domain: Family,
@@ -66,11 +85,16 @@ def map_base_chain(
     """
     Map ``(table, built-in chain)`` to ``(nft type, hook, priority)``.
 
-    A miss (broute/BROUTING, arp nat/mangle, unknown pair) raises
-    :class:`~pyferm.errors.FermError` -- "built-in" does not imply
+    A miss (broute/BROUTING, arp nat/mangle, eb raw/mangle, unknown pair)
+    raises :class:`~pyferm.errors.FermError` -- "built-in" does not imply
     "mappable".
     """
-    table_map = _ARP_BASE_CHAIN_MAP if domain == "arp" else _BASE_CHAIN_MAP
+    if domain == "arp":
+        table_map = _ARP_BASE_CHAIN_MAP
+    elif domain == "eb":
+        table_map = _EB_BASE_CHAIN_MAP
+    else:
+        table_map = _BASE_CHAIN_MAP
     spec = table_map.get((table, chain))
     if spec is None:
         raise FermError(

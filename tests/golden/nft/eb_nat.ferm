@@ -1,0 +1,24 @@
+# ebtables MAC NAT: snat/dnat translate to `ether saddr|daddr set`,
+# the -target companion picks the trailing verdict (default accept),
+# and the emitted MAC is the kernel readback canon (lowercase, octets
+# zero-padded) whatever spelling the config uses.
+domain eb {
+    table filter {
+        chain INPUT {
+            policy ACCEPT;
+            interface br0 ACCEPT;
+        }
+    }
+    table nat {
+        chain POSTROUTING {
+            outerface br0 snat to-source AA:BB:CC:0:11:22;
+            snat to-source aa:bb:cc:00:11:22 snat-target CONTINUE;
+        }
+        chain PREROUTING {
+            interface br0 dnat to-destination 0:1:2:3:4:5;
+        }
+        chain OUTPUT {
+            dnat to-destination aa:bb:cc:00:11:22 dnat-target DROP;
+        }
+    }
+}

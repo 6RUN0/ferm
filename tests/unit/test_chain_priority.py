@@ -617,3 +617,35 @@ def test_landmark_table_matches_live_nft_display(value: int) -> None:
         f"resolved it to {canon!r} -- landmark table has drifted from the "
         "kernel"
     )
+
+
+def test_eb_filter_priority_migration_rebuilds_chain() -> None:
+    # A live system installed before the bridge chain-map fix carries eb
+    # filter chains at priority 0; the emission now sits on the bridge
+    # `filter` landmark (-200).  nft refuses to redeclare a chain with a
+    # different priority, so the delta must delete and recreate it inside
+    # the one transaction instead of diffing rules in place.
+    snapshot = (
+        "table bridge ferm {\n"
+        "\tchain INPUT {\n"
+        "\t\ttype filter hook input priority 0; policy accept;\n"
+        "\t}\n"
+        "}\n"
+    )
+    desired = (
+        "add table bridge ferm\n"
+        "flush table bridge ferm\n"
+        "add chain bridge ferm INPUT "
+        "{ type filter hook input priority -200; policy accept; }\n"
+        'add rule bridge ferm INPUT iifname "br0" accept\n'
+    )
+    current = parse_nft_list(snapshot, family="bridge")
+    diff = diff_tables(current, parse_nft_script(desired), noflush=False)
+    assert diff.chain_rebuilds
+    delta = build_nft_delta(snapshot, desired, family="bridge")
+    assert delta is not None
+    assert "delete chain bridge ferm INPUT" in delta
+    assert (
+        "add chain bridge ferm INPUT "
+        "{ type filter hook input priority -200; policy accept; }" in delta
+    )

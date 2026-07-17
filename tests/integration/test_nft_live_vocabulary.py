@@ -423,3 +423,98 @@ def test_stateful_plan_converges_with_populated_set(
         f"{proc.stdout}\n{proc.stderr}"
     )
     assert "No changes." in proc.stdout, proc.stdout
+
+
+#: The eb-NAT slice: MAC snat/dnat rewrites with their -target verdicts,
+#: the bridge chain map (filter chains on the bridge `filter` landmark,
+#: nat chains on dstnat/out/srcnat -- what ebtables-nft creates), and the
+#: MAC readback canon (lowercase, octets zero-padded: the config below
+#: deliberately spells MACs uppercase/unpadded).
+_EB_NAT_VOCABULARY = """\
+domain eb {
+    table filter {
+        chain INPUT {
+            policy ACCEPT;
+            interface lo ACCEPT;
+        }
+    }
+    table nat {
+        chain POSTROUTING {
+            snat to-source AA:BB:CC:0:11:22 snat-target CONTINUE;
+            snat to-source aa:bb:cc:00:11:22;
+        }
+        chain PREROUTING dnat to-destination 0:1:2:3:4:5;
+        chain OUTPUT dnat to-destination aa:bb:cc:00:11:22 dnat-target DROP;
+    }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def eb_nat_config(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    config = tmp_path_factory.mktemp("nftebnat") / "eb_nat.ferm"
+    config.write_text(_EB_NAT_VOCABULARY, encoding="utf-8")
+    return config
+
+
+def test_eb_nat_translates_and_live_nft_accepts(eb_nat_config: Path) -> None:
+    proc = subprocess.run(  # fixed argv, no shell
+        [
+            sys.executable,
+            "-m",
+            "pyferm",
+            "--nft",
+            "--test",
+            "--noexec",
+            "--lines",
+            str(eb_nat_config),
+        ],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        env=_ENV,
+        cwd=REPO_ROOT,
+    )
+    assert proc.returncode == 0, proc.stderr
+    script = "".join(
+        line
+        for line in proc.stdout.splitlines(keepends=True)
+        if _NFT_LINE.match(line)
+    )
+    assert script, "empty nft ruleset"
+    check = subprocess.run(
+        ["unshare", "-rn", "nft", "-c", "-f", "-"],
+        input=script,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    assert check.returncode == 0, f"live nft -c rejected:\n{check.stderr}"
+
+
+def test_eb_nat_plan_converges_after_apply(eb_nat_config: Path) -> None:
+    # Apply and re-plan inside ONE namespace.  Convergence here is the
+    # emission<->readback contract for the whole slice at once: the kernel
+    # pads and lowercases the rewritten MACs and prints the bridge chain
+    # priorities symbolically (filter/out/dstnat/srcnat) -- an emission
+    # that missed either canon would diff an applied ruleset forever.
+    python = shlex.quote(sys.executable)
+    config = shlex.quote(str(eb_nat_config))
+    inner = (
+        f"{python} -m pyferm --nft {config} >/dev/null 2>&1; "
+        f"exec {python} -m pyferm --nft --plan {config}"
+    )
+    proc = subprocess.run(
+        ["unshare", "-rn", "sh", "-c", inner],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        env=_ENV,
+        cwd=REPO_ROOT,
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"--plan did not converge:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "No changes." in proc.stdout, proc.stdout

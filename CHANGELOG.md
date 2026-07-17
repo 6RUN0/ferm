@@ -13,6 +13,11 @@ For the history of the original Perl implementation, see
 
 ### Added
 
+- `--nft` translates the ebtables MAC NAT targets: `snat to-source` /
+  `dnat to-destination` (with their `snat-target`/`dnat-target`
+  verdicts) become `ether saddr|daddr set`, unlocking the
+  `grnet-synnefo` corpus config; `snat-arp`, `arpreply` and `redirect`
+  keep refusing (no nft equivalent).
 - `ferm(1)` and `import-ferm(1)` man pages, generated from POD templates
   and shipped in the deb/rpm/apk packages.
 - Bash completion for `ferm` and `import-ferm`, generated from the
@@ -41,6 +46,17 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- `--nft` no longer emits chain types the bridge family rejects: `eb
+  nat` chains were declared `type nat` (and `eb mangle OUTPUT` `type
+  route`), which passed `--lines` but always failed the `nft -c`
+  pre-check at apply time.  eb nat chains are now `type filter` on the
+  hooks and priorities ebtables-nft uses (`dstnat`/`out`/`srcnat`),
+  and eb filter chains moved from priority 0 to the bridge `filter`
+  landmark (−200) — a chain rebuild on the next apply, and a changed
+  hook order next to other bridge tables (libvirt, ebtables-nft).
+  `eb raw`/`eb mangle`, which stock ebtables does not have and the
+  ebtables path crashes on, now refuse cleanly under `--nft` instead
+  of translating.
 - `ferm rollback --interactive`: declining (or timing out) the
   post-apply confirmation now restores the config file to its committed
   state after the kernel rollback, instead of leaving the reverted

@@ -557,14 +557,120 @@ _VERDICT_TARGET: Final[dict[str, str]] = {
     target: target.lower() for target in CORE_TARGETS
 }
 
-#: ebtables target keywords (``modules.py`` ``target_x("eb", ...)``):
-#: they are targets, never user chains, and have no nft bridge-family
-#: translation yet, so :func:`build_verdict` refuses them explicitly.
-#: The parser rewrites the eb ``MARK`` keyword to ebtables' ``mark``
-#: spelling before it reaches the backend, so both forms are guarded.
-_EB_TARGETS: Final[frozenset[str]] = frozenset(
-    {"arpreply", "dnat", "redirect", "snat", "MARK", "mark"}
+#: The ebtables NAT targets ``translate_rule`` intercepts (it holds the
+#: chain name, which the placement check below needs and
+#: :func:`build_verdict` does not see -- the NETMAP precedent) and
+#: translates via :func:`_eb_nat_statement`; they never reach
+#: :func:`build_verdict`.
+_EB_NAT_TARGETS: Final[frozenset[str]] = frozenset({"snat", "dnat"})
+
+#: eb NAT target -> (builtin nat chains it is legal in, ether field,
+#: MAC companion name).  ebtables restricts the placement (man ebtables:
+#: snat only in nat/POSTROUTING, dnat only in nat/PREROUTING|OUTPUT) and
+#: the legacy kernel enforces it with hook masks at insert time, so a
+#: rule elsewhere can never apply on the ebtables path; a user chain's
+#: hook side is statically unknown (the NETMAP precedent), so it
+#: refuses too.
+_EB_NAT_SPEC: Final[dict[str, tuple[tuple[str, ...], str, str]]] = {
+    "snat": (("POSTROUTING",), "saddr", "to-source"),
+    "dnat": (("PREROUTING", "OUTPUT"), "daddr", "to-destination"),
+}
+
+#: ebtables ``--snat-target``/``--dnat-target`` operand -> nft verdict.
+#: The emitted text is the VALUE of this dict (a canonical constant,
+#: the :data:`_VERDICT_TARGET` pattern), never a transform of the config
+#: string -- the verdict lands unquoted in the nft script.
+_EB_NAT_VERDICT: Final[dict[str, str]] = {
+    "ACCEPT": "accept",
+    "DROP": "drop",
+    "CONTINUE": "continue",
+    "RETURN": "return",
+}
+
+#: A colon-separated MAC as ebtables accepts it: 1-2 hex digits per
+#: octet.  \A...\Z anchoring is a security invariant -- the canon below
+#: is the only barrier between the config string and the nft script
+#: (``$`` would match before a trailing newline).
+_EB_MAC_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A[0-9A-Fa-f]{1,2}(?::[0-9A-Fa-f]{1,2}){5}\Z"
 )
+
+#: ebtables target keywords with no nft bridge-family translation
+#: (``modules.py`` ``target_x("eb", ...)`` minus the NAT pair): they are
+#: targets, never user chains, so :func:`build_verdict` refuses them
+#: explicitly.  The parser rewrites the eb ``MARK`` keyword to ebtables'
+#: ``mark`` spelling before it reaches the backend, so both forms are
+#: guarded.
+_EB_REFUSED_TARGETS: Final[frozenset[str]] = frozenset(
+    {"arpreply", "redirect", "MARK", "mark"}
+)
+
+
+def _eb_mac_canon(scalar: str) -> str:
+    """
+    Canonicalize an ebtables MAC operand to the kernel readback spelling.
+
+    The readback prints lowercase octets zero-padded to two hex digits
+    (ebtables-translate emits them unpadded -- a phantom ``--plan`` diff),
+    so the result is rebuilt from the parsed octets rather than
+    lower-casing the input; ebtables accepts 1-2 digits per octet.
+    Anything else -- mask suffix, dash separators (nft itself would
+    swallow those, ebtables would not), stray whitespace -- refuses.
+    """
+    if not _EB_MAC_RE.match(scalar):
+        raise FermError(f"invalid mac '{scalar}' for nft backend")
+    return ":".join(f"{int(octet, 16):02x}" for octet in scalar.split(":"))
+
+
+def _eb_nat_statement(
+    table: str,
+    chain: str | None,
+    target_value: str,
+    companions: dict[str, RenderedOption],
+) -> NftVerdict:
+    """
+    Translate the ebtables snat/dnat target to ``ether <field> set``.
+
+    The shape is the ebtables-translate one, verified live against the
+    kernel readback: rewrite first, then the ``--snat-target``/
+    ``--dnat-target`` verdict (``accept`` when absent, ebtables'
+    default).  ``snat-arp`` refuses -- nft cannot rewrite the ARP
+    payload, and silently dropping that half would make the rule do
+    less than the config asked.  Always translates or raises; there is
+    no fall-through to a user-chain jump.
+    """
+    chains, field, mac_name = _EB_NAT_SPEC[target_value]
+    if table != "nat" or chain not in chains:
+        places = " or ".join(f"nat/{name}" for name in chains)
+        raise FermError(
+            f"eb {target_value} translates only inside the built-in "
+            f"{places} chain for the nft backend"
+        )
+    if "snat-arp" in companions:
+        raise FermError(
+            "option 'snat-arp' has no nft equivalent (nft cannot rewrite "
+            "the ARP payload); use the iptables backend for this rule"
+        )
+    comp = companions.get(mac_name)
+    if comp is None:
+        raise FermError(
+            f"eb {target_value} needs '{mac_name}' for the nft backend"
+        )
+    scalar, _ = unwrap_value(comp.value)
+    mac = _eb_mac_canon(scalar)
+    verdict = "accept"
+    target_comp = companions.get(f"{target_value}-target")
+    if target_comp is not None:
+        operand, _ = unwrap_value(target_comp.value)
+        mapped = _EB_NAT_VERDICT.get(operand)
+        if mapped is None:
+            raise FermError(
+                f"invalid {target_value}-target '{operand}' for the "
+                f"nft backend"
+            )
+        verdict = mapped
+    return NftVerdict(f"ether {field} set {mac} {verdict}")
+
 
 #: iptables ``reject-with`` canonical name -> nft reject spec, ip family.
 #: Covers every type ``iptables -j REJECT`` accepts; the short aliases
@@ -1329,8 +1435,9 @@ def build_verdict(
     # inet NAT targets (snat/to-source, dnat/to-destination), so without
     # this guard they would fall through to the user-chain branch below,
     # swallow the companion and emit a jump to a chain that never exists
-    # -- a silently-broken script instead of a clean refusal.
-    if domain is Family.EB and target_value in _EB_TARGETS:
+    # -- a silently-broken script instead of a clean refusal.  The eb NAT
+    # pair is intercepted in translate_rule and never reaches here.
+    if domain is Family.EB and target_value in _EB_REFUSED_TARGETS:
         # The keyword alone cannot tell the built-in target from a user
         # chain that happens to share its name, so the message names
         # both readings.

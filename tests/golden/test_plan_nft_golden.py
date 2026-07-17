@@ -94,7 +94,7 @@ def test_canon_ip_golden_is_clean_no_changes() -> None:
 
 
 def test_canon_eb_golden_is_clean_no_changes() -> None:
-    """bridge canon: dstnat=-300 named priority -> no diff."""
+    """bridge canon: filter/out/dstnat named priorities -> no diff."""
     canon = _PLAN_NFT_DIR / "canon_eb.ferm"
     code, out = _run_plan_nft(canon, "structured")
     assert code == 0, out

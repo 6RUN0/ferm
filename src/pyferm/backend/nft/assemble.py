@@ -67,7 +67,9 @@ from .stateful import (
     _time_matches,
 )
 from .verdicts import (
+    _EB_NAT_TARGETS,
     _ct_target_statements,
+    _eb_nat_statement,
     _netmap_verdict,
     _secmark_statement,
     _set_target_statement,
@@ -150,6 +152,13 @@ _TARGET_COMPANIONS: Final[frozenset[str]] = frozenset(
         "restore",
         # SECMARK's only option (the security context); collision-free.
         "selctx",
+        # ebtables snat/dnat companions (collision-free names; to-source/
+        # to-destination above are shared with ip SNAT/DNAT).  Without them
+        # the options would fall into the match path and refuse there
+        # before the eb NAT translation ever runs.
+        "snat-target",
+        "dnat-target",
+        "snat-arp",
         # HMARK companions (all `hmark-` prefixed, collision-free); the
         # masks/prefixes are collected so the target refuses with the HMARK
         # message rather than a generic match-path "not supported".
@@ -653,6 +662,15 @@ def translate_rule(
         # raw-table target the parser only emits for ip/ip6, matching the
         # previous build_verdict handling.
         statements.extend(_ct_target_statements(companions))
+    elif target_value in _EB_NAT_TARGETS and domain is Family.EB:
+        # ebtables snat/dnat are legal only in specific built-in nat chains
+        # (the legacy kernel enforces the placement with hook masks), which
+        # build_verdict does not see; the NETMAP precedent.  Non-eb domains
+        # fall through: snat/dnat are eb-only target keywords, elsewhere
+        # they are user-chain names.
+        statements.append(
+            _eb_nat_statement(table, chain, target_value, companions)
+        )
     elif target_value is not None:
         statements.append(
             build_verdict(

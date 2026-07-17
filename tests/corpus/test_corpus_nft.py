@@ -45,7 +45,6 @@ _EXPECTED_NFT_REFUSALS = frozenset(
         # wild corpus
         "antizapret-vpn",
         "brutesque-out",
-        "grnet-synnefo",
         "ivansible-natmss",
         "stuart-ha-server",
         # translated adversarial set

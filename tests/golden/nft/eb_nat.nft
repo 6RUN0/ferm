@@ -1,0 +1,12 @@
+add table bridge ferm
+delete table bridge ferm
+add table bridge ferm
+add chain bridge ferm INPUT { type filter hook input priority -200; policy accept; }
+add chain bridge ferm nat_OUTPUT { type filter hook output priority 100; }
+add chain bridge ferm nat_POSTROUTING { type filter hook postrouting priority 300; }
+add chain bridge ferm nat_PREROUTING { type filter hook prerouting priority -300; }
+add rule bridge ferm INPUT iifname "br0" accept
+add rule bridge ferm nat_OUTPUT ether daddr set aa:bb:cc:00:11:22 drop
+add rule bridge ferm nat_POSTROUTING oifname "br0" ether saddr set aa:bb:cc:00:11:22 accept
+add rule bridge ferm nat_POSTROUTING ether saddr set aa:bb:cc:00:11:22 continue
+add rule bridge ferm nat_PREROUTING iifname "br0" ether daddr set 00:01:02:03:04:05 accept

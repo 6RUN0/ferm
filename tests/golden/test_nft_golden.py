@@ -7,8 +7,9 @@ runs in preflight.
 
 Each ``nft/<name>.ferm`` input is paired with a ``nft/<name>.nft``
 expectation that was generated, cross-checked against the reference
-``iptables-translate``/``ip6tables-translate`` for every match/verdict,
-read line by line, and only then committed.  The positive parametrization
+``iptables-translate``/``ip6tables-translate`` (``ebtables-translate``
+for the eb pairs) for every match/verdict, read line by line, and only
+then committed.  The positive parametrization
 skips any ``.ferm`` whose ``.nft`` sibling is absent so a negative case
 (an input that deliberately exits non-zero and carries no ``.nft``) cannot
 break the parametrized suite.

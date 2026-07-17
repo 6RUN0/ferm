@@ -1274,9 +1274,13 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
     # NAT targets (to-source/to-destination), so without the explicit
     # guard they would fall through to the user-chain branch, swallow
     # the companion and emit a jump to a chain that never exists.
+    # snat/dnat are intercepted in translate_rule (they need the chain
+    # name for the placement check) and never reach build_verdict on the
+    # normal path; if one ever does, the registry backstop must refuse
+    # rather than fall through to the user-chain jump.
     comp = {"to-source": _opt("to-source", "aa:bb:cc:00:11:22")}
     with pytest.raises(
-        FermError, match=r"^eb target 'snat' \(or jump to a chain"
+        FermError, match=r"^target 'snat' \(or jump to a chain"
     ):
         build_verdict(Family.EB, "nat", "jump", "snat", comp)
     with pytest.raises(
