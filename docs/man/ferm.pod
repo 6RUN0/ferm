@@ -1426,8 +1426,6 @@ Disable connection tracking for all packets matching that rule.
 
     RATEEST rateest-name "foo" rateest-interval 60s rateest-ewmalog 100;
 
-    proto tcp dport (135:139 445) NOTRACK;
-
 =item B<NFLOG>
 
 Log packets over netlink; this is the successor of I<ULOG>.
@@ -2181,7 +2179,9 @@ used by your firewall script
 
 =head2 Software
 
-iptables and perl 5.6
+iptables and Python 3.11 or newer (the standalone binary package bundles
+its own Python); the native nft backend (B<--nft>) additionally needs
+the C<nft> tool
 
 =head1 BUGS
 

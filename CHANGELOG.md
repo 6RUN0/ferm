@@ -55,6 +55,11 @@ For the history of the original Perl implementation, see
   `--test-mock-previous` are deliberately documented in `--help` and
   the man page (the Perl manual documents only `--remote`): together
   with `--plan` they enable offline what-if planning without root.
+- **The single 1514-line `cli.py` is now the layered `cli/` package**
+  (`io`/`options` → `history`/`modes` → `apply` → `rollback` → `app`),
+  with the layer order enforced by an import-linter contract and the
+  public seam re-exported from `__init__` — pure code motion, no
+  behaviour change.
 
 ### Fixed
 

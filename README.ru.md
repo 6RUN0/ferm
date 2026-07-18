@@ -283,6 +283,9 @@ uv run ferm /etc/ferm/ferm.conf
 
 # Преобразовать существующий межсетевой экран в конфигурацию ferm:
 uv run import-ferm > /etc/ferm/ferm.conf
+
+# ...или преобразовать сохранённый дамп, root не нужен:
+iptables-save | uv run import-ferm > ferm.conf
 ```
 
 Будьте осторожны, чтобы не заблокировать себе доступ к удалённой машине —
@@ -310,6 +313,12 @@ ferm --plan --plan-format diff /etc/ferm/ferm.conf  # как unified diff
 ferm --plan --nft /etc/ferm/ferm.conf               # против nft-бэкенда
 ```
 
+Для офлайн-планирования «что если» без root: `--test` (алиас `--remote`)
+игнорирует состояние хоста и подразумевает `--noexec --lines`, а
+`--test-mock-previous fam=path` подставляет сохранённый дамп как
+предыдущее состояние семейства — `ferm --test --plan
+--test-mock-previous ip=dump.txt` планирует полностью офлайн.
+
 ### История конфигурации и откат (etckeeper)
 
 Когда `/etc` управляется [etckeeper](https://etckeeper.branchable.com/),
@@ -334,7 +343,7 @@ ferm rollback --to <sha>
 sudo ferm rollback --diff            # относительно предыдущей ревизии
 sudo ferm rollback --diff <sha>      # относительно точной ревизии
 # Показать только последние пять записей:
-sudo ferm rollback --list -n 5
+ferm rollback --list -n 5
 ```
 
 Замечания и границы:
@@ -379,6 +388,10 @@ sudo update-alternatives --set iptables  /usr/sbin/iptables-nft
 sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
 # или интерактивно: sudo update-alternatives --config iptables
 ```
+
+Учтите, что сам ferm предпочитает бинарник `iptables-legacy`, если тот
+установлен рядом; флаг `--nolegacy` отключает это предпочтение, и
+используется выбранный через alternatives `iptables`.
 
 **2. Нативный бэкенд ferm `--nft` (opt-in, экспериментальный).** Он
 транслирует конфигурацию в нативный nft-набор правил (см. *Состояние проекта*

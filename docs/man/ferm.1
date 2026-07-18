@@ -1544,8 +1544,6 @@ Disable connection tracking for all packets matching that rule.
 .IX Item "RATEEST"
 .Vb 1
 \&    RATEEST rateest\-name "foo" rateest\-interval 60s rateest\-ewmalog 100;
-\&
-\&    proto tcp dport (135:139 445) NOTRACK;
 .Ve
 .IP \fBNFLOG\fR 8
 .IX Item "NFLOG"
@@ -2295,7 +2293,9 @@ Linux 2.4 or newer, with netfilter support and all netfilter modules
 used by your firewall script
 .SS Software
 .IX Subsection "Software"
-iptables and perl 5.6
+iptables and Python 3.11 or newer (the standalone binary package bundles
+its own Python); the native nft backend (\fB\-\-nft\fR) additionally needs
+the \f(CW\*(C`nft\*(C'\fR tool
 .SH BUGS
 .IX Header "BUGS"
 Bugs? What bugs?

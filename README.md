@@ -276,6 +276,9 @@ uv run ferm /etc/ferm/ferm.conf
 
 # Convert an existing firewall into a ferm config:
 uv run import-ferm > /etc/ferm/ferm.conf
+
+# ...or convert a saved dump, no root required:
+iptables-save | uv run import-ferm > ferm.conf
 ```
 
 Be careful not to lock yourself out of a remote machine — use the
@@ -302,6 +305,12 @@ ferm --plan --plan-format diff /etc/ferm/ferm.conf  # as a unified diff
 ferm --plan --nft /etc/ferm/ferm.conf               # against the nft backend
 ```
 
+For offline what-if planning without root, `--test` (alias `--remote`)
+ignores host-specific state and implies `--noexec --lines`, and
+`--test-mock-previous fam=path` supplies a saved dump as a family's
+previous state — `ferm --test --plan --test-mock-previous ip=dump.txt`
+plans entirely offline.
+
 ### Config history and rollback (etckeeper)
 
 When [etckeeper](https://etckeeper.branchable.com/) manages `/etc`, every
@@ -326,7 +335,7 @@ ferm rollback --to <sha>
 sudo ferm rollback --diff            # against the previous revision
 sudo ferm rollback --diff <sha>      # against an exact revision
 # Show the last five entries only:
-sudo ferm rollback --list -n 5
+ferm rollback --list -n 5
 ```
 
 Notes and boundaries:
@@ -371,6 +380,10 @@ sudo update-alternatives --set iptables  /usr/sbin/iptables-nft
 sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
 # or pick interactively: sudo update-alternatives --config iptables
 ```
+
+Note that ferm itself prefers an `iptables-legacy` binary when one is
+installed alongside; pass `--nolegacy` to skip that preference so the
+alternatives-selected `iptables` is used.
 
 **2. ferm's native `--nft` backend (opt-in, experimental).** This translates
 the config into a native nft ruleset (see *Project status* above). Install

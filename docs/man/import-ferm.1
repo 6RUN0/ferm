@@ -79,8 +79,9 @@ configuration to ferm.  It reads a file generated with
 \&\fBiptables\-save\fR, and tries to suggest a ferm configuration file.
 .PP
 If no input file was specified on the command line, \fBimport\-ferm\fR
-runs \fIiptables\-save\fR.  A bare \f(CW\*(C`\-\*(C'\fR as \fIinputfile\fR reads standard
-input.
+reads a dump piped into standard input, or, when standard input is a
+terminal, runs \fIiptables\-save\fR itself.  A bare \f(CW\*(C`\-\*(C'\fR as \fIinputfile\fR
+reads standard input explicitly.
 .SH OPTIONS
 .IX Header "OPTIONS"
 .IP "\fB\-h, \-\-help\fR" 12

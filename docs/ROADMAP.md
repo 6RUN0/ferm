@@ -4,18 +4,21 @@ This is the high-level roadmap for evolving ferm from the original Perl
 program into a Python implementation with a native `nftables` backend. It
 summarises the strategy and phase breakdown.
 
-**Current status:** Phase 1 (faithful Perl → Python port, still emitting
-`iptables`) is complete. Phase 2 (native `nft` backend behind `--nft`) is
-available but **opt-in / experimental** — functional and adversarially
-reviewed, but without a Perl-oracle differential test and with the
-documented DROP-policy and `@preserve` differences. Phase 3 (packaging) has
-shipped a first alpha to PyPI (`ferm`), with `.deb`/`.rpm`/`.apk` packages
-and a standalone binary. Phases 4 (operational safety: `--plan`, delta-apply,
-etckeeper rollback) and 5 (nft-native sets, interval sets, verdict maps,
-native `reject-with`) shipped in `0.1.0a6`. Phase 7 (tooling / DX: the AST
-refactor, `--lint`, `--list-modules` / `--describe`, `--graph`) is
-implemented on the `python-port` branch but not yet released. The default
-backend stays `iptables`. See [`CHANGELOG.md`](../CHANGELOG.md).
+**Current status:** released through `0.1.0a8` (PyPI wheel/sdist,
+`.deb`/`.rpm`/`.apk`, standalone binary). Phase 1 (faithful Perl → Python
+port, still emitting `iptables`) is complete. Phase 2 (native `nft` backend
+behind `--nft`) is **opt-in** with the documented DROP-policy and
+`@preserve` differences; its match/target vocabulary is complete (the
+residue refuses by design), and it is checked against a curated
+`iptables-nft` kernel differential in addition to the golden + `nft -c`
+harness. Phase 3 (packaging), Phases 4 (operational safety: `--plan`,
+delta-apply, etckeeper rollback) and 5 (nft-native sets, interval sets,
+verdict maps, native `reject-with`) shipped in `0.1.0a6`; Phase 7
+(tooling / DX: the AST refactor, `--lint`, `--list-modules` / `--describe`,
+`--graph`) shipped across `0.1.0a7`/`0.1.0a8`. Still unreleased on
+`python-port`: man pages, bash completion, the rollback/history UX, and
+the arp/eb/socket vocabulary tail. The default backend stays `iptables`.
+See [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Guiding principle: one variable per phase
 
@@ -26,6 +29,9 @@ the Perl oracle in `reference/` can keep guarding behaviour:
   iptables).
 - **Phase 2** changes only the *output target* (iptables → native nft).
 - **Phase 3** changes only the *packaging*.
+
+Phase numbering is thematic, not chronological — Phase 7 shipped before
+Phase 6 was started.
 
 ## North star — invariants that must not be lost
 
@@ -108,10 +114,32 @@ protocol operand is now validated like every other sink (it was the last
 fail-open injection), `--nft --interactive --shell` emits a real
 anti-lockout snapshot/restore, a failed rollback snapshot aborts instead
 of deleting an existing table, and golden coverage gained negation,
-dual-stack and port-NAT cases. `--nft` stays opt-in/experimental: it has
-no Perl-oracle differential test (only the golden + `nft -c` harness), and
-the DROP-policy shift and `@preserve` regression above are by design — the
-default `iptables` backend is unchanged.
+dual-stack and port-NAT cases. `--nft` stays opt-in: the DROP-policy shift
+and `@preserve` regression above are by design — the default `iptables`
+backend is unchanged.
+
+Two later developments supersede parts of the original caveats:
+
+- **The match/target vocabulary is complete.** It was finished
+  incrementally across `0.1.0a7`/`0.1.0a8` and the current
+  `[Unreleased]`: osf, HMARK, SECMARK/CONNSECMARK, CT helper objects,
+  TPROXY, SYNPROXY, AUDIT, connbytes/connlimit/quota/iprange,
+  statistic/pkttype/recent/hashlimit, TTL/NETMAP, named arp opcodes, the
+  arp mangle targets, `restore-skmark`, and ebtables MAC NAT
+  (`snat`/`dnat`), among others. The residue refuses cleanly by design —
+  either nft has no native equivalent, or the Perl oracle itself rejects
+  the input. Family-specific boundaries recorded so they are not mistaken
+  for gaps: the bridge (`eb`) family has no `raw`/`mangle` tables (`--nft`
+  refuses, mirroring the oracle's own failure) and `snat-arp`, `arpreply`
+  and eb `redirect` keep refusing (no nft equivalent); in the arp family
+  `mangle-target RETURN` refuses (arptables rejects it) and a targetless
+  arp mangle rule needs an explicit `NOP`.
+- **`--nft` gained an independent semantic oracle.** A curated kernel
+  differential compiles configs through both `--nft` and `iptables-nft`
+  and compares the resulting kernel state (e2e + unit suites), and a
+  weekly live-`nft` conformance session diffs the emission canon — so
+  "no oracle differential" now means only that the *Perl* oracle has no
+  `--plan`/`--nft` backend.
 
 ### Phase 3 — Packaging (optional) ✅
 
@@ -154,10 +182,17 @@ here so they are not lost.
 - *GPG / Sigstore signing with maintainer keys* — build-provenance
   attestation (SLSA via GitHub Actions) already ships in Phase 3; keyring
   signing is a separate, deferred step.
-- *man page from POD* — **done**: `ferm(1)`/`import-ferm(1)` are
-  generated from POD templates (OPTIONS from the `cli_doc` table) and
-  shipped in the deb/rpm/apk packages; the unit's
-  `Documentation=man:ferm(1)` now resolves.
+- *man page from POD* — **done** (in `[Unreleased]`):
+  `ferm(1)`/`import-ferm(1)` are generated from POD templates (OPTIONS
+  from the `cli_doc` table) and shipped in the deb/rpm/apk packages; the
+  unit's `Documentation=man:ferm(1)` now resolves.
+- *Runtime guard of config-fragment permissions* — **open
+  security-hardening debt**: the packages install `/etc/ferm/ferm.conf`
+  root-owned, but nothing at load time refuses a world-/group-writable or
+  non-root-owned included fragment (e.g. `/etc/ferm/ferm.d/*.conf`); the
+  dist-directory guard below covers only the frozen binary's own
+  directory. A StrictModes-style check is recorded here so it is not
+  lost.
 - *Own apt repository* (reprepro/aptly) — the `.deb` ships as a GitHub
   Release asset; a signed apt repo is a separate distribution-lifecycle step.
 
@@ -223,8 +258,7 @@ copy rather than the exact shipped one. The direction is conservative
 (mpdecimal has a negligible CVE surface) and it is the same root cause the
 dist-tarball refinement above would resolve.
 
-**Runtime guard of dist directory permissions (implemented on
-`python-port`, not yet released):**
+**Runtime guard of dist directory permissions (shipped in `0.1.0a4`):**
 
 The installation README instructs users to unpack the binary into a
 root-owned, non-world-writable directory. That instruction is necessary but
@@ -258,8 +292,8 @@ Depends on Phase 2 (native nft: handles + atomic transactions). A
 flush-replace, plus richer config history/backup. A cheap seed
 (`--backup-dir`) was pulled forward into Phase 1.
 
-The first slice — **incremental atomic delta apply** under `--nft` — is
-implemented on the `python-port` branch (not yet released): under `--nft`,
+The first slice — **incremental atomic delta apply** under `--nft` —
+shipped in `0.1.0a6`: under `--nft`,
 `commit` defaults to an incremental nft transaction (a delta computed against
 the live `nft list table` snapshot) instead of `flush table` + full rebuild.
 Unchanged chains and unchanged named sets are left untouched, so their
@@ -278,8 +312,10 @@ reload; the fallback predicate is a single named function. The delta stays one
 that exist in the kernel but not in the config are removed, matching the
 semantics of a full rebuild.
 
-The second slice — **config history and rollback via etckeeper** — is also
-implemented on the `python-port` branch (not yet released). Rather than ferm
+The second slice — **config history and rollback via etckeeper** — also
+shipped in `0.1.0a6`; the rollback/history UX polish (dated `--list`
+entries, `--diff`, worktree restore on a declined confirmation) is in the
+current `[Unreleased]`. Rather than ferm
 growing its own VCS over `--backup-dir`, the source config is versioned by
 etckeeper (the standard for `/etc`): every successful apply commits to the
 `/etc` history with a semantic message describing the kernel delta (reusing
@@ -320,15 +356,15 @@ Depends on Phase 2 — the payoff for going native: sets, maps, intervals,
 concatenations, native `reject-with`, and the performance wins on
 router/NAT boxes.
 
-The first slice — **anonymous-set collapse** under `--nft` — is implemented
-on the `python-port` branch (not yet released): adjacent leaf rules that
+The first slice — **anonymous-set collapse** under `--nft` — shipped in
+`0.1.0a6`: adjacent leaf rules that
 differ in exactly one set-eligible value fold into a single rule carrying an
 anonymous set (`tcp dport { 22, 80, 443 }`), and `ferm --plan --nft` is honest
 about the folded form. Negated matches and per-rule-distinct statements stay
 linear (safe-bias); the `iptables` backend and the ferm core are untouched.
 
-The second slice — **named sets** (`@set` / `SetRef`) — is also implemented on
-`python-port` (not yet released): a ferm `@set` definition emits a native
+The second slice — **named sets** (`@set` / `SetRef`) — also shipped in
+`0.1.0a6`: a ferm `@set` definition emits a native
 `add set` / `add element` declaration, references translate to an `@name`
 operand, and `ferm --plan --nft` parses kernel-side `add set` / `add element`
 blocks so set additions, element-set changes, and removals each surface as a
@@ -336,8 +372,8 @@ blocks so set additions, element-set changes, and removals each surface as a
 the `iptables` backend keeps expanding the values inline at parse time, so a
 named set is a no-op there.
 
-The third slice — **interval sets** under `--nft` — is also implemented on
-`python-port` (not yet released): a set element written as an address range
+The third slice — **interval sets** under `--nft` — also shipped in
+`0.1.0a6`: a set element written as an address range
 (`10.0.0.0-10.0.0.255`, IPv6 ranges) or a CIDR prefix marks the set
 `flags interval`, alongside the numeric port ranges (`1024-2048`) already
 supported. Because the kernel rewrites elements on readback (a prefix-aligned
@@ -347,8 +383,8 @@ prefix), the plan diff canonicalizes both sides to that stored form, so a
 showing a phantom diff. nft rejects overlapping intervals at apply time
 (`nft -c`), so overlap detection stays the kernel's job (fail-closed).
 
-The fourth slice — **native `reject-with`** under `--nft` — is also
-implemented on `python-port` (not yet released): every `reject-with` value
+The fourth slice — **native `reject-with`** under `--nft` — also shipped
+in `0.1.0a6`: every `reject-with` value
 that `iptables`/`ip6tables -j REJECT` accepts (all canonical icmp/icmpv6
 types and their short aliases such as `net-unreach`, `tcp-rst`, `no-route`)
 translates to a native nft `reject with icmp[v6] type ...` /
@@ -357,8 +393,8 @@ as `prot-unreachable`; the spellings are checked against a live `nft -c`. An
 unknown value stays a translate-time error (fail-closed) rather than being
 silently applied.
 
-The fifth slice — **verdict maps (vmap)** under `--nft` — is also implemented
-on `python-port` (not yet released): a run of adjacent single-key leaf rules
+The fifth slice — **verdict maps (vmap)** under `--nft` — also shipped in
+`0.1.0a6`: a run of adjacent single-key leaf rules
 that differ in both the key and the verdict folds into one verdict map
 (`tcp dport vmap { 22 : accept, 80 : drop }`), the verdict-carrying counterpart
 of the anonymous-set collapse. Only pure verdicts (`accept`/`drop`/`return`/
@@ -408,8 +444,8 @@ here so they are not lost.
 
 ### Contract hardening
 
-A cross-cutting hardening pass on the `python-port` branch (not yet
-released): the `Family` type alias and `parse_family` gate replaced ad-hoc
+A cross-cutting hardening pass, shipped in `0.1.0a6`: the `Family` type
+alias and `parse_family` gate replaced ad-hoc
 string checks, the wrapped-value and rendered-rule objects
 (`Negated`/`Multi`/`SetRef`, `RenderedOption`/`RenderedRule`) were made
 frozen for value-based equality and binding immutability (the mutable
@@ -465,7 +501,9 @@ birth*. The nft layer is partially anchored by the opt-in `nft -c` pre-check,
 the per-PR `delta_apply_e2e` gate (rootless live-`nft` data-path readback),
 and the weekly `nft_conformance` session (live-`nft` canon differential); the
 iptables `--plan` layer is the least-anchored and relies on the authoring-time
-cross-check. The one anchor still missing from PR CI is a per-PR
+cross-check. A standing maintenance duty: when the pinned `nft` version is
+bumped, the conformance suite's `_BASELINE_DIVERGENCES` list must be
+re-derived against the new `nft`. The one anchor still missing from PR CI is a per-PR
 `nft_conformance` run, so the nft *canon* (as opposed to the data path) has
 only a weekly automated backstop — promoting it is the standing remedy; the
 heavier docker e2e/conformance suites stay deliberately out of PR CI.
@@ -491,7 +529,7 @@ Status: the AST refactor, the linter (`--lint`, `--lint-strict`,
 (`--list-modules`, `--describe`), the visualisation mode (`--graph`,
 `--graph-format {d2,dot}`), the golden-guarded simplification pass and
 the table-driven keyword dispatch (the parser and the introspection
-gate share one source of truth) shipped.
+gate share one source of truth) shipped across `0.1.0a7`/`0.1.0a8`.
 
 Deferred debts, recorded when the lint and introspection slices were
 scoped (YAGNI at the time, still on the table):
@@ -506,8 +544,8 @@ scoped (YAGNI at the time, still on the table):
   analyzer covers it (today it is inlined in the parser).
 - **Introspection:** `--format=json`; one-line prose for modules (POD
   extraction or hand-written); a dedicated `--list-keywords` flag.
-  Shell completion (bash) is **done**, generated from the option table;
-  zsh/fish remain open.
+  Shell completion (bash) is **done** (in `[Unreleased]`), generated
+  from the option table; zsh/fish remain open.
 
 ### Phase 8 — Ecosystem & alternative front end
 
@@ -622,7 +660,9 @@ populate an nft named set that a rule then drops on. Phase 5 shipped named
 sets, so the integration point exists; coexistence is by separate nft
 tables with per-table drop-terminal semantics (the `@extset` keyword was
 considered and rejected — a ferm table that flush-replaces its own
-contents must not own an externally-populated set). This is a documented
+contents must not own an externally-populated set), and ferm's base
+chains can already order themselves against a bouncer's table via the
+`priority` chain keyword. This is a documented
 recipe plus an example (optionally an `@hook` sidecar in the style of the
 legacy iptables `DOCKER-USER` chain), not core code.
 

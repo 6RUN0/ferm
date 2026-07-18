@@ -17,8 +17,9 @@ configuration to ferm.  It reads a file generated with
 B<iptables-save>, and tries to suggest a ferm configuration file.
 
 If no input file was specified on the command line, B<import-ferm>
-runs F<iptables-save>.  A bare C<-> as I<inputfile> reads standard
-input.
+reads a dump piped into standard input, or, when standard input is a
+terminal, runs F<iptables-save> itself.  A bare C<-> as I<inputfile>
+reads standard input explicitly.
 
 =head1 OPTIONS
 
