@@ -18,13 +18,21 @@ import importlib.util
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.unit._packaging import find_repo_root
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 pytest.importorskip("jinja2")
 
-_ROOT = Path(__file__).resolve().parents[2]
+# find_repo_root, not parents[2]: the mutmut sandbox copies only
+# src + tests into mutants/, so docs/ and tools/ live in the real
+# checkout above.
+_ROOT = find_repo_root()
 _MAN_DIR = _ROOT / "docs" / "man"
 _POD_MAN_VERSION_RE = re.compile(r"Pod::Man v?([\w.]+)")
 

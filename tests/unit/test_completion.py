@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[2]
+from tests.unit._packaging import find_repo_root
+
+# find_repo_root, not parents[2]: the mutmut sandbox copies only
+# src + tests into mutants/, so packaging/ and tools/ live in the real
+# checkout above.
+_ROOT = find_repo_root()
 _COMMITTED = _ROOT / "packaging" / "completions" / "ferm.bash"
 
 

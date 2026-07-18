@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import argparse
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from pyferm import cli_doc
 from pyferm.cli import _build_parser, _build_rollback_parser
+from tests.unit._packaging import find_repo_root
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -100,9 +100,9 @@ def test_summaries_are_argparse_safe() -> None:
 
 # --- man ROLLBACK prose vs the real rollback grammar -----------------------
 
-_FERM_POD_TEMPLATE = (
-    Path(__file__).resolve().parents[2] / "docs" / "templates" / "ferm.pod.j2"
-)
+# find_repo_root, not parents[2]: the mutmut sandbox copies only
+# src + tests into mutants/, so docs/ lives in the real checkout above.
+_FERM_POD_TEMPLATE = find_repo_root() / "docs" / "templates" / "ferm.pod.j2"
 
 
 def _rollback_section() -> str:
