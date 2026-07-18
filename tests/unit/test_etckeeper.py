@@ -161,8 +161,16 @@ def test_repo_relative_subpath_inside(
 def test_repo_relative_subpath_outside_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Anchored to the full tail, not just "outside the etckeeper": a mutant
+    # that shouts the reason ("REPOSITORY; ROLLBACK IS UNSUPPORTED THERE")
+    # or blanks it out must fail this, not slip through on the prefix alone.
     _patch(monkeypatch, _Recorder([_ok(stdout="/etc\n")]))
-    with pytest.raises(FermError, match="outside the etckeeper"):
+    with pytest.raises(
+        FermError,
+        match=re.escape(
+            "outside the etckeeper repository; rollback is unsupported there"
+        ),
+    ):
         etckeeper.repo_relative_subpath("/home/user/ferm.conf")
 
 
@@ -172,8 +180,17 @@ def test_repo_relative_subpath_at_repo_root_rejected(
     # A config directly at the repo root yields relpath ".", which would scope
     # a rollback to the WHOLE tree (git checkout/clean over all of /etc). Must
     # be refused, not silently widened.
+    # Anchored past "repository root" through the follow-up sentence: a
+    # mutant that only shouts the case (e.g. "TREE. PLACE THE CONFIG...")
+    # must fail this, not slip through on the shorter prefix alone.
     _patch(monkeypatch, _Recorder([_ok(stdout="/etc\n")]))
-    with pytest.raises(FermError, match="repository root"):
+    with pytest.raises(
+        FermError,
+        match=re.escape(
+            "repository root; a path-scoped rollback would revert and "
+            "clean the entire tree. Place the config in a subdirectory"
+        ),
+    ):
         etckeeper.repo_relative_subpath("/etc/ferm.conf")
 
 
@@ -269,8 +286,12 @@ def test_previous_revision_single_revision_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch(monkeypatch, _Recorder([_ok(stdout="only1111\n")]))
-    with pytest.raises(FermError, match="no previous version"):
+    with pytest.raises(FermError) as exc:
         etckeeper.previous_revision("ferm")
+    # Exact equality, not a substring match: a mutant that pads the message
+    # (e.g. "XXno previous version to roll back toXX") still contains "no
+    # previous version" as a substring, so only full equality catches it.
+    assert str(exc.value) == "no previous version to roll back to"
 
 
 def test_previous_revision_failure_raises(

@@ -165,6 +165,15 @@ def _texts(rule_options: list[RenderedOption], domain: Family) -> list[str]:
             None,
             "ct protocol mobility-header",
         ),
+        # ip6's icmp is proto 58 (ipv6-icmp), not proto 1: the domain MUST
+        # reach _nft_l4proto for this rewrite, or the emission would keep
+        # the raw `icmp` name and match the wrong protocol number.
+        (
+            Family.IP6,
+            _opt("ctproto", "icmp", module="conntrack"),
+            None,
+            "ct protocol ipv6-icmp",
+        ),
         # scalar decomposes (100 -> 1m40s), a range keeps bare seconds,
         # zero prints 0s -- the asymmetric kernel readback, pinned live
         (

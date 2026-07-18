@@ -88,6 +88,32 @@ def test_test_does_not_suppress_interactive(
         )
 
 
+def test_require_interactive_tty_stdin_message_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # stdin and stderr each get their own message; a mutant wrapping or
+    # rewording either literal must be caught, not just "not a tty".
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    with pytest.raises(FermError) as exc:
+        _resolve_options(_build_parser().parse_args(["--interactive", "f"]))
+    assert str(exc.value) == (
+        "ferm interactive mode not possible: /dev/stdin is not a tty"
+    )
+
+
+def test_require_interactive_tty_stderr_message_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False, raising=False)
+    with pytest.raises(FermError) as exc:
+        _resolve_options(_build_parser().parse_args(["--interactive", "f"]))
+    assert str(exc.value) == (
+        "ferm interactive mode not possible: /dev/stderr is not a tty"
+    )
+
+
 # -- argument validation ---------------------------------------------------
 #
 # The option-resolution guards (timeout shape, timeout-needs-interactive,
@@ -96,13 +122,15 @@ def test_test_does_not_suppress_interactive(
 
 def test_timeout_must_be_an_integer(monkeypatch: pytest.MonkeyPatch) -> None:
     # --interactive keeps the earlier no-sense guard quiet so the shape
-    # guard itself is exercised.
-    with pytest.raises(FermError, match="invalid timeout"):
+    # guard itself is exercised.  Exact text: a `match=` substring survives
+    # a mutant that wraps or rewords the message around the checked words.
+    with pytest.raises(FermError) as exc:
         _resolve(
             ["--interactive", "--timeout", "abc", "f"],
             tty=True,
             monkeypatch=monkeypatch,
         )
+    assert str(exc.value) == "invalid timeout. must be an integer"
 
 
 def test_timeout_guard_order_matches_oracle(
@@ -111,16 +139,22 @@ def test_timeout_guard_order_matches_oracle(
     # oracle order (ferm:691-698): the no-sense guard fires BEFORE the
     # integer-shape guard, so a malformed timeout without --interactive
     # reports the missing mode, not the shape.
-    with pytest.raises(FermError, match="no sense without interactive"):
+    with pytest.raises(FermError) as exc:
         _resolve(["--timeout", "abc", "f"], tty=True, monkeypatch=monkeypatch)
+    assert (
+        str(exc.value) == "ferm timeout has no sense without interactive mode"
+    )
 
 
 def test_timeout_requires_interactive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A well-formed timeout without --interactive is a usage error.
-    with pytest.raises(FermError, match="no sense without interactive"):
+    with pytest.raises(FermError) as exc:
         _resolve(["--timeout", "5", "f"], tty=True, monkeypatch=monkeypatch)
+    assert (
+        str(exc.value) == "ferm timeout has no sense without interactive mode"
+    )
 
 
 def test_invalid_mock_previous_spec(
@@ -138,14 +172,15 @@ def test_invalid_def_specification(
     trivial_conf: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["--test", "--def", "noequalssign", str(trivial_conf)]) == 1
-    assert "Invalid --def specification" in capsys.readouterr().err
+    # Exact text: `in` survives a mutant wrapping the message in markers.
+    assert capsys.readouterr().err == "Invalid --def specification\n"
 
 
 def test_extra_tokens_after_def(
     trivial_conf: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["--test", "--def", "$x=1 2", str(trivial_conf)]) == 1
-    assert "Extra tokens after --def" in capsys.readouterr().err
+    assert capsys.readouterr().err == "Extra tokens after --def\n"
 
 
 def test_def_is_evaluated_without_script_context(trivial_conf: Path) -> None:
@@ -352,6 +387,23 @@ def test_execute_exec_failure_is_fatal(
     assert "failed to execute:" in capfd.readouterr().err
 
 
+def test_execute_oserror_uses_strerror_not_the_full_exception(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # `exc.strerror or exc` prefers the clean OS message; a mutant swapping
+    # `or` for `and` would instead print the whole exception object
+    # ("[Errno 2] boom") once strerror is truthy -- the substring check
+    # above can't tell the two apart since both contain "boom".
+    def raise_oserror(*_a: object, **_k: object) -> None:
+        raise OSError(2, "boom")
+
+    monkeypatch.setattr(subprocess, "run", raise_oserror)
+    io = _make_io(Options(), sys.stdout)
+    with pytest.raises(SystemExit):
+        io.execute("true")
+    assert capfd.readouterr().err == "failed to execute: boom\n"
+
+
 def test_execute_returns_status_of_plain_command() -> None:
     io = _make_io(Options(), sys.stdout)
     assert io.execute("true") is None
@@ -472,6 +524,38 @@ def test_introspection_rejects_input_file(
     conf.write_text("", encoding="utf-8")
     assert main(["--list-modules", str(conf)]) == 1
     assert "takes no input file" in capsys.readouterr().err
+
+
+def test_describe_rejects_input_file_names_the_mode_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The --list-modules case above never exercises the else branch of
+    # `mode = "--list-modules" if args.list_modules else "--describe"` --
+    # only --describe reaches it, so the mode word must be pinned here too.
+    conf = tmp_path / "f.ferm"
+    conf.write_text("", encoding="utf-8")
+    assert main(["--describe", "tcp", str(conf)]) == 1
+    assert capsys.readouterr().err == "ferm --describe takes no input file\n"
+
+
+def test_describe_rejects_other_switch_names_the_mode_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--describe", "tcp", "--noexec"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --describe cannot be combined with --noexec\n"
+    )
+
+
+def test_list_modules_and_describe_combined_message_is_exact(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--list-modules", "--describe", "tcp"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --list-modules cannot be combined with --describe\n"
+    )
 
 
 def test_help_wins_over_introspection(
@@ -718,8 +802,9 @@ def test_plan_format_diff() -> None:
 
 
 def test_plan_format_without_plan_is_error() -> None:
-    with pytest.raises(FermError, match="plan-format"):
+    with pytest.raises(FermError) as exc:
         _resolve_plan(["--plan-format", "diff", "a.ferm"])
+    assert str(exc.value) == "ferm --plan-format has no sense without --plan"
 
 
 # --- --no-etckeeper flag plumbing -----------------------------------------
@@ -914,8 +999,11 @@ def test_make_nft_restore_oserror_raises_ferm_error(
         subprocess, "run", _RunRecorder(raises=FileNotFoundError)
     )
     restore = _make_nft_restore(Options(nft=True))
-    with pytest.raises(FermError, match="Failed to run nft"):
+    # Exact text: _run_failed(path, exc) must embed the REAL exception, not
+    # a nulled placeholder -- "Failed to run nft" alone survives either way.
+    with pytest.raises(FermError) as exc:
         restore(_nft_domain_info(), "add table ip ferm\n")
+    assert str(exc.value) == "Failed to run nft: boom"
 
 
 def test_make_nft_restore_apply_failure_after_check_raises(
@@ -1122,8 +1210,13 @@ def test_capture_genuine_failure_raises(
         ),
     )
     io = _make_io(Options(), sys.stdout)
-    with pytest.raises(FermError, match="Operation not permitted"):
+    # Exact text: `match=` on the stderr suffix alone survives a mutant
+    # wrapping or upper-casing the "failed to snapshot for rollback: " lead.
+    with pytest.raises(FermError) as exc:
         io.capture("nft list table ip ferm")
+    assert str(exc.value) == (
+        "failed to snapshot for rollback: Error: Operation not permitted"
+    )
 
 
 def test_read_save_strict_under_plan_raises_on_missing_tool() -> None:
@@ -1244,8 +1337,9 @@ def test_plan_nft_no_longer_raises() -> None:
 def test_plan_nft_noflush_raises() -> None:
     # --plan --nft --noflush is fail-closed until the append-only model is
     # implemented; mixing it silently would produce a wrong plan.
-    with pytest.raises(FermError, match="noflush"):
+    with pytest.raises(FermError) as exc:
         _resolve_plan(["--plan", "--nft", "--noflush", "a.ferm"])
+    assert str(exc.value) == "--noflush is not supported with --plan --nft yet"
 
 
 def test_plan_noflush_iptables_still_works() -> None:
@@ -1325,6 +1419,54 @@ def test_build_plan_validate_false_skips_nft_check(
     assert len(calls) == 1
 
 
+def test_build_plan_nft_diff_is_always_noflush_false() -> None:
+    # The nft append-only model differs fundamentally from iptables'
+    # --noflush semantics, so build_plan hardcodes noflush=False for every
+    # nft-backed PlanDiff regardless of options -- it must never be True.
+    from unittest.mock import MagicMock
+
+    from pyferm.backend.nft import TOOL_NFT
+    from pyferm.cli import build_plan
+    from pyferm.domains import DomainInfo, Family
+
+    domain_info = DomainInfo(enabled=True, tools={TOOL_NFT: "nft"})
+    rendered = MagicMock()
+    rendered.save = ""
+    backend = MagicMock()
+    backend.render.return_value = rendered
+
+    plan = build_plan(
+        {Family.IP: domain_info}, Options(nft=True), backend, validate=False
+    )
+    assert plan.families[Family.IP].noflush is False
+
+
+def test_build_plan_records_the_unsupported_domain_itself() -> None:
+    # domain_info.plan_unsupported (arp/eb: no *-save parser) must record
+    # the actual domain in plan.unsupported, not a nulled placeholder --
+    # the renderer names it in the printed plan.
+    from pyferm.cli import build_plan
+    from pyferm.domains import DomainInfo, Family
+
+    domain_info = DomainInfo(enabled=True, plan_unsupported=True)
+    plan = build_plan({Family.ARP: domain_info}, Options(), IptablesBackend())
+    assert plan.unsupported == [Family.ARP]
+
+
+def test_build_plan_iptables_noflush_passthrough() -> None:
+    # The iptables branch must forward options.noflush verbatim into the
+    # per-family PlanDiff -- a nulled kwarg would crash the noflush split
+    # in diff_tables (bool expected) or silently disable --noflush.
+    from pyferm.cli import build_plan
+    from pyferm.domains import TOOL_SAVE, DomainInfo, Family
+
+    domain_info = DomainInfo(enabled=True, tools={TOOL_SAVE: "iptables-save"})
+    plan = build_plan(
+        {Family.IP: domain_info}, Options(noflush=True), IptablesBackend()
+    )
+    assert plan.families[Family.IP].noflush is True
+
+
 def test_full_reload_flag_sets_option() -> None:
     from pyferm.cli import _build_parser, _resolve_options
 
@@ -1340,8 +1482,9 @@ def test_full_reload_without_nft_is_rejected() -> None:
     from pyferm.errors import FermError
 
     args = _build_parser().parse_args(["--full-reload", "f.ferm"])
-    with pytest.raises(FermError, match="full-reload"):
+    with pytest.raises(FermError) as exc:
         _resolve_options(args)
+    assert str(exc.value) == "ferm --full-reload has no sense without --nft"
 
 
 def test_full_reload_defaults_false() -> None:
@@ -1569,6 +1712,122 @@ def test_apply_success_path_reaches_commit(
     assert len(commit_calls) == 1
 
 
+def test_apply_commit_history_receives_the_real_arguments(
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The two tests above only check the call COUNT; a mutant nulling one of
+    # _commit_history's positional arguments (filename/domains/backend/
+    # subject) would still pass those.  Pin every argument's identity here.
+    from pyferm.cli import _apply_config
+
+    commit_calls = _patch_apply_seam(monkeypatch, commit_result=None)
+    assert (
+        _apply_config(
+            str(trivial_conf), Options(), sys.stdout, defs=[], subject="s"
+        )
+        == 0
+    )
+    assert len(commit_calls) == 1
+    filename, domains, options, backend, subject = cast(
+        "tuple[str, dict[str, object], Options, object, str | None]",
+        commit_calls[0],
+    )
+    assert filename == str(trivial_conf)
+    assert list(domains) == ["ip"]  # _FakeParser's fixed domain set
+    assert isinstance(options, Options)
+    assert backend is not None
+    assert subject == "s"
+
+
+class _CapturePreviousParser(_FakeParser):
+    """
+    Like _FakeParser but also drives capture_previous for each domain.
+
+    The real ``Parser`` calls ``capture_previous`` while resolving each
+    domain's tools; ``_FakeParser`` never does, so the closure built in
+    ``_apply_config`` (which forwards execute=/read_save=/capture= to
+    ``backend.capture_previous``) is never actually exercised without this.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        capture_previous = kwargs["capture_previous"]
+        for domain, domain_info in self.domains.items():
+            capture_previous(domain, domain_info)  # type: ignore[operator]
+
+
+class _CapturePreviousSpyBackend(_ApplyBackend):
+    """An _ApplyBackend recording the kwargs capture_previous forwards."""
+
+    def __init__(self, *, commit_result: int | None) -> None:
+        super().__init__(commit_result=commit_result)
+        self.capture_previous_calls: list[dict[str, object]] = []
+
+    def capture_previous(self, *_args: object, **kwargs: object) -> None:
+        self.capture_previous_calls.append(kwargs)
+
+
+def test_apply_capture_previous_forwards_io_seams(
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # capture_previous's closure folds execute/read_save/capture into the
+    # call to backend.capture_previous; a mutant nulling any one of those
+    # kwargs would crash the real backend (None is not callable) but
+    # _ApplyBackend's capture_previous swallows all kwargs, so a plain
+    # _FakeParser test can't see it -- drive the closure for real instead.
+    from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
+
+    backend = _CapturePreviousSpyBackend(commit_result=None)
+    monkeypatch.setattr(cli_apply, "_select_backend", lambda _o: backend)
+    monkeypatch.setattr(cli_apply, "Parser", _CapturePreviousParser)
+    monkeypatch.setattr(cli_apply, "_commit_history", lambda *_a, **_k: None)
+
+    assert (
+        _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[]) == 0
+    )
+    assert len(backend.capture_previous_calls) == 1
+    call = backend.capture_previous_calls[0]
+    assert callable(call["execute"])
+    assert callable(call["read_save"])
+    assert callable(call["capture"])
+
+
+class _CommitKwargsSpyBackend(_ApplyBackend):
+    """An _ApplyBackend recording the kwargs backend.commit receives."""
+
+    def __init__(self, *, commit_result: int | None) -> None:
+        super().__init__(commit_result=commit_result)
+        self.commit_calls: list[dict[str, object]] = []
+
+    def commit(self, *_args: object, **kwargs: object) -> int | None:
+        self.commit_calls.append(kwargs)
+        return self._commit_result
+
+
+def test_apply_commit_forwards_execute_and_restore_seams(
+    trivial_conf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # backend.commit is called with execute=/restore= kwargs; _ApplyBackend's
+    # own commit swallows all kwargs, so a mutant nulling either one is
+    # invisible to the count-only tests above -- record and check them here.
+    from pyferm.cli import _apply_config
+    from pyferm.cli import apply as cli_apply
+
+    backend = _CommitKwargsSpyBackend(commit_result=None)
+    monkeypatch.setattr(cli_apply, "_select_backend", lambda _o: backend)
+    monkeypatch.setattr(cli_apply, "Parser", _FakeParser)
+    monkeypatch.setattr(cli_apply, "_commit_history", lambda *_a, **_k: None)
+
+    assert (
+        _apply_config(str(trivial_conf), Options(), sys.stdout, defs=[]) == 0
+    )
+    assert len(backend.commit_calls) == 1
+    call = backend.commit_calls[0]
+    assert callable(call["execute"])
+    assert callable(call["restore"])
+
+
 # --- F1: interactive confirm/rollback composition ---------------------------
 
 
@@ -1729,10 +1988,16 @@ def test_post_hooks_run_after_all_domain_commits(
 
 
 class _RollbackSpy:
-    """Record ``etckeeper.rollback`` calls."""
+    """
+    Record ``etckeeper.rollback`` calls plus the subpath every other
+    etckeeper seam received (dirty/previous_revision/diff_revision), so a
+    mutant swapping a real subpath for ``None`` has a signal to fail on."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.dirty_calls: list[str] = []
+        self.previous_calls: list[str] = []
+        self.diff_calls: list[tuple[str, str]] = []
 
     def __call__(self, sha: str, subpath: str) -> None:
         self.calls.append((sha, subpath))
@@ -1772,12 +2037,28 @@ def _mock_rollback_seam(
 
     rollback_spy = _RollbackSpy()
     apply_spy = _ApplySpy()
+
+    def fake_dirty(*args: str) -> bool:
+        # working_tree_dirty() is also called path-independent (no args)
+        # from the etckeeper commit hook; only record a real subpath call.
+        if args:
+            rollback_spy.dirty_calls.append(args[0])
+        return dirty
+
+    def fake_previous(subpath: str) -> str:
+        rollback_spy.previous_calls.append(subpath)
+        return previous
+
+    def fake_diff(sha: str, subpath: str) -> str:
+        rollback_spy.diff_calls.append((sha, subpath))
+        return diff
+
     monkeypatch.setattr(etckeeper, "rollback_available", lambda: available)
     monkeypatch.setattr(etckeeper, "repo_relative_subpath", lambda _c: "ferm")
-    monkeypatch.setattr(etckeeper, "working_tree_dirty", lambda *_a: dirty)
-    monkeypatch.setattr(etckeeper, "previous_revision", lambda _s: previous)
+    monkeypatch.setattr(etckeeper, "working_tree_dirty", fake_dirty)
+    monkeypatch.setattr(etckeeper, "previous_revision", fake_previous)
     monkeypatch.setattr(etckeeper, "list_history", lambda _s, **_kw: history)
-    monkeypatch.setattr(etckeeper, "diff_revision", lambda _sha, _s: diff)
+    monkeypatch.setattr(etckeeper, "diff_revision", fake_diff)
     monkeypatch.setattr(etckeeper, "rollback", rollback_spy)
     monkeypatch.setattr(cli_rollback, "_apply_config", apply_spy)
     return rollback_spy, apply_spy
@@ -1863,6 +2144,21 @@ def test_rollback_limit_rejects_non_positive(bad: str) -> None:
     with pytest.raises(SystemExit) as exc:
         _rollback_main(["--list", "--limit", bad])
     assert exc.value.code == 2
+
+
+def test_positive_int_accepts_the_boundary_value_one() -> None:
+    from pyferm.cli.rollback import _positive_int
+
+    # 1 is the smallest valid limit ("must be an integer >= 1"); a mutant
+    # relaxing the guard to `< 2` or `<= 1` would reject it instead.
+    assert _positive_int("1") == 1
+
+
+def test_rollback_parser_limit_accepts_one() -> None:
+    # Same boundary through the full parser: -n 1 must not be rejected as
+    # a SystemExit.
+    args = _rb_parser().parse_args(["-n", "1", "/etc/x"])
+    assert args.limit == 1
 
 
 def _fake_vcs_for_diff(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
@@ -1961,6 +2257,24 @@ def test_rollback_diff_swallows_no_paths(
     assert "or use '--diff= CONFIG'" in err
 
 
+def test_hex_sha_rejects_non_hex_with_the_exact_hint() -> None:
+    # The three `in` checks above each survive a mutant that wraps just
+    # ONE segment in markers (the substring around it is untouched); pin
+    # the whole concatenated message here instead.
+    import argparse
+
+    from pyferm.cli.rollback import _hex_sha
+
+    with pytest.raises(argparse.ArgumentTypeError) as exc:
+        _hex_sha("/etc/ferm/ferm.conf")
+    assert str(exc.value) == (
+        "invalid SHA '/etc/ferm/ferm.conf': take the SHA from"
+        " 'ferm rollback --list'; the config file is a separate"
+        " argument -- name it first ('ferm rollback CONFIG --diff')"
+        " or use '--diff= CONFIG'"
+    )
+
+
 def test_rollback_diff_conflicts_with_to() -> None:
     from pyferm.cli import _rollback_main
 
@@ -1977,10 +2291,31 @@ def test_rollback_to_reapplies_inheriting_backend(
     rollback_spy, apply_spy = _mock_rollback_seam(monkeypatch)
     assert _rollback_main(["--to", "deadbeef", "--nft", "/etc/x.conf"]) == 0
     assert rollback_spy.calls == [("deadbeef", "ferm")]
+    # The dirty-worktree guard must check the CONFIG's subpath, not the
+    # whole /etc repository, or an unrelated dirty file elsewhere in /etc
+    # would block (or a real repo, silently ignore) this rollback.
+    assert rollback_spy.dirty_calls == ["ferm"]
     config, options, subject = apply_spy.calls[0]
     assert config == "/etc/x.conf"
     assert options.nft is True  # nft install stays nft, not iptables
     assert subject == "roll back x.conf to deadbeef"
+
+
+def test_rollback_diff_bare_previous_and_diff_are_subpath_scoped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The bare --diff form resolves its own SHA via previous_revision, then
+    # diffs it -- both calls must stay scoped to the config's subpath (not
+    # the whole /etc repo), or a real repo would diff/target the wrong tree.
+    from pyferm.cli import _rollback_main
+
+    rollback_spy, _apply = _mock_rollback_seam(
+        monkeypatch, previous="beadfeed", diff="delta\n"
+    )
+    assert _rollback_main(["--diff"]) == 0
+    assert capsys.readouterr().out == "delta\n"
+    assert rollback_spy.previous_calls == ["ferm"]
+    assert rollback_spy.diff_calls == [("beadfeed", "ferm")]
 
 
 def test_rollback_bare_no_previous_revision(
@@ -2380,14 +2715,19 @@ def test_graph_format_requires_graph(tmp_path: Path) -> None:
 def test_graph_rejects_extra_mode_and_pipe_and_filecount(
     tmp_path: Path,
 ) -> None:
+    # Exact text throughout: a `match=` substring survives a mutant that
+    # nulls or mangles the "--graph" mode word carried into each message.
     cfg = tmp_path / "f.ferm"
     cfg.write_text("chain INPUT {}\n", encoding="latin-1")
-    with pytest.raises(FermError, match="cannot be combined with --lint"):
+    with pytest.raises(FermError) as exc:
         _main(["--graph", "--lint", str(cfg)])
-    with pytest.raises(FermError, match="requires exactly one input file"):
+    assert str(exc.value) == "ferm --graph cannot be combined with --lint"
+    with pytest.raises(FermError) as exc:
         _main(["--graph"])
-    with pytest.raises(FermError, match="pipe command"):
+    assert str(exc.value) == "ferm --graph requires exactly one input file"
+    with pytest.raises(FermError) as exc:
         _main(["--graph", "cat foo |"])
+    assert str(exc.value) == "ferm --graph cannot read from a pipe command"
 
 
 def test_list_modules_wins_over_graph_format() -> None:
@@ -2535,6 +2875,14 @@ def test_resolve_domain_passthrough() -> None:
     assert _resolve_plan(["--domain", "ip", "a.ferm"]).domain == "ip"
 
 
+def test_resolve_nolegacy_passthrough() -> None:
+    # --nolegacy must reach Options.nolegacy verbatim: find_tool reads it to
+    # skip the *-legacy tool spelling, so a dropped/nulled kwarg would
+    # silently fall back to preferring *-legacy.
+    assert _resolve_plan(["--nolegacy", "a.ferm"]).nolegacy is True
+    assert _resolve_plan(["a.ferm"]).nolegacy is False
+
+
 def test_resolve_slow_sets_fast_false() -> None:
     assert _resolve_plan(["--slow", "a.ferm"]).fast is False
     assert _resolve_plan(["a.ferm"]).fast is True
@@ -2638,6 +2986,31 @@ def test_commit_subject_lists_enabled_families() -> None:
     assert _commit_subject("a/f.conf", domains, Options()) == (
         "apply f.conf (ip ip6, iptables)"
     )
+
+
+def test_commit_body_joins_multiple_families_with_newline() -> None:
+    # Two families in the body must be separated by a real newline; a
+    # mutant swapping "\n" for a marker string would corrupt every commit
+    # message with 2+ changed families, but a single-family test can't see
+    # the join separator at all.
+    from pyferm.cli.history import _commit_body
+    from pyferm.plan import Plan, PlanDiff, RuleChange
+
+    plan = Plan(
+        families={
+            "ip": PlanDiff(
+                rules_added=[RuleChange("filter", "INPUT", "-j ACCEPT")]
+            ),
+            "ip6": PlanDiff(
+                rules_added=[RuleChange("filter", "INPUT", "-j ACCEPT")]
+            ),
+        }
+    )
+    body = _commit_body(plan)
+    lines = body.splitlines()
+    assert lines[0].startswith("  ip:")
+    assert lines[1].startswith("  ip6:")
+    assert body.count("\n") == 1
 
 
 def _nft_body_backend() -> Backend:
@@ -3177,8 +3550,11 @@ def test_nft_apply_oserror_names_the_tool(
 
     monkeypatch.setattr(subprocess, "run", _FailOnApply())
     restore = _make_nft_restore(Options(nft=True))
-    with pytest.raises(FermError, match="nft"):
+    # Exact text: a bare "nft" substring matches even "Failed to run nft:
+    # None" (the exc-nulled mutant), so pin the whole message.
+    with pytest.raises(FermError) as exc:
         restore(_nft_domain_info(), "add table ip ferm\n")
+    assert str(exc.value) == "Failed to run nft: boom"
 
 
 def test_iptables_read_save_plan_kwargs_and_return(
@@ -3392,6 +3768,30 @@ def test_list_modules_rejects_mapped_flag_names_it_verbatim(
     )
 
 
+def test_lint_strict_without_lint_is_rejected_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "f.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--lint-strict", str(conf)]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --lint-strict has no sense without --lint\n"
+    )
+
+
+def test_lint_fail_level_without_lint_is_rejected_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "f.ferm"
+    conf.write_text("chain INPUT ACCEPT;\n", encoding="utf-8")
+    assert main(["--lint-fail-level", "error", str(conf)]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --lint-fail-level has no sense without --lint\n"
+    )
+
+
 def test_lint_rejects_plan_format_names_it_verbatim(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3425,6 +3825,19 @@ def test_lint_rejects_domain_names_it_verbatim(
     assert (
         capsys.readouterr().err
         == "ferm --lint cannot be combined with --domain\n"
+    )
+
+
+def test_lint_rejects_pipe_path_names_the_mode_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --lint shares _parse_config_eval_free's pipe-rejection with --graph;
+    # the "--lint" mode word must reach the message exactly, not a mangled
+    # or nulled placeholder.
+    assert main(["--lint", "cat foo |"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "ferm --lint cannot read from a pipe command\n"
     )
 
 

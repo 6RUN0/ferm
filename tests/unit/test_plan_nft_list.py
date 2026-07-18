@@ -158,6 +158,25 @@ def test_base_chain_header_without_policy_gets_policy_accept() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_rule_reject_default_canon_uses_family_kwarg() -> None:
+    """
+    The rule body's reject-with canon must use the ``family`` kwarg passed
+    to :func:`parse_nft_list`, not a hardcoded ``None``: for family 'ip6',
+    'reject with icmpv6 type port-unreachable' is the family default and
+    must collapse to bare 'reject'.  A hardcoded ``None`` would make no
+    family ever match and leave the verbose form in place.
+    """
+    text = (
+        "table ip6 ferm {\n"
+        "\tchain INPUT {\n"
+        "\t\tip6 nexthdr tcp reject with icmpv6 type port-unreachable\n"
+        "\t}\n"
+        "}\n"
+    )
+    tables = parse_nft_list(text, family="ip6")
+    assert tables["ferm"].chains["INPUT"].rules == ["ip6 nexthdr tcp reject"]
+
+
 def test_inline_family_mismatch_raises() -> None:
     """The family token in the table header must match the 'family' kwarg."""
     with pytest.raises(FermError):

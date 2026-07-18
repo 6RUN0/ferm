@@ -33,6 +33,13 @@ def test_jump_targets_still_works_through_treescan() -> None:
     assert list(treescan._jump_targets(("goto", "$x"))) == []  # $var skipped
 
 
+def test_take_value_handles_a_trailing_bare_dollar() -> None:
+    # A dangling "$" with no following name token (toks[i] would be past the
+    # end) must not be dereferenced: _take_value consumes only the "$" itself
+    # and stops at len(toks), it does not index one past it.
+    assert treescan._take_value(("$",), 0) == ([], 1)
+
+
 def test_quoted_interpolation_skipped_across_all_harvesters() -> None:
     # A bare $var is skipped as the token pair ("$", name); a quoted
     # '"$x"'/'"@arr"' evades that skip (it starts with '"', not '$') unless

@@ -489,6 +489,26 @@ COMMIT
     assert "chain FORWARD policy DROP;" in output
 
 
+def test_run_flushes_policies_across_table_boundary() -> None:
+    # Table 1 declares a chain with only a policy (no -A rule); table 2's
+    # *filter/*nat header switch must flush and reset table 1's leftover
+    # policies dict before table 2 accumulates its own. Resetting it to
+    # None instead of {} crashes the next table's ``self.policies[...] =``
+    # assignment with a TypeError.
+    save = """\
+*filter
+:INPUT DROP [0:0]
+COMMIT
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING --jump ACCEPT
+COMMIT
+"""
+    output = _imported(save)
+    assert "chain INPUT policy DROP;" in output
+    assert "policy ACCEPT;" in output
+
+
 def test_iptables_save_lines_returns_stdout_lines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

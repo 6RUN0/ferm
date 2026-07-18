@@ -457,3 +457,83 @@ def test_restore_skmark_stays_ip_only() -> None:
             _opt("restore-skmark", None, module="socket"),
             _target("ACCEPT"),
         )
+
+
+# -- marker-less rpfilter/socket rendering ---------------------------------
+#
+# translate_rule carries a SECOND rpfilter/socket dispatch, reached only
+# when a rule's options list has flag options of that module but no
+# MATCH_MODULE marker for it.  The real parser always synthesizes the
+# marker first (_load_match_module in parser.py runs before any keyword of
+# the module becomes parseable), so this path never fires end-to-end --
+# but nothing in RenderedOption/RenderedRule (plain dataclasses, no
+# cross-field invariant) or in translate_rule's own signature requires the
+# marker to be present, so a hand-built RenderedRule can still reach it.
+# These tests exercise that second dispatch directly.
+
+
+def test_rpfilter_without_marker_still_emits_the_fib_match() -> None:
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("loose", None, module="rpfilter"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "fib saddr oif != 0",
+        "accept",
+    ]
+
+
+def test_rpfilter_without_marker_emits_only_once() -> None:
+    # Two flag options of the SAME marker-less module must still collapse
+    # to one match (the `rpfilter_emitted` latch), not one per flag.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("loose", None, module="rpfilter"),
+            _opt("invert", None, module="rpfilter"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "fib saddr oif 0",
+        "accept",
+    ]
+
+
+def test_socket_without_marker_still_emits_the_socket_match() -> None:
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("transparent", None, module="socket"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "socket wildcard 0",
+        "socket transparent 1",
+        "accept",
+    ]
+
+
+def test_socket_without_marker_still_emits_restore_skmark() -> None:
+    # The restore-skmark side statement rides the marker-less dispatch too
+    # (assemble.py:765-771 mirrors the marker branch line for line).
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("restore-skmark", None, module="socket"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert [s.to_text() for s in nft.statements] == [
+        "socket wildcard 0",
+        "meta mark set socket mark",
+        "accept",
+    ]

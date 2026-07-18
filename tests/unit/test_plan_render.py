@@ -411,6 +411,12 @@ def test_delta_counts_sum_across_families() -> None:
         (DeltaCounts(rules_added=12), "+12 rules"),
         (DeltaCounts(rules_added=1), "+1 rule"),
         (DeltaCounts(rules_removed=42), "-42 rules"),
+        # singular forms: each category has its own _plural(count, ...) call,
+        # so a mutant that hardcodes one of them to _plural(None, ...) (always
+        # plural) only shows up when that specific category's count is 1.
+        (DeltaCounts(rules_removed=1), "-1 rule"),
+        (DeltaCounts(chains_removed=1), "1 chain removed"),
+        (DeltaCounts(objects_changed=1), "1 object"),
         (
             DeltaCounts(rules_added=12, rules_removed=3, policies=1),
             "+12/-3 rules, 1 policy",

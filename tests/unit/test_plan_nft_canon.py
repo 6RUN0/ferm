@@ -567,6 +567,18 @@ def test_header_priority_landmark_offset_resolved() -> None:
     )
 
 
+def test_header_priority_offset_keeps_trailing_policy_token() -> None:
+    # The offset branch must 'continue' the token loop, not 'break' out of
+    # it: a 'break' stops scanning right after the priority offset and
+    # never reaches the explicit trailing 'policy drop', so has_policy stays
+    # False and the tail appends a spurious 'policy accept' on top of it.
+    out = canonicalize_nft_header(
+        "type filter hook input priority filter + 5; policy drop;",
+        family="ip",
+    )
+    assert out == "type filter hook input priority 5 policy drop"
+
+
 def test_header_priority_malformed_offset_left_verbatim() -> None:
     # A non-numeric offset magnitude is safe-bias kept verbatim: no crash,
     # no dropped tokens, no partial resolution.

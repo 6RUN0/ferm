@@ -131,8 +131,73 @@ def test_nested_block_carries_a_source_position() -> None:
     root = _block("chain INPUT { jump X; }\n")
     header = root.statements[0]
     assert isinstance(header, HeaderNode)
+    # the header itself, not just its nested body -- _parse_header's
+    # terminator == "{" branch builds the HeaderNode with its own pos.
+    assert header.source_pos is not None
     assert header.body is not None
     assert header.body.source_pos is not None
+
+
+def test_bare_rule_statement_carries_a_source_position() -> None:
+    """
+    A plain rule (not a header/directive/@if/block) keeps its own position.
+
+    ``_parse_statement``'s final fallback builds the ``RuleNode`` from the
+    same ``pos`` captured at entry; a dropped ``pos`` there would only show
+    up on this bare-rule path (headers, directives and blocks each pass
+    their own position through a different branch).
+    """
+    root = _block("chain INPUT { jump X; }\n")
+    header = root.statements[0]
+    assert isinstance(header, HeaderNode)
+    assert header.body is not None
+    rule = header.body.statements[0]
+    assert isinstance(rule, RuleNode)
+    assert rule.source_pos is not None
+    assert rule.source_pos.line == 1
+
+
+def test_if_node_carries_a_source_position() -> None:
+    """
+    Both the outer ``IfNode`` and each ``@else @if`` link keep a real
+    ``source_pos`` -- ``_parse_statement`` threads its own ``pos`` into
+    ``_parse_if``, which in turn seeds ``current_pos`` from it for the first
+    link (subsequent links re-derive their own position at each ``@else``).
+    """
+    root = _block("@if 1 {} @else {}\n")
+    node = root.statements[0]
+    assert isinstance(node, IfNode)
+    assert node.source_pos is not None
+    assert node.source_pos.line == 1
+
+
+def test_malformed_if_then_branch_without_brace_keeps_a_position() -> None:
+    """
+    A "then" branch missing its ``{ ... }`` still gets an (empty) ``Block``
+    that carries the ``@if``'s own position, not ``None``.
+
+    A condition terminated by ``;`` instead of ``{`` (malformed input) makes
+    ``_parse_branch_block`` take its no-brace fallback.
+    """
+    root = _block("@if 1 ;\n")
+    node = root.statements[0]
+    assert isinstance(node, IfNode)
+    assert node.then_body is not None
+    assert node.then_body.statements == ()
+    assert node.then_body.source_pos is not None
+
+
+def test_malformed_final_else_branch_without_brace_keeps_a_position() -> None:
+    """
+    A final ``@else`` not followed by ``{`` still gets an (empty) ``Block``
+    carrying the current position, not ``None``.
+    """
+    root = _block("@if 1 {} @else 2;\n")
+    node = root.statements[0]
+    assert isinstance(node, IfNode)
+    assert node.else_body is not None
+    assert node.else_body.statements == ()
+    assert node.else_body.source_pos is not None
 
 
 def test_directive_node_keeps_its_position() -> None:

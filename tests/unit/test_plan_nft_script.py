@@ -333,6 +333,24 @@ def test_minimal_six_part_rule_is_accepted() -> None:
     assert tables["ferm"].chains["INPUT"].rules == ["accept"]
 
 
+def test_add_rule_reject_default_canon_uses_running_family() -> None:
+    """
+    The rule body's reject-with canon must use the script's running family,
+    not a hardcoded ``None``: 'reject with icmp type port-unreachable' is
+    the ip family default, so it must collapse to bare 'reject'.  Passing
+    ``family=None`` would make ``icmp`` never match any family's default and
+    leave the verbose form in place.
+    """
+    text = (
+        "add table ip ferm\n"
+        "add chain ip ferm INPUT\n"
+        "add rule ip ferm INPUT"
+        " ip protocol tcp reject with icmp type port-unreachable\n"
+    )
+    tables = parse_nft_script(text)
+    assert tables["ferm"].chains["INPUT"].rules == ["ip protocol tcp reject"]
+
+
 def test_mixed_families_in_one_script_rejected() -> None:
     # Every line must carry the family derived from the first; a second
     # family is a fail-loud parse error (not silently accepted / crashed).
@@ -433,6 +451,27 @@ def test_add_element_for_undeclared_set_creates_named_set() -> None:
     ps = tables["ferm"].sets["newset"]
     assert ps.name == "newset"
     assert ps.elements == ["22"]
+
+
+def test_unrecognized_add_subject_with_rule_shaped_token_count_raises() -> (
+    None
+):
+    """
+    An unrecognized ``add`` subject with 6+ tokens must still raise.
+
+    The rule production's gate is ``sub == "rule" and len(parts) >=
+    _NFT_RULE_MIN_PARTS``: both conditions matter.  If the gate degraded to
+    an ``or``, a garbage subject with enough trailing tokens would slip past
+    every dispatch check into the rule branch and silently append a bogus
+    rule to whatever chain happens to share its 5th token, instead of
+    raising.  The declared chain 'x' makes that silent success observable.
+    """
+    text = "add table ip ferm\nadd chain ip ferm x\nadd bogus ip ferm x y z\n"
+    with pytest.raises(FermError) as exc:
+        parse_nft_script(text)
+    message = str(exc.value)
+    assert "line 3" in message
+    assert "add bogus ip ferm x y z" in message
 
 
 def test_unrecognized_add_subject_reports_line_and_excerpt() -> None:

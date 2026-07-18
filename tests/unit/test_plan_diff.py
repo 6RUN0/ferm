@@ -15,6 +15,7 @@ from pyferm.plan import (
     render_structured,
     summary_line,
 )
+from pyferm.plan.diff import _diff_rules
 from tests.unit._plan import filter_table, plan_ip
 
 
@@ -40,6 +41,40 @@ def test_duplicate_rule_not_collapsed() -> None:
     des = filter_table({"INPUT": ParsedChain("ACCEPT", ["-j A"])})
     diff = diff_tables(cur, des, noflush=False)
     assert [r.rule for r in diff.rules_removed] == ["-j A"]
+
+
+def test_diff_rules_stays_minimal_on_a_large_chain_with_duplicates() -> None:
+    """
+    _diff_rules must pin ``autojunk=False`` on its SequenceMatcher.
+
+    difflib's default ``autojunk=True`` starts ignoring an element as a
+    match anchor once a >=200-element sequence repeats it past a ~1%
+    threshold.  A ferm chain legitimately has many structurally-identical
+    rules (a cycled small vocabulary is a realistic proxy for repeated
+    accept/log/drop bodies), so at that scale a chain carrying only a
+    handful of genuine edits would misreport nearly every rule as replaced
+    -- the exact "phantom full rebuild" a firewall differ must never do.
+
+    Built deterministically (no randomness): a 254-rule chain cycling
+    through 5 rule bodies, with exactly one deletion, one insertion and one
+    substitution applied to the desired side.  With autojunk correctly
+    disabled the positional diff stays small; flipping autojunk on inflates
+    it past 200 added/removed each (verified empirically against the real
+    difflib behaviour before pinning these bounds).
+    """
+    vocab = [f"rule_{i}" for i in range(5)]
+    current = [vocab[i % len(vocab)] for i in range(254)]
+    desired = current.copy()
+    del desired[40]
+    desired.insert(120, vocab[2])
+    desired[200] = vocab[3] if desired[200] != vocab[3] else vocab[4]
+
+    added, removed = _diff_rules(current, desired)
+
+    # The honest positional diff (autojunk=False): well under half the
+    # chain.  The autojunk=True mutant produces 214/214 on this exact input.
+    assert len(added) < 100
+    assert len(removed) < 100
 
 
 def test_policy_change() -> None:

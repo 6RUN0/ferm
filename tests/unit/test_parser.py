@@ -129,6 +129,15 @@ def test_policy_sets_chain_policy_without_a_rule() -> None:
     assert parser.domains[Family.IP].enabled
 
 
+def test_header_only_statement_emits_no_rule() -> None:
+    # mkrules only unfolds into chain_rules when the rule actually carries a
+    # match/action (has_rule); a bare "chain INPUT;" reaches mkrules via
+    # _leaf_finish_rule with has_rule still False and must add nothing.
+    parser = _parse("chain INPUT;")
+    chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
+    assert chain.rules == []
+
+
 # -- domain handling -------------------------------------------------------
 
 
@@ -201,6 +210,15 @@ def test_chain_array_auto_var_expands_per_chain() -> None:
     parser = _parse("chain (INPUT OUTPUT) mod comment comment $CHAIN ACCEPT;")
     for chain in ("INPUT", "OUTPUT"):
         assert _comment(_rules(parser, Family.IP, "filter", chain)[0]) == chain
+
+
+def test_domain_auto_var_expands_to_domain_name() -> None:
+    # set_domain records the family in ``auto["DOMAIN"]`` (exact key, not a
+    # differently-cased or garbled one), so ``$DOMAIN`` resolves to it.
+    parser = _parse(
+        "domain ip chain INPUT mod comment comment $DOMAIN ACCEPT;"
+    )
+    assert _comment(_rules(parser, Family.IP, "filter", "INPUT")[0]) == "ip"
 
 
 def test_table_auto_var_expands_to_table_name() -> None:
@@ -630,6 +648,28 @@ def test_mod_loads_match_module() -> None:
     assert ("ctstate", "ESTABLISHED", OptionKind.OPTION) in options
 
 
+def test_mod_array_loads_every_named_module() -> None:
+    # _load_match_modules iterates the whole value list with "continue" to
+    # skip an already-loaded module -- NOT "break", which would stop after
+    # the first one. Both "conntrack" and "helper" must load.
+    parser = _parse("chain INPUT mod (conntrack helper) ACCEPT;")
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert ("match", "conntrack", OptionKind.MATCH_MODULE) in options
+    assert ("match", "helper", OptionKind.MATCH_MODULE) in options
+
+
+def test_mod_array_continues_past_an_already_loaded_module() -> None:
+    # The "already loaded" branch is only exercised when the FIRST module in
+    # the array was already loaded by something earlier (here, the "dports"
+    # shortcut auto-loads "multiport"): "continue" must still load "helper"
+    # afterwards, where a "break" would drop it.
+    parser = _parse(
+        "chain INPUT proto tcp dports (80) mod (multiport helper) ACCEPT;"
+    )
+    options = _options(_rules(parser, Family.IP, "filter", "INPUT")[0])
+    assert ("match", "helper", OptionKind.MATCH_MODULE) in options
+
+
 def test_shortcut_module_deduped_against_explicit_mod() -> None:
     # The shortcut records its match module in rule.match, so a later explicit
     # "mod multiport" is deduped: only one "match multiport" is emitted.
@@ -710,6 +750,15 @@ def test_preserve_flags_a_chain() -> None:
     parser = _parse("chain INPUT @preserve;")
     chain = parser.domains[Family.IP].tables["filter"].chains["INPUT"]
     assert chain.preserve is True
+
+
+def test_preserve_does_not_enable_the_domain() -> None:
+    # _parse_preserve is the ONLY call site that relies on
+    # _walk_chain_infos's enable=False default (every other caller passes
+    # enable=True explicitly): @preserve alone must leave the domain
+    # disabled.
+    parser = _parse("chain INPUT @preserve;")
+    assert parser.domains[Family.IP].enabled is False
 
 
 def test_preserve_regex_records_a_pattern() -> None:
@@ -806,6 +855,18 @@ def test_hook_after_a_domain_token_is_rejected() -> None:
 def test_missing_chain_errors() -> None:
     with pytest.raises(FermError, match="Chain must be specified"):
         _parse("proto tcp ACCEPT;")
+
+
+def test_policy_before_chain_reports_chain_required() -> None:
+    # A DIFFERENT call site than test_missing_chain_errors: "policy"/
+    # "priority" are header keywords that hit _parse_header's own
+    # "if rule.chain is None: error(_ERR_CHAIN_REQUIRED)" guard directly,
+    # never reaching the leaf-rule "proto tcp ACCEPT;" path above. Exact
+    # equality (not just a substring match) pins the literal message, since
+    # error(None) would raise a TypeError instead of a located FermError.
+    with pytest.raises(FermError) as excinfo:
+        _parse("policy ACCEPT;")
+    assert str(excinfo.value) == "Chain must be specified"
 
 
 def test_missing_action_errors() -> None:
@@ -975,6 +1036,32 @@ def test_grammar_diagnostic_raises(source: str, match: str) -> None:
         _parse(source)
 
 
+def test_tcpmss_with_proto_tcp_succeeds() -> None:
+    # set_module_target's proto gate must accept the one protocol it exists
+    # to allow: "proto tcp" itself. A garbled literal on the RHS of the
+    # equality (matching nothing real) would reject even this case.
+    parser = _parse(
+        "table mangle chain FORWARD proto tcp TCPMSS set-mss 1400;"
+    )
+    options = _options(_rules(parser, Family.IP, "mangle", "FORWARD")[0])
+    assert ("jump", "TCPMSS", OptionKind.TARGET) in options
+    assert ("set-mss", "1400", OptionKind.OPTION) in options
+
+
+def test_function_call_replays_the_bodys_own_line_sentinel(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # function.tokens[0] is ALWAYS a Line sentinel (collect_tokens re-emits
+    # one for the body it captured, :1662); _call_function must replay it
+    # (i=0) so the definition's own line number is restored before the body
+    # runs. Starting at i=1 drops it silently -- the call keeps the CALLER's
+    # line instead, which a plain options/values assertion on the rule
+    # itself cannot observe: only the located error message can.
+    with pytest.raises(FermError, match="Chain must be specified"):
+        _parse("@def &f() = florble;\n\n\n\n&f();\n")
+    assert "Error in <test> line 1:" in capsys.readouterr().err
+
+
 def test_log_prefix_is_not_truncated() -> None:
     # The 29-char truncation lives only in ``parse_keyword``'s ``params == 1``
     # branch, but ``LOG``'s ``log-prefix`` takes the target default ``"s"`` and
@@ -1018,6 +1105,35 @@ def test_include_pulls_in_another_file(tmp_path: Path) -> None:
 
     rules = parser.domains[Family.IP].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", OptionKind.TARGET)]
+
+
+def test_include_sets_file_auto_vars(tmp_path: Path) -> None:
+    # _include_file seeds the included frame's FILENAME/FILEBNAME/DIRNAME
+    # pseudo-variables from the resolved include path itself (not None and
+    # not a mismatched pairing), each read back via a distinct chain.
+    included = tmp_path / "sub.ferm"
+    included.write_text(
+        "chain INPUT mod comment comment $FILENAME ACCEPT;\n"
+        "chain OUTPUT mod comment comment $FILEBNAME ACCEPT;\n"
+        "chain FORWARD mod comment comment $DIRNAME ACCEPT;\n",
+        encoding="utf-8",
+    )
+    main = tmp_path / "main.ferm"
+    main.write_text(f'@include "{included}";\n', encoding="utf-8")
+
+    parser = _parse_file(main)
+
+    assert _comment(_rules(parser, Family.IP, "filter", "INPUT")[0]) == str(
+        included
+    )
+    assert (
+        _comment(_rules(parser, Family.IP, "filter", "OUTPUT")[0])
+        == "sub.ferm"
+    )
+    assert (
+        _comment(_rules(parser, Family.IP, "filter", "FORWARD")[0])
+        == f"{tmp_path}/"
+    )
 
 
 def _parse_file(main: Path, *, options: Options | None = None) -> Parser:
@@ -1077,6 +1193,23 @@ def test_include_pipe_parses_command_output(tmp_path: Path) -> None:
     parser = _parse_file(main)
     rules = parser.domains[Family.IP].tables["filter"].chains["INPUT"].rules
     assert _options(rules[0]) == [("jump", "ACCEPT", OptionKind.TARGET)]
+
+
+def test_include_glob_skips_filename_validation(tmp_path: Path) -> None:
+    # _parse_include's "peek_token() == '@glob'" branch takes @glob's
+    # already-resolved absolute paths verbatim, WITHOUT collect_filenames's
+    # own validation (directory rejection, leading-pipe rejection, etc).
+    # A garbled comparison that never matches "@glob" would route even a
+    # literal @glob() call through collect_filenames instead, which rejects
+    # a directory match with a DIFFERENT, earlier error than the one
+    # _include_file itself raises when it tries to open one.
+    (tmp_path / "inc" / "only_a_directory").mkdir(parents=True)
+    main = tmp_path / "main.ferm"
+    main.write_text("@include @glob('inc/*');\n", encoding="utf-8")
+    with pytest.raises(
+        FermError, match=r"^Failed to open .*: Is a directory$"
+    ):
+        _parse_file(main)
 
 
 def test_include_pipe_nonzero_exit_aborts(tmp_path: Path) -> None:
@@ -1214,6 +1347,21 @@ def test_collect_filenames_non_file_rejected(tmp_path: Path) -> None:
     parent = str(tmp_path / "main.ferm")
     with pytest.raises(FermError, match="is not a file"):
         collect_filenames(parent, [str(tmp_path / "missing")])
+
+
+def test_collect_filenames_leading_pipe_rejected() -> None:
+    """
+    A relative path that ends up starting with '|' after the parent-dir
+    prefix is rejected outright -- a leading pipe is never a valid include.
+
+    ``_ABS_OR_PIPE_RE`` only recognises a LEADING '/' or a TRAILING '|' as
+    already-resolved, so an ordinary relative name is prefixed with the
+    parent directory before this check runs; the parent directory here
+    ("|/") is contrived so the prefixed path starts with '|' without
+    itself being the (valid) trailing-pipe form.
+    """
+    with pytest.raises(FermError, match="This kind of pipe is not allowed"):
+        collect_filenames("|/main.ferm", ["cmd"])
 
 
 def test_ipv6_base_match_keyword_recognized() -> None:

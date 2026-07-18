@@ -154,6 +154,23 @@ def test_describe_unknown_far_name_has_no_hint() -> None:
     with pytest.raises(FermError) as exc:
         describe("qqqqzzzz")
     assert "did you mean" not in str(exc.value)
+    # Exact equality: a mutant that seeds the no-hint default with a
+    # leftover marker (e.g. "XXXX") or the interpolated word "None" still
+    # passes the substring check above, so only full equality catches it.
+    assert str(exc.value) == "ferm --describe: unknown name 'qqqqzzzz'"
+
+
+def test_describe_unknown_hint_lists_registry_derived_names() -> None:
+    # 'saddr'/'vaddr'/'daddr' are option keywords reached only through the
+    # module registries, not through BUILTINS/SHORTCUTS/DEPRECATED_KEYWORDS.
+    # If the did-you-mean pool ever stopped scanning the registries, this
+    # hint would vanish entirely rather than merely shrink.
+    with pytest.raises(FermError) as exc:
+        describe("saddrx")
+    assert str(exc.value) == (
+        "ferm --describe: unknown name 'saddrx'; "
+        "did you mean: saddr, vaddr, daddr?"
+    )
 
 
 def test_list_modules_sections_and_width() -> None:

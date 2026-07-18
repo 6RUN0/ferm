@@ -2596,6 +2596,22 @@ def test_render_preserve_is_error() -> None:
         NftBackend().render(Family.IP, info, Options(test=True))
 
 
+def test_render_passes_the_real_domain_into_build_chains() -> None:
+    # render() must hand ITS OWN domain to build_chains, not some other
+    # value: eb's base-chain priority landmark (-200) differs from the
+    # shared ip/ip6 map's (0 for filter/INPUT), so a swapped domain would
+    # silently emit the wrong hook priority for every eb base chain.
+    info = DomainInfo()
+    table = info.tables.setdefault("filter", TableInfo())
+    table.chains.setdefault("INPUT", ChainInfo(policy="ACCEPT"))
+    save = NftBackend().render(Family.EB, info, Options(test=True)).save
+    assert save is not None
+    assert (
+        "add chain bridge ferm INPUT "
+        "{ type filter hook input priority -200; policy accept; }\n"
+    ) in save
+
+
 # --- commit / capture_previous / rollback ---------------------------------
 
 from pyferm.backend.base import Rendered  # noqa: E402
@@ -3291,6 +3307,53 @@ def test_collapse_second_axis_order_insensitive() -> None:
     assert out[0].statements[1].to_text() == "ip daddr { 10.0.0.3, 10.0.0.4 }"
 
 
+# _collapse_one_pass is exercised directly (not through the
+# _collapse_chain_rules fixpoint) below: the fixpoint re-runs a pass to
+# convergence, which can silently repair an off-by-one/step bug in a
+# SINGLE pass (two 2-way merges land on the same final answer as one
+# 4-way merge would), masking it from every _collapse_chain_rules-level
+# assertion above.
+from pyferm.backend.nft.assemble import _collapse_one_pass  # noqa: E402
+
+
+def test_collapse_one_pass_merges_full_uniform_run_in_one_call() -> None:
+    out, changed = _collapse_one_pass(
+        [
+            _port_rule("22"),
+            _port_rule("80"),
+            _port_rule("443"),
+            _port_rule("8080"),
+        ]
+    )
+    assert changed is True
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == "tcp dport { 22, 80, 443, 8080 }"
+
+
+def test_collapse_one_pass_stops_the_run_at_a_differing_selector() -> None:
+    # A uniform 3-run followed by a rule on a DIFFERENT selector: the
+    # extension loop must compare against -- and stop at -- the correct
+    # follow-up rule.  Comparing the wrong index, or overshooting the
+    # bound check by stepping 2 at a time, either folds the incompatible
+    # saddr rule into the dport set or drops one of the three ports into
+    # its own singleton.
+    saddr_rule = NftRule(
+        statements=[
+            NftMatch(
+                "ip saddr 10.0.0.9", set_key="ip saddr", element="10.0.0.9"
+            ),
+            NftVerdict("accept"),
+        ]
+    )
+    out, changed = _collapse_one_pass(
+        [_port_rule("22"), _port_rule("80"), _port_rule("443"), saddr_rule]
+    )
+    assert changed is True
+    assert len(out) == 2
+    assert out[0].statements[0].to_text() == "tcp dport { 22, 80, 443 }"
+    assert out[1] is saddr_rule
+
+
 # ---------------------------------------------------------------------------
 # Phase 5: verdict-map (vmap) fold
 # ---------------------------------------------------------------------------
@@ -3398,6 +3461,46 @@ def test_collapse_vmap_duplicate_key_ends_run() -> None:
     )
     assert out[1].statements[0].to_text() == "tcp dport 22"
     assert out[1].statements[1].to_text() == "return"
+
+
+def test_collapse_vmap_detects_duplicate_of_a_later_key() -> None:
+    # The above test repeats the FIRST key, which stays in keys_seen even
+    # if the per-iteration `keys_seen.add(...)` is broken (it is seeded,
+    # correctly, before the loop starts).  Repeating the SECOND key
+    # instead only breaks the run if that `.add()` records what it is
+    # actually told to.
+    out = _collapse_chain_rules(
+        [
+            _port_rule("22", "accept"),
+            _port_rule("80", "drop"),
+            _port_rule("80", "return"),
+        ]
+    )
+    assert len(out) == 2
+    assert (
+        out[0].statements[0].to_text()
+        == "tcp dport vmap { 22 : accept, 80 : drop }"
+    )
+    assert out[1].statements[0].to_text() == "tcp dport 80"
+    assert out[1].statements[1].to_text() == "return"
+
+
+def test_collapse_vmap_folds_a_three_key_run_in_one_shot() -> None:
+    # A three-distinct-key run must fold into ONE vmap; a corrupted `end`
+    # bookkeeping (assigning a literal instead of incrementing) leaves the
+    # loop believing the run ended one rule early, so the last leaf is
+    # folded into the vmap AND re-emitted as its own separate rule.
+    out = _collapse_chain_rules(
+        [
+            _port_rule("22", "accept"),
+            _port_rule("80", "drop"),
+            _port_rule("443", "return"),
+        ]
+    )
+    assert len(out) == 1
+    assert out[0].statements[0].to_text() == (
+        "tcp dport vmap { 22 : accept, 80 : drop, 443 : return }"
+    )
 
 
 def test_collapse_vmap_does_not_cross_selectors() -> None:
@@ -3771,6 +3874,27 @@ def test_translate_rule_companion_before_matches_keeps_matches() -> None:
         "meta l4proto tcp",
         "ip saddr 10.0.0.1",
         "reject with icmp type port-unreachable",
+    ]
+
+
+def test_translate_rule_setref_option_before_matches_keeps_matches() -> None:
+    # The inline-SetRef branch (a regular option whose VALUE is a SetRef,
+    # e.g. `dport $set`) must `continue`, not terminate the loop, so a
+    # match -- and the target's verdict -- following it are not dropped.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("dport", SetRef("badguys", ["22"])),
+            _opt("source", "10.0.0.1"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert _texts(nft) == [
+        "tcp dport @badguys",
+        "ip saddr 10.0.0.1",
+        "accept",
     ]
 
 
@@ -5340,6 +5464,38 @@ def test_recent_stuart_set_first_calibration() -> None:
         "limit rate over 192/hour burst 15 packets }"
     )
     assert _recent_texts(Family.IP, bare, upd) == [[spec], [spec, "jump bad"]]
+
+
+def test_recent_update_set_type_matches_domain() -> None:
+    # to_text() never renders `set_type` (only the set DECLARATION line,
+    # emitted later by _collect_set_declarations/serialize_table off the
+    # raw field), so none of the to_text()-based assertions above would
+    # notice a wrong/None set_type; the field must be read directly.
+    ip_rule = _recent_rule(
+        _recent("set"),
+        _recent("seconds", "60"),
+        _recent("name", "GUARD"),
+        verdict="DROP",
+    )
+    ip_specs = _build_recent_specs(Family.IP, [ip_rule])
+    ip_update = translate_rule(
+        Family.IP, "filter", ip_rule, chain="c", recent_specs=ip_specs
+    ).statements[0]
+    assert isinstance(ip_update, NftSetUpdate)
+    assert ip_update.set_type == "ipv4_addr"
+
+    ip6_rule = _recent_rule(
+        _recent("set"),
+        _recent("seconds", "60"),
+        _recent("name", "GUARD6"),
+        verdict="DROP",
+    )
+    ip6_specs = _build_recent_specs(Family.IP6, [ip6_rule])
+    ip6_update = translate_rule(
+        Family.IP6, "filter", ip6_rule, chain="c", recent_specs=ip6_specs
+    ).statements[0]
+    assert isinstance(ip6_update, NftSetUpdate)
+    assert ip6_update.set_type == "ipv6_addr"
 
 
 def test_recent_refuses_unsupported_verbs() -> None:
@@ -7894,6 +8050,25 @@ def test_merge_run_extends_prefolded_and_keeps_comment() -> None:
     assert merged.comment == "keepme"
 
 
+def test_merge_run_keeps_the_anchor_expr_field() -> None:
+    # to_text() ignores `.expr` entirely once `elements` is populated (it
+    # renders the set from set_key/elements instead), so a merge that
+    # drops the anchor's expr would NOT show up in any to_text()-based
+    # assertion, including the one above; the field must be read directly.
+    merged = _merge_run(
+        [
+            NftRule([_set_match("22"), NftVerdict("accept")]),
+            NftRule([_set_match("80"), NftVerdict("accept")]),
+        ],
+        0,
+        1,
+        0,
+    )
+    match = merged.statements[0]
+    assert isinstance(match, NftMatch)
+    assert match.expr == "tcp dport 22"
+
+
 def test_collapse_folds_full_run_of_singles() -> None:
     rules = [
         NftRule([_set_match(p), NftVerdict("accept")])
@@ -8583,6 +8758,27 @@ def test_collect_set_target_names_and_empty_set_exemption() -> None:
     assert _references_empty_named_set(lookup)
 
 
+def test_collect_set_target_names_survives_lookup_before_set_rule() -> None:
+    # The per-rule scan `continue`s past a non-SET-target rule to keep
+    # inspecting the rest of the list; a `break` there would abort the
+    # whole collection at the FIRST non-mutating rule instead of merely
+    # skipping it, silently losing every SET target that follows.
+    bucket = SetRef("badguys", [])
+    lookup = _rule(_match_set_opt(bucket, "src"), _target("DROP"))
+    set_rule = _set_target_rule("add-set", bucket)
+    names = _collect_set_target_names([lookup, set_rule])
+    assert names == _BUCKET_TARGETS
+
+
+def test_collect_set_target_names_recognizes_del_set_alone() -> None:
+    # add-set and del-set are collected by the same membership check; a
+    # spelling mutation on the "del-set" literal would silently stop
+    # collecting names off a del-only rule.
+    bucket = SetRef("badguys", [])
+    names = _collect_set_target_names([_set_target_rule("del-set", bucket)])
+    assert names == _BUCKET_TARGETS
+
+
 def test_collector_merges_lookup_with_set_target_both_orders() -> None:
     bucket = SetRef("badguys", [])
     set_rule = _translate_set_rule(
@@ -8754,3 +8950,47 @@ def test_tcp_option_match_implies_l4proto() -> None:
         ),
     )
     assert "synproxy mss 1460 wscale 7" in _texts(synproxy)
+
+
+def test_synproxy_mss_alone_does_not_imply_l4proto() -> None:
+    # The existing SYNPROXY case above always carries a `syn` option too,
+    # which ALSO implies l4proto on its own (it is in the unconditional
+    # name tuple) -- so it cannot tell an `and` from an `or` on the
+    # `(name in (mss, tcp-option) and module in (tcp, tcpmss))` clause.
+    # Dropping `syn` isolates it: SYNPROXY's `mss` companion shares its
+    # bare name with the tcp/tcpmss MATCH forms, but only the match's
+    # OWN module suppresses the `meta l4proto` prefix -- an `and`->`or`
+    # mutation would suppress it here too, though the readback keeps it.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "tcp", kind=OptionKind.PROTO),
+            _opt("mss", "1460", module="SYNPROXY"),
+            _opt("wscale", "7", module="SYNPROXY"),
+            _target("SYNPROXY"),
+        ),
+    )
+    assert _texts(nft) == [
+        "meta l4proto tcp",
+        "synproxy mss 1460 wscale 7",
+    ]
+
+
+def test_dccp_types_option_needs_the_dccp_module_to_imply_l4proto() -> None:
+    # `dccp-types` is a real xt_dccp option name; the l4proto-suppression
+    # check is module-qualified (module == "dccp"), but `_translate_match_
+    # parts` dispatches on the NAME alone, so a same-named option under a
+    # different module still translates -- an `and`->`or` mutation on the
+    # implied-l4proto clause would suppress the `meta l4proto` prefix for
+    # ANY module spelling an option `dccp-types`, not just the DCCP match.
+    nft = translate_rule(
+        Family.IP,
+        "filter",
+        _rule(
+            _opt("protocol", "dccp", kind=OptionKind.PROTO),
+            _opt("dccp-types", "REQUEST", module="other"),
+            _target("ACCEPT"),
+        ),
+    )
+    assert _texts(nft)[0] == "meta l4proto dccp"

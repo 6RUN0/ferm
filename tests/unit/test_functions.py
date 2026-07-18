@@ -22,6 +22,7 @@ from pyferm.functions import (
     Evaluator,
     _perl_substr,
     _perl_substr_index,
+    _split_backtick_output,
     ipfilter,
     realize_protocol,
     realize_protocol_keyword,
@@ -401,6 +402,25 @@ def test_builtin_glob(tmp_path: object) -> None:
     ev = Evaluator(tokenizer, Scope())
     ev.scope.push(Frame())
     assert ev.getvalues() == [str(base / "a.conf"), str(base / "b.conf")]
+
+
+def test_builtin_glob_absolute_pattern_is_used_as_is(tmp_path: object) -> None:
+    # An already-absolute glob pattern must not be prefixed with the
+    # script's own directory -- doubling the prefix would glob a path that
+    # does not exist and silently return no matches.
+    import pathlib
+
+    base = pathlib.Path(str(tmp_path))
+    (base / "a.conf").write_text("", encoding="utf-8")
+    tokenizer = Tokenizer(
+        Script(
+            filename=str(base / "rules.ferm"),
+            handle=io.StringIO(f"@glob('{base}/*.conf')"),
+        )
+    )
+    ev = Evaluator(tokenizer, Scope())
+    ev.scope.push(Frame())
+    assert ev.getvalues() == str(base / "a.conf")
 
 
 def test_builtin_glob_single_match_collapses_to_scalar(
@@ -962,3 +982,93 @@ def test_cgroup_classid_guard_messages_are_exact() -> None:
         _evaluator("zzzz:gg").cgroup_classid(Rule())
     with pytest.raises(FermError, match=_exact("classid is too large")):
         _evaluator("4294967296").cgroup_classid(Rule())
+
+
+# -- multiport_params: a chunk reset must clear size back to zero -----------
+
+
+def test_multiport_thirty_ports_splits_into_two_even_chunks() -> None:
+    # 30 single ports split into exactly two 15-port chunks. Resetting the
+    # running ``size`` counter to anything but 0 after a chunk boundary
+    # would desync the count from the (empty) new chunk and misplace the
+    # next split -- e.g. a stray "size = 1" yields 15/14/1 instead of 15/15.
+    ports = " ".join(str(p) for p in range(1, 31))
+    ev = _evaluator(f"({ports})")
+    assert ev.multiport_params(Rule(protocol="tcp")) == [
+        "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
+        "16,17,18,19,20,21,22,23,24,25,26,27,28,29,30",
+    ]
+
+
+# -- multiport_params: negation (scalar and array) ---------------------------
+
+
+def test_multiport_negated_scalar() -> None:
+    # multiport_params reads its value with allow_negation=True: a lone
+    # negated port must round-trip as a Negated scalar, not error out.
+    ev = _evaluator("! 80")
+    assert ev.multiport_params(Rule(protocol="tcp")) == Negated("80")
+
+
+def test_multiport_negated_array() -> None:
+    # multiport_params also passes allow_array_negation=True through to
+    # negate_value, so a negated port list is allowed and comma-joined
+    # under the Negated tag rather than raising "not possible to negate".
+    ev = _evaluator("! (80 443)")
+    assert ev.multiport_params(Rule(protocol="tcp")) == Negated("80,443")
+
+
+# -- _read_array: nested arrays flatten, they do not nest --------------------
+
+
+def test_getvalues_nested_array_flattens_into_one_list() -> None:
+    # A parenthesised array containing a nested array must flatten into a
+    # single flat list (the nested array's elements extend the outer
+    # wordlist); a mutant that appends the nested list as one element, or
+    # extends with None, would either nest it or crash.
+    ev = _evaluator("((1.2.3.4 5.6.7.8) 9.9.9.9)")
+    assert ev.getvalues() == ["1.2.3.4", "5.6.7.8", "9.9.9.9"]
+
+
+# -- getvalues: array negation is forbidden unless explicitly allowed -------
+
+
+def test_address_magic_forbids_negated_array_by_default() -> None:
+    # address_magic calls getvalues(allow_negation=True) without opting into
+    # allow_array_negation, so its True default must actually be False:
+    # negating an address array is rejected here, unlike multiport.
+    with pytest.raises(
+        FermError, match="it is not possible to negate an array"
+    ):
+        _evaluator("! (1.2.3.4 5.6.7.8)").address_magic(Rule(domain="ip"))
+
+
+# -- getvalues: a bare "&" is rejected as a keyword-parameter value ----------
+
+
+def test_ampersand_token_errors_as_keyword_parameter() -> None:
+    # A bare "&" (a function-call sigil with no call site) read as a value
+    # must error, not fall through to @-builtin dispatch or be returned as
+    # the literal string "&".
+    with pytest.raises(
+        FermError, match="function calls are not allowed as keyword parameter"
+    ):
+        _evaluator("&").getvalues()
+
+
+# -- get_function_params: allow_negation must reach every getvalues call ----
+
+
+def test_get_function_params_forwards_allow_negation() -> None:
+    # The parser passes allow_negation=True when expanding a user &function
+    # call so "! arg" is accepted; this must actually reach the per-param
+    # getvalues() call, not be dropped in favour of the False default.
+    ev = _evaluator("(! x)")
+    assert ev.get_function_params(allow_negation=True) == [Negated("x")]
+
+
+# -- _split_backtick_output: strip "#" comments before splitting ------------
+
+
+def test_split_backtick_output_strips_comment_and_splits() -> None:
+    assert _split_backtick_output("a # comment\nb") == ["a", "b"]
