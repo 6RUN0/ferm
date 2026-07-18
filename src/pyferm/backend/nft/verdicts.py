@@ -624,6 +624,21 @@ def _mac_canon(scalar: str) -> str:
     return ":".join(f"{int(octet, 16):02x}" for octet in scalar.split(":"))
 
 
+def _companion_scalar(comp: RenderedOption) -> str:
+    """
+    Unwrap an eb NAT / arp mangle companion operand.
+
+    The registry marks none of these options negatable, so a Negated
+    wrapper is a wiring bug (the :func:`_set_target_operand` precedent),
+    not a config error -- silently dropping the flag instead would turn
+    a future registry edit into a fail-open.
+    """
+    scalar, neg = unwrap_value(comp.value)
+    if neg:
+        raise internal_error(f"negated non-negatable companion '{comp.name}'")
+    return scalar
+
+
 def _eb_nat_statement(
     table: str,
     chain: str | None,
@@ -639,7 +654,10 @@ def _eb_nat_statement(
     default).  ``snat-arp`` refuses -- nft cannot rewrite the ARP
     payload, and silently dropping that half would make the rule do
     less than the config asked.  Always translates or raises; there is
-    no fall-through to a user-chain jump.
+    no fall-through to a user-chain jump.  The :data:`_EB_NAT_SPEC`
+    chain lists are the nft-supported subset, not the full ebtables
+    placement rule: ebtables also allows dnat in broute/BROUTING, which
+    stays unmapped (refused) on nft.
     """
     chains, field, mac_name = _EB_NAT_SPEC[target_value]
     if table != "nat" or chain not in chains:
@@ -658,12 +676,12 @@ def _eb_nat_statement(
         raise FermError(
             f"eb {target_value} needs '{mac_name}' for the nft backend"
         )
-    scalar, _ = unwrap_value(comp.value)
+    scalar = _companion_scalar(comp)
     mac = _mac_canon(scalar)
     verdict = "accept"
     target_comp = companions.get(f"{target_value}-target")
     if target_comp is not None:
-        operand, _ = unwrap_value(target_comp.value)
+        operand = _companion_scalar(target_comp)
         mapped = _EB_NAT_VERDICT.get(operand)
         if mapped is None:
             raise FermError(
@@ -739,7 +757,7 @@ def _arp_mangle_statement(
         comp = companions.get(name)
         if comp is None:
             continue
-        scalar, _ = unwrap_value(comp.value)
+        scalar = _companion_scalar(comp)
         if name.startswith("mangle-ip"):
             # Strictly an IPv4 literal: IPv4Address rejects leading
             # zeros, hex/int forms and ip6 colons (_validate_address
@@ -757,7 +775,7 @@ def _arp_mangle_statement(
     verdict = "accept"
     target_comp = companions.get("mangle-target")
     if target_comp is not None:
-        operand, _ = unwrap_value(target_comp.value)
+        operand = _companion_scalar(target_comp)
         mapped = _ARP_MANGLE_VERDICT.get(operand)
         if mapped is None:
             raise FermError(

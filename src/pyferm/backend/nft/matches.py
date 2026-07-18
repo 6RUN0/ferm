@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from .model import (
     _UNSUPPORTED_VALUE_SHAPE,
     NftMatch,
+    _bounded_uint,
     _is_ascii_uint,
     _nft_ifname,
     _nft_l4proto,
@@ -1173,8 +1174,9 @@ def _socket_matches(domain: Family, names: frozenset[str]) -> list[NftMatch]:
     ``nowildcard`` the tautological wildcard bound drops entirely (all
     forms from iptables-translate, readback-verified live).
     ``restore-skmark`` does not shape the matches: it becomes a ``meta
-    mark set socket mark`` statement, injected after the match list by
-    ``translate_rule``.
+    mark set socket mark`` statement, injected by ``translate_rule``
+    right at the socket match's source position (the restore is a side
+    effect of the socket match itself, not of the whole rule matching).
     """
     if domain not in (Family.IP, Family.IP6):
         raise FermError("mod socket is ip/ip6-only for the nft backend")
@@ -1334,7 +1336,12 @@ def _translate_match_parts(
         return (f"meta length {_op(neg)}{scalar}", None, None)
     if name == "opcode":
         if _is_ascii_uint(scalar):
-            if int(scalar) == 0:
+            # ar_op is a 16-bit field: arptables and `nft -c` both
+            # reject anything past 65535, but the oracle defers that to
+            # apply time, so the bound lives nft-only here to keep the
+            # dry-run surfaces honest (the opcode-0 precedent).
+            number = _bounded_uint(scalar, _U16_MAX, "arp opcode")
+            if number == 0:
                 # arptables treats --opcode 0 as a wildcard (verified
                 # live: arptables-nft installs NO operation match), so
                 # `arp operation 0` would invert the semantics into
@@ -1343,7 +1350,7 @@ def _translate_match_parts(
                     "arp opcode 0 is an arptables wildcard, "
                     "not a match, for nft backend"
                 )
-            operation = _ARP_OPERATION_BY_NUMBER.get(int(scalar), scalar)
+            operation = _ARP_OPERATION_BY_NUMBER.get(number, scalar)
             return (f"arp operation {_op(neg)}{operation}", None, None)
         # The ASCII gate mirrors arptables' strcasecmp: a bare
         # str.lower() would over-accept Unicode spellings the oracle

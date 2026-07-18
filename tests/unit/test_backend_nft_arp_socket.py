@@ -30,7 +30,7 @@ from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.scope import OptionKind
 from pyferm.values import Negated
-from tests.unit._nftrule import _opt, _rule, _target
+from tests.unit._nftrule import _exact, _opt, _rule, _target
 
 if TYPE_CHECKING:
     from pyferm.rules import RenderedOption
@@ -101,7 +101,9 @@ def test_opcode_zero_refuses(zero: str) -> None:
     # arptables --opcode 0 is a wildcard (live arptables-nft installs NO
     # operation match), so `arp operation 0` would invert it into
     # match-nothing; negated it is equally unexpressable.
-    message = r"\Aarp opcode 0 is an arptables wildcard, not a match, "
+    message = _exact(
+        "arp opcode 0 is an arptables wildcard, not a match, for nft backend"
+    )
     with pytest.raises(FermError, match=message):
         translate_match(Family.ARP, _opt("opcode", zero), None)
     with pytest.raises(FermError, match=message):
@@ -120,8 +122,26 @@ def test_opcode_zero_refuses(zero: str) -> None:
     ],
 )
 def test_named_opcode_refuses_off_table(bad: str) -> None:
-    with pytest.raises(FermError, match=r"\Ainvalid arp opcode "):
+    message = _exact(f"invalid arp opcode '{bad}' for nft backend")
+    with pytest.raises(FermError, match=message):
         translate_match(Family.ARP, _opt("opcode", bad), None)
+
+
+@pytest.mark.parametrize("out_of_range", ["65536", "70000"])
+def test_numeric_opcode_refuses_past_u16(out_of_range: str) -> None:
+    # ar_op is a 16-bit field: arptables and `nft -c` both reject
+    # anything past 65535, so the dry-run surfaces must too (the
+    # iptables path keeps emitting it verbatim -- oracle parity).
+    message = _exact(f"invalid arp opcode '{out_of_range}' for nft backend")
+    with pytest.raises(FermError, match=message):
+        translate_match(Family.ARP, _opt("opcode", out_of_range), None)
+
+
+def test_numeric_opcode_u16_ceiling_still_translates() -> None:
+    assert (
+        translate_match(Family.ARP, _opt("opcode", "65535"), None)
+        == "arp operation 65535"
+    )
 
 
 # -- arp mangle target ----------------------------------------------------
@@ -221,7 +241,8 @@ def test_arp_mangle_target_refuses_off_whitelist(operand: str) -> None:
     # RETURN in particular: the nft kernel would take `return`, but
     # arptables rejects it ("bad target for --mangle-target"), and
     # accepting it would accept a config the oracle refuses.
-    with pytest.raises(FermError, match=r"\Ainvalid mangle-target "):
+    message = _exact(f"invalid mangle-target '{operand}' for the nft backend")
+    with pytest.raises(FermError, match=message):
         _texts(
             Family.ARP,
             _opt("mangle-ip-s", "192.0.2.1"),
@@ -242,7 +263,8 @@ def test_arp_mangle_target_refuses_off_whitelist(operand: str) -> None:
     ],
 )
 def test_arp_mangle_refuses_non_ipv4_literal(bad: str) -> None:
-    with pytest.raises(FermError, match=r"\Ainvalid arp mangle ip "):
+    message = _exact(f"invalid arp mangle ip '{bad}' for nft backend")
+    with pytest.raises(FermError, match=message):
         _texts(
             Family.ARP,
             _opt("mangle-ip-s", bad),
@@ -251,7 +273,8 @@ def test_arp_mangle_refuses_non_ipv4_literal(bad: str) -> None:
 
 
 def test_arp_mangle_refuses_bad_mac() -> None:
-    with pytest.raises(FermError, match=r"\Ainvalid mac "):
+    message = _exact("invalid mac 'aa-bb-cc-00-11-22' for nft backend")
+    with pytest.raises(FermError, match=message):
         _texts(
             Family.ARP,
             _opt("mangle-mac-s", "aa-bb-cc-00-11-22"),
@@ -282,9 +305,11 @@ def test_arp_mangle_companion_without_mangle_target_refuses(
     options = [_opt("mangle-ip-s", "192.0.2.1")]
     if target is not None:
         options.append(target)
-    with pytest.raises(
-        FermError, match=r"\Aoption 'mangle-ip-s' needs the arp "
-    ):
+    message = _exact(
+        "option 'mangle-ip-s' needs the arp 'jump mangle' target "
+        "for the nft backend"
+    )
+    with pytest.raises(FermError, match=message):
         _texts(Family.ARP, *options)
 
 
@@ -305,6 +330,19 @@ def test_arp_mangle_companion_partition_is_consistent() -> None:
         "mangle-mac-d",
         "mangle-target",
     } == _ARP_MANGLE_COMPANIONS
+
+
+def test_arp_mangle_negated_companion_is_a_wiring_bug() -> None:
+    # The registry marks no mangle companion negatable, so a Negated
+    # wrapper can only come from a future registry edit -- surface it
+    # as an internal error instead of silently dropping the flag.
+    message = _exact(
+        "internal error: negated non-negatable companion 'mangle-ip-s'"
+    )
+    with pytest.raises(FermError, match=message):
+        _arp_mangle_statement(
+            {"mangle-ip-s": _opt("mangle-ip-s", Negated("192.0.2.1"))}
+        )
 
 
 def test_arp_mangle_statement_is_not_a_vmap_verdict() -> None:
@@ -347,6 +385,27 @@ def test_restore_skmark_statement_order(
     ]
 
 
+def test_restore_skmark_rides_at_the_socket_position() -> None:
+    # The mark restore is a side effect of the socket MATCH itself, so
+    # iptables-translate emits it right at the socket match's source
+    # position; nft runs statements left-to-right without rollback, and
+    # a tail placement would make the restore conditional on the later
+    # dport match (marking strictly fewer packets than real iptables).
+    assert _texts(
+        Family.IP,
+        _marker("socket"),
+        _opt("restore-skmark", None, module="socket"),
+        _opt("protocol", "tcp", kind=OptionKind.PROTO),
+        _opt("dport", "80"),
+        _target("ACCEPT"),
+    ) == [
+        "socket wildcard 0",
+        "meta mark set socket mark",
+        "tcp dport 80",
+        "accept",
+    ]
+
+
 def test_restore_skmark_without_target_is_valid_and_not_vmap() -> None:
     # xt allows a verdict-less rule (match + mark restore, then fall
     # through); the trailing statement must not be folded as a vmap
@@ -365,7 +424,8 @@ def test_restore_skmark_without_target_is_valid_and_not_vmap() -> None:
 
 
 def test_restore_skmark_stays_ip_only() -> None:
-    with pytest.raises(FermError, match=r"\Amod socket is ip/ip6-only"):
+    message = _exact("mod socket is ip/ip6-only for the nft backend")
+    with pytest.raises(FermError, match=message):
         _texts(
             Family.EB,
             _marker("socket"),

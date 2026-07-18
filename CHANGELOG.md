@@ -56,6 +56,15 @@ For the history of the original Perl implementation, see
 
 ### Fixed
 
+- `--nft` emits the `restore-skmark` mark restore at the socket match's
+  own position instead of after every other match: nft runs statements
+  left to right, so the old tail placement made the restore conditional
+  on later matches in the rule — marking fewer packets than iptables
+  does.  The emission now matches iptables-translate.
+- `--nft` refuses numeric arp `opcode` values past 65535 (`ar_op` is a
+  16-bit field): arptables and the `nft -c` pre-check both reject them,
+  but the dry-run surfaces (`--lines`, `--plan`) presented them as
+  valid.
 - `--nft` refuses `opcode 0` instead of emitting `arp operation 0`:
   arptables treats `--opcode 0` as a wildcard (verified live —
   arptables-nft installs no operation match at all), so the old

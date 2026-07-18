@@ -223,6 +223,15 @@ _BARE_INERT_MATCH_MODULES: Final[frozenset[str]] = frozenset(
     {"state", "conntrack"}
 )
 
+# xt_socket's --restore-skmark copies the matched socket's mark into the
+# packet as a side effect of the socket MATCH itself, so the statement
+# must sit at the socket match's source position (iptables-translate
+# parity): nft runs statements left-to-right without rollback, and a
+# tail placement would make the restore conditional on every later
+# match.  A statement, not a match; the rule stays valid without a
+# terminating verdict (the TCPOPTSTRIP precedent).
+_RESTORE_SKMARK_STATEMENT: Final = NftVerdict("meta mark set socket mark")
+
 
 def translate_rule(
     domain: Family,
@@ -471,6 +480,8 @@ def translate_rule(
             if module_name == "socket":
                 if not socket_emitted:
                     matches.extend(_socket_matches(domain, socket_names))
+                    if "restore-skmark" in socket_names:
+                        matches.append(_RESTORE_SKMARK_STATEMENT)
                     socket_emitted = True
                 continue
             # The -m marker is implicit in nft only when the module's
@@ -594,6 +605,8 @@ def translate_rule(
         if option.module == "socket":
             if not socket_emitted:
                 matches.extend(_socket_matches(domain, socket_names))
+                if "restore-skmark" in socket_names:
+                    matches.append(_RESTORE_SKMARK_STATEMENT)
                 socket_emitted = True
             continue
         if option.module == "quota":
@@ -653,13 +666,6 @@ def translate_rule(
                 f"option '{stray[0]}' needs the arp 'jump mangle' "
                 f"target for the nft backend"
             )
-    if "restore-skmark" in socket_names:
-        # xt_socket's --restore-skmark copies the matched socket's mark
-        # into the packet (iptables-translate: `meta mark set socket
-        # mark`, readback-verified live).  A statement, not a match, so
-        # it rides after the matches; the rule stays valid without a
-        # terminating verdict (the TCPOPTSTRIP precedent).
-        statements.append(NftVerdict("meta mark set socket mark"))
     if target_value == "TCPOPTSTRIP":
         # TCPOPTSTRIP appends a series of reset statements (one per stripped
         # option) and no verdict; build_verdict is typed for exactly one

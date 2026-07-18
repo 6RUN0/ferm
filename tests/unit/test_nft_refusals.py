@@ -13,8 +13,6 @@ mutants all fall.
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from pyferm.backend.nft import _translate_match_parts, translate_rule
@@ -50,13 +48,7 @@ from pyferm.backend.nft.verdicts import (
 from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.values import Negated, Params, SetRef
-from tests.unit._nftrule import _opt, _rule
-
-
-def _exact(message: str) -> str:
-    """Anchor an exact expected message for ``pytest.raises(match=...)``."""
-    return f"^{re.escape(message)}$"
-
+from tests.unit._nftrule import _exact, _opt, _rule
 
 # ---------------------------------------------------------------------------
 # mod ipv4options

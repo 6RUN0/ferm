@@ -10,6 +10,7 @@ callers pin.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from pyferm.rules import RenderedOption, RenderedRule
@@ -17,6 +18,17 @@ from pyferm.scope import OptionKind
 
 if TYPE_CHECKING:
     from pyferm.values import Value
+
+
+def _exact(message: str) -> str:
+    """
+    Anchor an exact expected message for ``pytest.raises(match=...)``.
+
+    ``match=`` is ``re.search``, so an unanchored (or start-only) pattern
+    still hits a message a mutant has wrapped or tail-appended; only the
+    full ``^...$`` form kills those mutants.
+    """
+    return f"^{re.escape(message)}$"
 
 
 def _opt(

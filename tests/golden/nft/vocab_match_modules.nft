@@ -10,6 +10,7 @@ add rule ip ferm INPUT socket wildcard 0 socket transparent 1 accept
 add rule ip ferm INPUT socket wildcard 0 accept
 add rule ip ferm INPUT socket wildcard 0 socket transparent 1 meta mark set socket mark accept
 add rule ip ferm INPUT socket wildcard 0 meta mark set socket mark
+add rule ip ferm INPUT socket wildcard 0 meta mark set socket mark tcp dport 80 accept
 add rule ip ferm INPUT ct original ip saddr 192.0.2.1 ct original ip daddr != 198.51.100.1 accept
 add rule ip ferm INPUT ct original proto-src 80-90 accept
 add rule ip ferm INPUT ct protocol tcp accept

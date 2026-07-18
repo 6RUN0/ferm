@@ -8,6 +8,7 @@ table filter {
         mod socket ACCEPT;
         mod socket transparent restore-skmark ACCEPT;
         mod socket restore-skmark NOP;
+        mod socket restore-skmark proto tcp dport 80 ACCEPT;
         mod conntrack ctorigsrc 192.0.2.1 ctorigdst ! 198.51.100.1 ACCEPT;
         mod conntrack ctorigsrcport 80:90 ACCEPT;
         mod conntrack ctproto tcp ACCEPT;

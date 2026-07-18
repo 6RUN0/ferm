@@ -32,7 +32,8 @@ from pyferm.backend.nft.verdicts import (
 from pyferm.domains import Family
 from pyferm.errors import FermError
 from pyferm.modules import TARGET_DEFS
-from tests.unit._nftrule import _opt, _rule, _target
+from pyferm.values import Negated
+from tests.unit._nftrule import _exact, _opt, _rule, _target
 
 if TYPE_CHECKING:
     from pyferm.rules import RenderedOption
@@ -85,7 +86,10 @@ def test_eb_chain_map_matches_ebtables_nft() -> None:
     ],
 )
 def test_eb_chain_map_refuses_unmappable(table: str, chain: str) -> None:
-    with pytest.raises(FermError, match=rf"\Achain '{table}/{chain}' not"):
+    message = _exact(
+        f"chain '{table}/{chain}' not yet supported by nft backend"
+    )
+    with pytest.raises(FermError, match=message):
         map_base_chain(Family.EB, table, chain)
 
 
@@ -119,7 +123,8 @@ def test_mac_canon_pads_and_lowercases(raw: str, canon: str) -> None:
     ],
 )
 def test_mac_canon_refuses(raw: str) -> None:
-    with pytest.raises(FermError, match=r"\Ainvalid mac "):
+    message = _exact(f"invalid mac '{raw}' for nft backend")
+    with pytest.raises(FermError, match=message):
         _mac_canon(raw)
 
 
@@ -185,7 +190,8 @@ def test_eb_dnat_target_maps_verdict() -> None:
 
 @pytest.mark.parametrize("operand", ["NFQUEUE", "accept", " ACCEPT", "jump x"])
 def test_eb_nat_target_refuses_off_whitelist(operand: str) -> None:
-    with pytest.raises(FermError, match=r"\Ainvalid snat-target "):
+    message = _exact(f"invalid snat-target '{operand}' for the nft backend")
+    with pytest.raises(FermError, match=message):
         _eb_nat_text(
             *_snat(
                 "aa:bb:cc:00:11:22",
@@ -210,24 +216,32 @@ def test_eb_nat_target_refuses_off_whitelist(operand: str) -> None:
 def test_eb_snat_refuses_outside_nat_postrouting(
     table: str, chain: str | None
 ) -> None:
-    with pytest.raises(
-        FermError,
-        match=r"\Aeb snat translates only inside the built-in "
-        r"nat/POSTROUTING chain",
-    ):
+    message = _exact(
+        "eb snat translates only inside the built-in nat/POSTROUTING "
+        "chain for the nft backend"
+    )
+    with pytest.raises(FermError, match=message):
         _eb_nat_text(*_snat("aa:bb:cc:00:11:22"), table=table, chain=chain)
 
 
-def test_eb_dnat_refuses_in_postrouting() -> None:
-    with pytest.raises(
-        FermError,
-        match=r"\Aeb dnat translates only inside the built-in "
-        r"nat/PREROUTING or nat/OUTPUT chain",
-    ):
+@pytest.mark.parametrize(
+    ("table", "chain"),
+    [
+        ("nat", "POSTROUTING"),
+        ("filter", "PREROUTING"),
+    ],
+)
+def test_eb_dnat_refuses_misplaced(table: str, chain: str) -> None:
+    message = _exact(
+        "eb dnat translates only inside the built-in nat/PREROUTING "
+        "or nat/OUTPUT chain for the nft backend"
+    )
+    with pytest.raises(FermError, match=message):
         _eb_nat_text(
             _target("dnat"),
             _opt("to-destination", "aa:bb:cc:00:11:22", module="dnat"),
-            chain="POSTROUTING",
+            table=table,
+            chain=chain,
         )
 
 
@@ -235,7 +249,11 @@ def test_eb_snat_arp_refuses_on_key_presence() -> None:
     # snat-arp is a zero-arg flag; the refusal keys on presence, not on
     # the (empty/sentinel) value -- silently dropping the ARP rewrite
     # would make the rule do less than the config asked.
-    with pytest.raises(FermError, match=r"\Aoption 'snat-arp' has no nft"):
+    message = _exact(
+        "option 'snat-arp' has no nft equivalent (nft cannot rewrite "
+        "the ARP payload); use the iptables backend for this rule"
+    )
+    with pytest.raises(FermError, match=message):
         _eb_nat_text(
             *_snat(
                 "aa:bb:cc:00:11:22",
@@ -245,8 +263,36 @@ def test_eb_snat_arp_refuses_on_key_presence() -> None:
 
 
 def test_eb_snat_without_to_source_refuses() -> None:
-    with pytest.raises(FermError, match=r"\Aeb snat needs 'to-source'"):
+    message = _exact("eb snat needs 'to-source' for the nft backend")
+    with pytest.raises(FermError, match=message):
         _eb_nat_text(_target("snat"))
+
+
+@pytest.mark.parametrize("name", ["snat", "dnat"])
+def test_non_eb_jump_snat_dnat_stays_a_user_chain(name: str) -> None:
+    # Only ebtables reads `-j snat`/`-j dnat` as targets; in the ip
+    # domain the names are ordinary user chains (the arp `mangle`
+    # sibling of this test).
+    nft = translate_rule(Family.IP, "filter", _rule(_target(name)))
+    assert [s.to_text() for s in nft.statements] == [f"jump {name}"]
+
+
+def test_eb_nat_negated_companion_is_a_wiring_bug() -> None:
+    # The registry marks no eb NAT companion negatable, so a Negated
+    # wrapper can only come from a future registry edit -- surface it
+    # as an internal error instead of silently dropping the flag.
+    message = _exact(
+        "internal error: negated non-negatable companion 'to-source'"
+    )
+    with pytest.raises(FermError, match=message):
+        _eb_nat_text(
+            _target("snat"),
+            _opt(
+                "to-source",
+                Negated("aa:bb:cc:00:11:22"),
+                module="snat",
+            ),
+        )
 
 
 # -- registry partition and folding --------------------------------------
