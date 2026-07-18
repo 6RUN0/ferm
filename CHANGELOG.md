@@ -11,6 +11,8 @@ For the history of the original Perl implementation, see
 
 ## [Unreleased]
 
+## [0.1.0a9] - 2026-07-18
+
 ### Added
 
 - `--nft` accepts the named arp `opcode` operands (`Request` ...
@@ -965,7 +967,8 @@ are unchanged unless `--nft` is passed.
   `preflight` and into GitHub Actions CI (static checks split out, patch
   gate on PRs, weekly audit + Dependabot).
 
-[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a8...develop
+[Unreleased]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a9...develop
+[0.1.0a9]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a8...py-v0.1.0a9
 [0.1.0a8]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a7...py-v0.1.0a8
 [0.1.0a7]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a6...py-v0.1.0a7
 [0.1.0a6]: https://github.com/6RUN0/ferm/compare/py-v0.1.0a3...py-v0.1.0a6
