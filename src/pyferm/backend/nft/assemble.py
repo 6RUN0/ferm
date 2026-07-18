@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from ...domains import (
     Family,
@@ -19,6 +19,8 @@ from ...values import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ...rules import (
         RenderedOption,
         RenderedRule,
@@ -231,6 +233,164 @@ _BARE_INERT_MATCH_MODULES: Final[frozenset[str]] = frozenset(
 # match.  A statement, not a match; the rule stays valid without a
 # terminating verdict (the TCPOPTSTRIP precedent).
 _RESTORE_SKMARK_STATEMENT: Final = NftVerdict("meta mark set socket mark")
+
+_INET_FAMILIES: Final[frozenset[Family]] = frozenset({Family.IP, Family.IP6})
+
+
+class _TargetContext(NamedTuple):
+    """Everything a special-target translation may need from translate_rule."""
+
+    domain: Family
+    table: str
+    chain: str | None
+    target_value: str
+    companions: dict[str, RenderedOption]
+    options: list[RenderedOption]
+    protocol: str | None
+
+
+class _TargetSplice(NamedTuple):
+    """
+    Statements a target translation contributes to the rule.
+
+    ``prepend`` lands before every match, ``append`` after all of them;
+    translate_rule splices both around the already-built match list.
+    """
+
+    prepend: tuple[NftStatement, ...] = ()
+    append: tuple[NftStatement, ...] = ()
+
+
+def _build_tcpoptstrip(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build TCPOPTSTRIP's reset series (a verdict-less rule).
+
+    One reset statement per stripped option and no verdict; build_verdict
+    is typed for exactly one verdict, so it is spelled here (the
+    mangle-MARK precedent for a verdict-less rule).
+    """
+    return _TargetSplice(
+        append=tuple(_tcpoptstrip_resets(ctx.companions, ctx.protocol))
+    )
+
+
+def _build_netmap(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build the NETMAP prefix-map verdict.
+
+    NETMAP needs the rule's own address match (the map key) and the
+    chain's hook side, which build_verdict does not see.
+    """
+    return _TargetSplice(
+        append=(
+            _netmap_verdict(
+                ctx.domain, ctx.table, ctx.chain, ctx.companions, ctx.options
+            ),
+        )
+    )
+
+
+def _build_set_target(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build the SET target's set-mutation statement.
+
+    -j SET is non-terminating in iptables and the nft set-mutation
+    statement is too: the rule ends without a verdict (TCPOPTSTRIP
+    precedent).
+    """
+    return _TargetSplice(
+        append=(_set_target_statement(ctx.domain, ctx.companions),)
+    )
+
+
+def _build_secmark(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build the SECMARK object reference.
+
+    SECMARK declares a table `secmark` object and references it; the
+    object rides `decls` off the NftObjectRef (the SET precedent for a
+    statement that carries a declaration).
+    """
+    return _TargetSplice(append=(_secmark_statement(ctx.companions),))
+
+
+def _build_ct(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build the CT target's ordered statement list.
+
+    CT's `helper` knob declares a table `ct helper` object and the rest
+    of its options are plain statements; one branch builds the ordered
+    list so a helper-plus-zone rule never splits across two dispatch
+    sites (the SECMARK object precedent).
+    """
+    return _TargetSplice(append=tuple(_ct_target_statements(ctx.companions)))
+
+
+def _build_eb_nat(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build the ebtables snat/dnat `ether ... set` statement.
+
+    snat/dnat are legal only in specific built-in nat chains (the legacy
+    kernel enforces the placement with hook masks), which build_verdict
+    does not see; the NETMAP precedent.
+    """
+    return _TargetSplice(
+        append=(
+            _eb_nat_statement(
+                ctx.table, ctx.chain, ctx.target_value, ctx.companions
+            ),
+        )
+    )
+
+
+def _build_arp_mangle(ctx: _TargetContext) -> _TargetSplice:
+    """
+    Build the arptables mangle guards and rewrite tail.
+
+    arptables reads `-j mangle` as its mangle target unconditionally (a
+    user chain of that name is unreachable on the oracle side), so the
+    arp domain never treats it as a user-chain jump.  The guards go
+    FIRST (below every other arp selector's header offset -- the
+    readback would reorder them there anyway), the rewrite tail last.
+    """
+    tail = _arp_mangle_statement(ctx.companions)
+    return _TargetSplice(
+        prepend=(NftMatch(_ARP_MANGLE_GUARDS),),
+        append=() if tail is None else (tail,),
+    )
+
+
+class _TargetTranslation(NamedTuple):
+    """One special-target dispatch entry: family guard plus translation."""
+
+    #: families the translation applies to; ``None`` means every family.
+    families: frozenset[Family] | None
+    build: Callable[[_TargetContext], _TargetSplice]
+
+
+#: Targets whose translation cannot go through build_verdict (extra
+#: context, several statements, or no verdict at all).  A miss -- unknown
+#: target OR a families guard that does not hold -- falls through to
+#: build_verdict, where NETMAP/SET/SECMARK meet its registry refusal for
+#: arp/eb while snat/dnat/mangle stay ordinary user-chain names outside
+#: their own family (eb resp. arp).  CT carries no guard: it is a
+#: raw-table target the parser only emits for ip/ip6, matching the
+#: previous build_verdict handling.  INVARIANT for new entries: a key
+#: that could double as a user-chain name (any lowercase word, like
+#: snat/dnat/mangle) MUST carry a families guard -- with ``None`` it
+#: would silently hijack every jump to a user chain of that name.
+_TARGET_TRANSLATIONS: Final[dict[str, _TargetTranslation]] = {
+    "TCPOPTSTRIP": _TargetTranslation(None, _build_tcpoptstrip),
+    "NETMAP": _TargetTranslation(_INET_FAMILIES, _build_netmap),
+    "SET": _TargetTranslation(_INET_FAMILIES, _build_set_target),
+    "SECMARK": _TargetTranslation(_INET_FAMILIES, _build_secmark),
+    "CT": _TargetTranslation(None, _build_ct),
+    **dict.fromkeys(
+        _EB_NAT_TARGETS,
+        _TargetTranslation(frozenset({Family.EB}), _build_eb_nat),
+    ),
+    "mangle": _TargetTranslation(frozenset({Family.ARP}), _build_arp_mangle),
+}
 
 
 def translate_rule(
@@ -666,71 +826,35 @@ def translate_rule(
                 f"option '{stray[0]}' needs the arp 'jump mangle' "
                 f"target for the nft backend"
             )
-    if target_value == "TCPOPTSTRIP":
-        # TCPOPTSTRIP appends a series of reset statements (one per stripped
-        # option) and no verdict; build_verdict is typed for exactly one
-        # verdict, so it is spelled here (the mangle-MARK precedent for a
-        # verdict-less rule).
-        statements.extend(_tcpoptstrip_resets(companions, protocol))
-    elif target_value == "NETMAP" and domain in (Family.IP, Family.IP6):
-        # NETMAP needs the rule's own address match (the map key) and the
-        # chain's hook side, which build_verdict does not see; arp/eb fall
-        # through to its registry refusal.
-        statements.append(
-            _netmap_verdict(domain, table, chain, companions, rule.options)
-        )
-    elif target_value == "SET" and domain in (Family.IP, Family.IP6):
-        # -j SET is non-terminating in iptables and the nft set-mutation
-        # statement is too: the rule ends without a verdict (TCPOPTSTRIP
-        # precedent).  arp/eb fall through to the registry refusal.
-        statements.append(_set_target_statement(domain, companions))
-    elif target_value == "SECMARK" and domain in (Family.IP, Family.IP6):
-        # SECMARK declares a table `secmark` object and references it; the
-        # object rides `decls` off the NftObjectRef (the SET precedent for a
-        # statement that carries a declaration).  arp/eb fall through to the
-        # registry refusal.
-        statements.append(_secmark_statement(companions))
-    elif target_value == "CT":
-        # CT's `helper` knob declares a table `ct helper` object and the rest
-        # of its options are plain statements; one branch builds the ordered
-        # list so a helper-plus-zone rule never splits across two dispatch
-        # sites (the SECMARK object precedent).  No domain guard: CT is a
-        # raw-table target the parser only emits for ip/ip6, matching the
-        # previous build_verdict handling.
-        statements.extend(_ct_target_statements(companions))
-    elif target_value in _EB_NAT_TARGETS and domain is Family.EB:
-        # ebtables snat/dnat are legal only in specific built-in nat chains
-        # (the legacy kernel enforces the placement with hook masks), which
-        # build_verdict does not see; the NETMAP precedent.  Non-eb domains
-        # fall through: snat/dnat are eb-only target keywords, elsewhere
-        # they are user-chain names.
-        statements.append(
-            _eb_nat_statement(table, chain, target_value, companions)
-        )
-    elif target_value == "mangle" and domain is Family.ARP:
-        # arptables reads `-j mangle` as its mangle target
-        # unconditionally (a user chain of that name is unreachable on
-        # the oracle side), so the arp domain never treats it as a
-        # user-chain jump; other domains fall through to build_verdict
-        # where `mangle` stays an ordinary chain name.  The guards go
-        # FIRST (below every other arp selector's header offset -- the
-        # readback would reorder them there anyway), the rewrite tail
-        # last.
-        statements.insert(0, NftMatch(_ARP_MANGLE_GUARDS))
-        tail = _arp_mangle_statement(companions)
-        if tail is not None:
-            statements.append(tail)
-    elif target_value is not None:
-        statements.append(
-            build_verdict(
-                domain,
-                table,
-                target_name or "jump",
-                target_value,
-                companions,
-                has_transport=has_transport,
+    if target_value is not None:
+        translation = _TARGET_TRANSLATIONS.get(target_value)
+        if translation is not None and (
+            translation.families is None or domain in translation.families
+        ):
+            splice = translation.build(
+                _TargetContext(
+                    domain=domain,
+                    table=table,
+                    chain=chain,
+                    target_value=target_value,
+                    companions=companions,
+                    options=rule.options,
+                    protocol=protocol,
+                )
             )
-        )
+            statements[:0] = splice.prepend
+            statements.extend(splice.append)
+        else:
+            statements.append(
+                build_verdict(
+                    domain,
+                    table,
+                    target_name or "jump",
+                    target_value,
+                    companions,
+                    has_transport=has_transport,
+                )
+            )
     return NftRule(statements=statements, comment=comment)
 
 
