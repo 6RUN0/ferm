@@ -419,3 +419,62 @@ def test_interactive_rollback_declined_restores_worktree(
     err = capsys.readouterr().err
     assert "Firewall rules rolled back." in err
     assert "restored to match the running rules." in err
+
+
+def test_rollback_to_unparsable_revision_restores_worktree(
+    etckeeper_sandbox: EtckeeperSandbox,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """
+    A revert to a config that no longer parses restores the worktree.
+
+    The re-apply dies in the parse phase -- before any hook, render or
+    commit -- so the kernel provably still runs the pre-rollback rules
+    (:class:`_KernelUntouchedFermError`); leaving the reverted config
+    in place would diverge from the kernel and block the next rollback
+    behind the dirty-worktree guard.  Real git plumbing and the real
+    parser; only the backend is faked, so no tool is ever spawned.
+    """
+    sandbox = etckeeper_sandbox
+    sandbox.write("ferm/ferm.conf", "bork bork;\n")
+    etckeeper.commit("ferm: apply A")
+    sandbox.write("ferm/ferm.conf", "table filter { chain OUTPUT; }\n")
+    etckeeper.commit("ferm: apply B")
+    monkeypatch.setattr("sys.stdin", _FakeStdin("y\n", tty=True))
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+
+    events: list[str] = []
+
+    class _FakeBackend:
+        """Records kernel-facing calls; the parse dies before any."""
+
+        def tool_names(self, _domain: object) -> dict[str, str]:
+            """No tools to resolve."""
+            return {}
+
+        def capture_previous(self, *_args: object, **_kwargs: object) -> None:
+            """No previous kernel state to read."""
+
+        def shell_snapshot(self, *_args: object, **_kwargs: object) -> None:
+            """No --shell snapshot."""
+            return
+
+        def commit(self, *_args: object, **_kwargs: object) -> None:
+            """Record a (never expected) apply."""
+            events.append("commit")
+
+    monkeypatch.setattr(
+        cli_apply, "_select_backend", lambda _options: _FakeBackend()
+    )
+
+    with pytest.raises(FermError):
+        cli._rollback_main([sandbox.config_path])
+
+    assert events == []  # the kernel was never touched
+    # the worktree is back on the current revision, clean
+    assert sandbox.read("ferm/ferm.conf") == "table filter { chain OUTPUT; }\n"
+    subpath = etckeeper.repo_relative_subpath(sandbox.config_path)
+    assert etckeeper.working_tree_dirty(subpath) is False
+    err = capsys.readouterr().err
+    assert "restored to match the running rules." in err

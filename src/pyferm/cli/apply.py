@@ -15,7 +15,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Final, TextIO
 
-from ..errors import ExitCode, internal_error
+from ..errors import ExitCode, FermError, internal_error
 from ..functions import Evaluator, splitpath_dir, splitpath_file
 from ..parser import Parser
 from ..resolver import pick_resolver, set_resolver_provider
@@ -43,6 +43,18 @@ if TYPE_CHECKING:
 #: A clean run leaves exactly two scope frames on the stack: the global
 #: frame plus the top-level script frame.  Anything else is an internal bug.
 BALANCED_STACK_DEPTH: Final[int] = 2
+
+
+class _KernelUntouchedFermError(FermError):
+    """
+    A :class:`FermError` raised before any kernel mutation.
+
+    Wraps a parse/eval-phase error escaping :func:`_apply_config`: no
+    hook, render or commit has run yet (``capture_previous`` only
+    reads), so the caller may treat the running rules as untouched.
+    The rollback subcommand restores the reverted worktree on this
+    signal and leaves it in place on any later, kernel-unknown failure.
+    """
 
 
 class _RolledBackExit(SystemExit):
@@ -246,6 +258,11 @@ def _apply_config(
     # garbage collection; the suite runs with ResourceWarning as error.
     try:
         parser.enter(0, None)
+    except FermError as exc:
+        # Nothing mutating has run yet -- the kernel is provably still
+        # on the pre-apply rules; mark the error so the rollback path
+        # can restore the reverted worktree safely.
+        raise _KernelUntouchedFermError(*exc.args) from exc
     finally:
         node: Script | None = tokenizer.script
         while node is not None:

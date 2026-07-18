@@ -25,10 +25,11 @@ def _exact(message: str) -> str:
     Anchor an exact expected message for ``pytest.raises(match=...)``.
 
     ``match=`` is ``re.search``, so an unanchored (or start-only) pattern
-    still hits a message a mutant has wrapped or tail-appended; only the
-    full ``^...$`` form kills those mutants.
+    still hits a message a mutant has wrapped or tail-appended; ``$`` is
+    not enough either (it matches before a trailing newline), so only the
+    full ``\\A...\\Z`` form kills those mutants.
     """
-    return f"^{re.escape(message)}$"
+    return rf"\A{re.escape(message)}\Z"
 
 
 def _opt(

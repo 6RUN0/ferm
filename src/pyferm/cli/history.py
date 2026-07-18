@@ -133,16 +133,48 @@ def _commit_subject(
     return f"{head} ({', '.join(descriptors)})"
 
 
+def _redact_def_operand(operand: str) -> str:
+    """Keep the variable name of a ``--def`` operand, hide its value."""
+    name, sep, _value = operand.partition("=")
+    return f"{name}=<redacted>" if sep else operand
+
+
+def _redacted_argv(argv: list[str]) -> list[str]:
+    """
+    Copy ``argv`` with every ``--def`` VALUE replaced by ``<redacted>``.
+
+    ``allow_abbrev=False`` in the parser means only the exact spellings
+    ``--def OPERAND`` and ``--def=OPERAND`` can carry a definition.
+    """
+    redacted: list[str] = []
+    expect_operand = False
+    for arg in argv:
+        if expect_operand:
+            redacted.append(_redact_def_operand(arg))
+            expect_operand = False
+        elif arg == "--def":
+            redacted.append(arg)
+            expect_operand = True
+        elif arg.startswith("--def="):
+            operand = arg.removeprefix("--def=")
+            redacted.append(f"--def={_redact_def_operand(operand)}")
+        else:
+            redacted.append(arg)
+    return redacted
+
+
 def _trailer_block() -> str:
     """
     Forensic git trailers recorded with every history commit.
 
-    ``Ferm-Command`` is the program basename plus the verbatim argv --
-    including ``--def`` values: the history lives in the admin's
-    private /etc repository next to the config itself, so this reveals
-    no new secrets, and incident forensics needs the exact command.
+    ``Ferm-Command`` is the program basename plus the argv, with one
+    exception: ``--def`` VALUES are redacted (the variable name stays
+    for forensics).  A ``--def`` exists precisely to inject a value the
+    versioned config does NOT contain (a secret from a vault or the
+    environment), so recording it verbatim would write that secret into
+    the durable, replicable /etc git history for the first time.
     """
-    command = " ".join([Path(sys.argv[0]).name, *sys.argv[1:]])
+    command = " ".join([Path(sys.argv[0]).name, *_redacted_argv(sys.argv[1:])])
     return f"Ferm-Version: {__version__}\nFerm-Command: {command}"
 
 

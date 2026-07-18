@@ -1350,7 +1350,10 @@ def _translate_match_parts(
                     "arp opcode 0 is an arptables wildcard, "
                     "not a match, for nft backend"
                 )
-            operation = _ARP_OPERATION_BY_NUMBER.get(number, scalar)
+            # str(number), not the raw scalar: the kernel lists
+            # `arp operation 05` back as `5`, so a leading-zero spelling
+            # would leave --plan/delta-apply diffing forever.
+            operation = _ARP_OPERATION_BY_NUMBER.get(number, str(number))
             return (f"arp operation {_op(neg)}{operation}", None, None)
         # The ASCII gate mirrors arptables' strcasecmp: a bare
         # str.lower() would over-accept Unicode spellings the oracle

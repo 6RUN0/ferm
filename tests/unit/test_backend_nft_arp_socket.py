@@ -28,6 +28,7 @@ from pyferm.backend.nft.verdicts import (
 )
 from pyferm.domains import Family
 from pyferm.errors import FermError
+from pyferm.modules import MATCH_DEFS
 from pyferm.scope import OptionKind
 from pyferm.values import Negated
 from tests.unit._nftrule import _exact, _opt, _rule, _target
@@ -141,6 +142,28 @@ def test_numeric_opcode_u16_ceiling_still_translates() -> None:
     assert (
         translate_match(Family.ARP, _opt("opcode", "65535"), None)
         == "arp operation 65535"
+    )
+
+
+@pytest.mark.parametrize(
+    ("padded", "operation"),
+    [
+        # unnamed numbers must emit the kernel's readback spelling: nft
+        # accepts `arp operation 05` but lists it back as `5`, so the
+        # raw spelling would leave --plan/delta-apply diffing forever
+        ("05", "5"),
+        ("007", "7"),
+        ("065535", "65535"),
+        # named numbers keep resolving through the name table
+        ("02", "reply"),
+    ],
+)
+def test_numeric_opcode_normalizes_leading_zeros(
+    padded: str, operation: str
+) -> None:
+    assert (
+        translate_match(Family.ARP, _opt("opcode", padded), None)
+        == f"arp operation {operation}"
     )
 
 
@@ -322,14 +345,16 @@ def test_non_arp_jump_mangle_stays_a_user_chain() -> None:
 def test_arp_mangle_companion_partition_is_consistent() -> None:
     # The guard set must cover exactly the rewrite table plus the
     # verdict knob; a future companion outside it would silently fall
-    # through the fail-open guard.
-    assert {
-        "mangle-ip-s",
-        "mangle-ip-d",
-        "mangle-mac-s",
-        "mangle-mac-d",
-        "mangle-target",
-    } == _ARP_MANGLE_COMPANIONS
+    # through the fail-open guard.  Derive the expectation from the
+    # option registry itself (the eb sibling does the same via
+    # TARGET_DEFS) so a new mangle-* spec in modules.py fails here
+    # instead of falling through at translate time.
+    registry = {
+        name
+        for name in MATCH_DEFS["arp"][""].keywords
+        if name.startswith("mangle-")
+    }
+    assert registry == _ARP_MANGLE_COMPANIONS
 
 
 def test_arp_mangle_negated_companion_is_a_wiring_bug() -> None:

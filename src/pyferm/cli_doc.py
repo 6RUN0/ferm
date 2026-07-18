@@ -15,8 +15,9 @@ This module sits BELOW ``pyferm.cli`` (shared with
 (``tests/unit/test_cli_doc.py``) walks ``parser._actions`` of both real
 parsers and fails on any drift -- names, choices and metavar alike.
 
-``import-ferm`` has no argparse parser (its argv handling faithfully
-ports the oracle's blanket ``-``-argument rejection), so its tiny block
+``import-ferm`` has no argparse parser (its argv handling ports the
+oracle's ``-``-argument rejection, with a bare ``-`` deliberately
+special-cased to mean stdin), so its tiny block
 is curated by hand and stays outside the gate by design; its usage
 banner renders from here so no second hand-written help remains.
 """

@@ -1010,7 +1010,10 @@ def _remove_stale_artifacts(out: Path, pattern: str) -> None:
 
     hatch-vcs bumps the dev version on every commit, so rebuilding into the
     same out dir would otherwise always trip the exactly-one artifact gate
-    that anchors the smoke sessions.
+    that anchors the smoke sessions.  The removal is unconditional: any
+    ``pyferm``-named artifact of the channel in ``--out`` is treated as
+    ours, so do not point ``--out`` at a directory shared with foreign
+    ``pyferm*`` packages.
     """
     for stale in sorted(out.glob(pattern)):
         print(f"removing stale artifact {stale.name}", file=sys.stderr)
@@ -1719,7 +1722,13 @@ def _action_build_apk(args: argparse.Namespace) -> int:
     completion = [
         p for p in apks if p.name.startswith("pyferm-bash-completion-")
     ]
-    main_apks = [p for p in apks if p not in completion]
+    # mirrors the in-container copy filter: abuild's doc splitter may
+    # produce a -doc subpackage that must never count as the main apk
+    main_apks = [
+        p
+        for p in apks
+        if p not in completion and not p.name.startswith("pyferm-doc-")
+    ]
     if len(main_apks) != 1 or len(completion) != 1:
         raise SystemExit(
             f"expected exactly one main pyferm .apk plus one"
@@ -1826,7 +1835,13 @@ def _action_smoke_apk(args: argparse.Namespace) -> int:
     completion = [
         p for p in apks if p.name.startswith("pyferm-bash-completion-")
     ]
-    main_apks = [p for p in apks if p not in completion]
+    # mirrors the in-container copy filter: abuild's doc splitter may
+    # produce a -doc subpackage that must never count as the main apk
+    main_apks = [
+        p
+        for p in apks
+        if p not in completion and not p.name.startswith("pyferm-doc-")
+    ]
     if len(main_apks) != 1 or len(completion) != 1:
         raise SystemExit(
             f"expected exactly one main pyferm .apk plus one"

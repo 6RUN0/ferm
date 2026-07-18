@@ -18,7 +18,7 @@ from ..cli_doc import rollback_help
 from ..config import Options
 from ..errors import ExitCode, FermError
 from ..functions import splitpath_file
-from .apply import _apply_config, _RolledBackExit
+from .apply import _apply_config, _KernelUntouchedFermError, _RolledBackExit
 from .io import _shell_streams
 from .options import _require_interactive_tty
 
@@ -27,11 +27,12 @@ from .options import _require_interactive_tty
 _DEFAULT_CONFIG: Final[str] = "/etc/ferm/ferm.conf"
 
 
-#: Strictly the hex sha ``--list`` prints (4-40 hex digits).  The
-#: generic etckeeper validator deliberately admits '/' and '.' (branch
-#: names) -- through it, ``--diff /path/to/conf`` would swallow a config
-#: path and die with a raw git error instead of a hint.
-_DIFF_SHA_RE: Final[re.Pattern[str]] = re.compile(r"\A[0-9a-fA-F]{4,40}\Z")
+#: Strictly a hex sha: abbreviated (4+) up to a full SHA-256 OID (64 --
+#: ``--to`` accepts those, so ``--diff`` must not cap at SHA-1's 40).
+#: The generic etckeeper validator deliberately admits '/' and '.'
+#: (branch names) -- through it, ``--diff /path/to/conf`` would swallow
+#: a config path and die with a raw git error instead of a hint.
+_DIFF_SHA_RE: Final[re.Pattern[str]] = re.compile(r"\A[0-9a-fA-F]{4,64}\Z")
 
 #: ``--diff`` without a value: distinct from the ``default`` (None) so
 #: "flag absent" and "flag present, no SHA" stay distinguishable.
@@ -265,10 +266,15 @@ def _rollback_to(
     already back on the pre-rollback rules (:class:`_RolledBackExit`), so the
     reverted worktree is restored too -- otherwise the config would sit on the
     old revision, uncommitted, disagreeing with the kernel and blocking the
-    next rollback behind the dirty-worktree guard.  Other re-apply failures
-    (a :class:`FermError`, an exec-failure exit) leave the worktree reverted:
+    next rollback behind the dirty-worktree guard.  The same holds when the
+    reverted config fails to parse or evaluate
+    (:class:`_KernelUntouchedFermError`): that error is raised before any
+    hook, render or commit, so the running rules are provably still the
+    pre-rollback ones.  Any later re-apply failure (a mid-apply
+    :class:`FermError`, an exec-failure exit) leaves the worktree reverted --
     the kernel state is not known to be pre-rollback there, so a restore
-    could just as well introduce the divergence it means to prevent.
+    could just as well introduce the divergence it means to prevent -- and
+    tells the operator so instead of failing silently.
     """
     if etckeeper.working_tree_dirty(subpath):
         raise FermError(
@@ -300,8 +306,23 @@ def _rollback_to(
                 defs=defs,
                 subject=f"roll back {splitpath_file(config)} to {sha}",
             )
-    except _RolledBackExit:
+    except (_RolledBackExit, _KernelUntouchedFermError):
+        # Both signals prove the kernel still runs the pre-rollback
+        # rules, so putting the worktree back cannot create divergence.
         _restore_worktree(config, subpath)
+        raise
+    except (FermError, SystemExit) as exc:
+        # The re-apply died with the kernel state unknown: leave the
+        # revert in place (see the docstring) but say so -- the next
+        # rollback attempt will otherwise hit the dirty-worktree guard
+        # with no visible reason.
+        if not (isinstance(exc, SystemExit) and exc.code in (0, None)):
+            sys.stderr.write(
+                f"ferm: {config} is left at the reverted revision,"
+                " uncommitted: the re-apply failed mid-flight and the"
+                " kernel may match neither revision; inspect the rules,"
+                " then commit or `git checkout` the config manually\n"
+            )
         raise
 
 

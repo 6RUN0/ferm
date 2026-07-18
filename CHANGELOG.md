@@ -37,7 +37,9 @@ For the history of the original Perl implementation, see
   `-n/--limit N` for `--list`.
 - `--describe` suggests close names on a typo (`did you mean: ...`).
 - Forensic `Ferm-Version:` / `Ferm-Command:` git trailers in every
-  etckeeper history commit.
+  etckeeper history commit; `--def` values are redacted in the recorded
+  command (the variable name is kept) so an externally-sourced secret
+  never lands in the /etc git history.
 
 ### Changed
 
@@ -69,6 +71,10 @@ For the history of the original Perl implementation, see
   arptables treats `--opcode 0` as a wildcard (verified live —
   arptables-nft installs no operation match at all), so the old
   emission inverted the semantics into match-nothing.
+- `--nft` emits numeric arp `opcode` values in the kernel's canonical
+  spelling: `opcode 05` used to emit `arp operation 05`, which `nft`
+  accepts but reads back as `5`, so `--plan`/delta-apply reported a
+  phantom diff on every run.
 - The ebtables path refuses `domain eb table raw`/`mangle` with a clean
   error (`ebtables has no table 'raw'`) instead of crashing with a
   `KeyError` traceback; the Perl oracle dies on these tables too.
@@ -89,9 +95,19 @@ For the history of the original Perl implementation, see
   config uncommitted on disk while the kernel keeps the pre-rollback
   rules (which also blocked the next rollback behind the dirty-worktree
   guard).
+- `ferm rollback`: when the reverted config fails to parse or evaluate,
+  the re-apply dies before anything reaches the kernel, so the config
+  file is restored to its committed state exactly like a declined
+  confirmation; a failure with unknown kernel state still keeps the
+  reverted file, but now says so explicitly instead of leaving the
+  next rollback to hit the dirty-worktree guard with no visible
+  reason.
 - The `ferm rollback --diff` error for a non-SHA value now explains how
   to combine a bare `--diff` with a non-default config path
   (`ferm rollback CONFIG --diff` or `--diff= CONFIG`).
+- `ferm rollback --diff` accepts a full 64-digit SHA-256 OID; the
+  validator used to cap at SHA-1's 40 digits while `--to` was
+  length-agnostic.
 - `import-ferm`: a bare `-` argument now reads stdin, matching Perl's
   `<>` operator (it used to be opened as a literal file named `-` and
   warned `Can't open -`).

@@ -291,7 +291,7 @@ def test_first_scalar_unsupported_shape_is_error() -> None:
 # ---------------------------------------------------------------------------
 from pyferm.backend.nft import translate_match  # noqa: E402
 from pyferm.rules import RenderedOption  # noqa: E402
-from tests.unit._nftrule import _opt, _rule, _target  # noqa: E402
+from tests.unit._nftrule import _exact, _opt, _rule, _target  # noqa: E402
 
 
 def test_translate_match_addresses_and_ifaces() -> None:
@@ -1280,11 +1280,19 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
     # rather than fall through to the user-chain jump.
     comp = {"to-source": _opt("to-source", "aa:bb:cc:00:11:22")}
     with pytest.raises(
-        FermError, match=r"^target 'snat' \(or jump to a chain"
+        FermError,
+        match=_exact(
+            "target 'snat' (or jump to a chain of that name) "
+            "not yet supported by nft backend"
+        ),
     ):
         build_verdict(Family.EB, "nat", "jump", "snat", comp)
     with pytest.raises(
-        FermError, match=r"^eb target 'redirect' \(or jump to a chain"
+        FermError,
+        match=_exact(
+            "eb target 'redirect' (or jump to a chain of that name) "
+            "not yet supported by nft backend"
+        ),
     ):
         build_verdict(Family.EB, "broute", "jump", "redirect", {})
     # MARK is the one eb keyword that collides with the ip/ip6 MARK
@@ -1293,7 +1301,11 @@ def test_build_verdict_eb_target_keywords_are_refused() -> None:
     # `meta mark set ...` instead of refusing -- and the registry sweep
     # below cannot see that, since it passes empty companions.
     with pytest.raises(
-        FermError, match=r"^eb target 'MARK' \(or jump to a chain"
+        FermError,
+        match=_exact(
+            "eb target 'MARK' (or jump to a chain of that name) "
+            "not yet supported by nft backend"
+        ),
     ):
         build_verdict(
             Family.EB,

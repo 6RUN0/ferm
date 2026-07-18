@@ -1894,6 +1894,23 @@ def test_rollback_diff_with_sha_prints_to_stdout(
     assert calls[-1][2:4] == ["diff", "deadbeef"]
 
 
+def test_rollback_diff_accepts_full_sha256_oid(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pyferm.cli import _rollback_main
+
+    # --to is length-agnostic, so --diff must not cap at SHA-1's 40
+    # digits: a full SHA-256 OID (64 hex) passes, 65 does not.
+    calls = _fake_vcs_for_diff(monkeypatch)
+    oid = "c" * 64
+    assert _rollback_main(["--diff", oid, "/etc/ferm/f.conf"]) == 0
+    assert capsys.readouterr().out == "diff text\n"
+    assert calls[-1][2:4] == ["diff", oid]
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--diff", "c" * 65, "/etc/ferm/f.conf"])
+    assert exc.value.code == 2
+
+
 def test_rollback_bare_diff_targets_previous_revision(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2083,10 +2100,13 @@ def test_rollback_restore_failure_warns_without_masking_exit(
 
 def test_rollback_reapply_ferm_error_keeps_reverted_worktree(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # A FermError from the re-apply (e.g. a resolver failure) is NOT a
-    # kernel rollback: the kernel state is not known to be pre-rollback,
-    # so no worktree restore happens (see _rollback_to's docstring).
+    # A mid-apply FermError from the re-apply (e.g. a resolver failure)
+    # is NOT a kernel rollback: the kernel state is not known to be
+    # pre-rollback, so no worktree restore happens (see _rollback_to's
+    # docstring) -- but the operator is told about the reverted,
+    # uncommitted config instead of hitting the dirty guard blind.
     from pyferm.cli import _rollback_main
     from pyferm.cli import rollback as cli_rollback
 
@@ -2099,6 +2119,66 @@ def test_rollback_reapply_ferm_error_keeps_reverted_worktree(
     with pytest.raises(FermError, match="unresolvable hostname"):
         _rollback_main(["--to", "deadbeef"])
     assert rollback_spy.calls == [("deadbeef", "ferm")]  # no HEAD restore
+    err = capsys.readouterr().err
+    assert err.endswith(
+        "ferm: /etc/ferm/ferm.conf is left at the reverted revision,"
+        " uncommitted: the re-apply failed mid-flight and the kernel may"
+        " match neither revision; inspect the rules, then commit or"
+        " `git checkout` the config manually\n"
+    )
+
+
+def test_rollback_reapply_parse_error_restores_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A parse/eval failure of the REVERTED config is raised before any
+    # hook, render or commit (_KernelUntouchedFermError), so the kernel
+    # provably still runs the pre-rollback rules -- the reverted
+    # worktree is put back, exactly like the declined-confirm path.
+    from pyferm.cli import _rollback_main
+    from pyferm.cli import rollback as cli_rollback
+    from pyferm.cli.apply import _KernelUntouchedFermError
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch)
+
+    def _unparsable_apply(*_args: object, **_kwargs: object) -> int:
+        raise _KernelUntouchedFermError("missing include")
+
+    monkeypatch.setattr(cli_rollback, "_apply_config", _unparsable_apply)
+    with pytest.raises(FermError, match="missing include"):
+        _rollback_main(["--to", "deadbeef"])
+    # the revert first, then the HEAD restore: kernel provably untouched
+    assert rollback_spy.calls == [("deadbeef", "ferm"), ("HEAD", "ferm")]
+    err = capsys.readouterr().err
+    assert err.endswith(
+        "Rollback of /etc/ferm/ferm.conf aborted; the config file was"
+        " restored to match the running rules.\n"
+    )
+
+
+def test_rollback_reapply_exec_failure_warns_and_keeps_revert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The exec-failure SystemExit from io deliberately skips the kernel
+    # rollback (kernel state unknown), so the worktree stays reverted --
+    # with the explicit warning, and the exit code intact.
+    from pyferm.cli import _rollback_main
+    from pyferm.cli import rollback as cli_rollback
+
+    rollback_spy, _apply = _mock_rollback_seam(monkeypatch)
+
+    def _exec_failing_apply(*_args: object, **_kwargs: object) -> int:
+        raise SystemExit(1)
+
+    monkeypatch.setattr(cli_rollback, "_apply_config", _exec_failing_apply)
+    with pytest.raises(SystemExit) as exc:
+        _rollback_main(["--to", "deadbeef"])
+    assert exc.value.code == 1
+    assert rollback_spy.calls == [("deadbeef", "ferm")]  # no HEAD restore
+    err = capsys.readouterr().err
+    assert "left at the reverted revision" in err
 
 
 def test_rollback_bare_non_tty_refused(
@@ -2665,6 +2745,45 @@ def test_commit_message_degrades_without_plan(
     version_line, command_line = trailers.splitlines()
     assert version_line.startswith("Ferm-Version: ")
     assert command_line == "Ferm-Command: ferm f.conf"
+
+
+def test_commit_message_redacts_def_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --def exists precisely to inject a value the versioned config does
+    # NOT contain (a vault/environment secret), so the trailer must keep
+    # the variable name for forensics but never write the value into the
+    # /etc git history.  Both argparse spellings and a value-less
+    # definition are covered.
+    from pyferm.cli import _build_commit_message
+    from pyferm.plan import Plan
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "/usr/sbin/ferm",
+            "--def",
+            "$pw=hunter2",
+            "--def=$token=tok=en",
+            "--def",
+            "$flag",
+            "f.conf",
+        ],
+    )
+    monkeypatch.setattr(
+        "pyferm.cli.history.build_plan", lambda *_a, **_k: Plan()
+    )
+    message = _build_commit_message(
+        "f.conf", {}, Options(), IptablesBackend(), None
+    )
+    command_line = message.splitlines()[-1]
+    assert command_line == (
+        "Ferm-Command: ferm --def $pw=<redacted> --def=$token=<redacted> "
+        "--def $flag f.conf"
+    )
+    assert "hunter2" not in message
+    assert "tok=en" not in message
 
 
 def test_commit_message_rollback_head_override(
